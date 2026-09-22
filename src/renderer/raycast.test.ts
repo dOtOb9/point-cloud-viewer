@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { lookAt, multiply, perspective } from "./mat4";
-import { closestHierarchyHit, intersectRayAabb, screenPointToWorldRay, type Ray } from "./raycast";
+import { closestHierarchyHit, intersectRayAabb, ndcPointToWorldRay, screenPointToWorldRay, type Ray } from "./raycast";
 
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
@@ -165,5 +165,81 @@ describe("screenPointToWorldRay", () => {
     const centerRay = screenPointToWorldRay(viewProj, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, CANVAS_WIDTH, CANVAS_HEIGHT);
     const centerHit = closestHierarchyHit(centerRay!, [edgeBox]);
     expect(centerHit).toBeNull();
+  });
+});
+
+describe("ndcPointToWorldRay", () => {
+  it("screenPointToWorldRayと同じ結果になる（画面中心のNDCは(0,0)）", () => {
+    // screenPointToWorldRayはピクセル座標をNDCに変換してこの関数に委ねるだけの
+    // 薄いラッパーになった（raycast.tsのコメント参照）。両者が食い違わないことを担保する。
+    const eye: [number, number, number] = [0, 0, 10];
+    const target: [number, number, number] = [0, 0, 0];
+    const view = lookAt(eye, target, [0, 1, 0]);
+    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1000);
+    const viewProj = multiply(proj, view);
+
+    const viaScreen = screenPointToWorldRay(viewProj, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, CANVAS_WIDTH, CANVAS_HEIGHT);
+    const viaNdc = ndcPointToWorldRay(viewProj, 0, 0);
+    expect(viaScreen).not.toBeNull();
+    expect(viaNdc).not.toBeNull();
+    expect(viaNdc!.direction[0]).toBeCloseTo(viaScreen!.direction[0], 9);
+    expect(viaNdc!.direction[1]).toBeCloseTo(viaScreen!.direction[1], 9);
+    expect(viaNdc!.direction[2]).toBeCloseTo(viaScreen!.direction[2], 9);
+  });
+
+  it("[-1, 1]の外側のNDC座標も扱える（全画面三角形の頂点。sky.ts/ground-grid.tsが使う）", () => {
+    const eye: [number, number, number] = [0, 0, 10];
+    const target: [number, number, number] = [0, 0, 0];
+    const view = lookAt(eye, target, [0, 1, 0]);
+    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1000);
+    const viewProj = multiply(proj, view);
+
+    // sky.ts/ground-grid.tsのvs_mainが使う全画面三角形の3頂点。
+    for (const [nx, ny] of [
+      [-1, -1],
+      [3, -1],
+      [-1, 3],
+    ] as const) {
+      const ray = ndcPointToWorldRay(viewProj, nx, ny);
+      expect(ray).not.toBeNull();
+      expect(Number.isFinite(ray!.direction[0])).toBe(true);
+      expect(Number.isFinite(ray!.direction[1])).toBe(true);
+      expect(Number.isFinite(ray!.direction[2])).toBe(true);
+    }
+  });
+
+  it("回帰: autzen規模の大きな座標 + NEAR/FARの広いレンジでもNaNにならない（実機不具合の再現と修正の担保）", () => {
+    // 所有者の実機報告「空にすると地面しか見えない/グリッドが効かない」の原因は、
+    // ワールド空間のinvViewProjをそのままf32でGPUに渡していたこと
+    // （scripts/diag-sky-ray.ts、TaskSheets/M2-shading-and-ui.md M2-0c参照）。
+    // NEAR=0.01, FAR=1e7（point-cloud-renderer.tsの実際の値）というダイナミック
+    // レンジの広さと、autzenのような大きなワールド座標（X約637,000）が組み合わさると、
+    // 逆行列をf32にキャストした瞬間に変換後のwが桁落ちしてNaNになる。
+    //
+    // ndcPointToWorldRayはすべてf64(通常のJSの数値)で計算するので、この関数自体は
+    // NaNを出さない。sky.ts/ground-grid.tsはこの関数の**戻り値**（正規化済みの
+    // 小さいベクトル）だけをf32にキャストするので安全になる、という設計を担保する。
+    const target: [number, number, number] = [637290.8, 851209.9, 510.7];
+    const eye: [number, number, number] = [637290.8, 855031.2, 1692.8]; // diag-sky-ray.tsと同じ視点
+    const up: [number, number, number] = [0, 0, 1];
+    const view = lookAt(eye, target, up);
+    const proj = perspective(Math.PI / 3, 1600 / 900, 0.01, 1e7);
+    const viewProj = multiply(proj, view);
+
+    for (const [nx, ny] of [
+      [0, 1],
+      [0, 0],
+      [0, -1],
+      [-1, 1],
+    ] as const) {
+      const ray = ndcPointToWorldRay(viewProj, nx, ny);
+      expect(ray).not.toBeNull();
+      expect(Number.isFinite(ray!.direction[0])).toBe(true);
+      expect(Number.isFinite(ray!.direction[1])).toBe(true);
+      expect(Number.isFinite(ray!.direction[2])).toBe(true);
+      // 方向は正規化済みなので大きさは1のはず（f32へキャストしても安全な理由）。
+      const len = Math.hypot(...ray!.direction);
+      expect(len).toBeCloseTo(1, 6);
+    }
   });
 });
