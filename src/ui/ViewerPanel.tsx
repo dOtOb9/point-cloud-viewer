@@ -1,0 +1,58 @@
+import { useState } from "react";
+import { useCopcViewer } from "../state/useCopcViewer";
+
+/**
+ * M1: COPCビューア本体。canvasはrenderer(PointCloudRenderer)がWebGPUで直接描画する
+ * （Reactは再レンダリングしない）。UIはuseCopcViewer経由でしかrendererに触らない
+ * （規約3）。
+ */
+export function ViewerPanel() {
+  const [canvasRef, viewer] = useCopcViewer();
+  const [pathInput, setPathInput] = useState("");
+
+  return (
+    <section className="relative h-[70vh] w-full overflow-hidden rounded border border-slate-700 bg-black">
+      <canvas ref={canvasRef} className="h-full w-full" />
+
+      <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-3">
+        <div className="pointer-events-auto flex items-center gap-2 rounded bg-slate-900/80 p-2 text-xs">
+          <input
+            type="text"
+            value={pathInput}
+            onChange={(e) => setPathInput(e.target.value)}
+            placeholder="開くCOPCファイルの絶対パス (.laz)"
+            className="w-96 rounded border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-slate-100"
+          />
+          <button
+            type="button"
+            onClick={() => void viewer.openFile(pathInput)}
+            disabled={viewer.status === "opening" || pathInput.trim() === ""}
+            className="rounded bg-slate-700 px-3 py-1 hover:bg-slate-600 disabled:opacity-50"
+          >
+            {viewer.status === "opening" ? "開いています…" : "開く"}
+          </button>
+        </div>
+
+        {viewer.error && (
+          <div className="pointer-events-auto rounded bg-red-900/80 p-2 text-xs text-red-200">
+            {viewer.error}
+          </div>
+        )}
+
+        <div className="pointer-events-auto self-start rounded bg-slate-900/80 p-2 font-mono text-xs text-slate-200">
+          {viewer.cloudInfo ? (
+            <>
+              <p>
+                points: {viewer.cloudInfo.pointCount.toLocaleString()} / nodes: {viewer.nodeCount}
+              </p>
+              <p>hasColor: {String(viewer.cloudInfo.hasColor)}</p>
+              <p className="text-slate-400">ルートノードのみ表示中（LODはM1-4で対応）</p>
+            </>
+          ) : (
+            <p>まだファイルを開いていません</p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
