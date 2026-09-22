@@ -20,23 +20,51 @@
 // 明度・色相ともにはっきり分け、(2) t=0の近傍に細い地平線（horizonLineColor）を
 // 明示的に描く。地面のグリッドは別ファイル(ground-grid.ts)で扱う。
 //
-// 修正（実機報告: 空にすると地面しか見えない）: 当初はワールド空間のviewProjの
-// 逆行列(invViewProj)をそのままuniformに積んでf32でGPUに渡し、フラグメント
-// シェーダで`invViewProj * ndc`からレイ方向を復元していた。これは`mat4.ts`冒頭の
-// 規約（ワールド座標そのものを行列に持たせない）に反していた: NEAR(0.01)/FAR(1e7)の
-// ダイナミックレンジにautzenのような大きなワールド座標（X約637,000）が重なると、
-// 逆行列の成分は1e-9〜1e8桁まで開く。f32(有効桁約7桁)ではこれを表現しきれず、
-// 変換後のwが桁落ちして0になり、`xyz / w`がInf、`normalize`がNaNになっていた
-// （`scripts/diag-sky-ray.ts`で再現・実測済み）。WGSLは`NaN >= 0.0`がfalseなので
-// 全ピクセルがelse分岐（groundColor）に落ち、「空にすると地面しか見えない」形で
-// 現れていた。
+// 実機不具合1回目（実機報告: 空にすると地面しか見えない）: 当初はワールド空間の
+// viewProjの逆行列(invViewProj)をそのままuniformに積んでf32でGPUに渡し、
+// フラグメントシェーダで`invViewProj * ndc`からレイ方向を復元していた。これは
+// `mat4.ts`冒頭の規約（ワールド座標そのものを行列に持たせない）に反していた:
+// NEAR(0.01)/FAR(1e7)のダイナミックレンジにautzenのような大きなワールド座標
+// （X約637,000）が重なると、逆行列の成分は1e-9〜1e8桁まで開く。f32(有効桁約7桁)
+// ではこれを表現しきれず、変換後のwが桁落ちして0になり、`xyz / w`がInf、
+// `normalize`がNaNになっていた（`scripts/diag-sky-ray.ts`で再現・実測済み）。
+// WGSLは`NaN >= 0.0`がfalseなので全ピクセルがelse分岐(groundColor)に落ち、
+// 「空にすると地面しか見えない」形で現れていた。
 //
-// 対策: 行列(invViewProj)もeyeもGPUに渡さない。JS側(f64)で`raycast.ts`の
-// `ndcPointToWorldRay`を使い、全画面三角形の3頂点それぞれのレイ方向を求めておく
-// （方向は正規化済みで大きさ~1なので、f32にキャストしても精度の問題が起きない）。
-// 頂点シェーダは`@builtin(vertex_index)`でこの3方向から1つを選んで
-// `@location`で渡すだけ。線形補間したものをフラグメントシェーダで`normalize`
-// すれば、各ピクセルのレイ方向になる（詳細はdraw()のコメント参照）。
+// 実機不具合2回目（実機報告: 空やグリッドを入れると画面が真っ黒になる）:
+// 1回目の対策として「全画面三角形の3頂点(NDC (-1,-1),(3,-1),(-1,3))それぞれの
+// レイ方向(正規化済み)をuniformで渡し、頂点シェーダで@locationに渡して線形補間、
+// フラグメントシェーダで再度normalize」という方式にしたが、これも壊れていた。
+// NDC=3は画面の中心から見て水平半画角(FOV60°・アスペクト16:9なら約46°)の
+// 3倍近い、70度以上離れた方向になる。**正規化済みの単位ベクトルをこれだけ広い
+// 角度で線形補間すると、球面上の弧ではなく弦を取ることになり、結果のベクトルは
+// 向きがずれるだけでなく長さが縮む**（数値検証: 中央付近で長さ0.55〜0.81。
+// 角度が開くほど0に近づく）。長さがほぼ0になった場所では`normalize(ほぼ0)`が
+// NaNになり、同じNaNが別の経路で戻ってきていた（「画面が真っ黒」はNaNが
+// アルファ/カラーに伝播した結果）。
+//
+// **教訓（重要。次に踏みやすい罠）:**
+// 1. **単位ベクトル（方向）を広い角度にわたって線形補間してはいけない。**
+//    線形補間は「位置」や「まっすぐ変化する量」には正しいが、正規化された
+//    方向ベクトルは球面上の点なので、弦（chord）を取ることになり、角度が
+//    開くほど誤差が増え、長さが縮む。全画面三角形は画面の3倍外側まで頂点が
+//    延びるため、この誤差が致命的な大きさになる
+// 2. **「NaNが出ない」は正しさの証明にならない。** 1回目の修正のとき、
+//    診断スクリプト(`scripts/diag-sky-ray.ts`)はNaNの有無だけを確認しており、
+//    値がf64の真値と一致するかを検証していなかった。その結果、2回目の
+//    不具合（値が最大0.16もずれ、条件によってはNaNにもなる）を見逃した。
+//    **「NaNが出ない」は必要条件であって十分条件ではない。**
+//
+// 対策（2回目）: 方向ベクトルの補間そのものをやめた。頂点シェーダで補間するのは
+// **NDC座標（位置）だけ**にする（位置の線形補間はアフィンな量なので正しい）。
+// フラグメントシェーダで、画素ごとに
+//   dir = normalize(forward + ndc.x * rightScaled + ndc.y * upScaled)
+// としてレイ方向を組み立てる。`forward`(カメラの視線方向)・`rightScaled`
+// (right * tan(fovY/2) * アスペクト比)・`upScaled`(up * tan(fovY/2))は
+// JS側(f64)で`mat4.ts`の`cameraBasis()`から求める。これはNDCがいくつでも
+// 厳密で（外挿ではなく、透視投影の逆関数そのもの）、扱う数値はどれも
+// 大きさ~1、行列もワールド座標の絶対値も一切GPUに渡らない
+// （詳細はdraw()のコメント参照）。
 
 import type { Vec3 } from "./up-axis";
 
@@ -72,11 +100,11 @@ const SKY_COLORS: SkyColors = {
 
 const SKY_SHADER_SRC = /* wgsl */ `
 struct SkyUniforms {
-  // 全画面三角形の3頂点それぞれのレイ方向（JS側でndcPointToWorldRayを使い、f64で
-  // 計算済み。ワールド空間の行列やeyeはここには無い。draw()のコメント参照）。
-  dirs0: vec4<f32>,        // xyzだけ使う
-  dirs1: vec4<f32>,
-  dirs2: vec4<f32>,
+  // カメラ基底（JS側(f64)でmat4.tsのcameraBasis()から求める。draw()のコメント参照）。
+  // ワールド空間の行列やeyeの絶対座標はここには無い。
+  forward: vec4<f32>,      // xyzだけ使う。カメラの視線方向(eye->target正規化)
+  rightScaled: vec4<f32>,  // xyzだけ使う。right * tan(fovY/2) * アスペクト比
+  upScaled: vec4<f32>,     // xyzだけ使う。up * tan(fovY/2)
   upAxis: vec4<f32>,       // xyzだけ使う。M2-0b: 上方向はここでも1箇所（このuniform）を経由する
   zenithColor: vec4<f32>,  // rgbだけ使う
   horizonColor: vec4<f32>,
@@ -87,10 +115,9 @@ struct SkyUniforms {
 
 struct VertexOut {
   @builtin(position) clipPosition: vec4<f32>,
-  // 正規化前のレイ方向。線形補間してからフラグメントシェーダでnormalizeする
-  // （正規化してから補間すると、頂点ごとに違う縮尺で割ることになり、補間結果が
-  // 本来の方向からずれるため。正規化は必ず補間の後）。
-  @location(0) dir: vec3<f32>,
+  // NDC座標（位置）。線形補間が正しいのはこれだけ（ファイル冒頭の教訓1参照。
+  // 方向ベクトルを直接ここに乗せて補間してはいけない）。
+  @location(0) ndc: vec2<f32>,
 };
 
 @vertex
@@ -101,17 +128,18 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
     vec2<f32>(3.0, -1.0),
     vec2<f32>(-1.0, 3.0),
   );
-  var dirs = array<vec3<f32>, 3>(u.dirs0.xyz, u.dirs1.xyz, u.dirs2.xyz);
   var out: VertexOut;
-  out.clipPosition = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
-  out.dir = dirs[vertexIndex];
+  let p = positions[vertexIndex];
+  out.clipPosition = vec4<f32>(p, 0.0, 1.0);
+  out.ndc = p;
   return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-  // このピクセルが見ている方向（頂点シェーダで渡した3方向を線形補間したもの）。
-  let dir = normalize(in.dir);
+  // このピクセルのレイ方向を、画素ごとに基底から直接組み立てる（NDCがいくつでも
+  // 厳密。ファイル冒頭の「対策（2回目）」参照）。
+  let dir = normalize(u.forward.xyz + in.ndc.x * u.rightScaled.xyz + in.ndc.y * u.upScaled.xyz);
 
   let up = normalize(u.upAxis.xyz);
   let t = dot(dir, up); // 1: 天頂, 0: 地平線, -1: 真下
@@ -139,7 +167,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 `;
 
 const SKY_UNIFORM_FLOATS =
-  4 * 3 /* dirs0/dirs1/dirs2 */ + 4 /* upAxis */ + 4 * 4 /* colors (zenith/horizon/ground/horizonLine) */;
+  4 * 3 /* forward/rightScaled/upScaled */ + 4 /* upAxis */ + 4 * 4 /* colors (zenith/horizon/ground/horizonLine) */;
 const SKY_UNIFORM_BYTES = SKY_UNIFORM_FLOATS * 4;
 
 /**
@@ -187,19 +215,25 @@ export class SkyBackground {
   /**
    * 同じレンダーパス内で、点群を描く前に呼ぶこと。
    *
-   * `vertexDirs`は全画面三角形の3頂点（NDC座標 (-1,-1), (3,-1), (-1,3)。
-   * `vs_main`のpositionsと同じ並び）それぞれのレイ方向。呼び出し側
-   * （point-cloud-renderer.ts）が`raycast.ts`の`ndcPointToWorldRay`をその3点で
-   * 呼んで、f64のまま求める。ここではf32にキャストするだけ（方向は正規化済みで
-   * 大きさ~1なので、桁落ちは起きない。invViewProjやeyeをここで扱わないのが
-   * ポイント。ファイル冒頭のコメント参照）。
+   * `forward`/`rightScaled`/`upScaled`はカメラ基底（呼び出し側`point-cloud-renderer.ts`が
+   * `mat4.ts`の`cameraBasis()`とFOV/アスペクト比からf64で計算する。詳細は
+   * ファイル冒頭の「対策（2回目）」参照）。どれも大きさ~1のベクトルなので、
+   * f32にキャストしても精度の問題は起きない。ワールド座標の絶対値
+   * （invViewProjやeyeの絶対座標）はここには一切登場しない。
    */
-  draw(device: GPUDevice, pass: GPURenderPassEncoder, vertexDirs: readonly [Vec3, Vec3, Vec3], upAxis: Vec3): void {
+  draw(
+    device: GPUDevice,
+    pass: GPURenderPassEncoder,
+    forward: Vec3,
+    rightScaled: Vec3,
+    upScaled: Vec3,
+    upAxis: Vec3,
+  ): void {
     if (!this.pipeline || !this.uniformBuffer || !this.bindGroup) return;
 
-    this.uniformData.set([...vertexDirs[0], 0], 0);
-    this.uniformData.set([...vertexDirs[1], 0], 4);
-    this.uniformData.set([...vertexDirs[2], 0], 8);
+    this.uniformData.set([...forward, 0], 0);
+    this.uniformData.set([...rightScaled, 0], 4);
+    this.uniformData.set([...upScaled, 0], 8);
     this.uniformData.set([upAxis[0], upAxis[1], upAxis[2], 0], 12);
     this.uniformData.set([...SKY_COLORS.zenith, 0], 16);
     this.uniformData.set([...SKY_COLORS.horizon, 0], 20);

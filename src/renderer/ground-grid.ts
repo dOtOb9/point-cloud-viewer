@@ -21,17 +21,29 @@
 //   点は常にグリッドより手前に残る
 // - 色はアルファブレンドで背景(空 or 単色)の上に重ねる
 //
-// 修正（実機報告: グリッドにチェックしても表示が変わらない）: sky.tsと同じ原因
-// （NEAR/FAR(0.01〜1e7)のダイナミックレンジ + autzenの大きなワールド座標で、
-// f32のinvViewProjからレイ方向を復元するとNaNになる）。詳しくはsky.tsの
-// コメントと`scripts/diag-sky-ray.ts`を参照。ここではレイ方向をsky.tsと同じ
-// 方式（JS(f64)でndcPointToWorldRayを使い、正規化済みの小さい方向ベクトルだけを
-// GPUに渡す）に直したのに加えて、**平面との交点計算もすべてカメラ相対にした**:
-// 世界座標そのもの(eyeやgroundHeightの絶対値)をf32でGPUに渡さない。
+// 修正1回目（実機報告: グリッドにチェックしても表示が変わらない）: sky.tsと同じ
+// 原因（NEAR/FAR(0.01〜1e7)のダイナミックレンジ + autzenの大きなワールド座標で、
+// f32のinvViewProjからレイ方向を復元するとNaNになる）。この時点でレイ方向を
+// JS(f64)で計算する方式に直したのに加えて、**平面との交点計算もすべてカメラ
+// 相対にした**（この部分は2回目の修正でも変わらず有効）:
 // - 平面の高さはカメラからの相対値(`groundHeight - eyeHeight`)で渡す
 // - グリッド線の位相合わせは、カメラ位置をセルサイズで割った余り(`phase`)で渡す。
 //   世界座標の整数部（大きい）を捨てて余り（小さい）だけ使っても、格子線は
 //   セルサイズ周期で繰り返すパターンなので見た目は変わらない
+//
+// 修正2回目（実機報告: 空やグリッドを入れると画面が真っ黒になる）: 1回目の
+// 対策は「全画面三角形の3頂点それぞれのレイ方向(正規化済み)を線形補間する」
+// 方式だったが、これも壊れていた。NDC=3（三角形の頂点。画面中心から70度以上）
+// のような広い角度にわたって単位ベクトルを線形補間すると、球面上の弧ではなく
+// 弦を取ることになり、長さが縮む（条件によってはほぼ0になり`normalize`がNaNに
+// なる）。詳しい原因と教訓は`sky.ts`のファイル冒頭コメントを参照（このファイルも
+// 同じ罠にかかっていた）。
+//
+// 対策（2回目）: レイ方向の補間をやめ、sky.tsと同じ「画素ごとに基底から
+// 直接組み立てる」方式にした:
+// `dir = normalize(forward + ndc.x * rightScaled + ndc.y * upScaled)`
+// 頂点シェーダで補間するのはNDC座標（位置）だけ。`forward`/`rightScaled`/
+// `upScaled`はカメラ基底（`mat4.ts`の`cameraBasis()`）から求める。
 
 import type { Vec3 } from "./up-axis";
 
@@ -87,18 +99,20 @@ export function floorMod(a: number, m: number): number {
 
 const GRID_SHADER_SRC = /* wgsl */ `
 struct GridUniforms {
-  // 全画面三角形の3頂点それぞれのレイ方向（sky.tsと同じ方式。ワールド空間の
-  // 行列やeyeの絶対座標はここには無い。ファイル冒頭のコメント参照）。
-  dirs0: vec4<f32>,    // xyzだけ使う
-  dirs1: vec4<f32>,
-  dirs2: vec4<f32>,
-  upAxis: vec4<f32>,   // xyzだけ使う
-  right: vec4<f32>,    // xyzだけ使う。upAxisに直交する水平基底（up-axis.tsのhorizontalBasis）
-  forward: vec4<f32>,  // xyzだけ使う。同上
+  // カメラ基底（sky.tsと同じ方式。ワールド空間の行列やeyeの絶対座標は
+  // ここには無い。ファイル冒頭のコメント参照）。
+  viewForward: vec4<f32>,      // xyzだけ使う。カメラの視線方向(eye->target正規化)
+  viewRightScaled: vec4<f32>,  // xyzだけ使う。right * tan(fovY/2) * アスペクト比
+  viewUpScaled: vec4<f32>,     // xyzだけ使う。up * tan(fovY/2)
+  upAxis: vec4<f32>,           // xyzだけ使う。シーンの上方向（グリッド平面の法線）
+  // グリッド平面に沿った水平基底（up-axis.tsのhorizontalBasis。カメラ基底とは別物、
+  // シーンのupAxisに直交する）。グリッド線の格子座標(uCoord/vCoord)を作るのに使う。
+  gridRight: vec4<f32>,    // xyzだけ使う
+  gridForward: vec4<f32>,  // xyzだけ使う
   // x: 平面の高さ(カメラからの相対値。groundHeight - eyeHeight), y: セルサイズ,
   // z: フェード距離, w: 未使用
   params: vec4<f32>,
-  // x: カメラ位置のright成分をセルサイズで割った余り, y: 同forward成分の余り,
+  // x: カメラ位置のgridRight成分をセルサイズで割った余り, y: 同gridForward成分の余り,
   // z, w: 未使用。ワールド座標の絶対値の代わりにこれを使う（ファイル冒頭のコメント）。
   phase: vec4<f32>,
   lineColor: vec4<f32>, // rgb: 線の色, a: 最大不透明度
@@ -107,8 +121,9 @@ struct GridUniforms {
 
 struct VertexOut {
   @builtin(position) clipPosition: vec4<f32>,
-  // 正規化前のレイ方向。sky.tsと同じ理由で、正規化は補間の後に行う。
-  @location(0) dir: vec3<f32>,
+  // NDC座標（位置）。線形補間が正しいのはこれだけ（sky.tsファイル冒頭の教訓1参照。
+  // 方向ベクトルを直接ここに乗せて補間してはいけない）。
+  @location(0) ndc: vec2<f32>,
 };
 
 @vertex
@@ -119,17 +134,19 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
     vec2<f32>(3.0, -1.0),
     vec2<f32>(-1.0, 3.0),
   );
-  var dirs = array<vec3<f32>, 3>(u.dirs0.xyz, u.dirs1.xyz, u.dirs2.xyz);
   var out: VertexOut;
-  out.clipPosition = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
-  out.dir = dirs[vertexIndex];
+  let p = positions[vertexIndex];
+  out.clipPosition = vec4<f32>(p, 0.0, 1.0);
+  out.ndc = p;
   return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-  // カメラを原点とする座標系(カメラ相対)ですべて計算する。eyeそのものは登場しない。
-  let dir = normalize(in.dir);
+  // このピクセルのレイ方向を、画素ごとに基底から直接組み立てる（NDCがいくつでも
+  // 厳密。sky.tsファイル冒頭の「対策（2回目）」参照）。カメラを原点とする座標系
+  // (カメラ相対)ですべて計算する。eyeの絶対座標そのものは登場しない。
+  let dir = normalize(u.viewForward.xyz + in.ndc.x * u.viewRightScaled.xyz + in.ndc.y * u.viewUpScaled.xyz);
   let up = normalize(u.upAxis.xyz);
 
   let relGroundHeight = u.params.x; // 平面の高さ(カメラからの相対値)
@@ -150,8 +167,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
   // カメラから交点までの差分（カメラ相対なので、これがそのまま交点の座標）。
   let hitRel = dir * t;
-  let hitU = dot(hitRel, u.right.xyz);
-  let hitV = dot(hitRel, u.forward.xyz);
+  let hitU = dot(hitRel, u.gridRight.xyz);
+  let hitV = dot(hitRel, u.gridForward.xyz);
 
   // グリッドの位相はカメラ位置の余り(u.phase)にhitRelを足して作る。世界座標の
   // 整数部（大きい）を経由しないので、f32でも精度が落ちない。整数個のcellSizeが
@@ -182,10 +199,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 `;
 
 const GRID_UNIFORM_FLOATS =
-  4 * 3 /* dirs0/dirs1/dirs2 */ +
+  4 * 3 /* viewForward/viewRightScaled/viewUpScaled */ +
   4 /* upAxis */ +
-  4 /* right */ +
-  4 /* forward */ +
+  4 /* gridRight */ +
+  4 /* gridForward */ +
   4 /* params */ +
   4 /* phase */ +
   4 /* lineColor */;
@@ -250,14 +267,19 @@ export class GroundGrid {
   /**
    * 同じレンダーパス内で、点群を描く前（空を描いた後でよい）に呼ぶこと。
    *
-   * `vertexDirs`はsky.tsと同じ、全画面三角形の3頂点それぞれのレイ方向
-   * （呼び出し側が`ndcPointToWorldRay`をf64で計算する）。
+   * `viewForward`/`viewRightScaled`/`viewUpScaled`はsky.tsと同じカメラ基底
+   * （呼び出し側`point-cloud-renderer.ts`が`mat4.ts`の`cameraBasis()`と
+   * FOV/アスペクト比からf64で計算する）。
+   *
+   * `gridRight`/`gridForward`はそれとは別物で、シーンのupAxisに直交する
+   * 水平基底（`up-axis.ts`の`horizontalBasis()`）。グリッド線を並べる平面上の
+   * 2D座標を作るのに使う。
    *
    * ここから先はすべて**カメラ相対**（ワールド座標の絶対値をそのまま渡さない。
    * ファイル冒頭のコメント参照）:
    * - `relGroundHeight`: 平面の高さから、カメラの高さ(`dot(eye, upAxis)`)を
    *   引いた差分。点群バウンディングボックス底面あたりの高さを想定。
-   * - `phaseU`/`phaseV`: カメラ位置の`right`/`forward`成分を`cellSize`で
+   * - `phaseU`/`phaseV`: カメラ位置の`gridRight`/`gridForward`成分を`cellSize`で
    *   割った余り（呼び出し側で`floorMod`を使って求める）。世界座標の絶対値
    *   そのものではなく、格子の位相合わせに要る分（余り）だけを渡す。
    *
@@ -267,10 +289,12 @@ export class GroundGrid {
   draw(
     device: GPUDevice,
     pass: GPURenderPassEncoder,
-    vertexDirs: readonly [Vec3, Vec3, Vec3],
+    viewForward: Vec3,
+    viewRightScaled: Vec3,
+    viewUpScaled: Vec3,
     upAxis: Vec3,
-    right: Vec3,
-    forward: Vec3,
+    gridRight: Vec3,
+    gridForward: Vec3,
     relGroundHeight: number,
     cellSize: number,
     fadeDistance: number,
@@ -279,12 +303,12 @@ export class GroundGrid {
   ): void {
     if (!this.pipeline || !this.uniformBuffer || !this.bindGroup) return;
 
-    this.uniformData.set([...vertexDirs[0], 0], 0);
-    this.uniformData.set([...vertexDirs[1], 0], 4);
-    this.uniformData.set([...vertexDirs[2], 0], 8);
+    this.uniformData.set([...viewForward, 0], 0);
+    this.uniformData.set([...viewRightScaled, 0], 4);
+    this.uniformData.set([...viewUpScaled, 0], 8);
     this.uniformData.set([upAxis[0], upAxis[1], upAxis[2], 0], 12);
-    this.uniformData.set([right[0], right[1], right[2], 0], 16);
-    this.uniformData.set([forward[0], forward[1], forward[2], 0], 20);
+    this.uniformData.set([gridRight[0], gridRight[1], gridRight[2], 0], 16);
+    this.uniformData.set([gridForward[0], gridForward[1], gridForward[2], 0], 20);
     this.uniformData.set([relGroundHeight, cellSize, fadeDistance, 0], 24);
     this.uniformData.set([phaseU, phaseV, 0, 0], 28);
     this.uniformData.set([...GRID_LINE_COLOR, GRID_MAX_ALPHA], 32);

@@ -96,6 +96,59 @@ export function lookAt(
 }
 
 /**
+ * カメラのローカル基底(forward, right, up)を求める。行列を組み立てず、3本の
+ * ベクトルだけが要る呼び出し側（sky.ts/ground-grid.tsのレイ方向再構成。
+ * TaskSheets/M2-shading-and-ui.md M2-0c、「広角での方向ベクトル線形補間」の
+ * 不具合の修正）のために用意した。
+ *
+ * `forward`はカメラが向いている方向（eye→target、正規化済み）。`right`/`up`は
+ * それに直交するカメラのローカル軸。式は次の通り（数値検証済み: autzenの実座標・
+ * FOV60°・アスペクト16:9でf64の真値との誤差 ~1e-8）。
+ *
+ * ```
+ * forward = normalize(target - eye)
+ * right   = normalize(cross(forward, worldUp))
+ * up      = normalize(cross(right, forward))
+ * ```
+ *
+ * `lookAt()`の内部計算（z = normalize(eye-target), x = normalize(cross(up,z)),
+ * y = cross(z,x)）と代数的に同じ基底になる（forward = -z, right = x,
+ * up = yなのは、cross(a,b) = -cross(b,a)を使えば示せる）。view行列の基底と
+ * 食い違わないことが重要なので、変更する場合はこの同値性を保つこと。
+ *
+ * eye/target/worldUpはすべてf64のワールド座標のまま渡してよい（eye-targetの
+ * 引き算はシーンのスケール程度の差分にしかならないので、桁落ちの心配はない。
+ * 戻り値はすべて正規化済みで大きさ1）。
+ */
+export function cameraBasis(
+  eye: readonly [number, number, number],
+  target: readonly [number, number, number],
+  worldUp: readonly [number, number, number],
+): { forward: [number, number, number]; right: [number, number, number]; up: [number, number, number] } {
+  const fx = target[0] - eye[0];
+  const fy = target[1] - eye[1];
+  const fz = target[2] - eye[2];
+  const fLen = Math.hypot(fx, fy, fz) || 1;
+  const forward: [number, number, number] = [fx / fLen, fy / fLen, fz / fLen];
+
+  const rx = forward[1] * worldUp[2] - forward[2] * worldUp[1];
+  const ry = forward[2] * worldUp[0] - forward[0] * worldUp[2];
+  const rz = forward[0] * worldUp[1] - forward[1] * worldUp[0];
+  const rLen = Math.hypot(rx, ry, rz) || 1;
+  const right: [number, number, number] = [rx / rLen, ry / rLen, rz / rLen];
+
+  // right, forwardはどちらも単位ベクトルで直交するので、この外積も単位ベクトル
+  // （正規化不要だが、丸め誤差の蓄積を避けるため念のため正規化する）。
+  const ux = right[1] * forward[2] - right[2] * forward[1];
+  const uy = right[2] * forward[0] - right[0] * forward[2];
+  const uz = right[0] * forward[1] - right[1] * forward[0];
+  const uLen = Math.hypot(ux, uy, uz) || 1;
+  const up: [number, number, number] = [ux / uLen, uy / uLen, uz / uLen];
+
+  return { forward, right, up };
+}
+
+/**
  * 4x4行列の逆行列。余因子（2x2小行列式）から余因子行列を組み立てる標準的なやり方
  * （閉じた式なので反復計算が要らず、行列が小さい分には数値的にも十分安定する）。
  * 行列式が0に近く逆行列が求まらない場合はnullを返す。

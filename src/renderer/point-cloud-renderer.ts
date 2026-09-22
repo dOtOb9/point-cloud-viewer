@@ -8,10 +8,10 @@
 import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
 import { NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
 import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
-import { multiply, perspective, translation, type Mat4 } from "./mat4";
+import { cameraBasis, multiply, perspective, translation, type Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
-import { ndcPointToWorldRay, screenPointToWorldRay } from "./raycast";
+import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 import { clearColorForMode, DEFAULT_BACKGROUND_MODE, SkyBackground, type BackgroundMode } from "./sky";
@@ -539,49 +539,56 @@ export class PointCloudRenderer {
       const upAxis = this.camera.getUpAxis();
       const eye = this.camera.eye();
 
-      // 実機不具合の修正（TaskSheets/M2-shading-and-ui.md M2-0c、
-      // scripts/diag-sky-ray.ts参照）: ワールド空間のinvViewProjをそのままf32で
-      // GPUに渡すと、NEAR/FAR(0.01/1e7)のダイナミックレンジとautzenのような
-      // 大きなワールド座標が重なってwが桁落ちし、全ピクセルNaNになっていた。
-      // 対策は、GPUに行列を渡すのをやめ、JS側(f64)でレイ方向だけを計算して渡すこと。
-      // 全画面三角形の3頂点(sky.ts/ground-grid.tsのvs_mainのpositionsと同じNDC座標。
-      // -1..1の外側にも一直線に延びる)それぞれのレイ方向を`ndcPointToWorldRay`
-      // (raycast.ts。カーソルのズームで実際に使われていて正しく動く実装と同じもの)
-      // で求める。方向は正規化済みで大きさ~1なので、f32にキャストしても精度は
-      // 落ちない。
-      const rayA = ndcPointToWorldRay(viewProj, -1, -1);
-      const rayB = ndcPointToWorldRay(viewProj, 3, -1);
-      const rayC = ndcPointToWorldRay(viewProj, -1, 3);
+      // 実機不具合の修正（2回。TaskSheets/M2-shading-and-ui.md M2-0c、
+      // scripts/diag-sky-ray.ts参照）:
+      // 1回目 - ワールド空間のinvViewProjをそのままf32でGPUに渡すと、NEAR/FAR
+      //         (0.01/1e7)のダイナミックレンジとautzenのような大きなワールド座標が
+      //         重なってwが桁落ちし、全ピクセルNaNになっていた
+      // 2回目 - 1回目の対策（全画面三角形の3頂点のレイ方向を線形補間する方式）も
+      //         壊れていた。NDC=3（三角形の頂点）は画面中心から70度以上離れており、
+      //         正規化済みの単位ベクトルをこの角度で線形補間すると弦を取ることに
+      //         なって長さが縮み、条件によってはNaNに戻っていた
+      //         （sky.tsファイル冒頭のコメント参照）
+      //
+      // 対策: 行列もレイ方向の補間も使わない。カメラ基底(forward/right/up)と
+      // FOV/アスペクト比から、画素ごとに`dir = normalize(forward + ndc.x*rightScaled
+      // + ndc.y*upScaled)`でレイ方向を組み立てる（sky.ts/ground-grid.tsのフラグメント
+      // シェーダ参照）。ここではその基底をf64で計算するだけ。扱う数値はどれも
+      // 大きさ~1で、f32にキャストしても精度は落ちない。
+      const { forward, right, up } = cameraBasis(eye, this.camera.target, upAxis);
+      const aspect = width / Math.max(height, 1);
+      const tanHalfFovY = Math.tan(FOV_Y_RADIANS / 2);
+      const rightScaled: Vec3 = [right[0] * aspect * tanHalfFovY, right[1] * aspect * tanHalfFovY, right[2] * aspect * tanHalfFovY];
+      const upScaled: Vec3 = [up[0] * tanHalfFovY, up[1] * tanHalfFovY, up[2] * tanHalfFovY];
 
-      // viewProjが特異なとき（通常は起きないが、初期化直後などの防御）はどちらも描かない。
-      if (rayA && rayB && rayC) {
-        const vertexDirs: readonly [Vec3, Vec3, Vec3] = [rayA.direction, rayB.direction, rayC.direction];
-
-        if (this.backgroundMode === "sky") {
-          this.sky.draw(device, pass, vertexDirs, upAxis);
-        }
-        if (this.gridEnabled) {
-          // グリッドは空を描いた後（or 単色クリアの後）に、半透明で重ねる。
-          // ここから先もすべてカメラ相対（ワールド座標の絶対値をf32で渡さない。
-          // ground-grid.tsのdraw()コメント参照）。
-          const { right, forward } = horizontalBasis(upAxis);
-          const eyeHeight = eye[0] * upAxis[0] + eye[1] * upAxis[1] + eye[2] * upAxis[2];
-          const eyeRight = eye[0] * right[0] + eye[1] * right[1] + eye[2] * right[2];
-          const eyeForward = eye[0] * forward[0] + eye[1] * forward[1] + eye[2] * forward[2];
-          this.grid.draw(
-            device,
-            pass,
-            vertexDirs,
-            upAxis,
-            right,
-            forward,
-            this.gridGroundHeight - eyeHeight,
-            this.gridCellSize,
-            this.gridFadeDistance,
-            floorMod(eyeRight, this.gridCellSize),
-            floorMod(eyeForward, this.gridCellSize),
-          );
-        }
+      if (this.backgroundMode === "sky") {
+        this.sky.draw(device, pass, forward, rightScaled, upScaled, upAxis);
+      }
+      if (this.gridEnabled) {
+        // グリッドは空を描いた後（or 単色クリアの後）に、半透明で重ねる。
+        // ここから先もすべてカメラ相対（ワールド座標の絶対値をf32で渡さない。
+        // ground-grid.tsのdraw()コメント参照）。gridRight/gridForwardは
+        // カメラ基底(right/up)とは別物で、シーンのupAxisに直交する水平基底
+        // （グリッド平面に沿った2D座標を作るためのもの）。
+        const { right: gridRight, forward: gridForward } = horizontalBasis(upAxis);
+        const eyeHeight = eye[0] * upAxis[0] + eye[1] * upAxis[1] + eye[2] * upAxis[2];
+        const eyeGridRight = eye[0] * gridRight[0] + eye[1] * gridRight[1] + eye[2] * gridRight[2];
+        const eyeGridForward = eye[0] * gridForward[0] + eye[1] * gridForward[1] + eye[2] * gridForward[2];
+        this.grid.draw(
+          device,
+          pass,
+          forward,
+          rightScaled,
+          upScaled,
+          upAxis,
+          gridRight,
+          gridForward,
+          this.gridGroundHeight - eyeHeight,
+          this.gridCellSize,
+          this.gridFadeDistance,
+          floorMod(eyeGridRight, this.gridCellSize),
+          floorMod(eyeGridForward, this.gridCellSize),
+        );
       }
     }
 
