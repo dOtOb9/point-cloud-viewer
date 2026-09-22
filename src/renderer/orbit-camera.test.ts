@@ -205,9 +205,24 @@ describe("OrbitCamera.rotate (既存挙動の回帰確認、M1-5では変更し�
 });
 
 describe("OrbitCamera 上方向 (M2-0b)", () => {
-  it("既定の上方向は[0,1,0]のまま（段階1はリファクタのみで挙動を変えない）", () => {
+  it("既定の上方向はZ（[0,0,1]）: LAS/COPCは投影座標系なのでZが標高（段階3）", () => {
     const camera = new OrbitCamera([0, 0, 0], 100);
-    expect(camera.getUpAxis()).toEqual([0, 1, 0]);
+    expect(camera.getUpAxis()).toEqual([0, 0, 1]);
+  });
+
+  it("既定の姿勢(pitch=0.3, upAxis=Z)は真上からの俯瞰ではなく、少し見下ろす角度になる", () => {
+    // 実機報告（M2-0b）: upAxisがYのままだと、この同じpitch値でもほぼ真上からの
+    // 俯瞰にしかならなかった（データのZ幅が薄いため）。upAxisがZになった今、
+    // pitch=0.3(≈17°)は「地面をほぼ真横から見る(pitch=0)」でも
+    // 「真上から見下ろす(pitch=90°)」でもない、その中間の浅い角度になるはず。
+    const camera = new OrbitCamera([0, 0, 0], 1000); // distance=1000（真上からの俯瞰を再現するのに十分大きい）
+    const eye = camera.eye();
+    // 視点の高さ(Z)は、水平方向の距離に比べてずっと小さいはず
+    // （真上からの俯瞰なら高さが支配的になり、比率が1に近づく）。
+    const horizontalDistance = Math.hypot(eye[0] - camera.target[0], eye[1] - camera.target[1]);
+    const height = Math.abs(eye[2] - camera.target[2]);
+    expect(height / horizontalDistance).toBeCloseTo(Math.tan(0.3), 6);
+    expect(height / horizontalDistance).toBeLessThan(1); // 高さより水平距離のほうが大きい
   });
 
   it("pitch=0のとき、eyeからtargetへの視線方向は上方向(upAxis)と直交する（＝水平）", () => {
