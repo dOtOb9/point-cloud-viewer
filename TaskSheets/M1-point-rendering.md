@@ -1,6 +1,6 @@
 # M1: 点群が画面に出る
 
-- 状態: 進行中（M1-1 完了）
+- 状態: 進行中（M1-1, M1-2 完了）
 - 前提: [ADR-0001](./ADR-0001-architecture.md), [ADR-0002](./ADR-0002-rendering-api.md), [M0](./M0-feasibility.md) 完了
 
 ## このマイルストーンの目的
@@ -138,10 +138,22 @@ f64 を GPU に送る案は採らない。WebGPU に f64 は無い。
 ### 受け入れ条件
 
 - [ ] `pcv://` でノードを要求すると上記形式のバイナリが返る
-- [ ] フロント側にパーサがあり、ヘッダの `magic` / `version` を検証して弾ける
-- [ ] 読み出した点数がヘッダの `point_count` と一致する
-- [ ] `DataSource` インターフェース（M0-3 で作った形）に `readNode(key)` が生えている
-- [ ] Tauri の API を import しているファイルが `src/datasource/tauri.ts` のままであること（**規約2**）
+      （`src-tauri/src/copc_state.rs` のテストで `open_copc_impl` → `read_node_bytes` の
+      経路が正しいバイト列を作ることは確認できた。ただし実際に webview から
+      `fetch("pcv://<key>")` を叩く経路（URIスキーム登録・CORS込み）は、GUIを目視できない
+      ため未検証。M1-3でUIから開く機能を足したときに `npm run tauri dev` のRust側stdoutログ
+      （`[pcv] served node ...`）で確認する）
+- [x] フロント側にパーサがあり、ヘッダの `magic` / `version` を検証して弾ける
+      （`src/datasource/node-format.ts` の `parseNodeBuffer`。`npx tsx` で
+      正常系・magic不正・version不正・バイト長不一致の4パターンを手動実行して確認した）
+- [x] 読み出した点数がヘッダの `point_count` と一致する
+      （Rust側は`read_node_bytes_matches_m1_2_wire_format`でバイト長を検証、
+      フロント側は`parseNodeBuffer`が`buffer.byteLength`とヘッダの`point_count`から
+      逆算した期待バイト数を突き合わせて検証する）
+- [x] `DataSource` インターフェース（M0-3 で作った形）に `readNode(key)` が生えている
+      （`src/datasource/DataSource.ts`。`TauriSource`が実装）
+- [x] Tauri の API を import しているファイルが `src/datasource/tauri.ts` のままであること（**規約2**）
+      （`grep -rl "@tauri-apps/api" src/` で確認）
 
 ### M0 で判明している落とし穴（そのまま効く）
 
