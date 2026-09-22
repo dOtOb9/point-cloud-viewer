@@ -1,32 +1,46 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { TauriSource, reportToBackendConsole, resolveBenchDataPath } from "../datasource/tauri";
 
 // M2: `pcv://` への並行リクエストが直列化していないかを計測する。
 //
 // TaskSheets/M1-point-rendering.md の「追記: 原因の候補を特定した」で立てた仮説
 // （同期版 register_uri_scheme_protocol はRustのメインスレッドで直列に実行される）を
-// 実測で検証する。M0-3 (useIpcBench.ts) と同じ考え方: 起動時に自動計測し、
-// GUIを目視できなくても `npm run tauri dev` の標準出力（report_diagnostic 経由）で
-// 結果が読めるようにする。
+// 実測で検証する。M0-3 (useIpcBench.ts) と同じ考え方: GUIを目視できなくても
+// `npm run tauri dev` の標準出力（report_diagnostic 経由）で結果が読めるようにする。
 //
 // 計測方法: 同じ `NODE_LIMIT` 個のノードキーを、並行数を変えながら繰り返し取得する。
 // 直列化しているなら、並行数を増やしても nodes/sec はほぼ変わらないはずである
 // （Rustのメインスレッドという単一の実行資源を奪い合うだけなので）。
+//
+// 計測はボタン押下時のみ実行する（起動時に自動実行すると、64ノード×並行数1/4/8=
+// 192回のノード読み出しが CopcPool を占有し、ビューア本体の点群読み込みと
+// リーダープールを奪い合って起動のたびにフリーズしていた。
+// TaskSheets/M1-point-rendering.md「実機確認で見つかった不具合」参照）。
 
 const CONCURRENCIES = [1, 4, 8];
 const NODE_LIMIT = 64;
-// sofi.copc.laz (3.6億点) でも計測する意味はあるが、起動のたびに走らせるには
-// 大きすぎる (2GB)。日常的な計測は軽いautzenで行い、sofiでの再現確認は
-// ADR-0007に手動実行の結果として別途記録する。
+// sofi.copc.laz (3.6億点) でも計測する意味はあるが、この計測は数秒〜十数秒かかる
+// 上にCopcPoolを占有するため大きすぎる (2GB)。日常的な計測は軽いautzenで行い、
+// sofiでの再現確認はADR-0007に手動実行の結果として別途記録する。
 const BENCH_FILE = "autzen-classified.copc.laz";
+
+// 64ノード×並行数1/4/8=192回のノード読み出しにかかる目安時間。
+// 実測レートから数秒〜十数秒（ADR-0007 / M2参照）。呼び出し側のUIはこれを明記すること。
+export const NODE_CONCURRENCY_BENCH_ESTIMATED_SECONDS = "数秒〜十数秒程度";
 
 export type NodeConcurrencyBenchStatus = "idle" | "running" | "done" | "skipped" | "error";
 
 export function useNodeConcurrencyBench() {
-  const [status, setStatus] = useState<NodeConcurrencyBenchStatus>("running");
+  const [status, setStatus] = useState<NodeConcurrencyBenchStatus>("idle");
   const [summary, setSummary] = useState<string | null>(null);
+  // マウント時には何もしない。ボタン押下で runId をインクリメントしたときだけ
+  // 下のeffectが起動する。
+  const [runId, setRunId] = useState(0);
 
   useEffect(() => {
+    // runId === 0 はまだボタンが押されていない初期状態なので何もしない。
+    if (runId === 0) return;
+
     let cancelled = false;
 
     async function run() {
@@ -104,7 +118,13 @@ export function useNodeConcurrencyBench() {
     return () => {
       cancelled = true;
     };
+  }, [runId]);
+
+  const rerun = useCallback(() => {
+    setStatus("running");
+    setSummary(null);
+    setRunId((n) => n + 1);
   }, []);
 
-  return { status, summary };
+  return { status, summary, rerun };
 }
