@@ -21,13 +21,20 @@
 //! 2. 仮にロック区間を最小化できたとしても、`CopcFile`が1個しか無い以上、
 //!    ある瞬間にディスクI/O・LAZ伸長を実行できるのは1スレッドだけである。
 //!
-//! 採った解決策: **同じファイルを独立に`POOL_SIZE`回開き、専用のFile
+//! 採った解決策: **同じファイルを独立にプールサイズ分だけ開き、専用のFile
 //! ハンドルを持つ`CopcFile`をプールする**（`CopcPool`）。読み出しは
 //! プールから1本借りて使い、終わったら返す。プールが空なら次に返却される
-//! まで待つ（`Condvar`）。これにより最大`POOL_SIZE`本まで、ディスクI/Oと
+//! まで待つ（`Condvar`）。これによりプールサイズ本まで、ディスクI/Oと
 //! LAZ伸長が本当に並行して走る。`CopcState`のMutexは「どのプールを使うか」
 //! という`Arc`のクローンを取り出す間だけロックし、実際の読み出しはロックの
 //! 外で行う（`read_node_bytes`参照）。
+//!
+//! プールサイズは当初`POOL_SIZE: usize = 8`という決め打ちの定数だったが、
+//! `ADR-0007-pcv-protocol-concurrency.md`の追記（並行数1/4/8/16/20の実測）で
+//! フロントの同時リクエスト数(4)が先に頭打ちになっていたと分かり、
+//! `default_pool_size()`（`std::thread::available_parallelism()`）から
+//! 動的に決める形に変えた。`open_copc`の`pool_size`引数で明示的に上書きも
+//! できる（計測ハーネス用）。
 //!
 //! 検討して採らなかった案は`CopcPool`のドキュメントコメントに書いた。
 
@@ -37,17 +44,28 @@ use std::sync::{Arc, Condvar, Mutex};
 use pcv_core::{CloudInfo, CopcFile, HierarchyNode, NodeKey};
 use tauri::State;
 
-/// 同時に読み出せるノード数の上限。`CopcFile`をこの数だけ独立に開いてプールする
-/// （各`CopcFile`が自分専用の`File`ハンドルとhierarchyのコピーを持つ）。
+/// `open_copc`が明示的なプールサイズ指定を受け取らなかったときに使う既定値。
 ///
-/// 大きくすればするほど並行度は上がるが、hierarchyのコピー分だけメモリを食う
-/// （`sofi.copc.laz`で13,163ノード、1ノードあたり数十バイトなので1コピーで
-/// 高々数百KB。`POOL_SIZE`個でもMB単位に収まる）。8はこの開発機の論理コア数
-/// （20）よりだいぶ少ないが、`pcv://`の1リクエストがCPU律速（LAZ伸長）なので、
-/// コア数まで増やしても実際のボトルネックはディスクI/Oとの兼ね合いになる。
-/// 実測で妥当性を確認した数値なので、変えるときは
-/// `ADR-0007-pcv-protocol-concurrency.md`の計測方法で測り直すこと。
-const POOL_SIZE: usize = 8;
+/// 当初は`POOL_SIZE: usize = 8`という決め打ちの定数だったが、
+/// `ADR-0007-pcv-protocol-concurrency.md`の追記（並行数1/4/8/16/20の実測）で
+/// 「フロントの同時リクエスト数(4)が先に頭打ちになっていて、プール(8)側は
+/// 半分遊んでいた」ことが分かった。実測では並行数20（この開発機の論理コア数と
+/// 同数）でもまだ頭打ちに達しておらず、`std::thread::available_parallelism()`を
+/// そのまま使うのが最も素直な式だと判断した。
+///
+/// `pcv://`の1リクエストはCPU律速（LAZ伸長）なので、論理コア数と同じ本数まで
+/// プールを用意すれば、少なくともこのマシンでは崩れない。物理コアより多い
+/// プールを開くコスト（`CopcFile::open`1回あたり数〜16ms、`ADR-0003`実測）は
+/// `open_copc`のたびに一度払うだけなので、コア数が多い環境でも許容範囲。
+///
+/// 実測の詳細・式を決めた根拠は`ADR-0007-pcv-protocol-concurrency.md`の
+/// 「追記: 実機での並行度の測り直し」を参照。変えるときは同ADRの方法で
+/// 測り直すこと。
+fn default_pool_size() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
 
 /// 独立した`CopcFile`をプールし、読み出しリクエストに貸し出す。
 ///
@@ -62,22 +80,26 @@ const POOL_SIZE: usize = 8;
 ///   の都度使い捨てで開く** — ノードを読むたびにファイルを開き直す
 ///   ことになり、毎回ヘッダとVLRを読み直すコストを払う。プールで使い回す
 ///   ほうが単純かつ安い（hierarchy再構築のコストは`ADR-0003`実測で
-///   1〜16ms。プール初期化時に`POOL_SIZE`回払うだけで済み、リクエストの
-///   たびには払わない）。
+///   1〜16ms。プール初期化時にプールサイズの回数だけ払うだけで済み、
+///   リクエストのたびには払わない）。
 struct CopcPool {
     idle: Mutex<Vec<CopcFile>>,
     available: Condvar,
+    /// プールした本数。ログ表示だけに使う（`idle`の初期長と同じ）。
+    pool_size: usize,
 }
 
 impl CopcPool {
-    fn open(path: &Path) -> Result<Self, String> {
-        let mut idle = Vec::with_capacity(POOL_SIZE);
-        for _ in 0..POOL_SIZE {
+    fn open(path: &Path, pool_size: usize) -> Result<Self, String> {
+        let pool_size = pool_size.max(1);
+        let mut idle = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
             idle.push(CopcFile::open(path).map_err(|e| e.to_string())?);
         }
         Ok(Self {
             idle: Mutex::new(idle),
             available: Condvar::new(),
+            pool_size,
         })
     }
 
@@ -170,15 +192,30 @@ pub struct OpenCopcResponse {
 ///
 /// hierarchyはノードあたり数十バイトのメタデータなので`invoke`で送る
 /// （大きい点データそのものではない。ADR-0001の「invokeは制御メッセージ専用」に沿う）。
+///
+/// `pool_size`を省略（`null`）すると`default_pool_size()`（論理コア数）を使う。
+/// 通常のUIからは省略して呼ぶ。明示的に渡せるのは
+/// `src/state/useNodeConcurrencyBench.ts`が並行数ごとにプールサイズも振って
+/// 計測するため（`ADR-0007-pcv-protocol-concurrency.md`参照）。同じファイルを
+/// 開き直すとプールを作り直すだけで、ハンドラの他の状態には影響しない。
 #[tauri::command]
-pub fn open_copc(path: String, state: State<CopcState>) -> Result<OpenCopcResponse, String> {
-    open_copc_impl(&path, &state)
+pub fn open_copc(
+    path: String,
+    pool_size: Option<usize>,
+    state: State<CopcState>,
+) -> Result<OpenCopcResponse, String> {
+    open_copc_impl(&path, pool_size, &state)
 }
 
 /// `open_copc`の中身。`tauri::State`を経由しない素の関数にしておくと、
 /// テストで実際のTauriランタイムを起動せずに検証できる。
-fn open_copc_impl(path: &str, state: &CopcState) -> Result<OpenCopcResponse, String> {
-    let pool = CopcPool::open(Path::new(path))?;
+fn open_copc_impl(
+    path: &str,
+    pool_size: Option<usize>,
+    state: &CopcState,
+) -> Result<OpenCopcResponse, String> {
+    let pool_size = pool_size.unwrap_or_else(default_pool_size);
+    let pool = CopcPool::open(Path::new(path), pool_size)?;
 
     // info/hierarchyはプール内のどの`CopcFile`でも同じ内容なので、1本借りて読む。
     let file = pool.checkout();
@@ -191,9 +228,10 @@ fn open_copc_impl(path: &str, state: &CopcState) -> Result<OpenCopcResponse, Str
     pool.checkin(file);
 
     println!(
-        "[pcv] opened {path}: {} points, {} nodes (reader pool size {POOL_SIZE})",
+        "[pcv] opened {path}: {} points, {} nodes (reader pool size {})",
         info.point_count,
-        nodes.len()
+        nodes.len(),
+        pool.pool_size
     );
 
     *state.0.lock().expect("CopcState mutex poisoned") = Some(Arc::new(pool));
@@ -207,7 +245,7 @@ fn open_copc_impl(path: &str, state: &CopcState) -> Result<OpenCopcResponse, Str
 /// 実際のディスクI/O・LAZ伸長（`pool.checkout()`で借りた`CopcFile`に対する
 /// `read_node`）はロックの外で行うため、複数リクエストが同時にここへ来ても
 /// `CopcState`のロックでは直列化しない（直列化の可能性が残るのは`CopcPool`
-/// 自体のプールサイズだけ。`POOL_SIZE`のドキュメント参照）。
+/// 自体のプールサイズだけ。`default_pool_size()`のドキュメント参照）。
 pub fn read_node_bytes(state: &CopcState, key: NodeKey) -> Result<Vec<u8>, String> {
     let pool = {
         let guard = state.0.lock().expect("CopcState mutex poisoned");
@@ -317,7 +355,7 @@ mod tests {
         let (_dir, path) = synthetic_copc_file();
         let state = CopcState::default();
 
-        let response = open_copc_impl(path.to_str().unwrap(), &state).unwrap();
+        let response = open_copc_impl(path.to_str().unwrap(), None, &state).unwrap();
 
         assert_eq!(response.info.point_count, 500);
         assert!(!response.nodes.is_empty());
@@ -328,7 +366,7 @@ mod tests {
     fn read_node_bytes_matches_m1_2_wire_format() {
         let (_dir, path) = synthetic_copc_file();
         let state = CopcState::default();
-        let response = open_copc_impl(path.to_str().unwrap(), &state).unwrap();
+        let response = open_copc_impl(path.to_str().unwrap(), None, &state).unwrap();
 
         let first_node = &response.nodes[0];
         let key = NodeKey::from_str(&first_node.key).unwrap();
