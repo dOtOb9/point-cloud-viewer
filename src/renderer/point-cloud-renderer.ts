@@ -11,7 +11,7 @@ import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { multiply, perspective, translation, type Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
-import { pickWorldPointUnderCursor, type NodeAabb } from "./raycast";
+import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 
@@ -113,13 +113,6 @@ export class PointCloudRenderer {
   /** 直近フレームのviewProj。ホイールイベント（フレームの外で起きる）でカーソル位置の
    *  レイを作るために、フレームをまたいで持っておく（M1-5）。 */
   private lastViewProj: Mat4 | null = null;
-  /**
-   * 直近フレームで実際に描画したノード（selectNodesForThisFrameのtoDraw）のAABB。
-   * pickPointUnderCursorはこの集合だけを対象にする。hierarchy全体を対象にすると、
-   * 内部ノードの入れ子AABBに対する最近傍判定が常に粗い外側の箱を選んでしまう
-   * （M1-point-rendering.md M1-5「実機確認で見つかった不具合」参照）。
-   */
-  private lastDrawnAabbs: NodeAabb[] = [];
 
   private pointBudget = DEFAULT_POINT_BUDGET;
   private rafHandle = 0;
@@ -192,30 +185,24 @@ export class PointCloudRenderer {
 
     this.resize(this.canvas.clientWidth || this.canvas.width, this.canvas.clientHeight || this.canvas.height);
     this.detachControls = attachOrbitControls(this.canvas, this.camera, {
-      pickPointUnderCursor: (screenX, screenY) => this.pickPointUnderCursor(screenX, screenY),
+      getCursorDirection: (screenX, screenY) => this.getCursorDirection(screenX, screenY),
     });
   }
 
   /**
-   * カーソル位置（キャンバスのピクセル座標）の下に、直近フレームで実際に描画した
-   * ノードがあれば、そのAABBとの最も近い交点を返す（M1-5）。まだ1フレームも
-   * 描画していない、またはカーソルが空を指している場合はnull（呼び出し側が
-   * targetへ向かって寄るフォールバックを使う）。
+   * カーソル位置（キャンバスのピクセル座標）を通るワールド空間のレイの方向を
+   * 返す（M1-5）。まだ1フレームも描画していない場合はnull（呼び出し側が
+   * targetを動かさずdistanceだけ縮めるフォールバックを使う）。
    *
-   * 対象をthis.lastDrawnAabbs（今フレーム描画したノードだけ）に限定している。
-   * this.hierarchy（全ノード）を渡すと、内部ノードの入れ子AABBのせいで常に
-   * 粗い外側の箱が最近傍判定に勝ってしまう不具合があった。
+   * かつてはここでAABBへのレイキャストを行い「カーソルの下にある点」を求めて
+   * `OrbitCamera.zoom()`に渡していたが、その方式（AABBの面を点の代理に使う）は
+   * 構造的に成立しなかった（詳細はorbit-camera.tsのzoom()のコメント参照）。
+   * 今は方向だけを渡す。
    */
-  private pickPointUnderCursor(screenX: number, screenY: number): [number, number, number] | null {
+  private getCursorDirection(screenX: number, screenY: number): [number, number, number] | null {
     if (!this.lastViewProj) return null;
-    return pickWorldPointUnderCursor(
-      this.lastViewProj,
-      screenX,
-      screenY,
-      this.canvas.width,
-      this.canvas.height,
-      this.lastDrawnAabbs,
-    );
+    const ray = screenPointToWorldRay(this.lastViewProj, screenX, screenY, this.canvas.width, this.canvas.height);
+    return ray?.direction ?? null;
   }
 
   setDataSource(dataSource: DataSource): void {
@@ -368,7 +355,6 @@ export class PointCloudRenderer {
     const planes = frustumPlanes(viewProj);
 
     const selection = this.selectNodesForThisFrame(viewProj, planes, width, height);
-    this.lastDrawnAabbs = selection.toDrawAabbs;
 
     if (this.loader) {
       this.loader.setWanted(selection.wanted, (key) => this.cache.has(key));
@@ -410,13 +396,11 @@ export class PointCloudRenderer {
     planes: Plane[],
     width: number,
     height: number,
-  ): { toDraw: CachedNode[]; toDrawAabbs: NodeAabb[]; wanted: { key: string; priority: number }[] } {
+  ): { toDraw: CachedNode[]; wanted: { key: string; priority: number }[] } {
     const candidates: {
       key: string;
       priority: number;
       pointCount: number;
-      boundsMin: readonly [number, number, number];
-      boundsMax: readonly [number, number, number];
     }[] = [];
 
     for (const node of this.hierarchy) {
@@ -433,15 +417,12 @@ export class PointCloudRenderer {
         key: node.key,
         priority,
         pointCount: node.pointCount,
-        boundsMin: node.boundsMin,
-        boundsMax: node.boundsMax,
       });
     }
 
     candidates.sort((a, b) => b.priority - a.priority);
 
     const toDraw: CachedNode[] = [];
-    const toDrawAabbs: NodeAabb[] = [];
     const wanted: { key: string; priority: number }[] = [];
     let budgetUsed = 0;
 
@@ -452,13 +433,12 @@ export class PointCloudRenderer {
       const cached = this.cache.get(candidate.key);
       if (cached) {
         toDraw.push(cached);
-        toDrawAabbs.push({ boundsMin: candidate.boundsMin, boundsMax: candidate.boundsMax });
       } else {
         wanted.push({ key: candidate.key, priority: candidate.priority });
       }
     }
 
-    return { toDraw, toDrawAabbs, wanted };
+    return { toDraw, wanted };
   }
 
   private drawFrame(viewProj: Mat4, width: number, height: number, nodes: CachedNode[]): void {

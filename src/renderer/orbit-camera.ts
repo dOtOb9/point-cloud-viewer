@@ -62,26 +62,49 @@ export class OrbitCamera {
   }
 
   /**
-   * ズーム。`towardPoint`を渡すと、targetをその点へ向けて寄せながら距離を縮める
-   * （カーソル位置に向かってズームする。M1-5。Potree/CloudCompare/Blenderと同じ挙動）。
+   * ズーム。`cursorDirection`（カーソル位置を通るワールド空間のレイの方向。正規化済み。
+   * `screenPointToWorldRay()`が返す`Ray.direction`をそのまま渡せる）を渡すと、
+   * targetをその方向へ動かしながら距離を縮める（カーソル位置に向かってズームする。
+   * M1-5。Potree/CloudCompare/Blenderと同じ挙動）。
    *
-   * `towardPoint`を省略した場合（カーソルの下にhierarchyのノードが無い＝空を指している
-   * 場合のフォールバック）は、従来どおり現在のtargetへ向かって寄るだけになる。
+   * `cursorDirection`を省略した場合（viewProjがまだ無い等でレイが作れないときの
+   * フォールバック）は、従来どおり現在のtargetを動かさずdistanceだけ縮める。
    *
-   * targetをtowardPointへ寄せる割合は、distanceを縮める割合（`1 - factor`）と揃えている。
-   * こうすると、towardPointがちょうどtargetと一致するとき（＝画面中心にカーソルがある
-   * とき）は移動量0になり、旧来の「targetに向かって寄る」動きにそのまま一致する。
-   * また、寄るたびにtargetが実際の対象へ近づいていくので、`distance`が0に漸近するのと
-   * 連動してtargetとの距離も縮まり続け、「近づいているのに対象に到達しない」という
-   * 旧実装の不具合（targetが固定だったため）が起きない。
+   * ## M1-5: なぜ「点」ではなく「方向」を使うのか（重要）
+   *
+   * 過去2回、ここは「カーソルの下にある点（`towardPoint`）」を受け取り、
+   * `target += (towardPoint - target) * (1 - factor)` という式で target を
+   * その点へ寄せる方式だった。この点は octree ノードの AABB とカーソルのレイの
+   * 交差判定（レイキャスト）で求めていた。
+   *
+   * この方式は**実装のバグではなく、方式そのものが構造的に成立しない**。
+   * 1ティックでの移動量は `(1 - factor) * D`（D = targetから towardPoint までの
+   * 距離）になる。ところが towardPoint は「点群の点があるところ」ではなく
+   * **AABB の面（箱の境界）**でしかない。カメラが箱の面に近づくほど D は
+   * 0 に近づき、移動量も一緒に 0 に近づく。つまり毎ティック「残り距離の
+   * 何%」ずつ進むだけで、**箱の面という何もない境界に漸近して止まる。**
+   * 点群の点そのものへ到達することは方式上ありえない。
+   * （実装は指示どおり正しく動いていた。指示していた方式そのものが誤りだった。）
+   *
+   * 今の実装はカーソル方向のベクトルだけを使い、AABB・ピッキング・深度バッファの
+   * どれにも依存しない。1ティックの移動量 `step = distance * (1 - factor)` は
+   * `distance`（自分がまさに縮めている量）に比例しており、target が実際に
+   * どこにあるか・カーソルの下に何があるかとは無関係に決まる。`distance`は
+   * 自分自身の縮小と一緒に動くので、「独立した何か」に漸近して止まることが
+   * 構造的に起こりえない。止まるとしたら`MIN_DISTANCE`に当たったときだけ。
+   *
+   * 次に「カーソル位置にズームしたい」と思ったとき、AABB の面や深度バッファの
+   * 値など「点」を求めてそこへ寄せる方式を選ばないこと。それは代理として
+   * 間違っている（箱の内部は空洞、面は点群の点ではない）。方向だけを使えば
+   * 間違いうる代理が一つも無い。
    */
-  zoom(factor: number, towardPoint?: readonly [number, number, number]): void {
-    if (towardPoint) {
-      const shrink = 1 - factor;
+  zoom(factor: number, cursorDirection?: readonly [number, number, number]): void {
+    const step = this.distance * (1 - factor);
+    if (cursorDirection) {
       this.target = [
-        this.target[0] + (towardPoint[0] - this.target[0]) * shrink,
-        this.target[1] + (towardPoint[1] - this.target[1]) * shrink,
-        this.target[2] + (towardPoint[2] - this.target[2]) * shrink,
+        this.target[0] + cursorDirection[0] * step,
+        this.target[1] + cursorDirection[1] * step,
+        this.target[2] + cursorDirection[2] * step,
       ];
     }
     this.distance = clamp(this.distance * factor, MIN_DISTANCE, MAX_DISTANCE);
@@ -131,15 +154,17 @@ const ZOOM_STEP = 1.1;
 
 export interface OrbitControlsOptions {
   /**
-   * ホイールでズームする直前に呼ばれる。カーソルの下（キャンバス上のピクセル座標、
-   * 左上原点）にあるワールド座標の点を返すと、`OrbitCamera.zoom()`がその点へ向かって
-   * 寄る（M1-5）。判定できない場合（hierarchyがまだ無い、カーソルが空を指している等）は
-   * nullを返せば、従来どおり現在のtargetへ向かって寄るだけになる。
+   * ホイールでズームする直前に呼ばれる。カーソル位置（キャンバス上のピクセル座標、
+   * 左上原点）を通るワールド空間のレイの方向（正規化済み）を返すと、
+   * `OrbitCamera.zoom()`がその方向へtargetを動かしながら寄る（M1-5）。
+   * 求まらない場合（viewProjがまだ無い等）はnullを返せば、従来どおりtargetを
+   * 動かさずdistanceだけ縮めるフォールバックになる。
    *
-   * 正確なピッキングである必要はない。octreeのノードAABBへの粗いレイキャストで十分
-   * （M1-point-rendering.md M1-5）。
+   * AABBへのレイキャストやピッキングは不要（`orbit-camera.ts`の`zoom()`のコメント
+   * 参照）。`screenPointToWorldRay()`（raycast.ts）が返す`Ray.direction`をそのまま
+   * 返せばよい。
    */
-  pickPointUnderCursor?: (screenX: number, screenY: number) => [number, number, number] | null;
+  getCursorDirection?: (screenX: number, screenY: number) => [number, number, number] | null;
 }
 
 /**
@@ -190,9 +215,9 @@ export function attachOrbitControls(
     const rect = canvas.getBoundingClientRect();
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
-    const towardPoint = options.pickPointUnderCursor?.(screenX, screenY) ?? undefined;
+    const cursorDirection = options.getCursorDirection?.(screenX, screenY) ?? undefined;
 
-    camera.zoom(factor, towardPoint);
+    camera.zoom(factor, cursorDirection);
   };
 
   const onContextMenu = (e: MouseEvent) => {
