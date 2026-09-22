@@ -1,0 +1,9 @@
+[package]
+name = "pcv-core"
+version = "0.1.0"
+edition = "2021"
+description = "COPC読込・octree走査・解析アルゴリズム。tauri に依存しない（wasm ターゲットでビルドできることが条件）"
+
+# 依存を追加するときは、ここに tauri / tauri-* を入れないこと。
+# ADR-0001 / ARCHITECTURE.md の規約: pcv-core は wasm32-unknown-unknown でビルドできる状態を維持する。
+[dependencies]
