@@ -12,7 +12,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use copc_core::{CopcInfo, VoxelKey};
-use copc_reader::{BoundsSelection, CopcReader, LodSelection};
+use copc_reader::CopcReader;
 
 use crate::node_format::{encode_node, NodeBuffer, NodePoint};
 
@@ -185,45 +185,31 @@ impl CopcFile {
 
     /// 指定したノードの点を読み出し、M1-2のバイナリ形式にエンコードして返す。
     /// 返る点数はヒエラルキが申告する `point_count` と一致する。
+    ///
+    /// `copc-reader`の`CopcReader::read_node`（vendor/copc-reader/PATCH.md参照）が
+    /// hierarchyの`Entry::offset`/`byte_size`へ直接seekして、そのノード自身の
+    /// LAZチャンクだけを伸長する。空間クエリで「そのレベル全体」を読んでから
+    /// bboxで絞り込む、という以前の実装（レベルが深いほど交差ノードが増えて
+    /// 遅くなっていた。実測は`TaskSheets/ADR-0007-pcv-protocol-concurrency.md`の
+    /// 追記を参照）はもう行わない。
+    ///
+    /// 読んだ点は無条件に全てこのノードに属する（COPCの構造上、1チャンク＝
+    /// 1ノードとして書かれているため）。そのため、以前あった
+    /// `point_belongs_to_key`（bboxの両端inclusive判定が隣接ノードの点まで
+    /// 拾ってしまう対症療法。`ADR-0003`のM1-1バグと同根）はもう不要になり、
+    /// このファイルから削除した。
     pub fn read_node(&mut self, key: NodeKey) -> Result<NodeBuffer> {
         let node = *self.hierarchy.get(key).ok_or(CopcError::UnknownNode(key))?;
-
-        // 同じlevelのvoxelは互いに重ならない立方体で空間を分割している「はず」だが、
-        // copc-readerのBounds::intersects/contains_xyzは両端inclusiveなので、
-        // 立方体の面がちょうど接している隣のノードまで「交差している」と判定され、
-        // 点がその面上にちょうど乗っていると隣のノードの点まで拾ってしまう
-        // （実測して確認した。単純に上端をepsilon縮める案は、逆に自分自身の
-        // 境界上にある正当な点を取りこぼす。実データはCOPCのcenter/halfsizeが
-        // データ範囲ぴったりに作られることが多く、境界上の点は珍しくない）。
-        //
-        // そこで、bboxによる絞り込みは「候補を広めに取る」ためだけに使い、
-        // 各点が本当にこのキーに属するかは copc-writer の octant 分割規則
-        // （`point_belongs_to_key`。center以上なら上位octant、という再帰的な
-        // 中央分割）を自分で再現して判定する。この規則はwriter側の
-        // `child_octant`と同一なので、hierarchyの申告点数と厳密に一致する。
-        let bounds = copc_core::Bounds::new(
-            (node.bounds_min[0], node.bounds_min[1], node.bounds_min[2]),
-            (node.bounds_max[0], node.bounds_max[1], node.bounds_max[2]),
-        );
         let has_color = self.info.has_color;
-        let copc_info = *self.reader.copc_info();
         let target_key = VoxelKey::from(key);
 
-        let point_iter = self
+        let points = self
             .reader
-            .points(
-                LodSelection::Level(key.level),
-                BoundsSelection::Within(bounds),
-            )
+            .read_node(target_key)
             .map_err(|source| CopcError::ReadNode { key, source })?;
 
         let mut node_points = Vec::with_capacity(node.point_count as usize);
-        for point in point_iter {
-            let point = point.map_err(|source| CopcError::ReadNode { key, source })?;
-            if !point_belongs_to_key(&copc_info, target_key, point.x, point.y, point.z) {
-                // bbox交差で候補に挙がっただけの、隣接ノードの点。
-                continue;
-            }
+        for point in points {
             let color = if has_color {
                 point.color.map(|c| {
                     // LASの色は16bit。8bitのRGBAに落とす（上位バイトを取るのが一般的な変換）。
@@ -318,36 +304,6 @@ fn voxel_bounds(key: VoxelKey, info: &CopcInfo) -> ([f64; 3], [f64; 3]) {
     ];
     let max = [min[0] + side, min[1] + side, min[2] + side];
     (min, max)
-}
-
-/// 点が本当に `key` のノードに属するかを判定する。
-///
-/// copc-writer（`lod.rs`の`child_octant`）は、ある立方体を8分割するとき
-/// 「各軸の座標が立方体の中心以上なら上位側」という再帰的な中央分割で
-/// octantを決めている。ここではルートcubeから`key`が指す深さまで同じ規則を
-/// たどり、各段で実際の座標がどちらのoctantに落ちるかを確認する。途中で1段でも
-/// 想定と違うoctantに落ちたら、その点は別のノードに属する。
-///
-/// bboxの交差判定（inclusive）だけで絞り込むと、立方体の面がちょうど接している
-/// 隣のノードの点まで混入することがある（read_nodeのコメント参照）。この関数は
-/// writerと同じ規則をそのまま再現するので、hierarchyが申告する点数と厳密に一致する。
-fn point_belongs_to_key(info: &CopcInfo, key: VoxelKey, x: f64, y: f64, z: f64) -> bool {
-    let mut bounds = copc_core::Bounds::cube(info.center, info.halfsize);
-    for level in 1..=key.level {
-        let shift = key.level - level;
-        let want_octant = ((key.x >> shift) & 1) as usize
-            | (((key.y >> shift) & 1) as usize) << 1
-            | (((key.z >> shift) & 1) as usize) << 2;
-        let center = bounds.center();
-        let actual_octant = usize::from(x >= center.0)
-            | (usize::from(y >= center.1) << 1)
-            | (usize::from(z >= center.2) << 2);
-        if actual_octant != want_octant {
-            return false;
-        }
-        bounds = bounds.octant(want_octant as u8);
-    }
-    true
 }
 
 #[cfg(test)]
