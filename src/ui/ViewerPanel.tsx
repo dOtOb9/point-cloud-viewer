@@ -61,6 +61,18 @@ export function ViewerPanel() {
           ) : (
             <p>まだファイルを開いていません</p>
           )}
+          {viewer.stats && (
+            <>
+              <p>
+                drawn: {viewer.stats.drawnPoints.toLocaleString()} pts / {viewer.stats.drawnNodes} nodes
+              </p>
+              <p>
+                loading: {viewer.stats.loadingNodes} / queued: {viewer.stats.queuedNodes} / cached:{" "}
+                {viewer.stats.cachedNodes}
+              </p>
+              <p>fps: {viewer.stats.fps.toFixed(1)}</p>
+            </>
+          )}
         </div>
       </div>
     </section>

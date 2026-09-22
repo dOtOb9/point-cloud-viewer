@@ -21,6 +21,21 @@ const POINT_SIZE_PX = 4;
 const FOV_Y_RADIANS = Math.PI / 3;
 const NEAR = 0.01;
 const FAR = 1e7;
+/** 統計をコールバックへ流す間隔(ms)。毎フレームだと呼び出し側(React state更新やRust
+ *  stdoutへのinvoke)が重くなるため間引く。 */
+const STATS_INTERVAL_MS = 500;
+
+/** M1-4: 描画点数・ロード中ノード数・fpsなど。GUIを目視できなくても
+ *  `npm run tauri dev` のRust側stdoutから挙動を追えるようにするための統計。 */
+export interface RenderStats {
+  drawnPoints: number;
+  drawnNodes: number;
+  loadingNodes: number;
+  queuedNodes: number;
+  cachedNodes: number;
+  fps: number;
+  pointBudget: number;
+}
 
 const UNIFORM_BUFFER_SIZE = 80; // mat4(64) + pointSizePx(4) + viewportWidth(4) + viewportHeight(4) + pad(4)
 
@@ -98,6 +113,10 @@ export class PointCloudRenderer {
   private pointBudget = DEFAULT_POINT_BUDGET;
   private rafHandle = 0;
   private disposed = false;
+
+  private onStats: ((stats: RenderStats) => void) | null = null;
+  private lastStatsEmitAt = 0;
+  private frameTimestamps: number[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -212,6 +231,11 @@ export class PointCloudRenderer {
     return this.pointBudget;
   }
 
+  /** 統計（描画点数・ロード中ノード数・fpsなど）が更新されるたびに呼ばれる。 */
+  onStatsUpdate(callback: (stats: RenderStats) => void): void {
+    this.onStats = callback;
+  }
+
   resize(width: number, height: number): void {
     const w = Math.max(1, Math.floor(width));
     const h = Math.max(1, Math.floor(height));
@@ -229,9 +253,9 @@ export class PointCloudRenderer {
 
   start(): void {
     if (this.rafHandle !== 0) return;
-    const frame = () => {
+    const frame = (time: number) => {
       if (this.disposed) return;
-      this.renderOnce();
+      this.renderOnce(time);
       this.rafHandle = requestAnimationFrame(frame);
     };
     this.rafHandle = requestAnimationFrame(frame);
@@ -290,8 +314,13 @@ export class PointCloudRenderer {
     this.cache.set(cached);
   }
 
-  private renderOnce(): void {
+  private renderOnce(time: number): void {
     if (!this.device || !this.context || !this.pipeline || !this.depthView) return;
+
+    this.frameTimestamps.push(time);
+    while (this.frameTimestamps.length > 0 && time - this.frameTimestamps[0] > 1000) {
+      this.frameTimestamps.shift();
+    }
 
     const width = this.canvas.width;
     const height = this.canvas.height;
@@ -308,6 +337,30 @@ export class PointCloudRenderer {
     }
 
     this.drawFrame(viewProj, width, height, selection.toDraw);
+
+    this.updateStats(selection.toDraw, time);
+  }
+
+  private updateStats(drawn: CachedNode[], time: number): void {
+    if (!this.onStats) return;
+    if (time - this.lastStatsEmitAt < STATS_INTERVAL_MS) return;
+    this.lastStatsEmitAt = time;
+
+    const drawnPoints = drawn.reduce((sum, n) => sum + n.pointCount, 0);
+    const fps =
+      this.frameTimestamps.length > 1
+        ? (this.frameTimestamps.length - 1) / ((time - this.frameTimestamps[0]) / 1000 || 1)
+        : 0;
+
+    this.onStats({
+      drawnPoints,
+      drawnNodes: drawn.length,
+      loadingNodes: this.loader?.loadingCount ?? 0,
+      queuedNodes: this.loader?.queuedCount ?? 0,
+      cachedNodes: this.cache.size,
+      fps,
+      pointBudget: this.pointBudget,
+    });
   }
 
   /**

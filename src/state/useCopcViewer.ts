@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { TauriSource, reportToBackendConsole } from "../datasource/tauri";
 import type { CloudInfo } from "../datasource/DataSource";
-import { PointCloudRenderer } from "../renderer/point-cloud-renderer";
+import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 
 const DEFAULT_POINT_BUDGET = 3_000_000;
 
@@ -17,6 +17,7 @@ export interface CopcViewerState {
   cloudInfo: CloudInfo | null;
   nodeCount: number;
   pointBudget: number;
+  stats: RenderStats | null;
   openFile: (path: string) => Promise<void>;
   setPointBudget: (budget: number) => void;
 }
@@ -36,6 +37,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [cloudInfo, setCloudInfo] = useState<CloudInfo | null>(null);
   const [nodeCount, setNodeCount] = useState(0);
   const [pointBudget, setPointBudgetState] = useState(DEFAULT_POINT_BUDGET);
+  const [stats, setStats] = useState<RenderStats | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -46,6 +48,16 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current = renderer;
     sourceRef.current = source;
     renderer.setDataSource(source);
+    renderer.onStatsUpdate((s) => {
+      setStats(s);
+      // GUIを目視できない環境でも`npm run tauri dev`のRust側stdoutから
+      // 描画点数・ロード中ノード数・fpsを追えるようにする（M1-4の必須要件）。
+      const summary =
+        `[M1] drawnPoints=${s.drawnPoints} drawnNodes=${s.drawnNodes} ` +
+        `loadingNodes=${s.loadingNodes} queuedNodes=${s.queuedNodes} ` +
+        `cachedNodes=${s.cachedNodes} fps=${s.fps.toFixed(1)} pointBudget=${s.pointBudget}`;
+      reportToBackendConsole(summary).catch((e) => console.error("reportToBackendConsole failed", e));
+    });
 
     let cancelled = false;
     renderer
@@ -106,6 +118,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     cloudInfo,
     nodeCount,
     pointBudget,
+    stats,
     openFile,
     setPointBudget,
   };
