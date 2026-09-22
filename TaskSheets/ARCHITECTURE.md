@@ -22,7 +22,7 @@ point-cloud-viewer/
 │                         → 薄く保つ。pcv:// の配信と制御コマンドだけ
 ├─ src/                   フロントエンド (TypeScript)
 │   ├─ datasource/        DataSource 抽象と実装
-│   ├─ renderer/          点群レンダラ (WebGPU / WebGL2)
+│   ├─ renderer/          点群レンダラ (WebGPU。ADR-0002によりWebGL2フォールバックは無し)
 │   ├─ state/             アプリ状態
 │   └─ ui/                React コンポーネント
 ├─ Cargo.toml             cargo workspace
@@ -41,7 +41,7 @@ point-cloud-viewer/
   └───────┬───────┘
           │
   ┌───────▼───────┐
-  │  src-tauri    │  pcv://node/<key> でノードのバイナリを配信
+  │  src-tauri    │  pcv://<level-x-y-z> でノードのバイナリを配信
   └───────┬───────┘
           │  カスタムプロトコル（invoke ではない → ADR-0001）
           ▼
