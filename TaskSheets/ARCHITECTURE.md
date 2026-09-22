@@ -76,9 +76,9 @@ point-cloud-viewer/
 | WebGPU 可否の確定 | 完了（M0-2）: WebGPU 採用。[ADR-0002](./ADR-0002-rendering-api.md) 参照 |
 | カスタムプロトコル | 完了（M0-3）: `pcv://` が `invoke` より有意に高速なことを実測済み。[M0-feasibility.md](./M0-feasibility.md) 参照 |
 | CI | 完了（M0-4）: 全ジョブ緑を実測。規約1/規約2 をCIで機械的に強制している |
-| COPC 読込 | 完了（M1-1）: `copc-core`/`copc-reader`採用。[ADR-0003](./ADR-0003-copc-crate.md) 参照 |
+| COPC 読込 | 完了（M1-1）。`copc-reader` は vendor/ でパッチ済み（[ADR-0003](./ADR-0003-copc-crate.md)） |
 | 点群のWebGPU描画 | 完了（M1-3）: point spriteパイプライン・orbitカメラ。[M1](./M1-point-rendering.md) |
-| octree LOD / 点予算 | 完了（M1-4）: 画面空間誤差での優先度付け・視錐台カリング・LRUキャッシュ・非同期ロード・統計表示。[M1](./M1-point-rendering.md) |
+| octree LOD / 点予算 | 完了（M1-4）。3.6億点を 13MB / 32ms で開けることを実測 |
 | `pcv://` 並行リクエストの直列化解消 | 完了（M2先頭）: 非同期プロトコルハンドラ + `CopcFile`のリーダープールに変更。並行数8でスループットが改修前比4.2〜10倍。[ADR-0007](./ADR-0007-pcv-protocol-concurrency.md) 参照 |
 | カーソル位置へのズーム | 完了（M1-5）: octreeのノードAABBへの粗いレイキャストでカーソル下の点を求め、そこへ`target`を寄せながらズームする。パン速度にシーンスケール由来の下限を追加。カメラの数式部分はvitestで確認済みだが、実際の画面での操作感はGUI目視待ち。[M1](./M1-point-rendering.md) M1-5参照 |
 | EDL シェーディング | 未着手（M2 に送った） |

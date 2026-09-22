@@ -11,8 +11,8 @@
 | | 内容 | 状態 |
 |---|---|---|
 | M0 | 前提の確定（WebGPU 可否 / IPC スループット / CI） | 完了 |
-| M1 | 点群が画面に出る（COPC 読込 → 描画 → LOD → 点予算） | 進行中 |
-| M2 | [点群を読めるようにする](./M2-shading-and-ui.md)（EDL・カラーマップ・UI シェル） | 未着手 |
+| M1 | [点群が画面に出る](./M1-point-rendering.md)（COPC 読込 → 描画 → LOD → 点予算） | **完了** |
+| M2 | [点群を読めるようにする](./M2-shading-and-ui.md)（上方向・空・EDL・カラーマップ・UI シェル） | 進行中 |
 | M3 | リリース配布と自動更新（[ADR-0004](./ADR-0004-distribution-and-update.md)） | 未着手 |
 | M4 | [各種形式の取り込みと変換、CRS](./M4-import-and-conversion.md)（LAS/LAZ/E57/PLY/PCD、平面直角座標系・UTM） | 未着手 |
 | M5 | 選択・編集・クリッピング | 未着手 |
