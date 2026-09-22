@@ -86,8 +86,11 @@ export class TauriSource implements DataSource {
     return await res.arrayBuffer();
   }
 
-  async open(path: string): Promise<OpenedCloud> {
-    const dto = await invoke<OpenCopcResponseDto>("open_copc", { path });
+  async open(path: string, readerPoolSize?: number): Promise<OpenedCloud> {
+    const dto = await invoke<OpenCopcResponseDto>("open_copc", {
+      path,
+      poolSize: readerPoolSize ?? null,
+    });
     return {
       info: toCloudInfo(dto.info),
       nodes: dto.nodes.map(toHierarchyNodeInfo),

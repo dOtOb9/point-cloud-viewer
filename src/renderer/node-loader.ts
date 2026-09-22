@@ -10,7 +10,38 @@ export interface NodeLoadRequest {
   priority: number;
 }
 
-const DEFAULT_MAX_CONCURRENT = 4;
+/**
+ * 同時に投げるノード取得リクエストの数。
+ *
+ * 当初は固定値 4 だった（M1-4 で「同時リクエスト数を絞る（4本程度）」と決めた）。
+ * しかし `ADR-0007-pcv-protocol-concurrency.md` の実測は、4 では足りないことを
+ * 示している（sofi.copc.laz: 並行数4 で 52.7 nodes/s、並行数8 で 88.0 nodes/s。
+ * 8 でもまだ頭打ちになっていない）。
+ *
+ * さらに、Rust 側のリーダープール（`src-tauri/src/copc_state.rs` の `CopcPool`）は
+ * 8 本用意されていたため、**フロントが 4 本しか投げないせいでプールの半分が
+ * 使われていなかった**。所有者から「点群が精細になるのに時間がかかるが CPU を
+ * 使えていないように見える」という報告があり、これがその実体である。
+ *
+ * そこで端末の論理コア数から決める形にした（`ADR-0009-adaptive-render-settings.md`:
+ * 静的な端末情報は初期値と上限を決めるために使う）。開発機は 20 コア、
+ * M3 の対象端末 OPPO Pad Air は 8 コアで、固定値では両方に合わない。
+ *
+ * # 未検証
+ *
+ * **4 → 8 が改善することは実測済みだが、8 を超える範囲は未実測である。**
+ * 上限を 16 に切っているのは、際限なく増やすとディスク I/O と競合しうるという
+ * 推測に基づくもので、**測って決めた値ではない**。
+ * 計測ハーネス（`src/state/useNodeConcurrencyBench.ts`）は現在 `[1, 4, 8]` のみを
+ * 測るので、まず 16 / 20 を測れるようにするところから始めること。
+ */
+function defaultMaxConcurrent(): number {
+  const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined;
+  if (!cores || !Number.isFinite(cores)) return 8; // 取れない環境では実測で裏付けのある 8
+  return Math.max(4, Math.min(cores, 16));
+}
+
+const DEFAULT_MAX_CONCURRENT = defaultMaxConcurrent();
 
 export class NodeLoader {
   private readonly dataSource: DataSource;

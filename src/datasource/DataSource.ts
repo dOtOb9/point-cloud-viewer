@@ -33,8 +33,16 @@ export interface DataSource {
    */
   fetchBench(sizeBytes: number): Promise<ArrayBuffer>;
 
-  /** COPCファイルを開き、点群全体の情報とoctreeのノード一覧を取得する。 */
-  open(path: string): Promise<OpenedCloud>;
+  /**
+   * COPCファイルを開き、点群全体の情報とoctreeのノード一覧を取得する。
+   *
+   * `readerPoolSize`は省略可能。Tauri実装では省略時にRust側が
+   * `default_pool_size()`（利用可能な並列度）で決める。明示的に渡せるのは
+   * `src/state/useNodeConcurrencyBench.ts`が並行数ごとにプールサイズも
+   * 振って計測するため（`TaskSheets/ADR-0007-pcv-protocol-concurrency.md`）。
+   * 通常のビューアはこの引数を渡さない。
+   */
+  open(path: string, readerPoolSize?: number): Promise<OpenedCloud>;
 
   /**
    * 指定したノードキーの点データを取得する。返るバイト列はM1-2で決めた
