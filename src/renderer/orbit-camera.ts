@@ -3,6 +3,7 @@
 // （M1-point-rendering.md 規約3: rendererはcanvasとDataSourceだけを受け取る）。
 
 import { lookAt, type Mat4 } from "./mat4";
+import { DEFAULT_UP_AXIS, horizontalBasis, type Vec3 } from "./up-axis";
 
 const MIN_DISTANCE = 0.01;
 const MAX_DISTANCE = 1e9; // COPCの世界座標は大きいことがあるので、上限は緩くしておく
@@ -29,9 +30,28 @@ export class OrbitCamera {
    */
   private minPanDistance = 0;
 
+  /**
+   * 点群の「上方向」（M2-0b）。既定値は`up-axis.ts`に集約してある。
+   * カメラの姿勢(eye/viewMatrix)とパン(pan)はどちらもこの値だけを参照する。
+   * `[0, 1, 0]`や`[0, 0, 1]`をここ以外に書かないこと。
+   */
+  private upAxis: Vec3 = DEFAULT_UP_AXIS;
+
   constructor(target: [number, number, number], distance: number) {
     this.target = target;
     this.distance = distance;
+  }
+
+  /**
+   * 上方向を変える（M2-0b）。定数ではなく設定可能にしてあるのは、PLY/PCDのように
+   * 座標系を持たないデータ（ADR-0008）ではZ-upとは限らないため。
+   */
+  setUpAxis(up: Vec3): void {
+    this.upAxis = up;
+  }
+
+  getUpAxis(): Vec3 {
+    return this.upAxis;
   }
 
   /**
@@ -42,18 +62,35 @@ export class OrbitCamera {
     this.minPanDistance = diagonal * MIN_PAN_DISTANCE_RATIO;
   }
 
-  /** カメラのワールド座標での位置。 */
+  /**
+   * カメラのワールド座標での位置。
+   *
+   * `upAxis`に直交する水平基底(`right`, `forward`)上でyawを回し(`h`)、
+   * `cos(pitch)`で水平成分、`sin(pitch)`で`upAxis`成分を混ぜる。
+   * `upAxis = [0, 1, 0]`のとき、この式は旧来の
+   * `[cosP*sin(yaw), sinP, cosP*cos(yaw)]`と代数的に一致する
+   * （`up-axis.ts`の`horizontalBasis`のコメント参照。テストでも確認済み）。
+   */
   eye(): [number, number, number] {
+    const { right, forward } = horizontalBasis(this.upAxis);
     const cosP = Math.cos(this.pitch);
+    const sinP = Math.sin(this.pitch);
+    const cosY = Math.cos(this.yaw);
+    const sinY = Math.sin(this.yaw);
+    const h: [number, number, number] = [
+      forward[0] * cosY + right[0] * sinY,
+      forward[1] * cosY + right[1] * sinY,
+      forward[2] * cosY + right[2] * sinY,
+    ];
     return [
-      this.target[0] + this.distance * cosP * Math.sin(this.yaw),
-      this.target[1] + this.distance * Math.sin(this.pitch),
-      this.target[2] + this.distance * cosP * Math.cos(this.yaw),
+      this.target[0] + this.distance * (cosP * h[0] + sinP * this.upAxis[0]),
+      this.target[1] + this.distance * (cosP * h[1] + sinP * this.upAxis[1]),
+      this.target[2] + this.distance * (cosP * h[2] + sinP * this.upAxis[2]),
     ];
   }
 
   viewMatrix(): Mat4 {
-    return lookAt(this.eye(), this.target, [0, 1, 0]);
+    return lookAt(this.eye(), this.target, this.upAxis);
   }
 
   rotate(dYaw: number, dPitch: number): void {
@@ -114,8 +151,7 @@ export class OrbitCamera {
   pan(dxScreen: number, dyScreen: number): void {
     const eye = this.eye();
     const forward = normalize(sub(this.target, eye));
-    const worldUp: [number, number, number] = [0, 1, 0];
-    const right = normalize(cross(forward, worldUp));
+    const right = normalize(cross(forward, this.upAxis));
     const up = normalize(cross(right, forward));
 
     // 距離に比例させることで、寄っているときは小さく、引いているときは大きく動く

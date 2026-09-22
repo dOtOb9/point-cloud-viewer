@@ -203,3 +203,61 @@ describe("OrbitCamera.rotate (既存挙動の回帰確認、M1-5では変更し�
     expect(camera.pitch).toBeLessThan(Math.PI / 2);
   });
 });
+
+describe("OrbitCamera 上方向 (M2-0b)", () => {
+  it("既定の上方向は[0,1,0]のまま（段階1はリファクタのみで挙動を変えない）", () => {
+    const camera = new OrbitCamera([0, 0, 0], 100);
+    expect(camera.getUpAxis()).toEqual([0, 1, 0]);
+  });
+
+  it("pitch=0のとき、eyeからtargetへの視線方向は上方向(upAxis)と直交する（＝水平）", () => {
+    for (const up of [
+      [0, 1, 0],
+      [0, 0, 1],
+    ] as const) {
+      const camera = new OrbitCamera([0, 0, 0], 100);
+      camera.setUpAxis(up);
+      camera.pitch = 0;
+      const eye = camera.eye();
+      const forward = normalize3(sub3(camera.target, eye));
+      const dot = forward[0] * up[0] + forward[1] * up[1] + forward[2] * up[2];
+      expect(dot).toBeCloseTo(0, 9);
+    }
+  });
+
+  it("pitch=±90°(クランプ直前)のとき、視線はほぼ上方向(upAxis)と平行になる", () => {
+    const camera = new OrbitCamera([0, 0, 0], 100);
+    camera.setUpAxis([0, 0, 1]);
+    camera.pitch = Math.PI / 2 - 0.01; // MAX_PITCH相当
+    const eye = camera.eye();
+    const forward = normalize3(sub3(camera.target, eye));
+    // 真上から見下ろす姿勢に近いので、視線とupAxisのなす角はほぼ0または180度
+    // （内積の絶対値がほぼ1）になるはず。
+    const dot = forward[0] * 0 + forward[1] * 0 + forward[2] * 1;
+    expect(Math.abs(dot)).toBeGreaterThan(0.999);
+  });
+
+  it("setUpAxis()でカメラを追従させると、上方向を変えてもeyeとtargetの距離(distance)は変わらない", () => {
+    const camera = new OrbitCamera([1, 2, 3], 50);
+    camera.pitch = 0.4;
+    camera.yaw = 1.1;
+    const before = distance3(camera.eye(), camera.target);
+    camera.setUpAxis([0, 0, 1]);
+    const after = distance3(camera.eye(), camera.target);
+    expect(after).toBeCloseTo(before, 9);
+    expect(after).toBeCloseTo(50, 9);
+  });
+
+  it("pan()も設定した上方向を使う: upAxisをZにすると、パンは新しい水平面（XY平面）内で動く", () => {
+    const camera = new OrbitCamera([0, 0, 0], 100);
+    camera.setUpAxis([0, 0, 1]);
+    camera.pitch = 0; // 水平を向く
+
+    camera.pan(0, 10); // 画面「上」方向へパン
+
+    // upAxisがZのとき、画面の上はワールドのZ方向に一致するはず
+    // （水平を向いているカメラのスクリーンupは常にワールドupと一致する）。
+    expect(camera.target[2]).not.toBeCloseTo(0, 6);
+    expect(Math.abs(camera.target[2])).toBeGreaterThan(0);
+  });
+});
