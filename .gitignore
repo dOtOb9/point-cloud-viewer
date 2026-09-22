@@ -1,0 +1,24 @@
+# Rust
+/target
+**/target
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# 点群データ（大きいのでコミットしない）
+*.las
+*.laz
+*.copc.laz
+/data
