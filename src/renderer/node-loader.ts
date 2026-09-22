@@ -27,18 +27,34 @@ export interface NodeLoadRequest {
  * 静的な端末情報は初期値と上限を決めるために使う）。開発機は 20 コア、
  * M3 の対象端末 OPPO Pad Air は 8 コアで、固定値では両方に合わない。
  *
+ * # 上限を設けない理由
+ *
+ * 一度 `Math.min(cores, 16)` という上限を置いたが、根拠が無いうえに**同じ無駄を
+ * 小さく再現していた**ので外した。Rust 側のプールは
+ * `std::thread::available_parallelism()`（この開発機で 20、上限なし）で作られるため、
+ * フロントを 16 に切るとプールが 4 本遊ぶ。「4 本しか投げないのでプール 8 本の半分が
+ * 遊んでいた」という、いま直したばかりの問題と同じ構造である。
+ *
+ * **投げすぎても害は無い。** プールが本当の上限で、超えた分は `Condvar` で
+ * 次の返却を待つだけである（`src-tauri/src/copc_state.rs` の `CopcPool`）。
+ * したがってフロント側とプール側は同じ値に揃えるのが素直で、
+ * どちらも端末の論理コア数から決める。
+ *
  * # 未検証
  *
- * **4 → 8 が改善することは実測済みだが、8 を超える範囲は未実測である。**
- * 上限を 16 に切っているのは、際限なく増やすとディスク I/O と競合しうるという
- * 推測に基づくもので、**測って決めた値ではない**。
- * 計測ハーネス（`src/state/useNodeConcurrencyBench.ts`）は現在 `[1, 4, 8]` のみを
- * 測るので、まず 16 / 20 を測れるようにするところから始めること。
+ * **4 → 8 が改善することは実測済み**（ADR-0007）**だが、8 を超える範囲は未実測である。**
+ * 論理コア数と同じが最適かどうかも分かっていない。計測ハーネス
+ * （`src/state/useNodeConcurrencyBench.ts`）は現在 `[1, 4, 8]` のみを測るので、
+ * まず 16 / 20 を測れるようにするところから始めること。
+ * 測るときはフロントの同時数とプールサイズの両方を振ること
+ * （片方だけ振っても、もう片方が先に頭打ちになって意味のある数値が出ない）。
  */
 function defaultMaxConcurrent(): number {
   const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined;
-  if (!cores || !Number.isFinite(cores)) return 8; // 取れない環境では実測で裏付けのある 8
-  return Math.max(4, Math.min(cores, 16));
+  // 取れない環境では、実測で裏付けのある 8 を使う（ADR-0007）。
+  if (!cores || !Number.isFinite(cores)) return 8;
+  // 下限 4 は、コア数を極端に少なく申告する環境で直列化しないための保険。
+  return Math.max(4, cores);
 }
 
 const DEFAULT_MAX_CONCURRENT = defaultMaxConcurrent();
