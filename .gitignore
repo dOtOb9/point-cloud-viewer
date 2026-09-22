@@ -39,3 +39,6 @@ Thumbs.db
 *.laz
 *.copc.laz
 /data
+
+# vendor/ はビルド時に Cargo.lock を再生成する。patch 先の lock は使われないので追跡しない。
+vendor/*/Cargo.lock
