@@ -98,7 +98,10 @@ fn measure(path: &Path, budget: u64) {
     println!("  点予算 {budget} を埋めるまで");
     println!("    読んだノード  : {nodes}");
     println!("    読んだ点      : {points}");
-    println!("    転送バイト    : {:.1} MiB", bytes as f64 / (1024.0 * 1024.0));
+    println!(
+        "    転送バイト    : {:.1} MiB",
+        bytes as f64 / (1024.0 * 1024.0)
+    );
     println!("    所要時間      : {:.2} 秒", total_s);
     println!("    最も遅い1ノード: {slowest_ms:.1} ms");
     println!();
