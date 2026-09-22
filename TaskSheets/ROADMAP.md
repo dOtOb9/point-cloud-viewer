@@ -14,7 +14,7 @@
 | M1 | 点群が画面に出る（COPC 読込 → 描画 → LOD → 点予算） | 進行中 |
 | M2 | [点群を読めるようにする](./M2-shading-and-ui.md)（EDL・カラーマップ・UI シェル） | 未着手 |
 | M3 | リリース配布と自動更新（[ADR-0004](./ADR-0004-distribution-and-update.md)） | 未着手 |
-| M4 | 生の LAS/LAZ の取り込みと変換 | 未着手 |
+| M4 | [各種形式の取り込みと変換、CRS](./M4-import-and-conversion.md)（LAS/LAZ/E57/PLY/PCD、平面直角座標系・UTM） | 未着手 |
 | M5 | 選択・編集・クリッピング | 未着手 |
 
 ## 土台（複数の機能が共有するもの）
