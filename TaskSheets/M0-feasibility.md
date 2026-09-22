@@ -30,9 +30,14 @@ Tauri v2 + React + TypeScript + Tailwind + Vite の最小構成を立ち上げ�
 
 ### 受け入れ条件
 
-- [ ] `npm run tauri dev` でウィンドウが開き、Tailwind のスタイルが効いている
-- [ ] `cargo build` が workspace 全体で通る
-- [ ] `crates/pcv-core/Cargo.toml` に `tauri` が無い
+- [x] `npm run tauri dev` でウィンドウが開き、Tailwind のスタイルが効いている
+      （ウィンドウを目視できない環境で実装したため、プロセスがクラッシュせず起動すること・
+      `vite build` が Tailwind 由来の CSS を生成すること・後続のM0-2/M0-3で同じ画面上の
+      React コンポーネントが正しく動作していることまでを間接的な根拠として確認した。
+      実際に色/フォントが期待通り出ているかは所有者の目視確認が必要）
+- [x] `cargo build` が workspace 全体で通る
+- [x] `crates/pcv-core/Cargo.toml` に `tauri` が無い（wasm32-unknown-unknown ターゲットでも
+      ビルドできることを確認済み）
 
 ### 自分で確かめる手順
 
@@ -69,9 +74,11 @@ WebView2 上で WebGPU が取得できるかを実測する。**これが M0 の
 
 ### 受け入れ条件
 
-- [ ] 上の表のどれに該当するかが確定し、下の「結果」節に記録されている
-- [ ] 採用する API（WebGPU / WebGL2）で、三角形1枚またはピクセル1点が canvas に描画される
-- [ ] `ADR-0002-rendering-api.md` を起こし、決定と根拠を記録した
+- [x] 上の表のどれに該当するかが確定し、下の「結果」節に記録されている
+- [x] 採用する API（WebGPU / WebGL2）で、三角形1枚またはピクセル1点が canvas に描画される
+      （`report_diagnostic` 経由の stdout ログで `drawnWith=webgpu` を確認。canvas の見た目
+      そのものは所有者の目視確認が必要）
+- [x] `ADR-0002-rendering-api.md` を起こし、決定と根拠を記録した
 
 ### 自分で確かめる手順
 
@@ -123,10 +130,11 @@ ADR-0001 で「`invoke` は Windows で約 50MB/s のボトルネックになる
 
 ### 受け入れ条件
 
-- [ ] カスタムプロトコルと `invoke` のスループットが数値で並んでいる
-- [ ] カスタムプロトコルが `invoke` より有意に速いことを確認した
-      （もし差が無ければ ADR-0001 の当該判断を見直し、ADR に追記する）
-- [ ] `DataSource` インターフェースの最初の形が `src/datasource/` に存在する
+- [x] カスタムプロトコルと `invoke` のスループットが数値で並んでいる
+- [x] カスタムプロトコルが `invoke` より有意に速いことを確認した
+      （差は明確にあったため ADR-0001 の見直しは不要だった）
+- [x] `DataSource` インターフェースの最初の形が `src/datasource/DataSource.ts` に存在する
+      （`TauriSource` が実装。`src/datasource/tauri.ts`）
 
 ### 自分で確かめる手順
 
@@ -136,9 +144,43 @@ npm run tauri dev     # ベンチ画面で計測ボタンを押し、数値が�
 
 ### 結果
 
-> サイズごとの所要時間と MB/s を、カスタムプロトコル / invoke の両方について記録する。
+- 日付: 2026-09-22
+- 環境: `npm run tauri dev`（devURL 経由、dev/debugビルド。`cargo build --release` の
+  最適化ビルドではない点に注意）
+- 計測方法: `src/state/useIpcBench.ts` が起動時に自動計測し、`console.log` と
+  `report_diagnostic` コマンド経由で Rust 側 stdout に出力する
 
-（未計測）
+| method | size | time | throughput |
+|---|---|---|---|
+| pcv:// | 1MiB | 24.3ms | 41.2MB/s |
+| pcv:// | 10MiB | 113.4ms | 88.2MB/s |
+| pcv:// | 100MiB | 1079.3ms | 92.7MB/s |
+| invoke | 1MiB | 782.1ms | 1.3MB/s |
+| invoke | 10MiB | 7827.8ms | 1.3MB/s |
+| invoke | 100MiB | 9771.1ms | 10.2MB/s |
+
+`npm run tauri dev` の標準出力の実測行:
+
+```
+[frontend] [M0-3] IPC bench: pcv:// 1MiB: 24.3ms 41.2MB/s | pcv:// 10MiB: 113.4ms 88.2MB/s | pcv:// 100MiB: 1079.3ms 92.7MB/s | invoke 1MiB: 782.1ms 1.3MB/s | invoke 10MiB: 7827.8ms 1.3MB/s | invoke 100MiB: 9771.1ms 10.2MB/s
+```
+
+**結論: カスタムプロトコルが `invoke` より有意に速いことを確認した**（サイズによるが約8倍〜60倍）。
+ADR-0001 の「`invoke` を制御メッセージ専用にし、ノードデータは `pcv://` で運ぶ」という判断を
+実測で裏付けた。ADR-0001 の見直しは不要。
+
+留意点:
+- 数値は dev/debugビルドでの計測であり、`tauri build`（release）とは絶対値が異なりうる。
+  ただし相対的な差（pcv:// が有意に速い）は序盤の実装段階から明確だった。
+- `invoke` の初回呼び出し時、devtoolsに
+  `IPC custom protocol failed, Tauri will now use the postMessage interface instead` という
+  警告が出ることがある。これは Tauri 自身の invoke 実装が内部で使う独自プロトコルが
+  devURL（Vite dev server）環境で failed し、`postMessage` にフォールバックするという
+  Tauri 側の既知の挙動で、今回追加した `pcv://` ベンチ用プロトコルとは別物。invoke の
+  数値がサイズに対して非単調（10MiBより100MiBの方が高スループット）なのはこのフォール
+  バック経路の影響を受けている可能性がある。相対比較の結論には影響しない。
+- 100MB× invoke はタイムアウト（60秒）以内に完了したが、10秒近くかかっており、実運用の
+  LODストリーミングには到底耐えない値。
 
 ### コミット単位
 

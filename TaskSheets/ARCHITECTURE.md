@@ -74,8 +74,8 @@ point-cloud-viewer/
 |---|---|
 | リポジトリ雛形 | 完了（M0-1） |
 | WebGPU 可否の確定 | 完了（M0-2）: WebGPU 採用。[ADR-0002](./ADR-0002-rendering-api.md) 参照 |
-| カスタムプロトコル | 未着手（M0） |
-| CI | 未着手（M0） |
+| カスタムプロトコル | 完了（M0-3）: `pcv://` が `invoke` より有意に高速なことを実測済み。[M0-feasibility.md](./M0-feasibility.md) 参照 |
+| CI | 進行中（M0-4） |
 | COPC 読込 | 未着手（M1） |
 | octree LOD / 点予算 | 未着手（M1） |
 | EDL シェーディング | 未着手（M1） |
