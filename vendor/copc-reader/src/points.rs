@@ -4,7 +4,7 @@ use std::path::Path;
 
 use copc_core::{
     layout_for_las_format, Bounds, CancelCheck, ColumnData, ColumnSelection, ColumnSpec, CopcInfo,
-    Entry, Error, LasColumnBatch, LasDimension, Result,
+    Entry, Error, LasColumnBatch, LasDimension, Result, VoxelKey,
 };
 use las::point::Format as LasPointFormat;
 use las::{Point, Transform, Vector};
@@ -125,6 +125,46 @@ impl<R: Read + Seek + Send> CopcReader<R> {
             PointQuery::new(lod, bounds),
             Some(cancel),
         )
+    }
+
+    /// Reads exactly one hierarchy node's own point chunk.
+    ///
+    /// PATCHED (point-cloud-viewer): added because the public API otherwise
+    /// only offers level/bounds queries (`points`/`points_for_query`), which
+    /// callers wanting a single node were forced to misuse by requesting the
+    /// whole level and discarding most of the decoded points as
+    /// bbox-intersecting-but-not-actually-inside candidates (see PATCH.md).
+    ///
+    /// A COPC hierarchy `Entry` already names the exact byte range
+    /// (`offset`/`byte_size`) of that one node's own compressed LAZ chunk, so
+    /// this seeks straight there and decompresses only those bytes. Every
+    /// point decoded from that range belongs to `key` by construction (COPC
+    /// writers place one node's points in one contiguous chunk and nowhere
+    /// else), so no bounds or octant post-filtering is needed or applied.
+    pub fn read_node(&mut self, key: VoxelKey) -> Result<Vec<Point>> {
+        let entry = *self.file.hierarchy().get(&key).ok_or_else(|| {
+            Error::InvalidInput(format!("no hierarchy entry for key {key:?}"))
+        })?;
+        if !entry.has_point_data() {
+            return Err(Error::InvalidInput(format!(
+                "hierarchy entry {key:?} has no point data (empty node or child-page pointer)"
+            )));
+        }
+        let point_format = self.file.point_format()?;
+        let transforms = self.file.transforms();
+        let mut chunk_bytes = Vec::new();
+        let points_in_chunk = read_chunk_bytes(&mut self.source, entry, &mut chunk_bytes)?;
+        let mut points = Vec::with_capacity(points_in_chunk);
+        decode_chunk_points(
+            &chunk_bytes,
+            points_in_chunk,
+            self.file.laszip_vlr(),
+            &point_format,
+            &transforms,
+            None,
+            &mut points,
+        )?;
+        Ok(points)
     }
 
     pub fn read_columns(
