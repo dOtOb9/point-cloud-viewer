@@ -73,7 +73,7 @@ point-cloud-viewer/
 | 領域 | 状態 |
 |---|---|
 | リポジトリ雛形 | 完了（M0-1） |
-| WebGPU 可否の確定 | 未着手（M0） |
+| WebGPU 可否の確定 | 完了（M0-2）: WebGPU 採用。[ADR-0002](./ADR-0002-rendering-api.md) 参照 |
 | カスタムプロトコル | 未着手（M0） |
 | CI | 未着手（M0） |
 | COPC 読込 | 未着手（M1） |

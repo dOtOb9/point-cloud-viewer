@@ -81,10 +81,27 @@ npm run tauri dev     # 画面にアダプタ情報か「WebGPU 非対応」が�
 
 ### 結果
 
-> ここに実測結果を書く。日付、WebView2 のバージョン、GPU、`requestAdapter()` の結果、
-> 試したフラグ、最終的な決定。
+- 日付: 2026-09-22
+- OS: Windows 11 Home 10.0.26200 (build 26200)
+- WebView2 Runtime: 153.0.4234.48
+- GPU: NVIDIA GeForce RTX 4070（ドライバ 32.0.15.9186）
+- `"gpu" in navigator`: true
+- `requestAdapter()`: 成功。フラグなし（`additionalBrowserArguments` は未使用）
+- adapter.info: vendor="nvidia", architecture="lovelace"（device / description は空文字で返ってきた）
+- 三角形描画: 成功（`drawnWith=webgpu`）
+- 試したフラグ: なし（素の状態で動作したため追加不要だった）
+- 判断表での該当区分: 「WebGPU が素で使える」
+- 最終決定: **WebGPU を採用**（WebGL2 フォールバックは実装しない）。詳細と根拠は
+  [ADR-0002](./ADR-0002-rendering-api.md) を参照。
 
-（未計測）
+実測は `npm run tauri dev` の標準出力で確認した（`src/state/useWebGpuProbe.ts` が
+`report_diagnostic` コマンド経由で Rust 側 stdout にも出力する）:
+
+```
+[frontend] [M0-2] WebGPU supported: vendor="nvidia" architecture="lovelace" device="(unknown)" description="(unknown)" drawnWith=webgpu
+```
+
+検証は開発機1台のみ。古いGPU/ドライバでの挙動は未検証（ADR-0002の留意点を参照）。
 
 ### コミット単位
 
