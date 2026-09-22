@@ -1,18 +1,26 @@
-// 点群のWebGPU描画パイプライン本体。M1-3: COPCを1つ開き、まず1ノード（ルート）だけを
-// 出す。LODはまだ入れない（M1-4で複数ノードのoctree LODに置き換える）。
+// 点群のWebGPU描画パイプライン本体。M1-3（1ノード描画・orbitカメラ）に続き、
+// M1-4のoctree LOD（画面空間誤差での優先度付け・視錐台カリング・点予算・
+// ノードキャッシュ・非同期ロード）をここに実装する。統計表示は次のコミットで足す。
 //
 // 規約3（ARCHITECTURE.md）: このファイルはReactを知らない。canvasと`DataSource`だけを
 // 受け取る。UIから触るときは `src/state/` を経由すること。
 
-import type { DataSource } from "../datasource/DataSource";
-import { NODE_POINT_STRIDE, parseNodeBuffer, type ParsedNode } from "../datasource/node-format";
+import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
+import { NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
 import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { multiply, perspective, translation, type Mat4 } from "./mat4";
+import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
+import { screenSpaceError } from "./screen-space-error";
+import { NodeCache, type CachedNode } from "./node-cache";
+import { NodeLoader } from "./node-loader";
 
+const DEFAULT_POINT_BUDGET = 3_000_000;
+/** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
+const CACHE_BUDGET_MULTIPLIER = 2;
+const POINT_SIZE_PX = 4;
 const FOV_Y_RADIANS = Math.PI / 3;
 const NEAR = 0.01;
 const FAR = 1e7;
-const POINT_SIZE_PX = 4;
 
 const UNIFORM_BUFFER_SIZE = 80; // mat4(64) + pointSizePx(4) + viewportWidth(4) + viewportHeight(4) + pad(4)
 
@@ -70,14 +78,6 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 }
 `;
 
-interface LoadedNode {
-  origin: readonly [number, number, number];
-  pointCount: number;
-  vertexBuffer: GPUBuffer;
-  uniformBuffer: GPUBuffer;
-  bindGroup: GPUBindGroup;
-}
-
 export class PointCloudRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly camera: OrbitCamera;
@@ -91,14 +91,18 @@ export class PointCloudRenderer {
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
 
-  private dataSource: DataSource | null = null;
-  private node: LoadedNode | null = null;
+  private hierarchy: HierarchyNodeInfo[] = [];
+  private cache: NodeCache;
+  private loader: NodeLoader | null = null;
+
+  private pointBudget = DEFAULT_POINT_BUDGET;
   private rafHandle = 0;
   private disposed = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.camera = new OrbitCamera([0, 0, 0], 100);
+    this.cache = new NodeCache(this.pointBudget * CACHE_BUDGET_MULTIPLIER);
   }
 
   async init(): Promise<void> {
@@ -161,66 +165,51 @@ export class PointCloudRenderer {
   }
 
   setDataSource(dataSource: DataSource): void {
-    this.dataSource = dataSource;
-  }
-
-  /** ルートノード（"0-0-0-0"）だけを読み込んで表示する。M1-3のスコープ。 */
-  async loadRootNode(rootBoundsMin: readonly [number, number, number], rootBoundsMax: readonly [number, number, number]): Promise<void> {
-    if (!this.dataSource) throw new Error("setDataSource() must be called before loadRootNode()");
-
-    const center: [number, number, number] = [
-      (rootBoundsMin[0] + rootBoundsMax[0]) / 2,
-      (rootBoundsMin[1] + rootBoundsMax[1]) / 2,
-      (rootBoundsMin[2] + rootBoundsMax[2]) / 2,
-    ];
-    const diagonal =
-      Math.hypot(
-        rootBoundsMax[0] - rootBoundsMin[0],
-        rootBoundsMax[1] - rootBoundsMin[1],
-        rootBoundsMax[2] - rootBoundsMin[2],
-      ) || 100;
-    this.camera.target = center;
-    this.camera.distance = diagonal;
-
-    const buffer = await this.dataSource.readNode("0-0-0-0");
-    const parsed = parseNodeBuffer(buffer);
-    this.uploadNode(parsed);
-  }
-
-  private uploadNode(node: ParsedNode): void {
-    if (!this.device || !this.uniformLayout) return;
-
-    this.node?.vertexBuffer.destroy();
-    this.node?.uniformBuffer.destroy();
-
-    const vertexBuffer = this.device.createBuffer({
-      size: Math.max(node.pointsBytes.byteLength, NODE_POINT_STRIDE),
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    this.device.queue.writeBuffer(
-      vertexBuffer,
-      0,
-      node.pointsBytes.buffer,
-      node.pointsBytes.byteOffset,
-      node.pointsBytes.byteLength,
+    this.loader = new NodeLoader(
+      dataSource,
+      (key, node) => this.handleNodeLoaded(key, node),
+      (key, error) => {
+        console.error(`[renderer] failed to load node ${key}`, error);
+      },
     );
+  }
 
-    const uniformBuffer = this.device.createBuffer({
-      size: UNIFORM_BUFFER_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    const bindGroup = this.device.createBindGroup({
-      layout: this.uniformLayout,
-      entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
-    });
+  /** octreeのノード一覧をセットする。データ点群を開き直したら呼ぶ。 */
+  setHierarchy(nodes: HierarchyNodeInfo[]): void {
+    this.hierarchy = nodes;
 
-    this.node = {
-      origin: node.origin,
-      pointCount: node.pointCount,
-      vertexBuffer,
-      uniformBuffer,
-      bindGroup,
-    };
+    if (nodes.length > 0) {
+      const min: [number, number, number] = [Infinity, Infinity, Infinity];
+      const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+      for (const node of nodes) {
+        for (let axis = 0; axis < 3; axis++) {
+          min[axis] = Math.min(min[axis], node.boundsMin[axis]);
+          max[axis] = Math.max(max[axis], node.boundsMax[axis]);
+        }
+      }
+      const center: [number, number, number] = [
+        (min[0] + max[0]) / 2,
+        (min[1] + max[1]) / 2,
+        (min[2] + max[2]) / 2,
+      ];
+      const diagonal = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 100;
+      this.camera.target = center;
+      this.camera.distance = diagonal;
+    }
+  }
+
+  /** キャッシュをすべて捨てる。別のファイルを開いたときに呼ぶ。 */
+  clearCache(): void {
+    this.cache.dispose();
+  }
+
+  setPointBudget(budget: number): void {
+    this.pointBudget = Math.max(1, Math.floor(budget));
+    this.cache.maxPoints = this.pointBudget * CACHE_BUDGET_MULTIPLIER;
+  }
+
+  getPointBudget(): number {
+    return this.pointBudget;
   }
 
   resize(width: number, height: number): void {
@@ -259,9 +248,46 @@ export class PointCloudRenderer {
     this.disposed = true;
     this.stop();
     this.detachControls();
-    this.node?.vertexBuffer.destroy();
-    this.node?.uniformBuffer.destroy();
+    this.loader?.dispose();
+    this.cache.dispose();
     this.depthTexture?.destroy();
+  }
+
+  private handleNodeLoaded(key: string, node: ParsedNode): void {
+    if (this.disposed || !this.device || !this.uniformLayout) return;
+
+    const vertexBuffer = this.device.createBuffer({
+      size: Math.max(node.pointsBytes.byteLength, NODE_POINT_STRIDE),
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    // pointsBytesはfetchしたArrayBufferへのビュー。writeBufferは内容をコピーするので、
+    // 元のArrayBufferをここで保持し続ける必要はない。
+    this.device.queue.writeBuffer(
+      vertexBuffer,
+      0,
+      node.pointsBytes.buffer,
+      node.pointsBytes.byteOffset,
+      node.pointsBytes.byteLength,
+    );
+
+    const uniformBuffer = this.device.createBuffer({
+      size: UNIFORM_BUFFER_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const bindGroup = this.device.createBindGroup({
+      layout: this.uniformLayout,
+      entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+    });
+
+    const cached: CachedNode = {
+      key,
+      origin: node.origin,
+      pointCount: node.pointCount,
+      vertexBuffer,
+      uniformBuffer,
+      bindGroup,
+    };
+    this.cache.set(cached);
   }
 
   private renderOnce(): void {
@@ -273,49 +299,112 @@ export class PointCloudRenderer {
     const proj = perspective(FOV_Y_RADIANS, aspect, NEAR, FAR);
     const view = this.camera.viewMatrix();
     const viewProj = multiply(proj, view);
+    const planes = frustumPlanes(viewProj);
 
-    const encoder = this.device.createCommandEncoder();
+    const selection = this.selectNodesForThisFrame(viewProj, planes, width, height);
+
+    if (this.loader) {
+      this.loader.setWanted(selection.wanted, (key) => this.cache.has(key));
+    }
+
+    this.drawFrame(viewProj, width, height, selection.toDraw);
+  }
+
+  /**
+   * M1-4: 画面空間誤差でノードに優先度を付け、視錐台の外を除外し、
+   * 点予算を超えたら優先度の低いノードから諦める。
+   */
+  private selectNodesForThisFrame(
+    viewProj: Mat4,
+    planes: Plane[],
+    width: number,
+    height: number,
+  ): { toDraw: CachedNode[]; wanted: { key: string; priority: number }[] } {
+    const candidates: { key: string; priority: number; pointCount: number }[] = [];
+
+    for (const node of this.hierarchy) {
+      if (!aabbIntersectsFrustum(planes, node.boundsMin, node.boundsMax)) continue;
+      const priority = screenSpaceError(
+        viewProj,
+        node.boundsMin,
+        node.boundsMax,
+        node.pointCount,
+        width,
+        height,
+      );
+      candidates.push({ key: node.key, priority, pointCount: node.pointCount });
+    }
+
+    candidates.sort((a, b) => b.priority - a.priority);
+
+    const toDraw: CachedNode[] = [];
+    const wanted: { key: string; priority: number }[] = [];
+    let budgetUsed = 0;
+
+    for (const candidate of candidates) {
+      if (budgetUsed + candidate.pointCount > this.pointBudget) continue;
+      budgetUsed += candidate.pointCount;
+
+      const cached = this.cache.get(candidate.key);
+      if (cached) {
+        toDraw.push(cached);
+      } else {
+        wanted.push({ key: candidate.key, priority: candidate.priority });
+      }
+    }
+
+    return { toDraw, wanted };
+  }
+
+  private drawFrame(viewProj: Mat4, width: number, height: number, nodes: CachedNode[]): void {
+    const device = this.device;
+    const context = this.context;
+    const pipeline = this.pipeline;
+    const depthView = this.depthView;
+    if (!device || !context || !pipeline || !depthView) return;
+
+    const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
-          view: this.context.getCurrentTexture().createView(),
+          view: context.getCurrentTexture().createView(),
           clearValue: { r: 0.05, g: 0.05, b: 0.08, a: 1 },
           loadOp: "clear",
           storeOp: "store",
         },
       ],
       depthStencilAttachment: {
-        view: this.depthView,
+        view: depthView,
         depthClearValue: 1.0,
         depthLoadOp: "clear",
         depthStoreOp: "store",
       },
     });
-    pass.setPipeline(this.pipeline);
+    pass.setPipeline(pipeline);
 
-    if (this.node) {
-      this.drawNode(this.node, viewProj, width, height, pass);
+    const uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
+    for (const node of nodes) {
+      const model = translation(node.origin[0], node.origin[1], node.origin[2]);
+      const mvp = multiply(viewProj, model);
+      uniformData.set(mvp, 0);
+      uniformData[16] = POINT_SIZE_PX;
+      uniformData[17] = width;
+      uniformData[18] = height;
+      uniformData[19] = 0;
+      device.queue.writeBuffer(
+        node.uniformBuffer,
+        0,
+        uniformData.buffer,
+        uniformData.byteOffset,
+        uniformData.byteLength,
+      );
+
+      pass.setBindGroup(0, node.bindGroup);
+      pass.setVertexBuffer(0, node.vertexBuffer);
+      pass.draw(6, node.pointCount);
     }
 
     pass.end();
-    this.device.queue.submit([encoder.finish()]);
-  }
-
-  private drawNode(node: LoadedNode, viewProj: Mat4, width: number, height: number, pass: GPURenderPassEncoder): void {
-    if (!this.device) return;
-    const model = translation(node.origin[0], node.origin[1], node.origin[2]);
-    const mvp = multiply(viewProj, model);
-
-    const uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
-    uniformData.set(mvp, 0);
-    uniformData[16] = POINT_SIZE_PX;
-    uniformData[17] = width;
-    uniformData[18] = height;
-    uniformData[19] = 0;
-    this.device.queue.writeBuffer(node.uniformBuffer, 0, uniformData.buffer, uniformData.byteOffset, uniformData.byteLength);
-
-    pass.setBindGroup(0, node.bindGroup);
-    pass.setVertexBuffer(0, node.vertexBuffer);
-    pass.draw(6, node.pointCount);
+    device.queue.submit([encoder.finish()]);
   }
 }

@@ -31,6 +31,17 @@ export function ViewerPanel() {
           >
             {viewer.status === "opening" ? "開いています…" : "開く"}
           </button>
+          <label className="ml-4 flex items-center gap-2 text-slate-300">
+            点予算
+            <input
+              type="number"
+              min={1000}
+              step={100_000}
+              value={viewer.pointBudget}
+              onChange={(e) => viewer.setPointBudget(Number(e.target.value) || 0)}
+              className="w-28 rounded border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-slate-100"
+            />
+          </label>
         </div>
 
         {viewer.error && (
@@ -46,7 +57,6 @@ export function ViewerPanel() {
                 points: {viewer.cloudInfo.pointCount.toLocaleString()} / nodes: {viewer.nodeCount}
               </p>
               <p>hasColor: {String(viewer.cloudInfo.hasColor)}</p>
-              <p className="text-slate-400">ルートノードのみ表示中（LODはM1-4で対応）</p>
             </>
           ) : (
             <p>まだファイルを開いていません</p>
