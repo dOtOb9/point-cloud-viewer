@@ -47,8 +47,11 @@
 
 import type { Vec3 } from "./up-axis";
 
-/** 既定はオフ。空と同じく「既定で強制しない」方針を踏襲する（トグルで有効化）。 */
-export const DEFAULT_GRID_ENABLED = false;
+/** 既定はオン。策定時はオフだったが、実機フィードバックを受けて空(sky.ts)と
+ *  合わせてオンに変更した。経緯はTaskSheets/M2-shading-and-ui.md M2-0cに記録して
+ *  ある。グリッドは薄い線を背景に重ねるだけで点群のコントラストをほとんど
+ *  損なわないため、そもそも既定オフにする理由が空ほど強くなかった。 */
+export const DEFAULT_GRID_ENABLED = true;
 
 const GRID_LINE_COLOR: Vec3 = [0.55, 0.58, 0.6];
 /** グリッド線の最大不透明度。背景に薄く重ねるだけにし、点群を邪魔しない。 */

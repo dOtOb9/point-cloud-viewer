@@ -5,7 +5,13 @@
 // タスクシートの要求を担保する純粋関数(niceGridCellSize)だけを担保する。
 
 import { describe, expect, it } from "vitest";
-import { floorMod, gridFadeDistance, niceGridCellSize } from "./ground-grid";
+import { DEFAULT_GRID_ENABLED, floorMod, gridFadeDistance, niceGridCellSize } from "./ground-grid";
+
+describe("DEFAULT_GRID_ENABLED", () => {
+  it("既定はオン: 実機フィードバックを受けてオフから変更した（TaskSheets/M2-shading-and-ui.md M2-0c参照）", () => {
+    expect(DEFAULT_GRID_ENABLED).toBe(true);
+  });
+});
 
 describe("niceGridCellSize", () => {
   it("シーンが大きいほど、間隔も大きくなる（固定値ではない）", () => {

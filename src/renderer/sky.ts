@@ -9,8 +9,10 @@
 //   このパイプラインが深度バッファに何も書き込まない/常に通すようにする
 //   （点群側のパイプラインはdepthCompare="less"のまま。空が先に描かれても、
 //   その後の点はすべて手前に来る）
-// - 既定で強制しない: 空 / 単色(暗) / 単色(明) を切り替えられるようにする。
-//   既定は単色(暗)のまま（点のコントラストを最大にするため）
+// - 切り替えられること: 空 / 単色(暗) / 単色(明) を選べるようにする。既定値は
+//   下の`DEFAULT_BACKGROUND_MODE`のコメント、および TaskSheets/M2-shading-and-ui.md
+//   M2-0cの「既定の決定」を参照（策定時の既定=単色(暗)から、実機フィードバックを
+//   受けて既定=空に変更した経緯を記録してある）
 // - 地平線の下も描く: 上方向(upAxis)との内積が負の側（地平線より下）にも
 //   別の色（ground）を割り当てる。空だけだと下を向いたときに背景が消えるため。
 //
@@ -70,9 +72,11 @@ import type { Vec3 } from "./up-axis";
 
 export type BackgroundMode = "sky" | "solid-dark" | "solid-light";
 
-/** 既定は単色(暗)のまま。点群ビューアが暗い背景を使うのは点のコントラストが
- *  最大になるため（M2-0c）。空は選べる状態にするだけで、既定にはしない。 */
-export const DEFAULT_BACKGROUND_MODE: BackgroundMode = "solid-dark";
+/** 既定は「空」。M2-0c策定時は「点のコントラストを落とすため既定にしない」
+ *  としていたが、実データを見て判断した結果、空を既定にした。経緯は
+ *  TaskSheets/M2-shading-and-ui.md M2-0cに記録している（方針転換ではなく、
+ *  当初「実データを見て決める」と書いた通りに決めたもの）。 */
+export const DEFAULT_BACKGROUND_MODE: BackgroundMode = "sky";
 
 export const SOLID_DARK_CLEAR: GPUColor = { r: 0.05, g: 0.05, b: 0.08, a: 1 };
 export const SOLID_LIGHT_CLEAR: GPUColor = { r: 0.92, g: 0.93, b: 0.95, a: 1 };
