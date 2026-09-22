@@ -137,12 +137,10 @@ f64 を GPU に送る案は採らない。WebGPU に f64 は無い。
 
 ### 受け入れ条件
 
-- [ ] `pcv://` でノードを要求すると上記形式のバイナリが返る
-      （`src-tauri/src/copc_state.rs` のテストで `open_copc_impl` → `read_node_bytes` の
-      経路が正しいバイト列を作ることは確認できた。ただし実際に webview から
-      `fetch("pcv://<key>")` を叩く経路（URIスキーム登録・CORS込み）は、GUIを目視できない
-      ため未検証。M1-3でUIから開く機能を足したときに `npm run tauri dev` のRust側stdoutログ
-      （`[pcv] served node ...`）で確認する）
+- [x] `pcv://` でノードを要求すると上記形式のバイナリが返る
+      （`src-tauri/src/copc_state.rs` のテストに加え、M1-3で実際に `npm run tauri dev` を
+      起動し webview から `fetch(convertFileSrc("0-0-0-0", "pcv"))` が動くことを確認した。
+      Rust側stdoutに `[pcv] served node 0-0-0-0: 20000 points, 400032 bytes` が出た）
 - [x] フロント側にパーサがあり、ヘッダの `magic` / `version` を検証して弾ける
       （`src/datasource/node-format.ts` の `parseNodeBuffer`。`npx tsx` で
       正常系・magic不正・version不正・バイト長不一致の4パターンを手動実行して確認した）
@@ -184,10 +182,22 @@ f64 を GPU に送る案は採らない。WebGPU に f64 は無い。
 
 ### 受け入れ条件
 
-- [ ] COPC を1つ開き、ルートノードの点が画面に出る
+- [x] COPC を1つ開き、ルートノードの点が画面に出る
+      （`npm run tauri dev` を実際に起動し、20万点の合成COPC(copc-writerで生成)を
+      一時的に自動オープンするコード〈確認後に削除〉で確認した。Rust側stdoutに
+      `[pcv] served node 0-0-0-0: 20000 points, 400032 bytes` と
+      `[frontend] [M1] opened ...: points=200000 nodes=41 rootPoints=20000` が出た）
 - [ ] カメラを回しても点群が歪まない・ジッタしない（M1-2 の相対座標が効いていることの確認）
+      未検証。マウス操作でのカメラ回転はGUIを目視できないと確認できない。
+      相対座標のロジック自体はpcv-core側のテスト
+      （`root_node_positions_are_small_relative_to_large_world_coordinates`）で
+      検証済みだが、「実際に画面でガタつかないか」は所有者の目視確認が必要
 - [ ] 点が円形に描かれ、手前の点が奥の点を隠す（深度が効いている）
+      フラグメントシェーダのdiscardと depth24plus の depthWriteEnabled/depthCompare は
+      実装したが、実際に円形に見えるか・奥行きが正しいかはGUIを目視できないため未検証
 - [ ] ウィンドウをリサイズしてもアスペクト比が崩れない
+      resize()でdepthテクスチャとcanvas幅高を再生成する実装はしたが、
+      実際の見た目はGUIを目視できないため未検証
 
 ### 自分で確かめる手順
 
