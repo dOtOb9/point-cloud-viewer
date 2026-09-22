@@ -8,6 +8,8 @@ const MIN_DISTANCE = 0.01;
 const MAX_DISTANCE = 1e9; // COPCの世界座標は大きいことがあるので、上限は緩くしておく
 const MIN_PITCH = -Math.PI / 2 + 0.01;
 const MAX_PITCH = Math.PI / 2 - 0.01;
+/** パン速度下限（`minPanDistance`）を、シーンBBOXの対角線の何割にするか。 */
+const MIN_PAN_DISTANCE_RATIO = 0.0005;
 
 export class OrbitCamera {
   /** 注視点。ワールド座標（f64のまま持つ。COPCの座標は大きいことがある）。 */
@@ -18,9 +20,26 @@ export class OrbitCamera {
   /** 仰角（ラジアン）。 */
   pitch = 0.3;
 
+  /**
+   * パン速度の下限を決めるための基準距離（シーン全体のスケール由来）。
+   * M1-5: パン速度は`distance`に比例させているため、ズームで寄って`distance`が
+   * 小さくなると、そのままではパンがほとんど動かなくなってしまう。シーン全体の
+   * 大きさに応じた下限を設けることで、寄った状態でも実用的な速度を保つ。
+   * `setSceneScale()`で設定する。未設定（0）なら従来どおり`distance`をそのまま使う。
+   */
+  private minPanDistance = 0;
+
   constructor(target: [number, number, number], distance: number) {
     this.target = target;
     this.distance = distance;
+  }
+
+  /**
+   * 点群全体のBBOX対角線の長さなど、シーンのスケールを教える。
+   * パン速度の下限（`minPanDistance`）をこれに比例させる。
+   */
+  setSceneScale(diagonal: number): void {
+    this.minPanDistance = diagonal * MIN_PAN_DISTANCE_RATIO;
   }
 
   /** カメラのワールド座標での位置。 */
@@ -42,7 +61,29 @@ export class OrbitCamera {
     this.pitch = clamp(this.pitch + dPitch, MIN_PITCH, MAX_PITCH);
   }
 
-  zoom(factor: number): void {
+  /**
+   * ズーム。`towardPoint`を渡すと、targetをその点へ向けて寄せながら距離を縮める
+   * （カーソル位置に向かってズームする。M1-5。Potree/CloudCompare/Blenderと同じ挙動）。
+   *
+   * `towardPoint`を省略した場合（カーソルの下にhierarchyのノードが無い＝空を指している
+   * 場合のフォールバック）は、従来どおり現在のtargetへ向かって寄るだけになる。
+   *
+   * targetをtowardPointへ寄せる割合は、distanceを縮める割合（`1 - factor`）と揃えている。
+   * こうすると、towardPointがちょうどtargetと一致するとき（＝画面中心にカーソルがある
+   * とき）は移動量0になり、旧来の「targetに向かって寄る」動きにそのまま一致する。
+   * また、寄るたびにtargetが実際の対象へ近づいていくので、`distance`が0に漸近するのと
+   * 連動してtargetとの距離も縮まり続け、「近づいているのに対象に到達しない」という
+   * 旧実装の不具合（targetが固定だったため）が起きない。
+   */
+  zoom(factor: number, towardPoint?: readonly [number, number, number]): void {
+    if (towardPoint) {
+      const shrink = 1 - factor;
+      this.target = [
+        this.target[0] + (towardPoint[0] - this.target[0]) * shrink,
+        this.target[1] + (towardPoint[1] - this.target[1]) * shrink,
+        this.target[2] + (towardPoint[2] - this.target[2]) * shrink,
+      ];
+    }
     this.distance = clamp(this.distance * factor, MIN_DISTANCE, MAX_DISTANCE);
   }
 
@@ -56,7 +97,9 @@ export class OrbitCamera {
 
     // 距離に比例させることで、寄っているときは小さく、引いているときは大きく動く
     // （マウスの見た目の移動量とパン量が一致するようにするための簡易な近似）。
-    const speed = this.distance * 0.0015;
+    // ただし寄りすぎて`distance`がシーン全体からすると無視できるくらい小さくなると、
+    // このままではパンがほぼ止まって見えるので、シーン規模由来の下限で床を張る（M1-5）。
+    const speed = Math.max(this.distance, this.minPanDistance) * 0.0015;
     const move: [number, number, number] = [
       -right[0] * dxScreen * speed + up[0] * dyScreen * speed,
       -right[1] * dxScreen * speed + up[1] * dyScreen * speed,
@@ -86,11 +129,28 @@ function normalize(v: readonly [number, number, number]): [number, number, numbe
 const ROTATE_SPEED = 0.005;
 const ZOOM_STEP = 1.1;
 
+export interface OrbitControlsOptions {
+  /**
+   * ホイールでズームする直前に呼ばれる。カーソルの下（キャンバス上のピクセル座標、
+   * 左上原点）にあるワールド座標の点を返すと、`OrbitCamera.zoom()`がその点へ向かって
+   * 寄る（M1-5）。判定できない場合（hierarchyがまだ無い、カーソルが空を指している等）は
+   * nullを返せば、従来どおり現在のtargetへ向かって寄るだけになる。
+   *
+   * 正確なピッキングである必要はない。octreeのノードAABBへの粗いレイキャストで十分
+   * （M1-point-rendering.md M1-5）。
+   */
+  pickPointUnderCursor?: (screenX: number, screenY: number) => [number, number, number] | null;
+}
+
 /**
  * canvasにポインタ/ホイールイベントを張り、OrbitCameraを操作できるようにする。
  * 返り値のdispose()でイベントを外せる。
  */
-export function attachOrbitControls(canvas: HTMLCanvasElement, camera: OrbitCamera): () => void {
+export function attachOrbitControls(
+  canvas: HTMLCanvasElement,
+  camera: OrbitCamera,
+  options: OrbitControlsOptions = {},
+): () => void {
   let dragButton: number | null = null;
   let lastX = 0;
   let lastY = 0;
@@ -126,7 +186,13 @@ export function attachOrbitControls(canvas: HTMLCanvasElement, camera: OrbitCame
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
     const factor = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-    camera.zoom(factor);
+
+    const rect = canvas.getBoundingClientRect();
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    const towardPoint = options.pickPointUnderCursor?.(screenX, screenY) ?? undefined;
+
+    camera.zoom(factor, towardPoint);
   };
 
   const onContextMenu = (e: MouseEvent) => {

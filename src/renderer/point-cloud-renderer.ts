@@ -11,6 +11,7 @@ import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { multiply, perspective, translation, type Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
+import { closestHierarchyHit, screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 
@@ -109,6 +110,9 @@ export class PointCloudRenderer {
   private hierarchy: HierarchyNodeInfo[] = [];
   private cache: NodeCache;
   private loader: NodeLoader | null = null;
+  /** 直近フレームのviewProj。ホイールイベント（フレームの外で起きる）でカーソル位置の
+   *  レイを作るために、フレームをまたいで持っておく（M1-5）。 */
+  private lastViewProj: Mat4 | null = null;
 
   private pointBudget = DEFAULT_POINT_BUDGET;
   private rafHandle = 0;
@@ -180,7 +184,22 @@ export class PointCloudRenderer {
     });
 
     this.resize(this.canvas.clientWidth || this.canvas.width, this.canvas.clientHeight || this.canvas.height);
-    this.detachControls = attachOrbitControls(this.canvas, this.camera);
+    this.detachControls = attachOrbitControls(this.canvas, this.camera, {
+      pickPointUnderCursor: (screenX, screenY) => this.pickPointUnderCursor(screenX, screenY),
+    });
+  }
+
+  /**
+   * カーソル位置（キャンバスのピクセル座標）の下にhierarchyのノードがあれば、
+   * そのAABBとの最も近い交点を返す（M1-5）。まだ1フレームも描画していない、
+   * またはカーソルが空を指している場合はnull（呼び出し側がtargetへ向かって寄る
+   * フォールバックを使う）。
+   */
+  private pickPointUnderCursor(screenX: number, screenY: number): [number, number, number] | null {
+    if (!this.lastViewProj || this.hierarchy.length === 0) return null;
+    const ray = screenPointToWorldRay(this.lastViewProj, screenX, screenY, this.canvas.width, this.canvas.height);
+    if (!ray) return null;
+    return closestHierarchyHit(ray, this.hierarchy);
   }
 
   setDataSource(dataSource: DataSource): void {
@@ -214,6 +233,7 @@ export class PointCloudRenderer {
       const diagonal = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 100;
       this.camera.target = center;
       this.camera.distance = diagonal;
+      this.camera.setSceneScale(diagonal);
     }
   }
 
@@ -328,6 +348,7 @@ export class PointCloudRenderer {
     const proj = perspective(FOV_Y_RADIANS, aspect, NEAR, FAR);
     const view = this.camera.viewMatrix();
     const viewProj = multiply(proj, view);
+    this.lastViewProj = viewProj;
     const planes = frustumPlanes(viewProj);
 
     const selection = this.selectNodesForThisFrame(viewProj, planes, width, height);
