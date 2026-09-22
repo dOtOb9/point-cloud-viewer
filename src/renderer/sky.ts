@@ -19,6 +19,24 @@
 // 滑らかに変わる面にしか見えないこと。対策として、(1) groundColorをhorizonColorと
 // 明度・色相ともにはっきり分け、(2) t=0の近傍に細い地平線（horizonLineColor）を
 // 明示的に描く。地面のグリッドは別ファイル(ground-grid.ts)で扱う。
+//
+// 修正（実機報告: 空にすると地面しか見えない）: 当初はワールド空間のviewProjの
+// 逆行列(invViewProj)をそのままuniformに積んでf32でGPUに渡し、フラグメント
+// シェーダで`invViewProj * ndc`からレイ方向を復元していた。これは`mat4.ts`冒頭の
+// 規約（ワールド座標そのものを行列に持たせない）に反していた: NEAR(0.01)/FAR(1e7)の
+// ダイナミックレンジにautzenのような大きなワールド座標（X約637,000）が重なると、
+// 逆行列の成分は1e-9〜1e8桁まで開く。f32(有効桁約7桁)ではこれを表現しきれず、
+// 変換後のwが桁落ちして0になり、`xyz / w`がInf、`normalize`がNaNになっていた
+// （`scripts/diag-sky-ray.ts`で再現・実測済み）。WGSLは`NaN >= 0.0`がfalseなので
+// 全ピクセルがelse分岐（groundColor）に落ち、「空にすると地面しか見えない」形で
+// 現れていた。
+//
+// 対策: 行列(invViewProj)もeyeもGPUに渡さない。JS側(f64)で`raycast.ts`の
+// `ndcPointToWorldRay`を使い、全画面三角形の3頂点それぞれのレイ方向を求めておく
+// （方向は正規化済みで大きさ~1なので、f32にキャストしても精度の問題が起きない）。
+// 頂点シェーダは`@builtin(vertex_index)`でこの3方向から1つを選んで
+// `@location`で渡すだけ。線形補間したものをフラグメントシェーダで`normalize`
+// すれば、各ピクセルのレイ方向になる（詳細はdraw()のコメント参照）。
 
 import type { Vec3 } from "./up-axis";
 
@@ -54,8 +72,11 @@ const SKY_COLORS: SkyColors = {
 
 const SKY_SHADER_SRC = /* wgsl */ `
 struct SkyUniforms {
-  invViewProj: mat4x4<f32>,
-  eye: vec4<f32>,          // xyzだけ使う
+  // 全画面三角形の3頂点それぞれのレイ方向（JS側でndcPointToWorldRayを使い、f64で
+  // 計算済み。ワールド空間の行列やeyeはここには無い。draw()のコメント参照）。
+  dirs0: vec4<f32>,        // xyzだけ使う
+  dirs1: vec4<f32>,
+  dirs2: vec4<f32>,
   upAxis: vec4<f32>,       // xyzだけ使う。M2-0b: 上方向はここでも1箇所（このuniform）を経由する
   zenithColor: vec4<f32>,  // rgbだけ使う
   horizonColor: vec4<f32>,
@@ -66,7 +87,10 @@ struct SkyUniforms {
 
 struct VertexOut {
   @builtin(position) clipPosition: vec4<f32>,
-  @location(0) ndc: vec2<f32>,
+  // 正規化前のレイ方向。線形補間してからフラグメントシェーダでnormalizeする
+  // （正規化してから補間すると、頂点ごとに違う縮尺で割ることになり、補間結果が
+  // 本来の方向からずれるため。正規化は必ず補間の後）。
+  @location(0) dir: vec3<f32>,
 };
 
 @vertex
@@ -77,20 +101,17 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
     vec2<f32>(3.0, -1.0),
     vec2<f32>(-1.0, 3.0),
   );
+  var dirs = array<vec3<f32>, 3>(u.dirs0.xyz, u.dirs1.xyz, u.dirs2.xyz);
   var out: VertexOut;
-  let p = positions[vertexIndex];
-  out.clipPosition = vec4<f32>(p, 0.0, 1.0);
-  out.ndc = p;
+  out.clipPosition = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  out.dir = dirs[vertexIndex];
   return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-  // 遠クリップ面(NDC z=1、WebGPUの深度レンジは0..1)上の点をワールド座標へ戻し、
-  // カメラ位置からその点への方向を「このピクセルが見ている方向」とする。
-  let farPoint4 = u.invViewProj * vec4<f32>(in.ndc, 1.0, 1.0);
-  let farPoint = farPoint4.xyz / farPoint4.w;
-  let dir = normalize(farPoint - u.eye.xyz);
+  // このピクセルが見ている方向（頂点シェーダで渡した3方向を線形補間したもの）。
+  let dir = normalize(in.dir);
 
   let up = normalize(u.upAxis.xyz);
   let t = dot(dir, up); // 1: 天頂, 0: 地平線, -1: 真下
@@ -117,7 +138,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 }
 `;
 
-const SKY_UNIFORM_FLOATS = 16 /* invViewProj */ + 4 /* eye */ + 4 /* upAxis */ + 4 * 4 /* colors (zenith/horizon/ground/horizonLine) */;
+const SKY_UNIFORM_FLOATS =
+  4 * 3 /* dirs0/dirs1/dirs2 */ + 4 /* upAxis */ + 4 * 4 /* colors (zenith/horizon/ground/horizonLine) */;
 const SKY_UNIFORM_BYTES = SKY_UNIFORM_FLOATS * 4;
 
 /**
@@ -162,17 +184,27 @@ export class SkyBackground {
     });
   }
 
-  /** 同じレンダーパス内で、点群を描く前に呼ぶこと。 */
-  draw(device: GPUDevice, pass: GPURenderPassEncoder, invViewProj: number[], eye: Vec3, upAxis: Vec3): void {
+  /**
+   * 同じレンダーパス内で、点群を描く前に呼ぶこと。
+   *
+   * `vertexDirs`は全画面三角形の3頂点（NDC座標 (-1,-1), (3,-1), (-1,3)。
+   * `vs_main`のpositionsと同じ並び）それぞれのレイ方向。呼び出し側
+   * （point-cloud-renderer.ts）が`raycast.ts`の`ndcPointToWorldRay`をその3点で
+   * 呼んで、f64のまま求める。ここではf32にキャストするだけ（方向は正規化済みで
+   * 大きさ~1なので、桁落ちは起きない。invViewProjやeyeをここで扱わないのが
+   * ポイント。ファイル冒頭のコメント参照）。
+   */
+  draw(device: GPUDevice, pass: GPURenderPassEncoder, vertexDirs: readonly [Vec3, Vec3, Vec3], upAxis: Vec3): void {
     if (!this.pipeline || !this.uniformBuffer || !this.bindGroup) return;
 
-    this.uniformData.set(invViewProj, 0);
-    this.uniformData.set([eye[0], eye[1], eye[2], 0], 16);
-    this.uniformData.set([upAxis[0], upAxis[1], upAxis[2], 0], 20);
-    this.uniformData.set([...SKY_COLORS.zenith, 0], 24);
-    this.uniformData.set([...SKY_COLORS.horizon, 0], 28);
-    this.uniformData.set([...SKY_COLORS.ground, 0], 32);
-    this.uniformData.set([...SKY_COLORS.horizonLine, 0], 36);
+    this.uniformData.set([...vertexDirs[0], 0], 0);
+    this.uniformData.set([...vertexDirs[1], 0], 4);
+    this.uniformData.set([...vertexDirs[2], 0], 8);
+    this.uniformData.set([upAxis[0], upAxis[1], upAxis[2], 0], 12);
+    this.uniformData.set([...SKY_COLORS.zenith, 0], 16);
+    this.uniformData.set([...SKY_COLORS.horizon, 0], 20);
+    this.uniformData.set([...SKY_COLORS.ground, 0], 24);
+    this.uniformData.set([...SKY_COLORS.horizonLine, 0], 28);
     device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData.buffer, this.uniformData.byteOffset, this.uniformData.byteLength);
 
     pass.setPipeline(this.pipeline);

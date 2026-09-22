@@ -8,15 +8,15 @@
 import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
 import { NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
 import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
-import { invert, multiply, perspective, translation, type Mat4 } from "./mat4";
+import { multiply, perspective, translation, type Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
-import { screenPointToWorldRay } from "./raycast";
+import { ndcPointToWorldRay, screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 import { clearColorForMode, DEFAULT_BACKGROUND_MODE, SkyBackground, type BackgroundMode } from "./sky";
-import { DEFAULT_GRID_ENABLED, gridFadeDistance, GroundGrid, niceGridCellSize } from "./ground-grid";
-import { horizontalBasis } from "./up-axis";
+import { DEFAULT_GRID_ENABLED, floorMod, gridFadeDistance, GroundGrid, niceGridCellSize } from "./ground-grid";
+import { horizontalBasis, type Vec3 } from "./up-axis";
 
 const DEFAULT_POINT_BUDGET = 3_000_000;
 /** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
@@ -536,28 +536,50 @@ export class PointCloudRenderer {
     // (depthWriteEnabled=false, depthCompare="always")ので、この後に描く点群
     // (depthCompare="less")は常に手前に残る。
     if (this.backgroundMode === "sky" || this.gridEnabled) {
-      const invViewProj = invert(viewProj);
       const upAxis = this.camera.getUpAxis();
       const eye = this.camera.eye();
 
-      if (invViewProj) {
+      // 実機不具合の修正（TaskSheets/M2-shading-and-ui.md M2-0c、
+      // scripts/diag-sky-ray.ts参照）: ワールド空間のinvViewProjをそのままf32で
+      // GPUに渡すと、NEAR/FAR(0.01/1e7)のダイナミックレンジとautzenのような
+      // 大きなワールド座標が重なってwが桁落ちし、全ピクセルNaNになっていた。
+      // 対策は、GPUに行列を渡すのをやめ、JS側(f64)でレイ方向だけを計算して渡すこと。
+      // 全画面三角形の3頂点(sky.ts/ground-grid.tsのvs_mainのpositionsと同じNDC座標。
+      // -1..1の外側にも一直線に延びる)それぞれのレイ方向を`ndcPointToWorldRay`
+      // (raycast.ts。カーソルのズームで実際に使われていて正しく動く実装と同じもの)
+      // で求める。方向は正規化済みで大きさ~1なので、f32にキャストしても精度は
+      // 落ちない。
+      const rayA = ndcPointToWorldRay(viewProj, -1, -1);
+      const rayB = ndcPointToWorldRay(viewProj, 3, -1);
+      const rayC = ndcPointToWorldRay(viewProj, -1, 3);
+
+      // viewProjが特異なとき（通常は起きないが、初期化直後などの防御）はどちらも描かない。
+      if (rayA && rayB && rayC) {
+        const vertexDirs: readonly [Vec3, Vec3, Vec3] = [rayA.direction, rayB.direction, rayC.direction];
+
         if (this.backgroundMode === "sky") {
-          this.sky.draw(device, pass, invViewProj, eye, upAxis);
+          this.sky.draw(device, pass, vertexDirs, upAxis);
         }
         if (this.gridEnabled) {
           // グリッドは空を描いた後（or 単色クリアの後）に、半透明で重ねる。
+          // ここから先もすべてカメラ相対（ワールド座標の絶対値をf32で渡さない。
+          // ground-grid.tsのdraw()コメント参照）。
           const { right, forward } = horizontalBasis(upAxis);
+          const eyeHeight = eye[0] * upAxis[0] + eye[1] * upAxis[1] + eye[2] * upAxis[2];
+          const eyeRight = eye[0] * right[0] + eye[1] * right[1] + eye[2] * right[2];
+          const eyeForward = eye[0] * forward[0] + eye[1] * forward[1] + eye[2] * forward[2];
           this.grid.draw(
             device,
             pass,
-            invViewProj,
-            eye,
+            vertexDirs,
             upAxis,
             right,
             forward,
-            this.gridGroundHeight,
+            this.gridGroundHeight - eyeHeight,
             this.gridCellSize,
             this.gridFadeDistance,
+            floorMod(eyeRight, this.gridCellSize),
+            floorMod(eyeForward, this.gridCellSize),
           );
         }
       }
