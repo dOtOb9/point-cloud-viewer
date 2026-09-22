@@ -2,6 +2,9 @@
 name = "pcv-core"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 description = "COPC読込・octree走査・解析アルゴリズム。tauri に依存しない（wasm ターゲットでビルドできることが条件）"
 
 # 依存を追加するときは、ここに tauri / tauri-* を入れないこと。

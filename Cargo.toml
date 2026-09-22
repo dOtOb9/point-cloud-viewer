@@ -2,6 +2,12 @@
 resolver = "2"
 members = ["crates/pcv-core", "src-tauri"]
 
+# 全クレート共通のメタデータ。各メンバーは license.workspace = true で継承する。
+[workspace.package]
+license = "MIT OR Apache-2.0"
+authors = ["dOtOb9"]
+repository = "https://github.com/dOtOb9/point-cloud-viewer"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1
