@@ -122,7 +122,10 @@ DataSource (interface)
 1. **WebView2 で WebGPU が使えるか未確定。** M0 で実測して確定させる。使えない場合は WebGL2 に
    確定させて進む。Potree は WebGL2 のみで数十億点を捌いているため、これは死因にならない
    （compute shader による GPU カリングを諦め、CPU カリングにする）。
+   → M0-2 で実測し WebGPU 採用を確定。[ADR-0002](./ADR-0002-rendering-api.md) 参照。
 2. **IPC 帯域。** 最初からカスタムプロトコルで実装し、スループットを計測するベンチを CI に入れる。
+   → M0-3 で実測。`pcv://` は `invoke` の約8〜60倍のスループットが出ることを確認し、
+   本ADRの判断を裏付けた。詳細は [M0-feasibility.md](./M0-feasibility.md) の M0-3 結果節。
 
 ## 却下した案
 
