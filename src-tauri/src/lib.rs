@@ -52,31 +52,50 @@ fn default_bench_data_path(filename: String) -> Option<String> {
 /// `encodeURIComponent` で1セグメントとしてエンコードするため、パスに `/` を含めず
 /// 数値やダッシュ区切りの文字列だけを渡す（`/node/<key>` のような複数セグメントにしない。
 /// M1-point-rendering.md 参照）。
+///
+/// M2: 非同期版（`register_asynchronous_uri_scheme_protocol`）を使う。ノード読み出し
+/// （ディスクI/O + LAZ伸長）は`tauri::async_runtime::spawn_blocking`でブロッキング用
+/// スレッドプールに逃がし、Rustのメインスレッドを塞がない。これにより並行リクエストが
+/// 直列化しなくなる（`CopcState`側のロック粒度と`CopcFile`の`&mut self`制約への対処は
+/// `copc_state.rs`冒頭のコメントと`CopcPool`を参照。計測結果は
+/// `TaskSheets/ADR-0007-pcv-protocol-concurrency.md`）。
+///
+/// ベンチ用ダミーデータ（`/<size>`）は`vec![0u8; size]`を確保するだけでCPUを
+/// 使わないため、スレッドを分けずその場で応答する。
 fn handle_pcv_protocol(
     ctx: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
-) -> tauri::http::Response<Vec<u8>> {
+    responder: tauri::UriSchemeResponder,
+) {
     let path = request.uri().path();
     let segment = path.strip_prefix('/').unwrap_or(path);
 
     if let Ok(size) = segment.parse::<usize>() {
-        return octet_stream_response(vec![0u8; size]);
+        responder.respond(octet_stream_response(vec![0u8; size]));
+        return;
     }
 
-    if let Ok(key) = segment.parse::<pcv_core::NodeKey>() {
-        let state = ctx.app_handle().state::<CopcState>();
-        return match copc_state::read_node_bytes(&state, key) {
+    let Ok(key) = segment.parse::<pcv_core::NodeKey>() else {
+        responder.respond(bad_request_response(&format!(
+            "unknown pcv:// path (expected /<size> or /<level>-<x>-<y>-<z>): {segment}"
+        )));
+        return;
+    };
+
+    // `ctx`はこのハンドラ呼び出しの間しか生きないので、spawn_blockingへ渡すために
+    // `AppHandle`を複製する（`AppHandle`は内部でArcを持つ薄いハンドルで、複製は安い）。
+    let app_handle = ctx.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<CopcState>();
+        let response = match copc_state::read_node_bytes(&state, key) {
             Ok(bytes) => octet_stream_response(bytes),
             Err(message) => {
                 eprintln!("[pcv] failed to serve node {key}: {message}");
                 bad_request_response(&message)
             }
         };
-    }
-
-    bad_request_response(&format!(
-        "unknown pcv:// path (expected /<size> or /<level>-<x>-<y>-<z>): {segment}"
-    ))
+        responder.respond(response);
+    });
 }
 
 /// 開発時は devUrl (http://localhost:1420) からの fetch になり、pcv:// とは
@@ -108,7 +127,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(CopcState::default())
-        .register_uri_scheme_protocol("pcv", handle_pcv_protocol)
+        .register_asynchronous_uri_scheme_protocol("pcv", handle_pcv_protocol)
         .invoke_handler(tauri::generate_handler![
             report_diagnostic,
             bench_invoke,

@@ -4,16 +4,114 @@
 //! `invoke` で扱う。ノードの点データそのものは `pcv://` 経由で流す（`lib.rs` の
 //! `handle_pcv_protocol` 参照）。重い処理（COPCのパース・octree走査）は
 //! `pcv-core` に任せ、ここはTauriとの橋渡しだけをする。
+//!
+//! ## M2: `pcv://` の並行リクエストを直列化させない
+//!
+//! 経緯は `TaskSheets/ADR-0007-pcv-protocol-concurrency.md` を参照。要点だけここに残す。
+//!
+//! `pcv://` のハンドラを非同期版（`register_asynchronous_uri_scheme_protocol`）に
+//! 切り替え、ノード読み出しをブロッキング用スレッドプールに逃がしても、
+//! **`CopcFile` を1個だけ`Mutex`で共有したままでは直列化が解消しない**。
+//! 理由は2つ絡み合っている。
+//!
+//! 1. `CopcFile::read_node` は `&mut self` を取る（`copc-reader`が内部でシーク
+//!    位置を進めながら読むため、共有参照では呼べない）。1個のMutexで包むと、
+//!    結局「1本のreaderをスレッド間で奪い合う」形になり、ロックを読み出しの
+//!    間じゅう持ち続ける実装をつい書いてしまいやすい。
+//! 2. 仮にロック区間を最小化できたとしても、`CopcFile`が1個しか無い以上、
+//!    ある瞬間にディスクI/O・LAZ伸長を実行できるのは1スレッドだけである。
+//!
+//! 採った解決策: **同じファイルを独立に`POOL_SIZE`回開き、専用のFile
+//! ハンドルを持つ`CopcFile`をプールする**（`CopcPool`）。読み出しは
+//! プールから1本借りて使い、終わったら返す。プールが空なら次に返却される
+//! まで待つ（`Condvar`）。これにより最大`POOL_SIZE`本まで、ディスクI/Oと
+//! LAZ伸長が本当に並行して走る。`CopcState`のMutexは「どのプールを使うか」
+//! という`Arc`のクローンを取り出す間だけロックし、実際の読み出しはロックの
+//! 外で行う（`read_node_bytes`参照）。
+//!
+//! 検討して採らなかった案は`CopcPool`のドキュメントコメントに書いた。
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 
 use pcv_core::{CloudInfo, CopcFile, HierarchyNode, NodeKey};
 use tauri::State;
 
+/// 同時に読み出せるノード数の上限。`CopcFile`をこの数だけ独立に開いてプールする
+/// （各`CopcFile`が自分専用の`File`ハンドルとhierarchyのコピーを持つ）。
+///
+/// 大きくすればするほど並行度は上がるが、hierarchyのコピー分だけメモリを食う
+/// （`sofi.copc.laz`で13,163ノード、1ノードあたり数十バイトなので1コピーで
+/// 高々数百KB。`POOL_SIZE`個でもMB単位に収まる）。8はこの開発機の論理コア数
+/// （20）よりだいぶ少ないが、`pcv://`の1リクエストがCPU律速（LAZ伸長）なので、
+/// コア数まで増やしても実際のボトルネックはディスクI/Oとの兼ね合いになる。
+/// 実測で妥当性を確認した数値なので、変えるときは
+/// `ADR-0007-pcv-protocol-concurrency.md`の計測方法で測り直すこと。
+const POOL_SIZE: usize = 8;
+
+/// 独立した`CopcFile`をプールし、読み出しリクエストに貸し出す。
+///
+/// 検討して採らなかった案:
+/// - **`Arc<Mutex<CopcFile>>`のまま** — 今回直したかった問題そのもの。
+///   ロックを読み出し中ずっと持たなければ`&mut self`の要求を満たせず、
+///   結局1本のreaderの奪い合いになる。
+/// - **`RwLock<CopcFile>`** — `read_node`が`&mut self`を要求するので
+///   共有参照(`read()`)では呼べない。書き込みロック(`write()`)を使うなら
+///   `Mutex`と変わらない。
+/// - **hierarchyの走査だけ`pcv-core`に新APIを足し、`CopcReader`をリクエスト
+///   の都度使い捨てで開く** — ノードを読むたびにファイルを開き直す
+///   ことになり、毎回ヘッダとVLRを読み直すコストを払う。プールで使い回す
+///   ほうが単純かつ安い（hierarchy再構築のコストは`ADR-0003`実測で
+///   1〜16ms。プール初期化時に`POOL_SIZE`回払うだけで済み、リクエストの
+///   たびには払わない）。
+struct CopcPool {
+    idle: Mutex<Vec<CopcFile>>,
+    available: Condvar,
+}
+
+impl CopcPool {
+    fn open(path: &Path) -> Result<Self, String> {
+        let mut idle = Vec::with_capacity(POOL_SIZE);
+        for _ in 0..POOL_SIZE {
+            idle.push(CopcFile::open(path).map_err(|e| e.to_string())?);
+        }
+        Ok(Self {
+            idle: Mutex::new(idle),
+            available: Condvar::new(),
+        })
+    }
+
+    /// プールから1本借りる。空なら、誰かが`checkin`するまでこのスレッドを
+    /// ブロックする。呼び出し元は常に`spawn_blocking`の中（ブロッキング用
+    /// スレッドプール上）なので、ここでブロックしてもUIスレッドは止まらない。
+    fn checkout(&self) -> CopcFile {
+        let mut idle = self.idle.lock().expect("CopcPool mutex poisoned");
+        loop {
+            if let Some(file) = idle.pop() {
+                return file;
+            }
+            idle = self
+                .available
+                .wait(idle)
+                .expect("CopcPool condvar poisoned");
+        }
+    }
+
+    fn checkin(&self, file: CopcFile) {
+        self.idle
+            .lock()
+            .expect("CopcPool mutex poisoned")
+            .push(file);
+        self.available.notify_one();
+    }
+}
+
 /// 現在開いているCOPCファイル。同時に1つしか開けない前提（M1時点ではタブ等は無い）。
+/// 中身は`CopcPool`（上記参照）。`Arc`にしているのは、`read_node_bytes`が
+/// `CopcState`のロックをプールの参照を取り出す一瞬だけに留め、実際の読み出しは
+/// ロックの外で行うため（`Arc::clone`してすぐロックを手放す）。
 #[derive(Default)]
-pub struct CopcState(pub Mutex<Option<CopcFile>>);
+pub struct CopcState(Mutex<Option<Arc<CopcPool>>>);
 
 /// `open_copc` がフロントに返す、点群全体のサマリ。`CloudInfo`をそのままJSONにできる
 /// 形へ詰め替える（pcv-coreはserdeに依存しないので、DTOはここで定義する）。
@@ -80,34 +178,50 @@ pub fn open_copc(path: String, state: State<CopcState>) -> Result<OpenCopcRespon
 /// `open_copc`の中身。`tauri::State`を経由しない素の関数にしておくと、
 /// テストで実際のTauriランタイムを起動せずに検証できる。
 fn open_copc_impl(path: &str, state: &CopcState) -> Result<OpenCopcResponse, String> {
-    let file = CopcFile::open(Path::new(path)).map_err(|e| e.to_string())?;
+    let pool = CopcPool::open(Path::new(path))?;
 
+    // info/hierarchyはプール内のどの`CopcFile`でも同じ内容なので、1本借りて読む。
+    let file = pool.checkout();
     let info = CloudInfoDto::from(file.info());
     let nodes: Vec<HierarchyNodeDto> = file
         .hierarchy()
         .nodes()
         .map(HierarchyNodeDto::from)
         .collect();
+    pool.checkin(file);
 
     println!(
-        "[pcv] opened {path}: {} points, {} nodes",
+        "[pcv] opened {path}: {} points, {} nodes (reader pool size {POOL_SIZE})",
         info.point_count,
         nodes.len()
     );
 
-    *state.0.lock().expect("CopcState mutex poisoned") = Some(file);
+    *state.0.lock().expect("CopcState mutex poisoned") = Some(Arc::new(pool));
 
     Ok(OpenCopcResponse { info, nodes })
 }
 
 /// `handle_pcv_protocol` から呼ばれる、実際のノード読み出し。
-/// ロック取得とエラーメッセージ整形をここに集約する。
+///
+/// `CopcState`のロックは`Arc<CopcPool>`を複製する一瞬だけ持ち、すぐ手放す。
+/// 実際のディスクI/O・LAZ伸長（`pool.checkout()`で借りた`CopcFile`に対する
+/// `read_node`）はロックの外で行うため、複数リクエストが同時にここへ来ても
+/// `CopcState`のロックでは直列化しない（直列化の可能性が残るのは`CopcPool`
+/// 自体のプールサイズだけ。`POOL_SIZE`のドキュメント参照）。
 pub fn read_node_bytes(state: &CopcState, key: NodeKey) -> Result<Vec<u8>, String> {
-    let mut guard = state.0.lock().expect("CopcState mutex poisoned");
-    let file = guard
-        .as_mut()
-        .ok_or_else(|| "no COPC file is open (call open_copc first)".to_string())?;
-    let buf = file.read_node(key).map_err(|e| e.to_string())?;
+    let pool = {
+        let guard = state.0.lock().expect("CopcState mutex poisoned");
+        guard
+            .as_ref()
+            .ok_or_else(|| "no COPC file is open (call open_copc first)".to_string())?
+            .clone()
+    };
+
+    let mut file = pool.checkout();
+    let result = file.read_node(key);
+    pool.checkin(file);
+
+    let buf = result.map_err(|e| e.to_string())?;
     println!(
         "[pcv] served node {key}: {} points, {} bytes",
         buf.point_count,
