@@ -6,4 +6,17 @@ description = "COPC読込・octree走査・解析アルゴリズム。tauri に�
 
 # 依存を追加するときは、ここに tauri / tauri-* を入れないこと。
 # ADR-0001 / ARCHITECTURE.md の規約: pcv-core は wasm32-unknown-unknown でビルドできる状態を維持する。
+#
+# COPC クレートは copc-core / copc-reader を採用（ADR-0003）。どちらも wasm32-unknown-unknown で
+# ビルドできることを実測して選定した。http / parallel フィーチャは有効にしない
+# (ureq / rayon が wasm 側の前提を複雑にするため。Web版のRange読み込みはM2以降で別途検討する)。
 [dependencies]
+copc-core = "0.9.0"
+copc-reader = "0.9.0"
+thiserror = "2"
+
+[dev-dependencies]
+# テスト用に極小のCOPCファイルをその場で生成するためだけに使う（M1-point-rendering.md の
+# 「テストデータの扱い」参照）。pcv-core の実行時依存には含めない。
+copc-writer = "0.9.0"
+tempfile = "3"

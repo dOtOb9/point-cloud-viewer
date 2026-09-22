@@ -466,8 +466,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -498,6 +500,42 @@ checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
 dependencies = [
  "time",
  "version_check",
+]
+
+[[package]]
+name = "copc-core"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "202b8bbfe2e572eb4db38b5ba78b0c5ae7ecfdf89e3d694c3ddf15cb77ffa8c9"
+dependencies = [
+ "las",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "copc-reader"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e99790fb79c73248d91e3b12932ad8e5af34e4893042fa7a2ec1fb7001b5ac0f"
+dependencies = [
+ "byteorder",
+ "copc-core",
+ "las",
+ "laz",
+]
+
+[[package]]
+name = "copc-writer"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0d7154f635d2512e173c3718d2d253cce07d8461f386e51fc688d5cfc7407f5"
+dependencies = [
+ "byteorder",
+ "copc-core",
+ "las",
+ "laz",
+ "memmap2",
+ "tempfile",
 ]
 
 [[package]]
@@ -1920,6 +1958,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "las"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62f1a1abaa9217530731d35a08a5e37828b2f6158196cdd61252c017bbdace95"
+dependencies = [
+ "byteorder",
+ "chrono",
+ "laz",
+ "log",
+ "num-traits",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "laz"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4913af39d4e471d749fbcec0d726c5d4fc6f97cac851a62ff7a84300a7a7579"
+dependencies = [
+ "byteorder",
+ "num-traits",
+]
+
+[[package]]
 name = "libappindicator"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2020,6 +2083,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "memoffset"
@@ -2440,6 +2512,13 @@ dependencies = [
 [[package]]
 name = "pcv-core"
 version = "0.1.0"
+dependencies = [
+ "copc-core",
+ "copc-reader",
+ "copc-writer",
+ "tempfile",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "pcv-tauri"

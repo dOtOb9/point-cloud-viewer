@@ -2,19 +2,16 @@
 //!
 //! この crate は tauri に依存しない。ネイティブ (x86_64-pc-windows-msvc など) と
 //! wasm32-unknown-unknown の両方でビルドできることが Web 版バックエンドを成立させる条件
-//! (ADR-0001 参照)。M0 時点では中身は空。
+//! (ADR-0001 参照)。
+//!
+//! M1-1でCOPCリーダーを実装した。採用クレートの選定理由は
+//! `TaskSheets/ADR-0003-copc-crate.md` を参照。
 
-/// M0 時点のプレースホルダ。wasm ターゲットでもビルドが通ることの確認用。
-pub fn placeholder() -> &'static str {
-    "pcv-core"
-}
+mod copc;
+mod node_format;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_returns_name() {
-        assert_eq!(placeholder(), "pcv-core");
-    }
-}
+pub use copc::{CloudInfo, CopcError, CopcFile, Hierarchy, HierarchyNode, NodeKey, Result};
+pub use node_format::{
+    encode_node, NodeBuffer, NodePoint, FLAG_CLASSIFICATION, FLAG_COLOR, FLAG_INTENSITY,
+    HEADER_BYTES, MAGIC, POINT_STRIDE, VERSION,
+};
