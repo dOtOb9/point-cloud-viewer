@@ -80,5 +80,6 @@ point-cloud-viewer/
 | 点群のWebGPU描画 | 完了（M1-3）: point spriteパイプライン・orbitカメラ。[M1](./M1-point-rendering.md) |
 | octree LOD / 点予算 | 完了（M1-4）: 画面空間誤差での優先度付け・視錐台カリング・LRUキャッシュ・非同期ロード・統計表示。[M1](./M1-point-rendering.md) |
 | `pcv://` 並行リクエストの直列化解消 | 完了（M2先頭）: 非同期プロトコルハンドラ + `CopcFile`のリーダープールに変更。並行数8でスループットが改修前比4.2〜10倍。[ADR-0007](./ADR-0007-pcv-protocol-concurrency.md) 参照 |
+| カーソル位置へのズーム | 完了（M1-5）: octreeのノードAABBへの粗いレイキャストでカーソル下の点を求め、そこへ`target`を寄せながらズームする。パン速度にシーンスケール由来の下限を追加。カメラの数式部分はvitestで確認済みだが、実際の画面での操作感はGUI目視待ち。[M1](./M1-point-rendering.md) M1-5参照 |
 | EDL シェーディング | 未着手（M2 に送った） |
 | カラーマップ切替 | 未着手（M2 に送った） |
