@@ -79,5 +79,6 @@ point-cloud-viewer/
 | COPC 読込 | 完了（M1-1）: `copc-core`/`copc-reader`採用。[ADR-0003](./ADR-0003-copc-crate.md) 参照 |
 | 点群のWebGPU描画 | 完了（M1-3）: point spriteパイプライン・orbitカメラ。[M1](./M1-point-rendering.md) |
 | octree LOD / 点予算 | 完了（M1-4）: 画面空間誤差での優先度付け・視錐台カリング・LRUキャッシュ・非同期ロード・統計表示。[M1](./M1-point-rendering.md) |
+| `pcv://` 並行リクエストの直列化解消 | 完了（M2先頭）: 非同期プロトコルハンドラ + `CopcFile`のリーダープールに変更。並行数8でスループットが改修前比4.2〜10倍。[ADR-0007](./ADR-0007-pcv-protocol-concurrency.md) 参照 |
 | EDL シェーディング | 未着手（M2 に送った） |
 | カラーマップ切替 | 未着手（M2 に送った） |
