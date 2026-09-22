@@ -3,6 +3,7 @@ import { TauriSource, reportToBackendConsole } from "../datasource/tauri";
 import type { CloudInfo } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
+import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // BackgroundModeもここから再エクスポートする。
@@ -24,9 +25,11 @@ export interface CopcViewerState {
   pointBudget: number;
   stats: RenderStats | null;
   backgroundMode: BackgroundMode;
+  gridEnabled: boolean;
   openFile: (path: string) => Promise<void>;
   setPointBudget: (budget: number) => void;
   setBackgroundMode: (mode: BackgroundMode) => void;
+  setGridEnabled: (enabled: boolean) => void;
 }
 
 /**
@@ -46,6 +49,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [pointBudget, setPointBudgetState] = useState(DEFAULT_POINT_BUDGET);
   const [stats, setStats] = useState<RenderStats | null>(null);
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
+  const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -65,8 +69,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         `[M1] drawnPoints=${s.drawnPoints} drawnNodes=${s.drawnNodes} ` +
         `loadingNodes=${s.loadingNodes} queuedNodes=${s.queuedNodes} ` +
         `cachedNodes=${s.cachedNodes} fps=${s.fps.toFixed(1)} pointBudget=${s.pointBudget} ` +
-        // M2-0c: 空の有無でfpsを比較できるよう、背景モードも一緒に出す。
-        `backgroundMode=${s.backgroundMode} ` +
+        // M2-0c: 空/グリッドの有無でfpsを比較できるよう、一緒に出す。
+        `backgroundMode=${s.backgroundMode} gridEnabled=${s.gridEnabled} ` +
         // M2-0b: GUIを目視できなくても、pitch=0が水平になっているか等をstdoutだけで
         // 機械的に確認できるようにカメラの向きも出す。
         `pitch=${s.cameraPitch.toFixed(3)} yaw=${s.cameraYaw.toFixed(3)} ` +
@@ -132,6 +136,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setBackgroundMode(mode);
   }, []);
 
+  const setGridEnabled = useCallback((enabled: boolean) => {
+    setGridEnabledState(enabled);
+    rendererRef.current?.setGridEnabled(enabled);
+  }, []);
+
   const state: CopcViewerState = {
     status,
     error,
@@ -140,9 +149,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     pointBudget,
     stats,
     backgroundMode,
+    gridEnabled,
     openFile,
     setPointBudget,
     setBackgroundMode,
+    setGridEnabled,
   };
   return [canvasRef, state];
 }

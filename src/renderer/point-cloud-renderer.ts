@@ -15,6 +15,8 @@ import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 import { clearColorForMode, DEFAULT_BACKGROUND_MODE, SkyBackground, type BackgroundMode } from "./sky";
+import { DEFAULT_GRID_ENABLED, gridFadeDistance, GroundGrid, niceGridCellSize } from "./ground-grid";
+import { horizontalBasis } from "./up-axis";
 
 const DEFAULT_POINT_BUDGET = 3_000_000;
 /** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
@@ -42,6 +44,8 @@ export interface RenderStats {
   pointBudget: number;
   /** M2-0c: 空の有無でfpsを比較できるよう、現在の背景モードを統計に含める。 */
   backgroundMode: BackgroundMode;
+  /** M2-0c補強B: グリッドの有無でfpsを比較できるよう、現在のオン/オフを統計に含める。 */
+  gridEnabled: boolean;
   /** M2-0b: GUIを目視できなくても`pitch=0`が水平になっているかを`npm run tauri dev`の
    *  stdoutだけで機械的に確認できるように、カメラの向きも統計に含める。 */
   cameraPitch: number;
@@ -138,6 +142,15 @@ export class PointCloudRenderer {
   private readonly sky = new SkyBackground();
   private backgroundMode: BackgroundMode = DEFAULT_BACKGROUND_MODE;
 
+  /** 地面のグリッド（M2-0c補強B）。既定はオフ（空と同じく既定で強制しない）。 */
+  private readonly grid = new GroundGrid();
+  private gridEnabled = DEFAULT_GRID_ENABLED;
+  /** シーンのバウンディングボックスから決める、グリッドの間隔・フェード距離・高さ。
+   *  `setHierarchy()`で点群を開くたびに更新する（固定値にしないため）。 */
+  private gridCellSize = 1;
+  private gridFadeDistance = 100;
+  private gridGroundHeight = 0;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.camera = new OrbitCamera([0, 0, 0], 100);
@@ -200,6 +213,7 @@ export class PointCloudRenderer {
     });
 
     this.sky.init(device, this.format, DEPTH_FORMAT);
+    this.grid.init(device, this.format, DEPTH_FORMAT);
 
     this.resize(this.canvas.clientWidth || this.canvas.width, this.canvas.clientHeight || this.canvas.height);
     this.detachControls = attachOrbitControls(this.canvas, this.camera, {
@@ -255,6 +269,14 @@ export class PointCloudRenderer {
       this.camera.target = center;
       this.camera.distance = diagonal;
       this.camera.setSceneScale(diagonal);
+
+      // M2-0c補強B: グリッドの間隔・フェード距離・高さをシーンのスケールから
+      // 決め直す（固定値にしないため、タスクシートの要求）。高さは上方向(upAxis)
+      // 成分でのバウンディングボックス底面（点群の一番下）に置く。
+      const upAxis = this.camera.getUpAxis();
+      this.gridGroundHeight = min[0] * upAxis[0] + min[1] * upAxis[1] + min[2] * upAxis[2];
+      this.gridCellSize = niceGridCellSize(diagonal);
+      this.gridFadeDistance = gridFadeDistance(diagonal);
     }
   }
 
@@ -279,6 +301,15 @@ export class PointCloudRenderer {
 
   getBackgroundMode(): BackgroundMode {
     return this.backgroundMode;
+  }
+
+  /** 地面グリッド（M2-0c補強B）: 向き・尺度・地平線の手がかりを与える。既定はオフ。 */
+  setGridEnabled(enabled: boolean): void {
+    this.gridEnabled = enabled;
+  }
+
+  getGridEnabled(): boolean {
+    return this.gridEnabled;
   }
 
   /** 統計（描画点数・ロード中ノード数・fpsなど）が更新されるたびに呼ばれる。 */
@@ -412,6 +443,7 @@ export class PointCloudRenderer {
       fps,
       pointBudget: this.pointBudget,
       backgroundMode: this.backgroundMode,
+      gridEnabled: this.gridEnabled,
       cameraPitch: this.camera.pitch,
       cameraYaw: this.camera.yaw,
       cameraUpAxis: [...this.camera.getUpAxis()],
@@ -500,13 +532,34 @@ export class PointCloudRenderer {
       },
     });
 
-    // 空は点より必ず奥に描く（M2-0c）。SkyBackgroundは深度を書かない
+    // 空・グリッドは点より必ず奥に描く（M2-0c）。どちらも深度を書かない
     // (depthWriteEnabled=false, depthCompare="always")ので、この後に描く点群
-    // (depthCompare="less")は常に空より手前に残る。
-    if (this.backgroundMode === "sky") {
+    // (depthCompare="less")は常に手前に残る。
+    if (this.backgroundMode === "sky" || this.gridEnabled) {
       const invViewProj = invert(viewProj);
+      const upAxis = this.camera.getUpAxis();
+      const eye = this.camera.eye();
+
       if (invViewProj) {
-        this.sky.draw(device, pass, invViewProj, this.camera.eye(), this.camera.getUpAxis());
+        if (this.backgroundMode === "sky") {
+          this.sky.draw(device, pass, invViewProj, eye, upAxis);
+        }
+        if (this.gridEnabled) {
+          // グリッドは空を描いた後（or 単色クリアの後）に、半透明で重ねる。
+          const { right, forward } = horizontalBasis(upAxis);
+          this.grid.draw(
+            device,
+            pass,
+            invViewProj,
+            eye,
+            upAxis,
+            right,
+            forward,
+            this.gridGroundHeight,
+            this.gridCellSize,
+            this.gridFadeDistance,
+          );
+        }
       }
     }
 

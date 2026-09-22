@@ -62,6 +62,14 @@ export function ViewerPanel() {
               ))}
             </select>
           </label>
+          <label className="ml-4 flex items-center gap-2 text-slate-300">
+            <input
+              type="checkbox"
+              checked={viewer.gridEnabled}
+              onChange={(e) => viewer.setGridEnabled(e.target.checked)}
+            />
+            グリッド
+          </label>
         </div>
 
         {viewer.error && (
