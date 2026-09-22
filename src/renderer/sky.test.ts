@@ -7,8 +7,8 @@ import { describe, expect, it } from "vitest";
 import { clearColorForMode, DEFAULT_BACKGROUND_MODE, SOLID_DARK_CLEAR, SOLID_LIGHT_CLEAR } from "./sky";
 
 describe("DEFAULT_BACKGROUND_MODE", () => {
-  it("既定は空: 実機フィードバックを受けて単色(暗)から変更した（TaskSheets/M2-shading-and-ui.md M2-0c参照）", () => {
-    expect(DEFAULT_BACKGROUND_MODE).toBe("sky");
+  it("既定は単色(暗): 一時「空」を試したが、所有者が実データで見て単色(暗)に戻した（TaskSheets/M2-shading-and-ui.md M2-0c参照）", () => {
+    expect(DEFAULT_BACKGROUND_MODE).toBe("solid-dark");
   });
 });
 

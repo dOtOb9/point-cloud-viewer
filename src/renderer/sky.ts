@@ -11,8 +11,8 @@
 //   その後の点はすべて手前に来る）
 // - 切り替えられること: 空 / 単色(暗) / 単色(明) を選べるようにする。既定値は
 //   下の`DEFAULT_BACKGROUND_MODE`のコメント、および TaskSheets/M2-shading-and-ui.md
-//   M2-0cの「既定の決定」を参照（策定時の既定=単色(暗)から、実機フィードバックを
-//   受けて既定=空に変更した経緯を記録してある）
+//   M2-0cの「既定の決定」を参照（一時「空」を既定にしたが、実機フィードバックを
+//   受けて最終的に単色(暗)に戻した。経緯を記録してある）
 // - 地平線の下も描く: 上方向(upAxis)との内積が負の側（地平線より下）にも
 //   別の色（ground）を割り当てる。空だけだと下を向いたときに背景が消えるため。
 //
@@ -72,11 +72,12 @@ import type { Vec3 } from "./up-axis";
 
 export type BackgroundMode = "sky" | "solid-dark" | "solid-light";
 
-/** 既定は「空」。M2-0c策定時は「点のコントラストを落とすため既定にしない」
- *  としていたが、実データを見て判断した結果、空を既定にした。経緯は
- *  TaskSheets/M2-shading-and-ui.md M2-0cに記録している（方針転換ではなく、
- *  当初「実データを見て決める」と書いた通りに決めたもの）。 */
-export const DEFAULT_BACKGROUND_MODE: BackgroundMode = "sky";
+/** 既定は単色(暗)。一時「空」を既定にしたが、所有者が実データで見て単色(暗)に
+ *  戻すと判断した。結果として、M2-0c策定時の「点のコントラストを落とすため
+ *  既定にしない」という当初の判断が実データで裏付けられた形になる。経緯は
+ *  TaskSheets/M2-shading-and-ui.md M2-0cに記録している。空は引き続き選べる
+ *  （グリッドの既定はオン。ground-grid.ts参照）。 */
+export const DEFAULT_BACKGROUND_MODE: BackgroundMode = "solid-dark";
 
 export const SOLID_DARK_CLEAR: GPUColor = { r: 0.05, g: 0.05, b: 0.08, a: 1 };
 export const SOLID_LIGHT_CLEAR: GPUColor = { r: 0.92, g: 0.93, b: 0.95, a: 1 };
