@@ -8,6 +8,10 @@
   寄ること・寄り続けても止まらないこと・回転とパンの既存挙動を壊していないこと）は
   vitestで確認したが、「実際に画面でその通りに感じるか」はGUIを操作できないため
   未検証。所有者の目視確認が必要
+  なお実機確認で「逆に近づかなくなった」という退行報告があり、レイ×AABB判定の
+  2件のバグ（カメラを含む箱がt=0を返す・内部ノードの入れ子AABBが最近傍判定で
+  常に勝つ）が原因と特定して修正した。詳細は本ファイル末尾の
+  「実機確認で見つかった不具合」を参照
 - 前提: [ADR-0001](./ADR-0001-architecture.md), [ADR-0002](./ADR-0002-rendering-api.md), [M0](./M0-feasibility.md) 完了
 
 ## このマイルストーンの目的
@@ -391,12 +395,19 @@ zoom(factor) {
 ### 受け入れ条件
 
 - [ ] カーソルを点群の端にある物に合わせてホイールを回すと、**中心ではなくそこに**近づく
-      未検証。`src/renderer/raycast.ts`の`screenPointToWorldRay`
+      未検証（GUI目視待ち）。`src/renderer/raycast.ts`の`screenPointToWorldRay`
       （スクリーン座標→ワールド空間のレイ）と`closestHierarchyHit`
-      （レイ×hierarchyのAABBで最も近い交点を返す）、`OrbitCamera.zoom(factor, towardPoint)`
-      （towardPointへtargetが寄る）はそれぞれ単体テストで確認しているが、
-      実際のマウス操作でカーソル位置の物に寄っていくように*見える*かはGUIを
-      目視・操作できないため確認できていない。所有者の目視確認が必要
+      （レイ×AABBで最も近い交点を返す）、`OrbitCamera.zoom(factor, towardPoint)`
+      （towardPointへtargetが寄る）はそれぞれ単体テストで確認している。
+      実機確認で「逆に近づかなくなった」という退行が報告されたため2件のバグ
+      （カメラを含む箱がt=0を返す・内部ノードの入れ子AABBに対する最近傍判定が
+      常に粗い外側の箱を選ぶ）を修正した。修正後は`pickWorldPointUnderCursor`が
+      「カメラを内包するAABBの内側に前方の面がある」状況でカメラ位置ではなく
+      前方の面を返すこと、その値を`OrbitCamera.zoom()`に渡してもtargetがカメラへ
+      吸い寄せられないことを、実機の状況を模したテストで確認した（詳細は本ファイル
+      末尾の「実機確認で見つかった不具合」参照）。ただし実際のマウス操作でカーソル
+      位置の物に寄っていくように*見える*かはGUIを目視・操作できないため未確認。
+      所有者の目視確認が必要
 - [x] 寄り続けても操作が止まらない（距離が漸近して動かなくなることがない）
       （`src/renderer/orbit-camera.test.ts`の「寄り続けても止まらない」テストで確認。
       固定の点へ向けて60回ズームインし続けても、target-towardPoint間の距離が
@@ -486,8 +497,11 @@ npm run tauri dev
 
 - [ ] カーソル位置に向かってズームできる（中心に寄っていかない）
       実装済み（`OrbitCamera.zoom`のtowardPoint引数と、カーソル位置のレイを
-      hierarchyのAABBと交差させる`PointCloudRenderer.pickPointUnderCursor`）。
-      要素ごとの単体テストはあるが、実際の画面での見た目はGUIを目視できないため未検証
+      「直近フレームで実際に描画したノード」のAABBと交差させる
+      `PointCloudRenderer.pickPointUnderCursor`）。実機報告された退行
+      （カメラ位置に吸い寄せられる）は原因を特定して修正済み（本ファイル末尾
+      「実機確認で見つかった不具合」参照）。要素ごとの単体テスト・実機の状況を
+      模した再現テストはあるが、実際の画面での見た目はGUIを目視できないため未検証
 - [x] 寄り続けても操作が止まらない
       `orbit-camera.test.ts`で、固定の点へ向けたズームインを繰り返しても
       targetとの距離が縮み続けることを確認済み（詳細は上のM1-5セクション参照）
