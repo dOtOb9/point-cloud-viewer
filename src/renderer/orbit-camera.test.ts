@@ -1,131 +1,154 @@
 // orbit-camera.ts のテスト（M1-5）。
 //
-// 直した不具合（3点、TaskSheets/M1-point-rendering.md M1-5参照）:
-//   1. zoom()は固定のtargetに向かって距離を掛け算で縮めるだけで、カーソル位置とは無関係だった
-//   2. そのため寄るほど画面中心（=target）に吸い寄せられ、点群の端にある物に寄れなかった
-//   3. pan()の速度が`distance`に比例するため、寄るほどパンも実用にならないくらい遅くなった
+// M1-5は3回書き直している。今回（3回目）で方式そのものを変えた。
 //
-// ここでは「修正前のロジックに戻すと落ちる」ことを意識してテストを書く。
-// 特に「towardPointを渡すとtargetがそちらへ寄っていく」テストは、`zoom(factor)`を
-// 単純な`distance *= factor`に戻すと必ず失敗する。
+// 1回目: zoom()は固定のtargetに向かって距離を掛け算で縮めるだけで、カーソル位置とは
+//        無関係だった → 寄るほど画面中心に吸い寄せられ、点群の端にある物に寄れなかった
+// 2回目: 「カーソルの下にある点」をoctreeのAABBへのレイキャストで求め、zoom()に渡す
+//        方式にした → 実装上のバグ（レイ原点がAABB内側にあると交点=カメラ位置になる、
+//        内部ノードの入れ子AABBが常に勝つ）を2件直したが、直した後も
+//        「スクロールするほどズームが利かなくなる」という報告が続いた。
+//        原因は実装ではなく方式そのもの: towardPointはAABBの面（箱の境界）でしかなく、
+//        カメラがその面に近づくほど1ティックの移動量（(1-factor)*targetからの距離）が
+//        0に近づき、何もない境界に漸近して止まる。点群の点に到達する構造になっていない。
+// 3回目（今回）: 「点」を求めるのをやめ、カーソル位置のレイの「方向」だけを使う方式に
+//        変えた。1ティックの移動量`step = distance * (1-factor)`は`distance`
+//        （自分が縮めている量そのもの）に比例するので、target/towardPointの位置とは
+//        無関係に決まり、独立に0へ潰れることが構造的に起こりえない。
+//        止まるとしたらMIN_DISTANCEに当たったときだけ。
+//
+// このファイルで担保したいこと（下の受け入れ条件と対応）:
+// - zoom()が方向ベクトルを取ること
+// - ズームを何度繰り返しても、1ティックの移動量がdistanceに比例し続けること
+//   （比例定数(1-factor)が毎回同じであることを直接検証する。これがまさに
+//   「移動量が独立に潰れない」ことの証明になる）
+// - カーソルが画面中心のとき、従来（固定targetへ寄る旧実装）と同じ軸上を動くこと
+// - cursorDirection省略時はtargetを動かさずdistanceだけ縮めること（フォールバック）
 
 import { describe, expect, it } from "vitest";
-import { lookAt, multiply, perspective } from "./mat4";
 import { OrbitCamera } from "./orbit-camera";
-import { pickWorldPointUnderCursor } from "./raycast";
-
-const CANVAS_WIDTH = 800;
-const CANVAS_HEIGHT = 600;
 
 function distance3(a: readonly [number, number, number], b: readonly [number, number, number]): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
+function sub3(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): [number, number, number] {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function normalize3(v: readonly [number, number, number]): [number, number, number] {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+/** aとbが（ほぼ）平行かどうか。外積のノルムが十分小さいかで判定する。 */
+function isParallel(a: readonly [number, number, number], b: readonly [number, number, number]): boolean {
+  const cross: [number, number, number] = [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+  return Math.hypot(cross[0], cross[1], cross[2]) < 1e-6;
+}
+
 describe("OrbitCamera.zoom", () => {
-  it("towardPointを渡さない場合、従来どおりtargetは動かさずdistanceだけ縮む（フォールバック）", () => {
+  it("cursorDirectionを渡さない場合、targetは動かさずdistanceだけ縮む（フォールバック）", () => {
     const camera = new OrbitCamera([1, 2, 3], 100);
     camera.zoom(0.5);
     expect(camera.target).toEqual([1, 2, 3]);
     expect(camera.distance).toBeCloseTo(50, 9);
   });
 
-  it("towardPointを渡すと、targetがそちらへ寄る（中心ではなくカーソル位置に近づく）", () => {
+  it("cursorDirectionを渡すと、targetがその方向へ動く", () => {
     const camera = new OrbitCamera([0, 0, 0], 100);
-    const edgePoint: [number, number, number] = [50, 0, 0]; // 点群の端にある物、のつもり
+    const direction: [number, number, number] = [1, 0, 0];
 
-    const beforeDistanceToEdge = distance3(camera.target, edgePoint);
-    camera.zoom(0.5, edgePoint);
-    const afterDistanceToEdge = distance3(camera.target, edgePoint);
+    camera.zoom(0.5, direction);
 
-    // targetは[0,0,0]のままではなく、edgePoint側へ動いているはず。
-    expect(camera.target).not.toEqual([0, 0, 0]);
-    expect(afterDistanceToEdge).toBeLessThan(beforeDistanceToEdge);
+    // step = distance(100) * (1 - 0.5) = 50。targetは+x方向に50動くはず。
+    expect(camera.target[0]).toBeCloseTo(50, 9);
+    expect(camera.target[1]).toBeCloseTo(0, 9);
+    expect(camera.target[2]).toBeCloseTo(0, 9);
+    expect(camera.distance).toBeCloseTo(50, 9);
   });
 
-  it("towardPointがtargetと一致するときは、targetは動かない（中心を指しているときは旧来の動きと一致）", () => {
-    const camera = new OrbitCamera([5, 5, 5], 100);
-    camera.zoom(0.5, [5, 5, 5]);
-    expect(camera.target[0]).toBeCloseTo(5, 9);
-    expect(camera.target[1]).toBeCloseTo(5, 9);
-    expect(camera.target[2]).toBeCloseTo(5, 9);
+  it("移動量はdistanceに比例する: 同じfactorなら、distanceが違っても比率(1-factor)は変わらない", () => {
+    const direction: [number, number, number] = [0, 0, 1];
+    const factor = 0.8;
+
+    const small = new OrbitCamera([0, 0, 0], 10);
+    small.zoom(factor, direction);
+    const large = new OrbitCamera([0, 0, 0], 1000);
+    large.zoom(factor, direction);
+
+    // 移動量はdistanceに正比例するので、比率(移動量 / 開始distance)はどちらも(1-factor)になる。
+    expect(small.target[2] / 10).toBeCloseTo(1 - factor, 9);
+    expect(large.target[2] / 1000).toBeCloseTo(1 - factor, 9);
   });
 
-  it("寄り続けても止まらない: 同じ点へ向けてズームし続けると、targetとの距離が単調に縮み続ける", () => {
-    const camera = new OrbitCamera([0, 0, 0], 1000);
-    const edgePoint: [number, number, number] = [500, 0, 0];
+  it("寄り続けても1ティックの移動量が独立に潰れない: 100回ズームインしても、毎回 distance*(1-factor) だけ動く", () => {
+    // これがM1-5「3回目」の核心。旧方式（AABBの面という『点』へ向けてtargetを寄せる）
+    // では、targetが対象に近づくほど「targetからtowardPointまでの距離」が0に近づき、
+    // 移動量も一緒に0へ潰れて止まった。この方式ではtargetの位置や対象までの距離とは
+    // 無関係に、移動量が「今のdistance」だけで決まる。distanceは毎回factor倍に
+    // 縮んでいくが、移動量とdistanceの比率(1-factor)は常に同じであり続ける。
+    const camera = new OrbitCamera([0, 0, 0], 1_000_000);
+    const direction: [number, number, number] = [1, 0, 0];
+    const factor = 1 / 1.1; // ZOOM_STEPの逆数相当（ズームイン）
 
-    let previousGap = distance3(camera.target, edgePoint);
-    let sawProgressEveryTick = true;
+    let previousDistance = camera.distance;
+    for (let i = 0; i < 100; i++) {
+      const before: [number, number, number] = [...camera.target];
+      camera.zoom(factor, direction);
+      const moved = distance3(camera.target, before);
 
-    for (let i = 0; i < 60; i++) {
-      camera.zoom(1 / 1.1, edgePoint); // ZOOM_STEPの逆数相当（ズームイン）
-      const gap = distance3(camera.target, edgePoint);
-      if (!(gap < previousGap)) {
-        sawProgressEveryTick = false;
-      }
-      previousGap = gap;
+      // 実装のバグ（例えば移動量を固定量にしてしまう等）ならこの比率はズレる。
+      // 旧方式（targetの位置に依存する）なら、targetが動くにつれてこの比率も
+      // 崩れていくはずだが、方向ベースの実装では毎回ぴったり一致し続ける。
+      const expectedMoved = previousDistance * (1 - factor);
+      expect(moved).toBeCloseTo(expectedMoved, 6);
+
+      previousDistance = camera.distance;
     }
 
-    // 60回ズームインした後、targetは edgePoint のごく近くまで寄っているはず
-    // （固定のtargetに漸近するだけの旧実装では、targetとedgePointの距離は
-    //  500から一切縮まらない）。
-    expect(sawProgressEveryTick).toBe(true);
-    expect(previousGap).toBeLessThan(2); // 500 → 60ティックで1/150以下まで縮む
+    // distanceは毎回factor倍に縮み続け、100回後には初期値よりずっと小さくなっている
+    // （MIN_DISTANCEに当たっていなければ）。「途中で動かなくなる」ことがない証拠として、
+    // 最後まで単調に縮み続けたことを確認する。
+    expect(camera.distance).toBeLessThan(1_000_000 * Math.pow(factor, 99));
   });
 
-  it("交差が無い（空を指している）場合の呼び出しでは、targetを固定のtowardPointに寄せてしまわない", () => {
-    // pickPointUnderCursorがnullを返すケースをシミュレート: 呼び出し側はtowardPointを
-    // 渡さずにzoom()を呼ぶ想定。target不変・distance縮小のみになることを確認する。
-    const camera = new OrbitCamera([10, 20, 30], 200);
-    camera.zoom(1 / 1.1);
-    expect(camera.target).toEqual([10, 20, 30]);
-    expect(camera.distance).toBeCloseTo(200 / 1.1, 6);
+  it("カーソルが画面中心のとき: 従来どおりtarget方向に寄る挙動と一致する（eyeとtargetが同じ視線軸上を動く）", () => {
+    // 「画面中心にカーソルがある」とは、カーソルのレイの方向がちょうど
+    // eyeからtargetへ向かう方向（视線方向）と一致するということ。
+    const camera = new OrbitCamera([0, 0, -100], 50);
+    const eyeBefore = camera.eye();
+    const forward = normalize3(sub3(camera.target, eyeBefore));
+
+    camera.zoom(0.9, forward);
+    const eyeAfter = camera.eye();
+
+    // 新しいeyeは、旧eye→旧targetの視線軸上に乗っている（横に逸れない）。
+    // これは固定target（旧来の一番単純な実装）でdistanceだけを縮めたときと同じ軸で、
+    // 「中心を指しているときは中心へ向かって素直に寄る」という従来の挙動と一致する。
+    expect(isParallel(sub3(eyeAfter, eyeBefore), forward)).toBe(true);
+
+    // かつ、eyeとtargetの距離（=distance）はfactor倍に縮んでいる。
+    expect(camera.distance).toBeCloseTo(50 * 0.9, 9);
   });
 
-  it("M1-5の回帰: pickWorldPointUnderCursorが返すtowardPointはカメラ位置と一致せず、targetがカメラへ吸い寄せられない", () => {
-    // 所有者の実機報告「逆に近づかなくなった」を、raycastとOrbitCameraを繋いだ形で
-    // 再現する。カメラは点群のルートAABBの内側にいて、その内側に前方の面(child)が
-    // ある。修正前は交点＝カメラ位置になり、zoom()のtarget += (towardPoint - target)
-    // でtargetがカメラへ寄っていってしまっていた。
-    const eye: [number, number, number] = [0, 0, 0];
-    const camera = new OrbitCamera([0, 0, -50], 50); // targetは前方遠くに置く
-    const view = lookAt(eye, [0, 0, -1], [0, 1, 0]);
-    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1000);
-    const viewProj = multiply(proj, view);
-
-    const root = { boundsMin: [-100, -100, -100] as const, boundsMax: [100, 100, 100] as const }; // カメラを内包
-    const child = { boundsMin: [-2, -2, -5] as const, boundsMax: [2, 2, -3] as const }; // 前方の面、カメラは含まない
-
-    const towardPoint = pickWorldPointUnderCursor(
-      viewProj,
-      CANVAS_WIDTH / 2,
-      CANVAS_HEIGHT / 2,
-      CANVAS_WIDTH,
-      CANVAS_HEIGHT,
-      [root, child],
-    );
-    expect(towardPoint).not.toBeNull();
-
-    const distanceFromEye = Math.hypot(
-      towardPoint![0] - eye[0],
-      towardPoint![1] - eye[1],
-      towardPoint![2] - eye[2],
-    );
-    expect(distanceFromEye).toBeGreaterThan(1); // カメラ位置そのものではない
-
-    camera.zoom(0.9, towardPoint!);
-    const targetAfter = camera.target;
-
-    // targetはtowardPoint（カメラ前方の面、eyeから3〜5離れた位置）へ少し寄るだけで、
-    // eye(カメラ位置)まで一気に吸い寄せられてはいない。
-    // 修正前は towardPoint が eye そのものだったため、target は毎ズームでeyeへ
-    // 直行し、「距離を詰めても対象に近づかない」（所有者の実機報告）状態になっていた。
-    const distanceFromEyeAfter = Math.hypot(
-      targetAfter[0] - eye[0],
-      targetAfter[1] - eye[1],
-      targetAfter[2] - eye[2],
-    );
-    expect(distanceFromEyeAfter).toBeGreaterThan(10);
+  it("画面中心へ向けてズームし続けても、eyeとtargetの間隔（distance）は0に漸近するだけで、動き自体は止まらない", () => {
+    const camera = new OrbitCamera([0, 0, -1000], 200);
+    let previousDistance = camera.distance;
+    for (let i = 0; i < 50; i++) {
+      const eyeBefore = camera.eye();
+      const forward = normalize3(sub3(camera.target, eyeBefore));
+      camera.zoom(0.9, forward);
+      expect(camera.distance).toBeLessThan(previousDistance);
+      previousDistance = camera.distance;
+    }
   });
 });
 

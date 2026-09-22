@@ -10,13 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { lookAt, multiply, perspective } from "./mat4";
-import {
-  closestHierarchyHit,
-  intersectRayAabb,
-  pickWorldPointUnderCursor,
-  screenPointToWorldRay,
-  type Ray,
-} from "./raycast";
+import { closestHierarchyHit, intersectRayAabb, screenPointToWorldRay, type Ray } from "./raycast";
 
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
@@ -171,76 +165,5 @@ describe("screenPointToWorldRay", () => {
     const centerRay = screenPointToWorldRay(viewProj, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, CANVAS_WIDTH, CANVAS_HEIGHT);
     const centerHit = closestHierarchyHit(centerRay!, [edgeBox]);
     expect(centerHit).toBeNull();
-  });
-});
-
-describe("pickWorldPointUnderCursor（実機で起きた状況の再現）", () => {
-  it("カメラが点群のルートAABBの内側にいて、内側に入れ子ノードがあっても、カメラ位置ではなく前方の面を返す", () => {
-    // 所有者の実機報告「逆に近づかなくなった」の再現。ズームで点群にわずかでも
-    // 寄ると、カメラはoctreeのルートノードのAABBの内側に入る。このとき修正前の
-    // コードは常にt=0（＝カメラ位置そのもの）を返していた。
-    const eye: [number, number, number] = [0, 0, 0];
-    const target: [number, number, number] = [0, 0, -1]; // -z方向を向く
-    const view = lookAt(eye, target, [0, 1, 0]);
-    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1000);
-    const viewProj = multiply(proj, view);
-
-    // ルートノード: 点群全体を覆う大きな箱。カメラ(原点)を内側に含む。
-    const root = { boundsMin: [-100, -100, -100] as const, boundsMax: [100, 100, 100] as const };
-    // 入れ子の子ノード: ルートの内側にあり、カメラの前方（-z側）にある実際の表面、のつもり。
-    // カメラ(原点)は含まない。
-    const child = { boundsMin: [-2, -2, -5] as const, boundsMax: [2, 2, -3] as const };
-
-    const hit = pickWorldPointUnderCursor(
-      viewProj,
-      CANVAS_WIDTH / 2,
-      CANVAS_HEIGHT / 2,
-      CANVAS_WIDTH,
-      CANVAS_HEIGHT,
-      [root, child],
-    );
-
-    expect(hit).not.toBeNull();
-    // 修正前は hit が eye（[0,0,0]相当のニアプレーン上の点）になっていた。
-    // 修正後はchildの手前面(z=-3)付近を指すはず。
-    expect(hit![2]).toBeCloseTo(-3, 1);
-    expect(Math.abs(hit![2] - eye[2])).toBeGreaterThan(1); // カメラ位置と一致していない
-  });
-
-  it("描画中のノードが無い場合はnullを返す（フォールバックが効く）", () => {
-    const eye: [number, number, number] = [0, 0, 10];
-    const target: [number, number, number] = [0, 0, 0];
-    const view = lookAt(eye, target, [0, 1, 0]);
-    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1000);
-    const viewProj = multiply(proj, view);
-
-    const hit = pickWorldPointUnderCursor(
-      viewProj,
-      CANVAS_WIDTH / 2,
-      CANVAS_HEIGHT / 2,
-      CANVAS_WIDTH,
-      CANVAS_HEIGHT,
-      [], // まだ何も描画していない
-    );
-    expect(hit).toBeNull();
-  });
-
-  it("カーソルが空を指している場合はnullを返す", () => {
-    const eye: [number, number, number] = [0, 0, 10];
-    const target: [number, number, number] = [0, 0, 0];
-    const view = lookAt(eye, target, [0, 1, 0]);
-    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1000);
-    const viewProj = multiply(proj, view);
-    const farAwayBox = { boundsMin: [500, 500, 500] as const, boundsMax: [501, 501, 501] as const };
-
-    const hit = pickWorldPointUnderCursor(
-      viewProj,
-      CANVAS_WIDTH / 2,
-      CANVAS_HEIGHT / 2,
-      CANVAS_WIDTH,
-      CANVAS_HEIGHT,
-      [farAwayBox],
-    );
-    expect(hit).toBeNull();
   });
 });
