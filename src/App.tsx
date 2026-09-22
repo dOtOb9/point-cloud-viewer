@@ -1,6 +1,7 @@
 import { ViewerPanel } from "./ui/ViewerPanel";
 import { WebGpuProbePanel } from "./ui/WebGpuProbePanel";
 import { IpcBenchPanel } from "./ui/IpcBenchPanel";
+import { NodeConcurrencyBenchPanel } from "./ui/NodeConcurrencyBenchPanel";
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
         <div className="mt-4 flex flex-col items-center gap-4">
           <WebGpuProbePanel />
           <IpcBenchPanel />
+          <NodeConcurrencyBenchPanel />
         </div>
       </details>
     </main>

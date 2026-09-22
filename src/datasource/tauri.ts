@@ -57,6 +57,18 @@ export async function reportToBackendConsole(message: string): Promise<void> {
 }
 
 /**
+ * M2: 並行リクエストの計測ハーネス（`useNodeConcurrencyBench`）が使う。
+ * `TaskSheets/TEST-DATA.md` のテストデータは `.gitignore` されておりCIには無いため、
+ * リポジトリの `data/<filename>` を実行時に探し、無ければ `null` を返す
+ * （呼び出し側はその場合ベンチをスキップする）。パス解決はRust側で
+ * `CARGO_MANIFEST_DIR` から行うため、`npm run tauri dev` のカレントディレクトリに
+ * 依存しない（Rust側の実装は `src-tauri/src/lib.rs` の `default_bench_data_path`）。
+ */
+export async function resolveBenchDataPath(filename: string): Promise<string | null> {
+  return await invoke<string | null>("default_bench_data_path", { filename });
+}
+
+/**
  * DataSource の Tauri 実装。`pcv://` カスタムプロトコルでノードデータを取得する
  * （ADR-0001）。M0時点ではベンチ用エンドポイントを叩くだけ。
  */

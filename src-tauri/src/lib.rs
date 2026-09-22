@@ -24,6 +24,27 @@ fn bench_invoke(size: usize) -> Vec<u8> {
     vec![0u8; size]
 }
 
+/// M2: `pcv://` 並行リクエストの計測ハーネス（`useNodeConcurrencyBench`）用。
+/// `TaskSheets/TEST-DATA.md` のテストデータはリポジトリにコミットしないため
+/// （`.gitignore`済み、CIには無い）、`data/<filename>` を実行時に探して絶対パスを返す。
+/// 見つからなければ `None`（呼び出し側はベンチをスキップする）。
+///
+/// `env!("CARGO_MANIFEST_DIR")` はこのクレート（`src-tauri`）のディレクトリに
+/// 展開されるコンパイル時定数なので、`npm run tauri dev` を実行するカレント
+/// ディレクトリが何であっても同じ場所（リポジトリ直下の `data/`）を指す。
+#[tauri::command]
+fn default_bench_data_path(filename: String) -> Option<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("data")
+        .join(&filename);
+    if path.is_file() {
+        path.to_str().map(str::to_string)
+    } else {
+        None
+    }
+}
+
 /// `pcv://<path>` の1セグメントを見て、M0のベンチ用ダミーデータ（`/<size>`）か
 /// M1のノードデータ（`/<level>-<x>-<y>-<z>`）かを振り分ける。
 ///
@@ -91,6 +112,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             report_diagnostic,
             bench_invoke,
+            default_bench_data_path,
             copc_state::open_copc
         ])
         .run(tauri::generate_context!())
