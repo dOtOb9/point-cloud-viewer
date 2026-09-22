@@ -1,5 +1,11 @@
 import { useState } from "react";
-import { useCopcViewer } from "../state/useCopcViewer";
+import { useCopcViewer, type BackgroundMode } from "../state/useCopcViewer";
+
+const BACKGROUND_MODE_LABELS: Record<BackgroundMode, string> = {
+  "solid-dark": "単色(暗)",
+  "solid-light": "単色(明)",
+  sky: "空",
+};
 
 /**
  * M1: COPCビューア本体。canvasはrenderer(PointCloudRenderer)がWebGPUで直接描画する
@@ -41,6 +47,20 @@ export function ViewerPanel() {
               onChange={(e) => viewer.setPointBudget(Number(e.target.value) || 0)}
               className="w-28 rounded border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-slate-100"
             />
+          </label>
+          <label className="ml-4 flex items-center gap-2 text-slate-300">
+            背景
+            <select
+              value={viewer.backgroundMode}
+              onChange={(e) => viewer.setBackgroundMode(e.target.value as BackgroundMode)}
+              className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-slate-100"
+            >
+              {(Object.keys(BACKGROUND_MODE_LABELS) as BackgroundMode[]).map((mode) => (
+                <option key={mode} value={mode}>
+                  {BACKGROUND_MODE_LABELS[mode]}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
 

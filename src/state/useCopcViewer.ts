@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { TauriSource, reportToBackendConsole } from "../datasource/tauri";
 import type { CloudInfo } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
+import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
+
+// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
+// BackgroundModeもここから再エクスポートする。
+export type { BackgroundMode };
 
 const DEFAULT_POINT_BUDGET = 3_000_000;
 
@@ -18,8 +23,10 @@ export interface CopcViewerState {
   nodeCount: number;
   pointBudget: number;
   stats: RenderStats | null;
+  backgroundMode: BackgroundMode;
   openFile: (path: string) => Promise<void>;
   setPointBudget: (budget: number) => void;
+  setBackgroundMode: (mode: BackgroundMode) => void;
 }
 
 /**
@@ -38,6 +45,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [nodeCount, setNodeCount] = useState(0);
   const [pointBudget, setPointBudgetState] = useState(DEFAULT_POINT_BUDGET);
   const [stats, setStats] = useState<RenderStats | null>(null);
+  const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -52,10 +60,17 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStats(s);
       // GUIを目視できない環境でも`npm run tauri dev`のRust側stdoutから
       // 描画点数・ロード中ノード数・fpsを追えるようにする（M1-4の必須要件）。
+      const fmt3 = (v: readonly [number, number, number]) => `[${v.map((x) => x.toFixed(2)).join(",")}]`;
       const summary =
         `[M1] drawnPoints=${s.drawnPoints} drawnNodes=${s.drawnNodes} ` +
         `loadingNodes=${s.loadingNodes} queuedNodes=${s.queuedNodes} ` +
-        `cachedNodes=${s.cachedNodes} fps=${s.fps.toFixed(1)} pointBudget=${s.pointBudget}`;
+        `cachedNodes=${s.cachedNodes} fps=${s.fps.toFixed(1)} pointBudget=${s.pointBudget} ` +
+        // M2-0c: 空の有無でfpsを比較できるよう、背景モードも一緒に出す。
+        `backgroundMode=${s.backgroundMode} ` +
+        // M2-0b: GUIを目視できなくても、pitch=0が水平になっているか等をstdoutだけで
+        // 機械的に確認できるようにカメラの向きも出す。
+        `pitch=${s.cameraPitch.toFixed(3)} yaw=${s.cameraYaw.toFixed(3)} ` +
+        `upAxis=${fmt3(s.cameraUpAxis)} eye=${fmt3(s.cameraEye)}`;
       reportToBackendConsole(summary).catch((e) => console.error("reportToBackendConsole failed", e));
     });
 
@@ -112,6 +127,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setPointBudget(budget);
   }, []);
 
+  const setBackgroundMode = useCallback((mode: BackgroundMode) => {
+    setBackgroundModeState(mode);
+    rendererRef.current?.setBackgroundMode(mode);
+  }, []);
+
   const state: CopcViewerState = {
     status,
     error,
@@ -119,8 +139,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     nodeCount,
     pointBudget,
     stats,
+    backgroundMode,
     openFile,
     setPointBudget,
+    setBackgroundMode,
   };
   return [canvasRef, state];
 }

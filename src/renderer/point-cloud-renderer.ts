@@ -8,12 +8,13 @@
 import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
 import { NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
 import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
-import { multiply, perspective, translation, type Mat4 } from "./mat4";
+import { invert, multiply, perspective, translation, type Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
 import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
+import { clearColorForMode, DEFAULT_BACKGROUND_MODE, SkyBackground, type BackgroundMode } from "./sky";
 
 const DEFAULT_POINT_BUDGET = 3_000_000;
 /** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
@@ -22,6 +23,9 @@ const POINT_SIZE_PX = 4;
 const FOV_Y_RADIANS = Math.PI / 3;
 const NEAR = 0.01;
 const FAR = 1e7;
+/** 深度バッファのフォーマット。点群パイプラインと空パイプライン(sky.ts)の両方が
+ *  同じレンダーパスに参加するので、1箇所にまとめて食い違いを防ぐ。 */
+const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 /** 統計をコールバックへ流す間隔(ms)。毎フレームだと呼び出し側(React state更新やRust
  *  stdoutへのinvoke)が重くなるため間引く。 */
 const STATS_INTERVAL_MS = 500;
@@ -36,6 +40,14 @@ export interface RenderStats {
   cachedNodes: number;
   fps: number;
   pointBudget: number;
+  /** M2-0c: 空の有無でfpsを比較できるよう、現在の背景モードを統計に含める。 */
+  backgroundMode: BackgroundMode;
+  /** M2-0b: GUIを目視できなくても`pitch=0`が水平になっているかを`npm run tauri dev`の
+   *  stdoutだけで機械的に確認できるように、カメラの向きも統計に含める。 */
+  cameraPitch: number;
+  cameraYaw: number;
+  cameraUpAxis: [number, number, number];
+  cameraEye: [number, number, number];
 }
 
 const UNIFORM_BUFFER_SIZE = 80; // mat4(64) + pointSizePx(4) + viewportWidth(4) + viewportHeight(4) + pad(4)
@@ -122,6 +134,10 @@ export class PointCloudRenderer {
   private lastStatsEmitAt = 0;
   private frameTimestamps: number[] = [];
 
+  /** 空の背景（M2-0c）。既定は単色(暗)のままで、"sky"を選んだときだけ描く。 */
+  private readonly sky = new SkyBackground();
+  private backgroundMode: BackgroundMode = DEFAULT_BACKGROUND_MODE;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.camera = new OrbitCamera([0, 0, 0], 100);
@@ -180,8 +196,10 @@ export class PointCloudRenderer {
         targets: [{ format: this.format }],
       },
       primitive: { topology: "triangle-list" },
-      depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
     });
+
+    this.sky.init(device, this.format, DEPTH_FORMAT);
 
     this.resize(this.canvas.clientWidth || this.canvas.width, this.canvas.clientHeight || this.canvas.height);
     this.detachControls = attachOrbitControls(this.canvas, this.camera, {
@@ -254,6 +272,15 @@ export class PointCloudRenderer {
     return this.pointBudget;
   }
 
+  /** 背景モード（M2-0c）: 空 / 単色(暗) / 単色(明)。既定は単色(暗)。 */
+  setBackgroundMode(mode: BackgroundMode): void {
+    this.backgroundMode = mode;
+  }
+
+  getBackgroundMode(): BackgroundMode {
+    return this.backgroundMode;
+  }
+
   /** 統計（描画点数・ロード中ノード数・fpsなど）が更新されるたびに呼ばれる。 */
   onStatsUpdate(callback: (stats: RenderStats) => void): void {
     this.onStats = callback;
@@ -268,7 +295,7 @@ export class PointCloudRenderer {
     this.depthTexture?.destroy();
     this.depthTexture = this.device.createTexture({
       size: [w, h],
-      format: "depth24plus",
+      format: DEPTH_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.depthView = this.depthTexture.createView();
@@ -384,6 +411,11 @@ export class PointCloudRenderer {
       cachedNodes: this.cache.size,
       fps,
       pointBudget: this.pointBudget,
+      backgroundMode: this.backgroundMode,
+      cameraPitch: this.camera.pitch,
+      cameraYaw: this.camera.yaw,
+      cameraUpAxis: [...this.camera.getUpAxis()],
+      cameraEye: this.camera.eye(),
     });
   }
 
@@ -453,7 +485,9 @@ export class PointCloudRenderer {
       colorAttachments: [
         {
           view: context.getCurrentTexture().createView(),
-          clearValue: { r: 0.05, g: 0.05, b: 0.08, a: 1 },
+          // "sky"のときは全画面がSkyBackgroundで上書きされるので、このclearValueは
+          // 実質使われない。単色モードのときだけ見えるので、そちらの色にしておく。
+          clearValue: clearColorForMode(this.backgroundMode),
           loadOp: "clear",
           storeOp: "store",
         },
@@ -465,6 +499,17 @@ export class PointCloudRenderer {
         depthStoreOp: "store",
       },
     });
+
+    // 空は点より必ず奥に描く（M2-0c）。SkyBackgroundは深度を書かない
+    // (depthWriteEnabled=false, depthCompare="always")ので、この後に描く点群
+    // (depthCompare="less")は常に空より手前に残る。
+    if (this.backgroundMode === "sky") {
+      const invViewProj = invert(viewProj);
+      if (invViewProj) {
+        this.sky.draw(device, pass, invViewProj, this.camera.eye(), this.camera.getUpAxis());
+      }
+    }
+
     pass.setPipeline(pipeline);
 
     const uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
