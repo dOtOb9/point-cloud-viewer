@@ -18,6 +18,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm run test
 
   # ARCHITECTURE.md の規約をCIで機械的に守らせる。
   # この2つが崩れると Web 版が出せなくなるが、崩れても通常のビルドは通ってしまうため、
