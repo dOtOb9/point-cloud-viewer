@@ -76,7 +76,7 @@ point-cloud-viewer/
 | WebGPU 可否の確定 | 完了（M0-2）: WebGPU 採用。[ADR-0002](./ADR-0002-rendering-api.md) 参照 |
 | カスタムプロトコル | 完了（M0-3）: `pcv://` が `invoke` より有意に高速なことを実測済み。[M0-feasibility.md](./M0-feasibility.md) 参照 |
 | CI | 完了（M0-4）: 全ジョブ緑を実測。規約1/規約2 をCIで機械的に強制している |
-| COPC 読込 | 未着手（M1-1）: [M1](./M1-point-rendering.md) |
+| COPC 読込 | 完了（M1-1）: `copc-core`/`copc-reader`採用。[ADR-0003](./ADR-0003-copc-crate.md) 参照 |
 | octree LOD / 点予算 | 未着手（M1-4）: [M1](./M1-point-rendering.md) |
 | EDL シェーディング | 未着手（M2 に送った） |
 | カラーマップ切替 | 未着手（M2 に送った） |

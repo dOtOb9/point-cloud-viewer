@@ -1,6 +1,6 @@
 # M1: 点群が画面に出る
 
-- 状態: 未着手
+- 状態: 進行中（M1-1 完了）
 - 前提: [ADR-0001](./ADR-0001-architecture.md), [ADR-0002](./ADR-0002-rendering-api.md), [M0](./M0-feasibility.md) 完了
 
 ## このマイルストーンの目的
@@ -61,11 +61,21 @@ impl CopcFile {
 
 ### 受け入れ条件
 
-- [ ] COPC ファイルを開き、総点数・BBOX・octree のノード数が取れる
-- [ ] 任意のノードキーを指定して点を読み出せ、点数がヒエラルキの申告と一致する
-- [ ] `cargo build -p pcv-core --target wasm32-unknown-unknown` が通る（**規約1**）
-- [ ] `cargo test -p pcv-core` にテストがあり、CI で走る
-- [ ] ADR-0003 にクレート選定の理由が記録されている
+- [x] COPC ファイルを開き、総点数・BBOX・octree のノード数が取れる
+      （`crates/pcv-core/src/copc.rs` の `open_reports_total_point_count_and_bbox` で確認。
+      copc-writerで生成した2000点の合成COPCを開き、`info().point_count`・`min`/`max`・
+      `hierarchy().len()` を検証している）
+- [x] 任意のノードキーを指定して点を読み出せ、点数がヒエラルキの申告と一致する
+      （`read_node_point_count_matches_hierarchy` で、hierarchy内の全ノードを走査し
+      `read_node(key)` の返す点数が `hierarchy().get(key).point_count` と一致することを確認。
+      当初は境界面が接するノード間で1点だけ混入する不具合があり、`point_belongs_to_key`で
+      修正した。詳細はADR-0003参照）
+- [x] `cargo build -p pcv-core --target wasm32-unknown-unknown` が通る（**規約1**）
+      （ローカルで実行し成功を確認。copc-core/copc-reader両方を実装に組み込んだ後の実測）
+- [x] `cargo test -p pcv-core` にテストがあり、CI で走る
+      （10個のユニットテストを追加。ローカルの `cargo test --workspace` で全てpassすることを
+      確認。CIでの実行結果はpush後にGitHub Actionsのrunで確認する）
+- [x] ADR-0003 にクレート選定の理由が記録されている（`TaskSheets/ADR-0003-copc-crate.md`）
 
 ### テストデータの扱い
 
