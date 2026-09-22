@@ -10,7 +10,12 @@
 // 単純な`distance *= factor`に戻すと必ず失敗する。
 
 import { describe, expect, it } from "vitest";
+import { lookAt, multiply, perspective } from "./mat4";
 import { OrbitCamera } from "./orbit-camera";
+import { pickWorldPointUnderCursor } from "./raycast";
+
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
 
 function distance3(a: readonly [number, number, number], b: readonly [number, number, number]): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -75,6 +80,52 @@ describe("OrbitCamera.zoom", () => {
     camera.zoom(1 / 1.1);
     expect(camera.target).toEqual([10, 20, 30]);
     expect(camera.distance).toBeCloseTo(200 / 1.1, 6);
+  });
+
+  it("M1-5の回帰: pickWorldPointUnderCursorが返すtowardPointはカメラ位置と一致せず、targetがカメラへ吸い寄せられない", () => {
+    // 所有者の実機報告「逆に近づかなくなった」を、raycastとOrbitCameraを繋いだ形で
+    // 再現する。カメラは点群のルートAABBの内側にいて、その内側に前方の面(child)が
+    // ある。修正前は交点＝カメラ位置になり、zoom()のtarget += (towardPoint - target)
+    // でtargetがカメラへ寄っていってしまっていた。
+    const eye: [number, number, number] = [0, 0, 0];
+    const camera = new OrbitCamera([0, 0, -50], 50); // targetは前方遠くに置く
+    const view = lookAt(eye, [0, 0, -1], [0, 1, 0]);
+    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1000);
+    const viewProj = multiply(proj, view);
+
+    const root = { boundsMin: [-100, -100, -100] as const, boundsMax: [100, 100, 100] as const }; // カメラを内包
+    const child = { boundsMin: [-2, -2, -5] as const, boundsMax: [2, 2, -3] as const }; // 前方の面、カメラは含まない
+
+    const towardPoint = pickWorldPointUnderCursor(
+      viewProj,
+      CANVAS_WIDTH / 2,
+      CANVAS_HEIGHT / 2,
+      CANVAS_WIDTH,
+      CANVAS_HEIGHT,
+      [root, child],
+    );
+    expect(towardPoint).not.toBeNull();
+
+    const distanceFromEye = Math.hypot(
+      towardPoint![0] - eye[0],
+      towardPoint![1] - eye[1],
+      towardPoint![2] - eye[2],
+    );
+    expect(distanceFromEye).toBeGreaterThan(1); // カメラ位置そのものではない
+
+    camera.zoom(0.9, towardPoint!);
+    const targetAfter = camera.target;
+
+    // targetはtowardPoint（カメラ前方の面、eyeから3〜5離れた位置）へ少し寄るだけで、
+    // eye(カメラ位置)まで一気に吸い寄せられてはいない。
+    // 修正前は towardPoint が eye そのものだったため、target は毎ズームでeyeへ
+    // 直行し、「距離を詰めても対象に近づかない」（所有者の実機報告）状態になっていた。
+    const distanceFromEyeAfter = Math.hypot(
+      targetAfter[0] - eye[0],
+      targetAfter[1] - eye[1],
+      targetAfter[2] - eye[2],
+    );
+    expect(distanceFromEyeAfter).toBeGreaterThan(10);
   });
 });
 

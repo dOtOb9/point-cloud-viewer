@@ -56,10 +56,26 @@ function unprojectNdc(inv: Mat4, ndcX: number, ndcY: number, ndcZ: number): [num
 }
 
 /**
+ * レイ原点からの距離がこれ未満の交点は候補にしない。screenPointToWorldRayが作る
+ * レイの原点はニアプレーン上の点、つまりほぼカメラ位置なので、ここでの「わずか」は
+ * ニアプレーン距離（NEAR、point-cloud-renderer.tsで0.01）程度で十分。
+ *
+ * 過去にここを`Math.max(tMin, 0)`にしていたことがあり、その場合レイ原点がAABBの
+ * 内側にあると（＝カメラがoctreeノードの中にいると）0を返していた。カメラは
+ * 点群にわずかでも寄るとルートノードのAABBの内側に入るため、ズームするたびに
+ * 「交点＝カメラ位置そのもの」が返り、targetがカメラへ吸い寄せられて逆に
+ * 寄れなくなる不具合を生んだ（M1-point-rendering.md M1-5「実機確認で見つかった
+ * 不具合」参照）。この定数はその再発防止のためにある。
+ */
+const MIN_HIT_DISTANCE = 0.01;
+
+/**
  * レイとAABB（軸並行境界箱）の交差判定（スラブ法）。
  *
- * 交差する場合、レイ原点からの距離tのうち手前側の交点を返す（AABBの内側から
- * レイが出発する場合は0を返す）。交差しなければnull。
+ * 交差する場合、レイ原点からの距離t（MIN_HIT_DISTANCEより大きい、手前側の交点）を
+ * 返す。レイ原点がAABBの内側にある（＝カメラがそのノードの中にいる）場合や、
+ * 交点がMIN_HIT_DISTANCE以下しかない場合はnullを返す。「カメラを含む箱に向かって
+ * 寄る」ことに意味は無いため。
  */
 export function intersectRayAabb(
   ray: Ray,
@@ -93,8 +109,9 @@ export function intersectRayAabb(
     if (tMin > tMax) return null;
   }
 
-  if (tMax < 0) return null; // AABB全体がレイの後ろ側にある
-  return Math.max(tMin, 0);
+  if (tMax < MIN_HIT_DISTANCE) return null; // AABB全体がレイの後ろ側にある
+  if (tMin < MIN_HIT_DISTANCE) return null; // レイ原点がAABBの内側（またはすぐ後ろ）にある
+  return tMin;
 }
 
 export interface NodeAabb {
@@ -122,4 +139,31 @@ export function closestHierarchyHit(ray: Ray, nodes: readonly NodeAabb[]): [numb
     ray.origin[1] + ray.direction[1] * closestT,
     ray.origin[2] + ray.direction[2] * closestT,
   ];
+}
+
+/**
+ * カーソル位置（キャンバスのピクセル座標）の下にある点をおおまかに求める（M1-5）。
+ * screenPointToWorldRayでレイを作り、candidateAabbsの中で最も近い交点を返す。
+ *
+ * `candidateAabbs`は**その時点で実際に描画されているノード**のAABBに限定すること。
+ * hierarchy全体（全LODレベルの全ノード）を渡すと、内部ノードのAABBは子を入れ子に
+ * 包んでいるため、最近傍の交点を取ると常に最も粗い外側の箱が勝ってしまい、
+ * カーソル下の実際の表面まで届かない（M1-point-rendering.md M1-5
+ * 「実機確認で見つかった不具合」参照）。
+ *
+ * viewProjがまだ無い、レイが作れない、candidateAabbsが空、どの候補とも交差しない、
+ * のいずれかの場合はnull（呼び出し側はtargetへ向かって寄るフォールバックを使う）。
+ */
+export function pickWorldPointUnderCursor(
+  viewProj: Mat4,
+  screenX: number,
+  screenY: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  candidateAabbs: readonly NodeAabb[],
+): [number, number, number] | null {
+  if (candidateAabbs.length === 0) return null;
+  const ray = screenPointToWorldRay(viewProj, screenX, screenY, canvasWidth, canvasHeight);
+  if (!ray) return null;
+  return closestHierarchyHit(ray, candidateAabbs);
 }
