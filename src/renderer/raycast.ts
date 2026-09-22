@@ -28,6 +28,9 @@ export interface Ray {
  * その2点を結ぶ直線をレイとする。
  *
  * viewProjが特異（逆行列が求まらない）な場合はnullを返す。
+ *
+ * 内部の計算は`ndcPointToWorldRay`に委ねている。ここではピクセル座標をNDCに
+ * 変換するだけ。
  */
 export function screenPointToWorldRay(
   viewProj: Mat4,
@@ -36,11 +39,30 @@ export function screenPointToWorldRay(
   canvasWidth: number,
   canvasHeight: number,
 ): Ray | null {
-  const inv = invert(viewProj);
-  if (!inv) return null;
-
   const ndcX = (screenX / canvasWidth) * 2 - 1;
   const ndcY = 1 - (screenY / canvasHeight) * 2;
+  return ndcPointToWorldRay(viewProj, ndcX, ndcY);
+}
+
+/**
+ * NDC座標（画面中央が(0,0)、右上が(1,1)）から、ワールド空間のレイを作る。
+ * `screenPointToWorldRay`の核になる処理で、こちらは`ndcX`/`ndcY`に`[-1, 1]`の
+ * 範囲外の値を渡すこともできる（全画面三角形の頂点など、画面の外側に対応する
+ * NDC座標を扱いたい場合。sky.ts/ground-grid.tsが使う）。
+ *
+ * viewProjが特異（逆行列が求まらない）な場合はnullを返す。
+ *
+ * **すべてJSの数値(f64)で計算すること。** このプロジェクトのNEAR(0.01)/FAR(1e7)は
+ * ダイナミックレンジが10^9あり、そこにCOPCのような大きなワールド座標
+ * （例: autzenはX約637,000）が重なると、逆行列の成分は桁が大きく開く
+ * （`scripts/diag-sky-ray.ts`参照）。この関数の戻り値（方向ベクトル、大きさ~1）を
+ * GPUに渡す直前でf32にキャストする分にはなにも問題ない
+ * （unormalizeした値ではなく正規化済みの小さい値だから）が、**逆行列や
+ * この関数の内部の計算そのものをf32にしてはいけない**（`mat4.ts`冒頭の規約）。
+ */
+export function ndcPointToWorldRay(viewProj: Mat4, ndcX: number, ndcY: number): Ray | null {
+  const inv = invert(viewProj);
+  if (!inv) return null;
 
   // このプロジェクトのperspective()（mat4.ts）はWebGPU規約のNDC z: 0(near)..1(far)を使う。
   const near = unprojectNdc(inv, ndcX, ndcY, 0);
