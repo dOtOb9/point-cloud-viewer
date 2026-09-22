@@ -1,12 +1,19 @@
 [workspace]
 resolver = "2"
 members = ["crates/pcv-core", "src-tauri"]
+exclude = ["vendor"]
 
 # 全クレート共通のメタデータ。各メンバーは license.workspace = true で継承する。
 [workspace.package]
 license = "MIT OR Apache-2.0"
 authors = ["dOtOb9"]
 repository = "https://github.com/dOtOb9/point-cloud-viewer"
+
+# copc-reader 0.9.0 は root hierarchy ページが hierarchy EVLR の先頭にあると誤って仮定しており、
+# hierarchy が複数ページに分かれる大規模 COPC を開けない。vendor/ に取り込んで修正している。
+# 経緯と再現手順は TaskSheets/ADR-0003-copc-crate.md の追記を参照。
+[patch.crates-io]
+copc-reader = { path = "vendor/copc-reader" }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

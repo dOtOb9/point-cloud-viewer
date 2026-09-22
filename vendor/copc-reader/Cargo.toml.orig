@@ -1,0 +1,41 @@
+[package]
+name = "copc-reader"
+description = "Pure-Rust COPC reader with public hierarchy access"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+documentation = "https://docs.rs/copc-reader"
+keywords = ["copc", "las", "laz", "point-cloud", "gis"]
+categories = ["science", "parser-implementations"]
+exclude = [
+    "tests/**",
+    "benches/**",
+]
+
+[features]
+## Parallel chunk decoding for column reads with rayon.
+parallel = ["dep:rayon"]
+## HTTP range-request source for `CopcRangeReader` (plain HTTP out of the box).
+http = ["dep:ureq"]
+## Enables TLS in ureq so `HttpRangeReader` can fetch HTTPS URLs.
+http-tls = ["http", "ureq/rustls"]
+
+[dependencies]
+byteorder = { workspace = true }
+copc-core = { version = "0.9.0", path = "../copc-core" }
+las = { workspace = true }
+laz = { workspace = true }
+rayon = { workspace = true, optional = true }
+ureq = { version = "3", optional = true, default-features = false }
+
+# Path-only (version-less) so packaging strips it; repo tests and benches
+# needing the writer are excluded from the published package.
+[dev-dependencies]
+copc-writer = { path = "../copc-writer" }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+tiny_http = "0.12"
