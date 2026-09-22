@@ -10,8 +10,8 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -19,12 +19,42 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
 
-  # M0-4のビルド対象は Windows (tauri.conf.json のbundle設定もWindows想定)。
-  # fmt/clippy/test もこの上で走らせ、キャッシュは Swatinem/rust-cache に任せる。
+  # ARCHITECTURE.md の規約をCIで機械的に守らせる。
+  # この2つが崩れると Web 版が出せなくなるが、崩れても通常のビルドは通ってしまうため、
+  # 人間のレビューに頼らずここで落とす。
+  invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # 規約1: pcv-core は tauri に依存せず、wasm32 でビルドできること。
+      # これが Web 版のバックエンドが成立する条件 (ADR-0001)。
+      - name: "規約1: pcv-core が wasm32 でビルドできる"
+        run: cargo build -p pcv-core --target wasm32-unknown-unknown
+
+      # 規約2: Tauri の API を import してよいのは src/datasource/tauri.ts だけ。
+      # 他所に漏れると Web 版で HttpSource に差し替えられなくなる (ADR-0001)。
+      - name: "規約2: Tauri API の import が datasource に閉じている"
+        run: |
+          allowed="src/datasource/tauri.ts"
+          found=$(grep -rl "@tauri-apps/api" src/ || true)
+          if [ "$found" != "$allowed" ]; then
+            echo "::error::Tauri API を import してよいのは $allowed だけです。"
+            echo "実際に import しているファイル:"
+            echo "$found" | sed 's/^/  /'
+            echo "理由は TaskSheets/ADR-0001-architecture.md の「Tauri 依存を1ファイルに閉じ込める」を参照。"
+            exit 1
+          fi
+          echo "OK: $allowed のみ"
+
   rust:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -33,12 +63,14 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # 13秒で終わる frontend だけを前提にする。
+  # rust ジョブ (5分超) を待つと build と直列になり、CI 全体が倍近く遅くなるため待たない。
   build:
-    needs: [frontend, rust]
+    needs: [frontend]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm

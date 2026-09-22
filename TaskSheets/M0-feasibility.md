@@ -1,6 +1,6 @@
 # M0: 前提の確定
 
-- 状態: 完了（GitHub Actions が実際に緑になることの確認のみ、remote未設定のため未検証）
+- 状態: 完了
 - 前提: [ADR-0001](./ADR-0001-architecture.md)
 
 ## このマイルストーンの目的
@@ -202,9 +202,9 @@ GitHub Actions で、push ごとに壊れていないことを確認する。
 
 ### 受け入れ条件
 
-- [ ] push で CI が走り、全ジョブが緑
-      （**未検証**: このリポジトリは `git remote` が未設定で、今回の作業でも push は
-      行っていない。GitHub Actions が実際に走ることは確認できていない）
+- [x] push で CI が走り、全ジョブが緑
+      （2026-09-22 に public リポジトリ https://github.com/dOtOb9/point-cloud-viewer へ push し、
+      run 35721042805 で frontend 13s / rust 5m30s / build 7m36s の3ジョブすべて success を確認）
 - [x] わざと `clippy` 警告を入れると CI が落ちることを確認した（**ザルでないことの確認**）
       （ローカルで `&Vec<i32>` 引数を追加し `cargo clippy -- -D warnings` が
       `clippy::ptr_arg` で失敗することを確認してから元に戻した。GitHub Actions 上での
@@ -225,8 +225,7 @@ gh run view --log-failed   # 落ちたとき
 
 ## M0 完了の定義
 
-- [x] M0-1 〜 M0-4 がすべて完了している（M0-4の「push でCIが走り緑になる」だけは
-      remote未設定のため未検証。等価なローカル確認は済ませた。各タスクの受け入れ条件を参照）
+- [x] M0-1 〜 M0-4 がすべて完了している
 - [x] 描画 API（WebGPU か WebGL2 か）が確定し、ADR-0002 に記録されている
 - [x] IPC 方式の判断が実測値で裏付けられている
 - [x] `ARCHITECTURE.md` の「現在の状態」表が更新されている
