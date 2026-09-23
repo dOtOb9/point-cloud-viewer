@@ -11,6 +11,7 @@ import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { cameraBasis, multiply, perspective, translation, type Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
+import { medianOf, nextPointBudget, DEFAULT_POINT_BUDGET_TUNING } from "./point-budget";
 import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
@@ -21,6 +22,24 @@ import { horizontalBasis, type Vec3 } from "./up-axis";
 const DEFAULT_POINT_BUDGET = 3_000_000;
 /** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
 const CACHE_BUDGET_MULTIPLIER = 2;
+
+/**
+ * タスクB（ADR-0009）: 自動調整（`nextPointBudget`）が動かせる下限・上限。
+ *
+ * **この2つの数値は実測していない。** 下限は「これより粗いと点群として意味が
+ * 無い」という経験的な最低ライン、上限は「これまでの固定の点予算
+ * （開発機のRTX 4070を前提に決めた値）を、自動調整が勝手にそれ以上へ増やさない」
+ * という保守的な選択であって、対象端末（OPPO Pad Air等）の実測値ではない。
+ * 端末情報から上限を決める仕組み（ADR-0009が言う「静的情報の使いどころ」）は
+ * このタスクの範囲外で、[M3-8](../../TaskSheets/M3-release-and-update.md)の
+ * 端末適応作業に送る。
+ */
+const AUTO_POINT_BUDGET_MIN = 200_000;
+const AUTO_POINT_BUDGET_MAX = DEFAULT_POINT_BUDGET;
+
+/** 自動調整の判断に使う直近フレームの本数。ADR-0009:「判断は数フレームの中央値で
+ *  行う。単発の重いフレーム（ノード到着時など）に反応しない」。 */
+const AUTO_POINT_BUDGET_FRAME_HISTORY = 20;
 const POINT_SIZE_PX = 4;
 const FOV_Y_RADIANS = Math.PI / 3;
 const NEAR = 0.01;
@@ -31,6 +50,9 @@ const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 /** 統計をコールバックへ流す間隔(ms)。毎フレームだと呼び出し側(React state更新やRust
  *  stdoutへのinvoke)が重くなるため間引く。 */
 const STATS_INTERVAL_MS = 500;
+/** 自動点予算調整（タスクB）を実際に評価する間隔(ms)。毎フレーム評価すると
+ *  変化が細かすぎて読みにくくなるため、統計更新と同じ間隔に間引く。 */
+const AUTO_POINT_BUDGET_INTERVAL_MS = STATS_INTERVAL_MS;
 
 /** M1-4: 描画点数・ロード中ノード数・fpsなど。GUIを目視できなくても
  *  `npm run tauri dev` のRust側stdoutから挙動を追えるようにするための統計。 */
@@ -42,6 +64,9 @@ export interface RenderStats {
   cachedNodes: number;
   fps: number;
   pointBudget: number;
+  /** タスクB（ADR-0009）:「現在値を画面に出す。勝手に変わる仕組みは、何が
+   *  起きているか見えないと不信になる」。点予算が自動調整中かどうかを含める。 */
+  autoPointBudgetEnabled: boolean;
   /** M2-0c: 空の有無でfpsを比較できるよう、現在の背景モードを統計に含める。 */
   backgroundMode: BackgroundMode;
   /** M2-0c補強B: グリッドの有無でfpsを比較できるよう、現在のオン/オフを統計に含める。 */
@@ -131,6 +156,14 @@ export class PointCloudRenderer {
   private lastViewProj: Mat4 | null = null;
 
   private pointBudget = DEFAULT_POINT_BUDGET;
+  /** タスクB（ADR-0009）: 自動調整のオン/オフ。`setPointBudget()`で手動設定すると
+   *  自動でoffになる（手動設定を自動調整より常に優先するため）。 */
+  private autoPointBudgetEnabled = true;
+  /** 自動調整の判断に使う直近フレームの所要時間(ms)。中央値を取ってから
+   *  `nextPointBudget`に渡す（単発の重いフレームに反応しないため）。 */
+  private recentFrameDeltasMs: number[] = [];
+  private previousFrameTime: number | null = null;
+  private lastAutoBudgetAdjustAt = 0;
   private rafHandle = 0;
   private disposed = false;
 
@@ -285,13 +318,33 @@ export class PointCloudRenderer {
     this.cache.dispose();
   }
 
+  /**
+   * 点予算を手動で設定する。ADR-0009:「ユーザーの手動設定を常に優先する。
+   * 手で変えたら自動調整は止まる」に従い、呼ぶと自動調整（タスクB）を止める。
+   * 再開するには`setAutoPointBudgetEnabled(true)`を呼ぶこと。
+   */
   setPointBudget(budget: number): void {
+    this.autoPointBudgetEnabled = false;
     this.pointBudget = Math.max(1, Math.floor(budget));
     this.cache.maxPoints = this.pointBudget * CACHE_BUDGET_MULTIPLIER;
   }
 
   getPointBudget(): number {
     return this.pointBudget;
+  }
+
+  /**
+   * タスクB（ADR-0009）: 点予算の自動調整のオン/オフ。offにすると
+   * `pointBudget`は最後の値のまま固定され、`setPointBudget()`で手動設定した
+   * ときと同じ状態になる。onにすると次の評価タイミング
+   * （`AUTO_POINT_BUDGET_INTERVAL_MS`ごと）から閉ループでの調整を再開する。
+   */
+  setAutoPointBudgetEnabled(enabled: boolean): void {
+    this.autoPointBudgetEnabled = enabled;
+  }
+
+  getAutoPointBudgetEnabled(): boolean {
+    return this.autoPointBudgetEnabled;
   }
 
   /** 背景モード（M2-0c）: 空 / 単色(暗) / 単色(明)。既定は単色(暗)。 */
@@ -403,6 +456,9 @@ export class PointCloudRenderer {
       this.frameTimestamps.shift();
     }
 
+    this.recordFrameDelta(time);
+    this.autoAdjustPointBudget(time);
+
     const width = this.canvas.width;
     const height = this.canvas.height;
     const aspect = width / Math.max(height, 1);
@@ -448,7 +504,50 @@ export class PointCloudRenderer {
       cameraYaw: this.camera.yaw,
       cameraUpAxis: [...this.camera.getUpAxis()],
       cameraEye: this.camera.eye(),
+      autoPointBudgetEnabled: this.autoPointBudgetEnabled,
     });
+  }
+
+  /**
+   * タスクB（ADR-0009）: 直近フレームの所要時間(ms)を`recentFrameDeltasMs`に
+   * 記録する。`nextPointBudget`に渡す中央値の材料。`frameTimestamps`
+   * （fps計算用、直近1秒分をすべて保持）とは別に、こちらは直近
+   * `AUTO_POINT_BUDGET_FRAME_HISTORY`本だけを保持する短い窓にする
+   * （中央値を「今どれくらい重いか」の指標にするには、古いフレームを
+   * 引きずらないほうがよいため）。
+   */
+  private recordFrameDelta(time: number): void {
+    if (this.previousFrameTime !== null) {
+      this.recentFrameDeltasMs.push(time - this.previousFrameTime);
+      if (this.recentFrameDeltasMs.length > AUTO_POINT_BUDGET_FRAME_HISTORY) {
+        this.recentFrameDeltasMs.shift();
+      }
+    }
+    this.previousFrameTime = time;
+  }
+
+  /**
+   * タスクB（ADR-0009）: フレーム時間の閉ループで点予算を調整する。
+   * 実際の計算（不感帯・変化量の制限・上限下限）はすべて`nextPointBudget`
+   * （純粋関数、`point-budget.ts`）に任せ、ここでは「いつ・何を渡すか」だけを
+   * 決める（規約: このファイルは呼ぶだけにする）。
+   */
+  private autoAdjustPointBudget(time: number): void {
+    if (!this.autoPointBudgetEnabled) return;
+    if (time - this.lastAutoBudgetAdjustAt < AUTO_POINT_BUDGET_INTERVAL_MS) return;
+    if (this.recentFrameDeltasMs.length === 0) return;
+    this.lastAutoBudgetAdjustAt = time;
+
+    const recentFrameMs = medianOf(this.recentFrameDeltasMs);
+    const next = nextPointBudget(this.pointBudget, recentFrameMs, {
+      ...DEFAULT_POINT_BUDGET_TUNING,
+      limits: { min: AUTO_POINT_BUDGET_MIN, max: AUTO_POINT_BUDGET_MAX },
+    });
+
+    if (next !== this.pointBudget) {
+      this.pointBudget = next;
+      this.cache.maxPoints = this.pointBudget * CACHE_BUDGET_MULTIPLIER;
+    }
   }
 
   /**

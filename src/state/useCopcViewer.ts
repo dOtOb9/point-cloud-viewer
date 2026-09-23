@@ -69,6 +69,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         `[M1] drawnPoints=${s.drawnPoints} drawnNodes=${s.drawnNodes} ` +
         `loadingNodes=${s.loadingNodes} queuedNodes=${s.queuedNodes} ` +
         `cachedNodes=${s.cachedNodes} fps=${s.fps.toFixed(1)} pointBudget=${s.pointBudget} ` +
+        // タスクB(ADR-0009):「現在値を画面に出す」の一環。自動調整中かどうかを
+        // stdoutだけでも確認できるようにする。
+        `autoPointBudget=${s.autoPointBudgetEnabled} ` +
         // M2-0c: 空/グリッドの有無でfpsを比較できるよう、一緒に出す。
         `backgroundMode=${s.backgroundMode} gridEnabled=${s.gridEnabled} ` +
         // M2-0b: GUIを目視できなくても、pitch=0が水平になっているか等をstdoutだけで
