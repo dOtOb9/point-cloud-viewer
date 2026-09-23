@@ -1,11 +1,20 @@
 import { useState } from "react";
-import type { BackgroundMode, CopcViewerState } from "../../state/useCopcViewer";
+import type { BackgroundMode, ColorMode, CopcViewerState } from "../../state/useCopcViewer";
 import { GLASS_SURFACE } from "./glass";
 
 const BACKGROUND_MODE_LABELS: Record<BackgroundMode, string> = {
   "solid-dark": "単色(暗)",
   "solid-light": "単色(明)",
   sky: "空",
+};
+
+/** M2-2: 着色モードの並び・ラベル。表示順はUIとして自然な優先順位
+ *  (RGB→標高→強度→分類)にしてあり、`colormap.ts`の`COLOR_MODES`の並びと合わせてある。 */
+const COLOR_MODE_LABELS: Record<ColorMode, string> = {
+  rgb: "RGB",
+  elevation: "標高",
+  intensity: "強度",
+  classification: "分類",
 };
 
 interface Props {
@@ -120,6 +129,36 @@ export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
             />
             グリッド
           </label>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-xs opacity-70">着色</label>
+            <select
+              value={viewer.colorMode}
+              onChange={(e) => viewer.setColorMode(e.target.value as ColorMode)}
+              className="rounded border border-black/10 bg-white/60 px-2 py-1 text-xs text-inherit dark:border-white/10 dark:bg-black/30"
+            >
+              {(Object.keys(COLOR_MODE_LABELS) as ColorMode[]).map((mode) => {
+                // RGBを持たないファイルではRGBを選べないようにする(受け入れ条件)。
+                // hasColorが分からない(まだファイルを開いていない)間はグレーアウトしない
+                // (falseと決めつけず、選べる状態にしておく)。
+                const disabled = mode === "rgb" && viewer.cloudInfo !== null && !viewer.cloudInfo.hasColor;
+                return (
+                  <option
+                    key={mode}
+                    value={mode}
+                    disabled={disabled}
+                    title={disabled ? "このファイルはRGBを持たない" : undefined}
+                  >
+                    {COLOR_MODE_LABELS[mode]}
+                    {disabled ? "（RGB無し）" : ""}
+                  </option>
+                );
+              })}
+            </select>
+            {viewer.cloudInfo !== null && !viewer.cloudInfo.hasColor && viewer.colorMode === "elevation" && (
+              <p className="text-xs opacity-60">このファイルはRGBを持たないため、標高で着色しています</p>
+            )}
+          </div>
 
           <label className="flex items-center gap-2 text-xs">
             <input

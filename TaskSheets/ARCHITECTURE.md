@@ -84,5 +84,5 @@ point-cloud-viewer/
 | 上方向(up軸)の集約 | 完了（M2-0b）: `src/renderer/up-axis.ts`にupAxisを1箇所へ集約し、既定をZ-up（`[0, 0, 1]`）に変更。カメラ(`eye()`/`viewMatrix()`)・パンがすべて同じ値を参照する。`pitch=0`が水平になることと`setUpAxis()`への追従はvitestで確認済み。実機での「地面が水平に見える」目視確認は所有者待ち。[M2](./M2-shading-and-ui.md) M2-0b参照 |
 | 空の背景・地面グリッド | 実装済み（M2-0c）、既定はオフ: `src/renderer/sky.ts`（手続き的グラデーション+地平線の線）と`src/renderer/ground-grid.ts`（スケール自動追従のグリッド）。どちらも深度を書かず点群より奥に描かれる。UIから「空/単色(暗)/単色(明)」とグリッドのon/offを切り替え可能。地平線の見え方・fps実測は所有者の実機待ち。[M2](./M2-shading-and-ui.md) M2-0c参照 |
 | EDL シェーディング | 実装済み（M2-1）、既定はオン: `src/renderer/edl.ts`。点群だけを描くオフスクリーンの色+深度テクスチャを新設し、`point-cloud-renderer.ts`の`drawFrame()`を2パス化(点群→オフスクリーン、空/グリッド+EDL合成→スワップチェーン)することで、EDLの陰影が空・グリッドに掛からないようにした。オン/オフのみUIから調整可能。強さは所有者が実機で確認して`0.05`に固定した(UIのスライダーは削除済み)。`sofi.copc.laz`での実際の見え方・fps実測は所有者の実機待ち。[M2](./M2-shading-and-ui.md) M2-1参照 |
-| カラーマップ切替 | 未着手（M2 に送った） |
+| カラーマップ切替 | 着手中（M2-2）: 色計算の純粋関数(`src/renderer/colormap.ts`、標高/強度のランプ・分類コード表)と`LayerPanel`の着色モード選択・`useCopcViewer.ts`のstateまで実装済み。`point-cloud-renderer.ts`の分割(別エージェント作業中)完了後、実際の描画色へ結線する。[M2](./M2-shading-and-ui.md) M2-2参照 |
 | WebGPU エラーの可視化 | 完了: `device.onuncapturederror`/`device.lost`の監視、初期化を`pushErrorScope`で区切っての箇所特定、画面への不透明なエラーバナー表示。EDL(M2-1)で「テスト・CIはすべて緑なのに画面は真っ黒になった」事故を受けて新設。[ADR-0011](./ADR-0011-gpu-error-visibility.md)参照 |

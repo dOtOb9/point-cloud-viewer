@@ -6,6 +6,7 @@ import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
 import { DEFAULT_EDL_ENABLED } from "../renderer/edl";
 import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
+import { DEFAULT_COLOR_MODE, resolveColorMode, type ColorMode } from "../renderer/colormap";
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // GpuErrorEntryもここから再エクスポートする。
@@ -14,6 +15,10 @@ export type { GpuErrorEntry };
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // BackgroundModeもここから再エクスポートする。
 export type { BackgroundMode };
+
+// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
+// ColorModeもここから再エクスポートする（M2-2）。
+export type { ColorMode };
 
 const DEFAULT_POINT_BUDGET = 3_000_000;
 
@@ -40,6 +45,19 @@ export interface CopcViewerState {
    *  M2-1参照）。強さは所有者が実機で確認して0.05に固定したため、UIから
    *  調整する手段は無い（`src/renderer/edl.ts`の`DEFAULT_EDL_STRENGTH`参照）。 */
   edlEnabled: boolean;
+  /** M2-2: 着色モード。既定は`DEFAULT_COLOR_MODE`("rgb")。ファイルを開いた結果
+   *  RGBが無いと分かった場合は自動で`FALLBACK_COLOR_MODE_WITHOUT_RGB`("elevation")
+   *  に落ちる（`openFile`参照）。手動で"rgb"を選んでも、開いているファイルが
+   *  RGBを持たなければ同様に落ちる（`setColorMode`参照。フォールバック先の
+   *  理由は`src/renderer/colormap.ts`の`FALLBACK_COLOR_MODE_WITHOUT_RGB`
+   *  のコメントに記録してある）。
+   *
+   *  **レンダラへの結線は未実装（このコミットの時点）。** `point-cloud-renderer.ts`を
+   *  分割中の別エージェントの作業と衝突しないよう、着色モードの計算
+   *  (`src/renderer/colormap.ts`)とこのstate・UIだけを先に用意した
+   *  （TaskSheets/M2-shading-and-ui.md M2-2参照）。実際に点の色が変わるのは
+   *  分割が完了し、rendererに`setColorMode`相当のAPIが追加されてから。 */
+  colorMode: ColorMode;
   /** WebGPUのエラー（新設）。`device.onuncapturederror`・デバイス消失・初期化時の
    *  バリデーションエラーがここに蓄積される。蓄積・重複抑制のロジック自体は
    *  `GpuErrorLog`（renderer/gpu-error-log.ts、GPUに依存しない純粋なクラス）に
@@ -52,6 +70,7 @@ export interface CopcViewerState {
   setBackgroundMode: (mode: BackgroundMode) => void;
   setGridEnabled: (enabled: boolean) => void;
   setEdlEnabled: (enabled: boolean) => void;
+  setColorMode: (mode: ColorMode) => void;
   /** バナーの「閉じる」ボタンから呼ぶ。指定したエラーだけを消す。 */
   dismissGpuError: (id: number) => void;
 }
@@ -81,6 +100,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
   const [edlEnabled, setEdlEnabledState] = useState(DEFAULT_EDL_ENABLED);
+  const [colorMode, setColorModeState] = useState<ColorMode>(DEFAULT_COLOR_MODE);
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
 
   useEffect(() => {
@@ -176,6 +196,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setCloudInfo(opened.info);
       setNodeCount(opened.nodes.length);
       setStatus("ready");
+      // M2-2: 開いたファイルがRGBを持たない場合、現在"rgb"を選んでいれば
+      // 自動的に標高へ落とす（colormap.tsの`resolveColorMode`/
+      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。関数形の更新にしているのは、
+      // このコールバック自体が`[]`依存の`useCallback`で、閉じ込めた古い
+      // `colorMode`を読まないようにするため。
+      setColorModeState((prev) => resolveColorMode(prev, opened.info.hasColor));
 
       const summary = `[M1] opened ${path}: points=${opened.info.pointCount} nodes=${opened.nodes.length}`;
       console.log(summary);
@@ -217,6 +243,23 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setEdlEnabled(enabled);
   }, []);
 
+  const setColorMode = useCallback(
+    (mode: ColorMode) => {
+      // 現在開いているファイルがRGBを持たない場合は、"rgb"を選ぼうとしても
+      // 自動的に標高へ落とす（受け入れ条件「RGBを持たない点群ではRGBが選べないか、
+      // 選んだときに分かる形で別モードに落ちる」）。`LayerPanel`側でも"rgb"の
+      // 選択肢自体をdisabledにしているため、通常はここに到達しないが、
+      // 二重の安全策として関数側でも解決する。
+      setColorModeState(resolveColorMode(mode, cloudInfo?.hasColor ?? false));
+      // TODO(M2-2): point-cloud-renderer.tsの分割が完了したら、ここで
+      // rendererRef.current?.setColorMode(...)相当のAPIを呼んで実際の描画色を
+      // 切り替える。分割中の別エージェントの作業と衝突しないよう、このコミットの
+      // 時点ではstateを更新するだけに留めている（TaskSheets/M2-shading-and-ui.md
+      // M2-2参照）。
+    },
+    [cloudInfo],
+  );
+
   const dismissGpuError = useCallback((id: number) => {
     gpuErrorLogRef.current.dismiss(id);
     setGpuErrors(gpuErrorLogRef.current.list());
@@ -233,6 +276,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     backgroundMode,
     gridEnabled,
     edlEnabled,
+    colorMode,
     gpuErrors,
     openFile,
     setPointBudget,
@@ -240,6 +284,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setBackgroundMode,
     setGridEnabled,
     setEdlEnabled,
+    setColorMode,
     dismissGpuError,
   };
   return [canvasRef, state];
