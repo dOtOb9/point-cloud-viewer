@@ -126,6 +126,13 @@ fn bad_request_response(message: &str) -> tauri::http::Response<Vec<u8>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // OSのファイル選択ダイアログ(デスクトップ・Android共通)。UI側は
+        // src/datasource/tauri.ts の pickLocalFile() 経由でしか呼ばない(規約2)。
+        .plugin(tauri_plugin_dialog::init())
+        // Androidの content:// URI からファイルを開くために使う(copc_state::CopcPool::open_uri
+        // 参照)。デスクトップではダイアログが返す通常のパスをそのまま開くだけで、
+        // 挙動は変わらない(CopcPool::open_pathはこのプラグインを経由しない)。
+        .plugin(tauri_plugin_fs::init())
         .manage(CopcState::default())
         .register_asynchronous_uri_scheme_protocol("pcv", handle_pcv_protocol)
         .invoke_handler(tauri::generate_handler![

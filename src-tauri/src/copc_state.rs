@@ -37,12 +37,47 @@
 //! できる（計測ハーネス用）。
 //!
 //! 検討して採らなかった案は`CopcPool`のドキュメントコメントに書いた。
+//!
+//! ## M3: OSのファイル選択ダイアログとAndroidの`content://` URI
+//!
+//! Tauri版にファイルパスの手入力しか無いと、Androidでは実質ファイルを開けない
+//! （Androidアプリは通常パスを手入力できるUIを持たず、ダイアログが返すのも
+//! `content://` URIであってファイルシステムパスではない）。そこで
+//! `tauri-plugin-dialog`でOS標準の選択ダイアログを出し（デスクトップ・Android共通）、
+//! 返ってきた文字列を`CopcPool::open_path`（通常のパス）か`CopcPool::open_uri`
+//! （`content://`等のURI）のどちらかに渡す。
+//!
+//! `open_uri`は`tauri-plugin-fs`の`FsExt`を使う。`Fs::open`はデスクトップでは
+//! `std::fs::OpenOptions::open`をそのまま呼ぶだけ（`open_path`と実質同じ処理）。
+//! Androidでは`content://`を`ContentResolver.openAssetFileDescriptor`
+//! （ネイティブKotlin側、`tauri-plugin-fs`の`FsPlugin.kt`）で解決し、得られた
+//! 生のファイルディスクリプタを`std::fs::File::from_raw_fd`で包んで返す —
+//! **ファイル全体をアプリのキャッシュにコピーしない**（2GB級のファイルがあるため、
+//! この経路を実際にソースを読んで確認せずに使うことはできなかった。確認した
+//! 根拠は`TaskSheets/M3-release-and-update.md`を参照）。
+//!
+//! `CopcPool::open_path`/`open_uri`はどちらも`pool_size`回、独立に「1本開く」
+//! 処理を呼び直す。**`File::try_clone()`は使わない**（複製したハンドルは
+//! シーク位置を共有するため、N本のリーダーで並行読みすると壊れる。本ファイル
+//! 冒頭の解説と同じ理由）。毎回オープンし直すことで、パスの場合もURIの場合も
+//! 新しいFile/fdが得られ、シーク位置が独立することを保証する。
+//!
+//! `open_uri`は`tauri::AppHandle`を要求するため、Androidの`content://` URIは
+//! 実機（またはAndroidエミュレータ）でしか作れず、ユニットテストの対象にしにくい
+//! （テスト用にAppHandleを用意する`tauri::test::mock_app()`は、この開発機の
+//! 環境では別の問題でテストプロセスが起動できなかった。詳細は
+//! `TaskSheets/M3-release-and-update.md`）。そのため`open_path`（AppHandle不要、
+//! これまでと同じ`std::fs::File`直開き）と`open_uri`を意図的に分け、
+//! ユニットテストは`open_path`側だけを対象にしている。
 
+use std::io::BufReader;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex};
 
 use pcv_core::{CloudInfo, CopcFile, HierarchyNode, NodeKey};
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
+use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
 
 /// `open_copc`が明示的なプールサイズ指定を受け取らなかったときに使う既定値。
 ///
@@ -115,11 +150,36 @@ struct CopcPool {
 }
 
 impl CopcPool {
-    fn open(path: &Path, pool_size: usize) -> Result<Self, String> {
+    /// 通常のファイルシステムパスから開く。`std::fs::File`を直接使う
+    /// （`tauri-plugin-fs`を経由しない。デスクトップでの挙動はこれまでと
+    /// 完全に同じで、`AppHandle`も要らない。ユニットテストはこちらだけを対象にする）。
+    fn open_path(path: &Path, pool_size: usize) -> Result<Self, String> {
+        Self::build(pool_size, || {
+            CopcFile::open(path).map_err(|e| e.to_string())
+        })
+    }
+
+    /// Androidの`content://`（または`file://`）URIから開く。`tauri-plugin-fs`の
+    /// `FsExt`経由（本ファイル冒頭のコメント参照）。実機でしか作れないURIを扱うため
+    /// `AppHandle`が要る。
+    fn open_uri<R: Runtime>(
+        app: &AppHandle<R>,
+        uri: &str,
+        pool_size: usize,
+    ) -> Result<Self, String> {
+        Self::build(pool_size, || open_uri_reader(app, uri))
+    }
+
+    /// `pool_size`回、独立に`open_one`を呼んでプールを作る（`File::try_clone()`は
+    /// 使わない。本ファイル冒頭のコメント参照）。
+    fn build<F>(pool_size: usize, mut open_one: F) -> Result<Self, String>
+    where
+        F: FnMut() -> Result<CopcFile, String>,
+    {
         let pool_size = pool_size.max(1);
         let mut idle = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
-            idle.push(CopcFile::open(path).map_err(|e| e.to_string())?);
+            idle.push(open_one()?);
         }
         Ok(Self {
             idle: Mutex::new(idle),
@@ -151,6 +211,32 @@ impl CopcPool {
             .push(file);
         self.available.notify_one();
     }
+}
+
+/// `content://`/`file://` URIを1本、`tauri_plugin_fs`経由で開く。
+///
+/// `FilePath::from_str`は`Infallible`（常に`Ok`）を返す実装になっている
+/// （`url::Url`としてパースでき、かつscheme長が2文字以上ならURL、それ以外
+/// （Windowsのドライブレター`C:`のようなscheme長1文字も含む）はパス扱いになる、
+/// という判別を`tauri-plugin-fs`側が持つ）。ここでは常にURIとして扱いたいので
+/// 判別結果は使わず、そのまま`app.fs().open()`に渡す。
+///
+/// `app.fs().open()`はデスクトップでは`std::fs::OpenOptions::open`を直接呼ぶだけ
+/// （Tauriのfsスコープ・権限チェックは`invoke`経由のJS呼び出しにだけ掛かるもので、
+/// このRustからの直接呼び出しには掛からない）。Androidでは
+/// `ContentResolver.openAssetFileDescriptor`から得た生のfdを
+/// `std::fs::File::from_raw_fd`で包んで返す（`tauri-plugin-fs`のソース
+/// `android.rs`/`FsPlugin.kt`で確認済み。コピーは発生しない）。
+fn open_uri_reader<R: Runtime>(app: &AppHandle<R>, uri: &str) -> Result<CopcFile, String> {
+    let file_path = FilePath::from_str(uri)
+        .unwrap_or_else(|infallible: std::convert::Infallible| match infallible {});
+    let mut open_options = OpenOptions::new();
+    open_options.read(true);
+    let file = app
+        .fs()
+        .open(file_path, open_options)
+        .map_err(|e| format!("URIを開けなかった ({uri}): {e}"))?;
+    CopcFile::from_reader(BufReader::new(file)).map_err(|e| e.to_string())
 }
 
 /// 現在開いているCOPCファイル。同時に1つしか開けない前提（M1時点ではタブ等は無い）。
@@ -223,25 +309,39 @@ pub struct OpenCopcResponse {
 /// `src/state/useNodeConcurrencyBench.ts`が並行数ごとにプールサイズも振って
 /// 計測するため（`ADR-0007-pcv-protocol-concurrency.md`参照）。同じファイルを
 /// 開き直すとプールを作り直すだけで、ハンドラの他の状態には影響しない。
+///
+/// `path`はファイルシステムパス、またはAndroidの`content://` URI（OSのファイル
+/// 選択ダイアログが返したものをそのまま渡す。`src/datasource/tauri.ts`の
+/// `pickLocalFile()`参照）。`app`はTauriが自動で注入する（フロントから渡す
+/// 引数ではない）。
 #[tauri::command]
 pub fn open_copc(
+    app: AppHandle,
     path: String,
     pool_size: Option<usize>,
     state: State<CopcState>,
 ) -> Result<OpenCopcResponse, String> {
-    open_copc_impl(&path, pool_size, &state)
+    let pool_size = pool_size.unwrap_or_else(default_pool_size);
+    // パスかURIかは`tauri_plugin_fs`の判別に任せる（本ファイル冒頭のコメント参照）。
+    // Windowsのドライブレター(`C:\...`)はscheme長1文字のためPath扱いになる。
+    let pool =
+        match FilePath::from_str(&path).unwrap_or_else(|e: std::convert::Infallible| match e {}) {
+            FilePath::Path(p) => CopcPool::open_path(&p, pool_size)?,
+            FilePath::Url(_) => CopcPool::open_uri(&app, &path, pool_size)?,
+        };
+    open_copc_impl(pool, &path, &state)
 }
 
-/// `open_copc`の中身。`tauri::State`を経由しない素の関数にしておくと、
-/// テストで実際のTauriランタイムを起動せずに検証できる。
+/// プールが開けた後の共通処理（hierarchy取得・`CopcState`更新・ログ出力）。
+/// `AppHandle`を必要としない素の関数にしておくと、テストでは
+/// `CopcPool::open_path`（`AppHandle`不要）で開いたプールをそのまま渡して検証できる
+/// （`content://` URIは実機でしか作れないため、`CopcPool::open_uri`はユニット
+/// テストの対象にしていない。本ファイル冒頭のコメント参照）。
 fn open_copc_impl(
+    pool: CopcPool,
     path: &str,
-    pool_size: Option<usize>,
     state: &CopcState,
 ) -> Result<OpenCopcResponse, String> {
-    let pool_size = pool_size.unwrap_or_else(default_pool_size);
-    let pool = CopcPool::open(Path::new(path), pool_size)?;
-
     // info/hierarchyはプール内のどの`CopcFile`でも同じ内容なので、1本借りて読む。
     let file = pool.checkout();
     let info = CloudInfoDto::from(file.info());
@@ -379,19 +479,86 @@ mod tests {
     fn open_copc_impl_populates_state_and_reports_summary() {
         let (_dir, path) = synthetic_copc_file();
         let state = CopcState::default();
+        let pool = CopcPool::open_path(&path, default_pool_size()).unwrap();
 
-        let response = open_copc_impl(path.to_str().unwrap(), None, &state).unwrap();
+        let response = open_copc_impl(pool, path.to_str().unwrap(), &state).unwrap();
 
         assert_eq!(response.info.point_count, 500);
         assert!(!response.nodes.is_empty());
         assert!(state.0.lock().unwrap().is_some());
     }
 
+    /// 受け入れ条件: パスから`CopcPool`が組めること。明示的なプールサイズが
+    /// そのまま反映されることも合わせて確認する（`useNodeConcurrencyBench`が
+    /// 依存している挙動）。
+    #[test]
+    fn copc_pool_open_path_builds_pool_with_requested_size() {
+        let (_dir, path) = synthetic_copc_file();
+        let pool_size = 3;
+
+        let pool = CopcPool::open_path(&path, pool_size).unwrap();
+
+        assert_eq!(pool.pool_size, pool_size);
+        // プールから借りたリーダーが実際に点を読めること（開き方が壊れていないこと）の確認。
+        let mut file = pool.checkout();
+        assert_eq!(file.info().point_count, 500);
+        let root = *file.hierarchy().nodes().next().unwrap();
+        assert!(file.read_node(root.key).is_ok());
+        pool.checkin(file);
+    }
+
+    /// 受け入れ条件: `CopcPool`がリーダーごとに独立したファイルハンドルを開き、
+    /// `File::try_clone()`のようにシーク位置を共有しないこと。
+    ///
+    /// Androidの`content://` URIは実機でしか作れないため（`CopcPool::open_uri`は
+    /// このテストの対象にしていない。本ファイル冒頭のコメント参照）、ここでは
+    /// 「同じパスを2回ファイルシステムから開くと、独立したシーク位置を持つ」という、
+    /// `open_path`/`open_uri`がどちらも依拠している一般的なOSの前提そのものを検証する。
+    /// `File::try_clone()`との違いを直接対比する形で確認する。
+    #[test]
+    fn independently_opened_file_handles_have_independent_seek_positions() {
+        use std::fs::File;
+        use std::io::{Read, Seek, SeekFrom};
+
+        let dir = tempfile::tempdir().expect("tempdir作成に失敗");
+        let path = dir.path().join("independent-seek.bin");
+        std::fs::write(&path, b"0123456789").expect("テストファイルの書き込みに失敗");
+
+        // 対比1: try_clone()は同じシーク位置を共有する（これがCopcPoolで
+        // 使ってはいけない理由そのもの）。
+        let mut original = File::open(&path).unwrap();
+        let mut cloned = original.try_clone().unwrap();
+        let mut buf = [0u8; 4];
+        original.read_exact(&mut buf).unwrap(); // originalが0..4を消費
+                                                // try_clone由来のハンドルも同じ位置(4)から読み始まる=共有されている証拠。
+        let mut buf2 = [0u8; 4];
+        cloned.read_exact(&mut buf2).unwrap();
+        assert_eq!(&buf2, b"4567", "try_clone()はシーク位置を共有するはず");
+
+        // 対比2: 独立にopen()し直すと、それぞれ別の位置から読める
+        // （open_path/open_uriが毎回これをやっている、という前提の検証）。
+        let mut reader_a = File::open(&path).unwrap();
+        let mut reader_b = File::open(&path).unwrap();
+        reader_a.seek(SeekFrom::Start(6)).unwrap();
+        let mut a_buf = [0u8; 4];
+        reader_a.read_exact(&mut a_buf).unwrap();
+        assert_eq!(&a_buf, b"6789");
+
+        // reader_bはreader_aのシークに一切影響されず、先頭から読める。
+        let mut b_buf = [0u8; 4];
+        reader_b.read_exact(&mut b_buf).unwrap();
+        assert_eq!(
+            &b_buf, b"0123",
+            "独立にopenしたハンドルは互いのシークに影響されない"
+        );
+    }
+
     #[test]
     fn read_node_bytes_matches_m1_2_wire_format() {
         let (_dir, path) = synthetic_copc_file();
         let state = CopcState::default();
-        let response = open_copc_impl(path.to_str().unwrap(), None, &state).unwrap();
+        let pool = CopcPool::open_path(&path, default_pool_size()).unwrap();
+        let response = open_copc_impl(pool, path.to_str().unwrap(), &state).unwrap();
 
         let first_node = &response.nodes[0];
         let key = NodeKey::from_str(&first_node.key).unwrap();
