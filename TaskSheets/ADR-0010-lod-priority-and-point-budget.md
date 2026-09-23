@@ -170,49 +170,165 @@ ADR-0009が「静的情報の使いどころ」として挙げているこの部
 | 単発フレームの時間をそのまま使う | ADR-0009:「単発の重いフレーム（ノード到着時など）に反応しない」ために中央値を使うと明記されている |
 | 上限を`navigator.deviceMemory`等から動的に決める | このタスクの範囲では「端末情報が意図的に粗い」問題（ADR-0009参照）への対処が別途要り、今回は「実測していない数値を実測したと書かない」ことを優先し、保守的な固定上限に留めた。M3-8に送る |
 
-## 触ったファイル
+## 追記（2026-09-23）: タスクBの閉ループがラチェットになっていた不具合を直す
 
-- `src/renderer/screen-space-error.ts`（タスクA: 式の変更）
-- `src/renderer/screen-space-error.test.ts`（タスクA: 新規テスト2件）
-- `src/renderer/point-budget.ts`（タスクB: 新規。純粋関数`nextPointBudget`/`medianOf`）
-- `src/renderer/point-budget.test.ts`（タスクB: 新規テスト5件）
-- `src/renderer/point-cloud-renderer.ts`（タスクB: `nextPointBudget`の呼び出し、
-  `setAutoPointBudgetEnabled`/`getAutoPointBudgetEnabled`の追加、
-  `RenderStats.autoPointBudgetEnabled`の追加）
-- `src/state/useCopcViewer.ts`（タスクB: stdoutログに`autoPointBudget=...`を追加）
+### 診断（所有者から前提として与えられたもの）
 
-## 所有者が自分で確認する手順
+タスクBの最初の実装（`nextPointBudget`。上の「タスクB」節）には構造的な不具合が
+あった。`recordFrameDelta()`は`requestAnimationFrame`のコールバック**間隔**を記録し、
+その中央値を`nextPointBudget()`に渡していたが、**これはvsyncの周期であって、描画の
+重さではない。**
 
-### タスクA・タスクB共通（テストとCI）
+60Hzの環境では間隔は16.7 / 33.3 / 50.0 msに量子化される。不感帯は
+`targetFrameMs ± deadZoneMs` = 16.67 ± 4 = [12.67, 20.67]。したがって:
+
+- 普通に60fpsが出ている: 間隔16.7ms → 不感帯の中 → 変化なし
+- コマ落ち: 間隔33.3ms → 上回る → 20%下げる
+- **予算を上げる条件（12.67ms未満）は、60Hz vsync環境では原理的に起こらない**
+  （1フレームがどれだけ速く終わっても、rAFは次のvsyncまで待たされるため）
+
+結果として、点予算は下がる一方で二度と戻らないラチェットになっていた。
+0.5秒ごと（`AUTO_POINT_BUDGET_INTERVAL_MS`）に20%ずつ下がるので、重い操作が
+6秒続けば下限の200,000（既定3,000,000の1/15）まで落ち、そこで「16.7ms＝不感帯の
+中」になって永久に固定される。所有者から「近くのチャンクで精緻にならないことが
+ある」という報告があったのは、起動してからコマ落ちがあったかどうかで結果が
+決まってしまうためだった。
+
+さらに`AUTO_POINT_BUDGET_MAX = DEFAULT_POINT_BUDGET`（どちらも3,000,000）だったため、
+そもそも開始値より上には一切増えられない、という問題も重なっていた。
+
+### 新しい設計: 「間に合っているか」を信号にしたAIMD
+
+vsync下では「描画の重さ」をrAFの間隔の絶対値からは読めない。そこで、間隔の絶対値
+ではなく**「vsyncに間に合っているかどうか」を信号にする**、AIMD
+（Additive Increase / Multiplicative Decrease。緩やかに増やし、外したら大きく
+減らす）型の制御に作り直した。`src/renderer/point-budget.ts`に実装した
+（引き続き純粋関数。WebGPUもReactも要らず、vitestだけで検証できる）。
+
+1. **`updateRefreshIntervalEstimate`**: 表示のリフレッシュ周期を、固定値
+   `1000/60`に決め打ちせず観測から推定する。**「これまでに観測した最小の間隔」を
+   使う。** vsync環境では1フレームの所要時間が物理的にリフレッシュ周期を
+   下回れないため、一度でも「詰まっていない」フレームに出会えれば、そのときの
+   間隔がほぼ正確な周期になる。`point-cloud-renderer.ts`の`recordFrameDelta`で
+   毎フレーム呼び、`refreshIntervalEstimate`フィールドに持たせ続ける。
+
+   直近の短いウィンドウだけを見て最頻値・最小値を取る方式も最初に試したが、
+   **「負荷が続いている区間全体を短いウィンドウで見てしまうと、その区間の
+   遅い間隔自体を誤ってリフレッシュ周期だと推定してしまう」という問題が
+   vitestで実際に再現した**（`point-budget.test.ts`の回復テストが、この方式では
+   コマ落ち区間の後に回復しないという形で失敗した）。負荷が数秒単位で続くことは
+   珍しくない（今回の不具合そのものがそういう状況だった）ため、ウィンドウの
+   長さを調整しても原理的に解決できない。「一度観測した最小値を覚え続ける」
+   ことで、負荷が続いている間もそれに引きずられず、正しい周期を保持できる。
+
+2. **`evaluatePointBudget`**: 直近ウィンドウ（`point-cloud-renderer.ts`側で
+   直近`AUTO_POINT_BUDGET_FRAME_HISTORY`=20フレーム分を保持）のうち、
+   推定周期の`missThresholdMultiplier`(=1.5)倍を超えたフレーム（＝vsyncを
+   1回以上落としたフレーム）の割合を見る。
+   - 割合が`missRatioToShrink`(=0.1)以上なら「外した」→ `shrinkRate`(=0.2)の
+     割合だけ即座に下げる
+   - 割合が`hitRatioToGrow`(=0)以下なら「間に合っている」→ 連続ヒット数を
+     1増やす。`sustainedHitsToGrow`(=6)回連続で「間に合っている」が続いたら、
+     そこで初めて`growRate`(=0.05)の割合だけ上げる（＝ここが直したかった
+     部分。評価間隔500ms×6回=3秒間の持続を要求することで「緩やかに増やす」を
+     実現している）
+   - その中間は不感帯（増やしも減らしもしない。振動を防ぐヒステリシス）
+
+3. **上限をメモリ予算から逆算する。** `node-cache.ts`のキャッシュは点予算
+   そのものではなく`点予算 × CACHE_BUDGET_MULTIPLIER`(=2)点分のGPUバッファを
+   保持するため、上限点数は`pointBudgetMaxFromMemoryBudget()`で
+   `メモリ予算バイト数 / (POINT_STRIDE × CACHE_BUDGET_MULTIPLIER)`として逆算する
+   （`point-cloud-renderer.ts`の`AUTO_POINT_BUDGET_MAX`）。POINT_STRIDEは
+   `crates/pcv-core/src/node_format.rs`の実装値（1点20バイト）をそのまま使った。
+   メモリ予算自体（`POINT_CACHE_MEMORY_BUDGET_BYTES`=256MiB）は
+   **実測していない、未検証の初期値**である。ADR-0009の対象端末
+   （OPPO Pad Air、RAM 4GB）を念頭に、点群キャッシュ以外にOS・アプリ本体・UI・
+   テクスチャ等が別途メモリを使うことを踏まえた保守的な見立てにすぎない。
+   実機での検証は[M3-8](./M3-release-and-update.md)に送る。
+
+### なぜこの設計か
+
+- **中央値からミス割合へ変えた理由**: 中央値は「典型的な1フレームの重さ」を
+  見るのに向いているが、今回の問題は「典型値」ではなく「量子化された値の
+  分布」自体が信号として壊れていたこと。ミス割合（閾値を超えたフレームが
+  ウィンドウの何割か）にすれば、vsyncへの量子化を前提にした判定になり、
+  絶対値の目標（fixed target）を持たずに済む
+- **持続時間（`sustainedHitsToGrow`）を要求する理由**: ADR-0009の「上げるときは
+  ゆっくり」を、1回あたりの変化率（`growRate`）だけでなく「上げる判断を下すまでの
+  持続時間」でも表現した。単発の好条件（一瞬だけ間に合った）で増やしてしまうと
+  すぐにまた外して往復するため
+- **`nextPointBudget`のシグネチャを丸ごと変えた理由**: 目標フレーム時間という
+  絶対値を受け取る設計そのものが、量子化された入力と相性が悪いという構造的な
+  問題だったため、値の調整（不感帯の幅を変える等）では直らないと判断した
+
+### 却下した案
+
+| 案 | 却下理由 |
+|---|---|
+| 不感帯やdeadZoneの数値だけ調整する | 「rAFの間隔をそのまま重さとして使う」設計自体が量子化と相性が悪い。数値をどう変えても、60Hzで予算を上げる条件が原理的に発生しない問題は直らない |
+| リフレッシュ周期を直近ウィンドウの最頻値で推定する | 負荷が長く続く区間では、その区間の遅い間隔自体を周期だと誤検出することがvitestで実際に確認できた（上記参照） |
+| 上限を`navigator.deviceMemory`等の端末情報から動的に決める | 端末情報が意図的に粗い問題（ADR-0009参照）への対処が別途要る。今回は「実測していない数値を実測したと書かない」ことを優先し、メモリ予算という1つの保守的な数値にすべてを寄せた。実機適応はM3-8に送る |
+
+### 検証
+
+`src/renderer/point-budget.test.ts`（15テスト、`npm test`で確認。すべて純粋関数
+単体のテストで、レンダラを一切起動していない）:
+
+- **回復の再現テスト（最重要）**: 「16.7ms一定」→「33.3ms一定（コマ落ち）が続き
+  予算が下限まで下がる」→「16.7ms一定に戻る」という列を与えたとき、予算が
+  元の水準（このテストではlimitsのmaxと一致する3,000,000）まで回復することを
+  確認した。テスト内のコメントに、旧実装(`nextPointBudget`)では同じ入力で
+  回復しないことを明記した
+- 60Hz相当(16.7ms)・144Hz相当(6.9ms)のどちらでも、それぞれの推定周期を基準に
+  正しく「間に合っている」と判定されることを確認した（固定値1000/60への
+  決め打ちが無いことの証拠）
+- 「描画コストは点予算に比例する」という単純なモデルで、予算を増やした結果
+  コマ落ちするようになったら下げ、その付近（モデル上の「限界」の近く）で
+  落ち着くことを確認した（際限なく上限まで増え続けない）
+- 不感帯で振動しないこと、上限・下限にクランプされることは、新しい設計でも
+  引き続きテストしている
+- `pointBudgetMaxFromMemoryBudget`単体で、メモリ予算からの逆算式が意図通りの
+  値を返すことを確認した
+
+### 所有者が自分で確認する手順
 
 ```bash
-npm run typecheck   # 通ること
+npm run typecheck   # 通ること（このコミット時点で、並行して進んでいるEDL(M2-1)
+                     # 作業側の型エラーが別途残っている場合があるが、それは
+                     # このタスクの範囲外。point-budget.ts/point-cloud-renderer.tsの
+                     # 点予算まわりは単体で型エラーが無いことを確認済み）
 npm run lint        # 通ること
-npm run test        # 68件（旧63件+タスクA2件+タスクB5件+関連の-2の差分調整...実際の件数はテスト出力で確認）すべてpassすること
+npm test            # 92件（このコミット時点。point-budget.test.tsの15件を含む）
+                     # すべてpassすること
+npm run build
 ```
 
-`screen-space-error.test.ts`と`point-budget.test.ts`のコメントに、テスト内の数値が
-何を計算した結果かを書いてあるので、疑わしければ`npx tsx`で該当の式を打ち直して
-自分で数値を再現できる。
-
-### 実機での確認（GUIが必要。この作業では未実施）
+`point-budget.test.ts`のコメントに、テスト内の数値が何を計算した結果かを
+書いてあるので、疑わしければ`npx tsx`で該当の式を打ち直して自分で数値を
+再現できる。
 
 **GUIでの目視確認はこの環境ではできなかった。** 以下は所有者に確認してほしい項目:
 
-1. `npm run tauri dev` で `sofi.copc.laz` を開く。以前は「レベル5以上が事実上
-   ロードされない」状態だったはずなので、寄っていったときに以前より高いレベルの
-   ノードが実際に読み込まれる（`cachedNodes`が増え続ける・寄った先の精細さが
-   上がる）ことを確認する
-2. 統計表示（InfoPanel、または`npm run tauri dev`のRust側stdout）に
-   `autoPointBudget=true`が出ること。負荷をかけて（速く動き回る、大きい点群を
-   開く）フレームが重くなったとき、`pointBudget`が自動的に下がっていくことを
-   確認する
-3. UIから点予算を手動で変更したとき、`autoPointBudget`が`false`になり、以後
-   自動では変わらないことを確認する（未実装: 自動調整を再開するUIは今回
-   作っていない。必要なら`setAutoPointBudgetEnabled(true)`を呼ぶ経路をUIに
-   追加すること）
+1. `npm run tauri dev` で重い点群を開き、視点を素早く動かすなどして意図的に
+   コマ落ちさせる。統計表示（InfoPanel、またはRust側stdout）で`pointBudget`が
+   下がることを確認する
+2. その後、視点を止めて（あるいは軽い操作に戻して）安定した状態を数秒
+   （目安: 評価間隔500ms×6回=3秒以上）保つ。**ここが今回直した部分。**
+   `pointBudget`が元の水準（またはその端末で安定して出せる水準）に向かって
+   緩やかに上がっていくことを確認する。以前はここで固定されたまま戻らなかった
+3. `autoPointBudget=true`が表示され続けること、UIから点予算を手動変更すると
+   `false`になることは、タスクB初版から変わっていないので既に確認済みのはず
 
-3点目にある通り、**`setAutoPointBudgetEnabled()`を呼び出すUIはまだ無い**
-（`PointCloudRenderer`のメソッドとしては存在する）。UIからの結線は今回のタスク
-（優先度の式・点予算の自動調整ロジック）の範囲外としたため、必要であれば
-別タスクとして扱うこと。
+## 触ったファイル（タスクB分。上記追記の修正で更新）
+
+- `src/renderer/screen-space-error.ts`（タスクA: 式の変更。今回の修正では触っていない）
+- `src/renderer/screen-space-error.test.ts`（タスクA: 新規テスト2件。今回の修正では触っていない）
+- `src/renderer/point-budget.ts`（タスクB: `nextPointBudget`/`medianOf`を
+  `evaluatePointBudget`/`updateRefreshIntervalEstimate`/
+  `pointBudgetMaxFromMemoryBudget`に作り直した）
+- `src/renderer/point-budget.test.ts`（タスクB: 15テストに全面的に書き直した）
+- `src/renderer/point-cloud-renderer.ts`（タスクB: `autoAdjustPointBudget`/
+  `recordFrameDelta`とその周辺の定数・フィールドのみ変更。
+  `AUTO_POINT_BUDGET_MAX`をメモリ予算からの逆算に変更。
+  描画パス（`drawFrame`・パイプライン構築）は触っていない。EDL(M2-1)まわりは
+  別エージェントが並行して作業中だったため未変更）
