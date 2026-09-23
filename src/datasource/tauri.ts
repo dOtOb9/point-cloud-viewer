@@ -3,6 +3,7 @@
 
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { DataSource, OpenedCloud } from "./DataSource";
 import {
   toCloudInfo,
@@ -54,6 +55,26 @@ export async function getAppVersion(): Promise<string> {
  */
 export async function resolveBenchDataPath(filename: string): Promise<string | null> {
   return await invoke<string | null>("default_bench_data_path", { filename });
+}
+
+/**
+ * M3: OSのファイル選択ダイアログを出し、選ばれたファイルのパス（デスクトップ）
+ * または`content://` URI（Android）を返す。キャンセルされたら`null`。
+ *
+ * デスクトップ・Android共通で同じ`tauri-plugin-dialog`の`open()`を呼ぶだけでよい
+ * （プラットフォームごとの分岐はプラグイン側が吸収する）。返り値の文字列は
+ * そのまま`DataSource.open(path)`に渡せる（Rust側の`open_copc`が
+ * パスかURIかを判別する。`src-tauri/src/copc_state.rs`参照）。
+ *
+ * `multiple: false`を渡しているため、`OpenDialogReturn`の条件型により
+ * 戻り値の型は`string | null`に確定する（配列にはならない）。
+ */
+export async function pickLocalFile(): Promise<string | null> {
+  return await openFileDialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "COPC (.laz / .copc.laz)", extensions: ["laz"] }],
+  });
 }
 
 /**

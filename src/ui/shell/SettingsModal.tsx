@@ -1,3 +1,5 @@
+import { useState } from "react";
+import type { CopcViewerState } from "../../state/useCopcViewer";
 import type { ThemePreference, ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { IpcBenchPanel } from "../IpcBenchPanel";
@@ -9,6 +11,7 @@ interface Props {
   onClose: () => void;
   theme: ThemeState;
   update: UpdateCheckState;
+  viewer: CopcViewerState;
 }
 
 const THEME_LABELS: Record<ThemePreference, string> = {
@@ -26,7 +29,9 @@ const THEME_LABELS: Record<ThemePreference, string> = {
  * 以前App.tsx直下の<details>にあったが、UIシェル導入でここへ移した
  * (機能は削っていない。折りたたみ式(<details>)なのは変わらず)。
  */
-export function SettingsModal({ open, onClose, theme, update }: Props) {
+export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
+  const [devPathInput, setDevPathInput] = useState("");
+
   if (!open) return null;
 
   return (
@@ -98,6 +103,37 @@ export function SettingsModal({ open, onClose, theme, update }: Props) {
             <IpcBenchPanel />
             <NodeConcurrencyBenchPanel />
           </div>
+
+          {/* M3: 主要UI(LayerPanel)はOSのファイル選択ダイアログに絞ったため
+              (Androidではパスを手入力できない。TaskSheets/M3-release-and-update.md参照)、
+              開発中に同じファイルを繰り返し開きたいときのための、パス直指定の
+              抜け道をここに残す。Web版には意味が無いので出さない。 */}
+          {!viewer.isBrowser && (
+            <div className="mt-3 flex flex-col gap-2 border-t border-slate-200 pt-3 dark:border-slate-700">
+              <h4 className="text-xs font-semibold opacity-70">開発用: パス指定で開く</h4>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={devPathInput}
+                  onChange={(e) => setDevPathInput(e.target.value)}
+                  placeholder="絶対パス (.laz)"
+                  className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
+                />
+                <button
+                  type="button"
+                  onClick={() => void viewer.openFile(devPathInput)}
+                  disabled={viewer.status === "opening" || devPathInput.trim() === ""}
+                  className="rounded bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50 dark:bg-white dark:text-slate-900"
+                >
+                  開く
+                </button>
+              </div>
+              <p className="text-xs opacity-60">
+                OSのファイル選択ダイアログを毎回出したくない開発時用。通常の利用では
+                左のレイヤーパネルの「ファイルを選ぶ…」を使う。
+              </p>
+            </div>
+          )}
         </details>
       </div>
     </div>

@@ -54,7 +54,13 @@ export function AppShell() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} update={update} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        theme={theme}
+        update={update}
+        viewer={viewer}
+      />
 
       {/* M3-2/M3-4: 更新通知。新しいバージョンがあるときだけ出る（デスクトップ・Android共通）。 */}
       <UpdateNotice update={update} />

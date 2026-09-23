@@ -1,5 +1,8 @@
 import { useState } from "react";
 import type { BackgroundMode, ColorMode, CopcViewerState } from "../../state/useCopcViewer";
+// 規約2: `@tauri-apps/plugin-dialog`を直接importしない。DataSource側の関数
+// (`pickLocalFile`)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
+import { pickLocalFile } from "../../datasource/tauri";
 import { GLASS_SURFACE } from "./glass";
 
 const BACKGROUND_MODE_LABELS: Record<BackgroundMode, string> = {
@@ -47,7 +50,6 @@ interface Props {
  * ボタンは常に画面内に残るので、畳んだ状態からでも必ず開き直せる。
  */
 export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
-  const [pathInput, setPathInput] = useState("");
   const [urlInput, setUrlInput] = useState("");
 
   return (
@@ -100,23 +102,22 @@ export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
                 </button>
               </>
             ) : (
-              <>
-                <input
-                  type="text"
-                  value={pathInput}
-                  onChange={(e) => setPathInput(e.target.value)}
-                  placeholder="絶対パス (.laz)"
-                  className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit dark:border-white/10 dark:bg-black/30"
-                />
-                <button
-                  type="button"
-                  onClick={() => void viewer.openFile(pathInput)}
-                  disabled={viewer.status === "opening" || pathInput.trim() === ""}
-                  className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 disabled:opacity-50 dark:bg-white/90 dark:text-slate-900"
-                >
-                  {viewer.status === "opening" ? "開いています…" : "開く"}
-                </button>
-              </>
+              // デスクトップ・Android共通: OSのファイル選択ダイアログを出す
+              // (`tauri-plugin-dialog`)。Androidはパスを手入力できないため、
+              // これが唯一の開き方になる(TaskSheets/M3-release-and-update.md参照)。
+              <button
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    const picked = await pickLocalFile();
+                    if (picked) void viewer.openFile(picked);
+                  })();
+                }}
+                disabled={viewer.status === "opening"}
+                className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 disabled:opacity-50 dark:bg-white/90 dark:text-slate-900"
+              >
+                {viewer.status === "opening" ? "開いています…" : "ファイルを選ぶ…"}
+              </button>
             )}
             {viewer.error && <p className="text-xs text-red-600 dark:text-red-400">{viewer.error}</p>}
           </div>
