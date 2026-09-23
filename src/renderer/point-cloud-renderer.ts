@@ -26,6 +26,11 @@ import { DEFAULT_GRID_ENABLED, floorMod, gridFadeDistance, GroundGrid, niceGridC
 import { horizontalBasis, type Vec3 } from "./up-axis";
 import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH, EdlPass } from "./edl";
 
+// WebGPUのエラーを画面に出す仕組み(新設)。蓄積・重複抑制のロジック自体は
+// GPUに依存しないgpu-error-log.tsに切り出してあり、このファイルはWebGPUの
+// APIから文字列を取り出して渡すだけにする(詳しい経緯はTaskSheets/
+// ADR-0011-gpu-error-visibility.md参照)。
+
 /** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
 const CACHE_BUDGET_MULTIPLIER = 2;
 
@@ -253,6 +258,12 @@ export class PointCloudRenderer {
   private lastStatsEmitAt = 0;
   private frameTimestamps: number[] = [];
 
+  /** WebGPUのエラー（新設）が起きるたびに呼ばれる。実際の蓄積・重複抑制は
+   *  呼び出し側（src/state/useCopcViewer.ts）の`GpuErrorLog`が行う。
+   *  ここは伝える役目だけ（規約3: このファイルはReactを知らないので、
+   *  コールバックで外へ渡す。`onStatsUpdate`と同じ形）。 */
+  private onGpuError: ((message: string) => void) | null = null;
+
   /** 空の背景（M2-0c）。既定は単色(暗)のままで、"sky"を選んだときだけ描く。 */
   private readonly sky = new SkyBackground();
   private backgroundMode: BackgroundMode = DEFAULT_BACKGROUND_MODE;
@@ -306,59 +317,95 @@ export class PointCloudRenderer {
       throw new Error("failed to get a webgpu canvas context");
     }
 
+    // WebGPUのエラーを画面に出す仕組み（新設）。
+    //
+    // `onuncapturederror`は、エラースコープ（下のinitWithErrorScope）で
+    // 囲んでいない場所で起きたバリデーションエラー・型エラーを拾う。
+    // 典型的にはこれは「毎フレームのdraw呼び出し」で起きる（EDL(M2-1)の
+    // 事故がまさにこれで、壊れたパイプラインでdrawするたびに同じエラーが
+    // フレームごとに発生し続けていた）。同じメッセージが毎フレーム連投
+    // されてコンソールが埋まらないよう、実際の抑制はGpuErrorLog（呼び出し側の
+    // src/state/useCopcViewer.ts）に任せ、ここでは素通しする。
+    device.onuncapturederror = (event) => {
+      this.reportGpuError(event.error.message);
+    };
+    // `device.lost`はGPUのリセットやドライバのクラッシュなどでデバイスその
+    // ものが失われたときに解決するPromise。エラースコープ・onuncapturederrorの
+    // どちらでも拾えない種類の異常なので、別途監視する。
+    device.lost
+      .then((info) => {
+        this.reportGpuError(`WebGPUデバイスが失われました (reason=${info.reason}): ${info.message}`);
+      })
+      .catch(() => {
+        // device.lostはPromise<GPUDeviceLostInfo>で本来rejectしないが、
+        // 念のため（未処理rejectionでコンソールを汚さないため）。
+      });
+
     this.device = device;
     this.context = context;
     this.format = navigator.gpu.getPreferredCanvasFormat();
     this.context.configure({ device, format: this.format, alphaMode: "opaque" });
 
-    this.uniformLayout = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
-
-    const shaderModule = device.createShaderModule({ code: SHADER_SRC });
-    this.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this.uniformLayout] }),
-      vertex: {
-        module: shaderModule,
-        entryPoint: "vs_main",
-        buffers: [
+    // 以降、パイプライン/バインドグループの生成はすべてinitWithErrorScope()で
+    // 囲む。EDL(M2-1)の事故では「画面が真っ黒になった」という情報しか
+    // 得られず原因の特定に時間がかかったため、生成ステップごとに区切って
+    // 「どの生成が失敗したか」がエラーメッセージから分かるようにする。
+    await this.initWithErrorScope(device, "点群パイプラインの生成", () => {
+      this.uniformLayout = device.createBindGroupLayout({
+        entries: [
           {
-            arrayStride: NODE_POINT_STRIDE,
-            stepMode: "instance",
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x3" },
-              { shaderLocation: 1, offset: 12, format: "unorm8x4" },
-            ],
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX,
+            buffer: { type: "uniform" },
           },
         ],
-      },
-      fragment: {
-        module: shaderModule,
-        entryPoint: "fs_main",
-        // M2-1: 点群はもうスワップチェーンへ直接描かない。EDLの合成パス(edl.ts)が
-        // 「点が描かれたピクセルだけ」を判定できるよう、点群専用のオフスクリーン
-        // テクスチャへ描く（drawFrame()のパス1参照）。
-        targets: [{ format: OFFSCREEN_COLOR_FORMAT }],
-      },
-      primitive: { topology: "triangle-list" },
-      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
+      });
+
+      const shaderModule = device.createShaderModule({ code: SHADER_SRC });
+      this.pipeline = device.createRenderPipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [this.uniformLayout] }),
+        vertex: {
+          module: shaderModule,
+          entryPoint: "vs_main",
+          buffers: [
+            {
+              arrayStride: NODE_POINT_STRIDE,
+              stepMode: "instance",
+              attributes: [
+                { shaderLocation: 0, offset: 0, format: "float32x3" },
+                { shaderLocation: 1, offset: 12, format: "unorm8x4" },
+              ],
+            },
+          ],
+        },
+        fragment: {
+          module: shaderModule,
+          entryPoint: "fs_main",
+          // M2-1: 点群はもうスワップチェーンへ直接描かない。EDLの合成パス(edl.ts)が
+          // 「点が描かれたピクセルだけ」を判定できるよう、点群専用のオフスクリーン
+          // テクスチャへ描く（drawFrame()のパス1参照）。
+          targets: [{ format: OFFSCREEN_COLOR_FORMAT }],
+        },
+        primitive: { topology: "triangle-list" },
+        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
+      });
     });
 
-    this.sky.init(device, this.format, DEPTH_FORMAT);
-    this.grid.init(device, this.format, DEPTH_FORMAT);
+    await this.initWithErrorScope(device, "空の背景(sky)の初期化", () => {
+      this.sky.init(device, this.format, DEPTH_FORMAT);
+    });
+    await this.initWithErrorScope(device, "地面グリッド(ground-grid)の初期化", () => {
+      this.grid.init(device, this.format, DEPTH_FORMAT);
+    });
     // EDLの合成パスはスワップチェーンのレンダーパスの中、空・グリッドの後の
     // 最後に呼ばれる(drawFrame()のパス2参照)ので、出力フォーマットはスワップ
     // チェーンに合わせる。深度フォーマットも渡す必要がある(sky.ts/ground-grid.ts
     // と同じ理由。実機不具合の修正、edl.tsのinit()コメント参照: パスが
     // depthStencilAttachmentを持つ以上、このパイプラインも同じフォーマットの
     // depthStencilを宣言しないとパスと非互換になり、drawがまるごと無効になる)。
-    this.edl.init(device, this.format, DEPTH_FORMAT);
+    await this.initWithErrorScope(device, "EDL合成パイプラインの初期化", () => {
+      this.edl.init(device, this.format, DEPTH_FORMAT);
+    });
 
     this.resize(this.canvas.clientWidth || this.canvas.width, this.canvas.clientHeight || this.canvas.height);
     this.detachControls = attachOrbitControls(this.canvas, this.camera, {
@@ -510,6 +557,42 @@ export class PointCloudRenderer {
   /** 統計（描画点数・ロード中ノード数・fpsなど）が更新されるたびに呼ばれる。 */
   onStatsUpdate(callback: (stats: RenderStats) => void): void {
     this.onStats = callback;
+  }
+
+  /** WebGPUのエラー（新設）が起きるたびに呼ばれる。`onStatsUpdate`と同じ形。 */
+  onGpuErrorReported(callback: (message: string) => void): void {
+    this.onGpuError = callback;
+  }
+
+  /**
+   * WebGPUのエラーメッセージを1件報告する。コンソールには常に出す（今までの
+   * 挙動を減らさない）うえで、コールバックが登録されていれば画面のバナー用にも渡す。
+   */
+  private reportGpuError(message: string): void {
+    console.error(`[renderer] WebGPU error: ${message}`);
+    this.onGpuError?.(message);
+  }
+
+  /**
+   * 初期化の1ステップ（パイプライン/バインドグループの生成）を
+   * `pushErrorScope("validation")`/`popErrorScope()`で囲み、失敗した場合に
+   * 「どの生成が失敗したか」が分かるメッセージで報告する。
+   *
+   * これが要る理由（EDL(M2-1)の事故の教訓）: `device.onuncapturederror`は
+   * デバイス全体に1つのハンドラしか持てず、メッセージだけを見ても「点群
+   * パイプラインなのかEDL合成パイプラインなのか」が分からない。初期化の
+   * ステップごとにエラースコープで区切ることで、`label`を先頭に付けた
+   * メッセージにできる（例:「EDL合成パイプラインの初期化でバリデーション
+   * エラー: <message>」）。エラースコープ内のエラーは`onuncapturederror`には
+   * 飛ばない（WebGPUの仕様上、スコープが先に捕まえる）ので、両者は競合しない。
+   */
+  private async initWithErrorScope(device: GPUDevice, label: string, fn: () => void): Promise<void> {
+    device.pushErrorScope("validation");
+    fn();
+    const error = await device.popErrorScope();
+    if (error) {
+      this.reportGpuError(`${label}でバリデーションエラー: ${error.message}`);
+    }
   }
 
   resize(width: number, height: number): void {
