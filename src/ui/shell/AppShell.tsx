@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useCopcViewer } from "../../state/useCopcViewer";
 import { useTheme } from "../../state/useTheme";
+import { useWebGpuSupport } from "../../state/useWebGpuSupport";
 import { ViewerPanel } from "../ViewerPanel";
 import { Dock } from "./Dock";
 import { GpuErrorBanner } from "./GpuErrorBanner";
 import { InfoPanel } from "./InfoPanel";
 import { LayerPanel } from "./LayerPanel";
 import { SettingsModal } from "./SettingsModal";
+import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 
 /**
  * M2-3: ADR-0005で決めたUIシェルの組み立て役。
@@ -20,10 +22,19 @@ import { SettingsModal } from "./SettingsModal";
 export function AppShell() {
   const [canvasRef, viewer] = useCopcViewer();
   const theme = useTheme();
+  const webGpuSupport = useWebGpuSupport();
 
   const [layerOpen, setLayerOpen] = useState(true);
   const [infoOpen, setInfoOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // M3-5: WebGPUが確定して「非対応」だった場合はここで打ち切り、専用画面に差し替える。
+  // useCopcViewer()自体は上で呼び終えている(Reactのフックは条件分岐の前で呼ぶ規約)が、
+  // 内部のeffectは<canvas>がDOMに無ければ何もしない(canvasRef.currentがnullのまま)ので、
+  // 以降<ViewerPanel>を描画しないことで実質的に何も起動させない。
+  if (webGpuSupport.status === "done" && !webGpuSupport.result.supported) {
+    return <UnsupportedDeviceScreen reason={webGpuSupport.result.reason} />;
+  }
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-black">
