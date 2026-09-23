@@ -56,3 +56,58 @@ jobs:
             **このインストーラには署名がありません。** Windows SmartScreenが
             「発行元不明」の警告を出す場合がありますが、これはコード署名証明書を
             導入していないためです（ADR-0004参照）。
+
+  # Android向けのdebug署名APKをビルドし、GitHub Releasesに添付する。
+  # M3-3参照。windowsジョブとは独立させ、こちらが失敗してもWindowsのリリースは
+  # 成立する。ただしGitHub Release自体の作成/アセット追加が競合しないよう、
+  # windowsジョブの後に実行する（windowsの成否そのものには依存しない。
+  # `if`でcheck-versionの成功だけを条件にしている）。
+  android:
+    needs: [check-version, windows]
+    if: ${{ !cancelled() && needs.check-version.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: android-actions/setup-android@v3
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          link-to-sdk: true
+      - name: NDK_HOME を設定する
+        run: echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+      # debug署名鍵(~/.android/debug.keystore)はGradleが初回に自動生成する。
+      # CIランナーは毎回まっさらなので、キャッシュしないと実行のたびに鍵が変わり、
+      # 「新しい版を上書きインストールできず、いったんアンインストールが必要になる」
+      # (Androidは署名が変わったAPKの上書きインストールを拒否する)。
+      # 秘密鍵・keystoreは生成しない方針(タスクシート参照)のため、ここでは
+      # 「初回に生成されたdebug鍵をキャッシュして使い回す」ことで対処する
+      # (debug鍵はAndroid標準の固定パスワードのみで保護される低リスクな鍵であり、
+      # ADR-0004が言う「秘密鍵」とは性質が異なる。詳細はM3-3の記録を参照)。
+      - name: debug.keystore をキャッシュする
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+      - run: npm ci
+      - name: tauri android init
+        run: npm run tauri android init
+      - name: tauri android build (debug署名)
+        run: npm run tauri android build -- --debug --apk
+      - name: Upload APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
