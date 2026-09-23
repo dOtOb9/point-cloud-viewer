@@ -72,6 +72,99 @@ describe("projectedBoundsDiagonalPixels", () => {
   });
 });
 
+describe("screenSpaceError: 新しい式（点間隔×ピクセル/ワールド単位）", () => {
+  // 2026-09-23の診断: 旧式 `sizePixels / density`（density = 点数/体積）は
+  // 「まばらさ」を体積÷点数（点間隔の3乗）で測っており、次元が合っていなかった。
+  // 1レベル下がるごとに体積が1/8・点数はほぼ一定（sofi.copc.lazの実測でも
+  // レベルによらず約25,000点/ノードだった）なので、旧式では誤差が
+  // 1/8 × sizePixelsの1/2 = 約1/16に落ちてしまい、深いノードが事実上
+  // 読み込まれなくなっていた（TaskSheets/M1-point-rendering.md M1-4参照）。
+  //
+  // 新式は「点間隔(ワールド) × ピクセル/ワールド単位」。点間隔は体積÷点数の
+  // 3乗根（1次元）なので、1レベル下がる（体積1/8）と点間隔はちょうど1/2になる。
+  // ピクセル/ワールド単位は距離が同じなら変わらないので、誤差もちょうど1/2に
+  // なるはず。
+
+  /** カメラを (0,0,distance) に置き、原点方向を見るテスト用viewProj。 */
+  function cameraAt(distance: number): Mat4 {
+    const view = lookAt([0, 0, distance], [0, 0, 0], [0, 1, 0]);
+    const proj = perspective((60 * Math.PI) / 180, CANVAS_WIDTH / CANVAS_HEIGHT, 0.1, 1e7);
+    return multiply(proj, view);
+  }
+
+  /** 原点中心、一辺sideの立方体のBBOX。 */
+  function cubeBounds(side: number): [[number, number, number], [number, number, number]] {
+    const h = side / 2;
+    return [
+      [-h, -h, -h],
+      [h, h, h],
+    ];
+  }
+
+  it("親ノードと子ノード（体積1/8・点数同じ・同じカメラ距離）の誤差比は約1/2になる", () => {
+    // 親: 一辺10、子: 一辺5（体積は (5/10)^3 = 1/8）。どちらもカメラから
+    // 距離100（一辺よりずっと遠いので、投影の非線形性がほぼ効かない）に置く。
+    // 点数は同じ25,000（sofi.copc.lazの実測でレベルによらずほぼ一定だった値）。
+    const viewProj = cameraAt(100);
+    const pointCount = 25000;
+
+    const [parentMin, parentMax] = cubeBounds(10);
+    const [childMin, childMax] = cubeBounds(5);
+
+    const parentError = screenSpaceError(viewProj, parentMin, parentMax, pointCount, CANVAS_WIDTH, CANVAS_HEIGHT);
+    const childError = screenSpaceError(viewProj, childMin, childMax, pointCount, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    const ratio = childError / parentError;
+    // 実測(npx tsxでの手計算確認): ratio ≈ 0.4872。
+    // 直す前の式（体積÷点数を使う版）だとこの比は約1/16（0.0625付近）に
+    // なり、この範囲には入らない。
+    expect(ratio).toBeGreaterThan(0.45);
+    expect(ratio).toBeLessThan(0.55);
+  });
+
+  it("レベル差3（誤差比 約1/8）でも、距離が約1/8近い深いノードのほうが優先度が高くなる", () => {
+    // 浅いノード: 一辺80、距離850。
+    // 深いノード: 3レベル分細かい（一辺 80/8 = 10。体積は (1/8)^3 = 1/512、
+    // 点間隔の比は cbrt(1/512) = 1/8）。距離は100（850分の100 ≈ 0.1176 ≈ 1/8.5、
+    // 「約1/8」）。
+    //
+    // 距離をちょうど1/8（=106.25）にすると、点間隔由来の1/8と、8倍近づいたことに
+        // よるピクセル/ワールド単位の8倍がちょうど相殺し、理論上ぴったり同点になる
+    // ことを`npx tsx`での手計算で確認した（これは新しい式が「距離1/2 ≒ レベル1つ」
+    // という設計どおりに機能していることの裏付けでもある）。ここでは「深い側が
+    // 優先度で勝つ」ことを数値で示したいので、それよりわずかに近い距離100を使う。
+    //
+    // 対して旧式（体積÷点数を使う版）では、点数が同じ場合 誤差∝sizePixels×体積。
+    // 体積比は(1/8)^3=1/512、sizePixelsは距離が8.5倍近いことでせいぜい
+    // 8.5倍程度にしかならないため、深いノードの誤差は浅いノードの1/60程度にしか
+    // ならず、勝てない（旧式のままだと本テストは失敗する）。
+    const shallowSide = 80;
+    const shallowDistance = 850;
+    const deepSide = 10; // shallowSide / 8
+    const deepDistance = 100; // shallowDistance / 8.5 ≈ 「約1/8」
+    const pointCount = 25000; // 両ノードとも同じ点数（実測で確認済みの前提）
+
+    const shallowError = screenSpaceError(
+      cameraAt(shallowDistance),
+      ...cubeBounds(shallowSide),
+      pointCount,
+      CANVAS_WIDTH,
+      CANVAS_HEIGHT,
+    );
+    const deepError = screenSpaceError(
+      cameraAt(deepDistance),
+      ...cubeBounds(deepSide),
+      pointCount,
+      CANVAS_WIDTH,
+      CANVAS_HEIGHT,
+    );
+
+    // 実測(npx tsxでの手計算確認): shallowError ≈ 2.579, deepError ≈ 2.749
+    // (比 ≈ 1.066。約6.6%深い側が高い)。
+    expect(deepError).toBeGreaterThan(shallowError);
+  });
+});
+
 describe("screenSpaceError: ズームインしたカメラで全ノードが最大優先度に潰れない", () => {
   it("カメラの近くに複数のノードがあっても、優先度が全部同じ最大値にならない", () => {
     // 原点付近を見る、ズームインした状態のカメラ。

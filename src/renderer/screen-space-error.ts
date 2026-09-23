@@ -127,8 +127,42 @@ export function projectedBoundsDiagonalPixels(
 }
 
 /**
- * ノードの「誤差」= 画面上の大きさ ÷ 点密度。大きいほど優先度が高い
- * （画面上で大きく見えているのに点がまばら＝粗い、ということ）。
+ * ノードの「誤差」= そのノードの点間隔を画面に投影したピクセル数。大きいほど
+ * 優先度が高い（画面上で1点あたりの間隔が大きく見えている＝粗い、ということ）。
+ *
+ * ## 以前の式が間違っていた理由（2026-09-23の診断）
+ *
+ * 以前は `sizePixels / density`（= 画面上のBBOX対角長 × 体積 ÷ 点数）を
+ * 誤差としていた。「まばらさ」を測るつもりが、次元が合っていなかった。
+ * 「まばらさ」は本来**点間隔**（1次元、長さ）で測るべきところを、
+ * `体積 ÷ 点数`（点間隔の3乗、体積の次元）で測っていたため、
+ * ノードが1レベル細かくなるごとに（体積が1/8・点数はほぼ一定なので）
+ * 誤差が1/8×さらにsizePixelsが1/2で**約1/16に落ちる**、という急すぎる
+ * 減衰になっていた。距離の効果は1/距離の1乗しかないため、深いノードが
+ * 浅く遠いノードに優先度で勝つには非現実的な倍率の接近が要り、
+ * 実質的に深いレベルのノードがロードされないという不具合になっていた
+ * （実測・詳細は `TaskSheets/ADR-0010-...md` および
+ * `TaskSheets/M1-point-rendering.md` M1-4参照）。
+ *
+ * ## 新しい式
+ *
+ * 誤差 = 点間隔(ワールド単位) × そのノード位置でのピクセル/ワールド単位。
+ *
+ * - 点間隔 = `(体積 / 点数) ^ (1/3)`。体積を点数で均等に分け合った1点あたりの
+ *   立方体の一辺の長さ、という意味。次元は長さ（1次元）で、「まばらさ」の
+ *   物理量として正しい
+ * - ピクセル/ワールド単位 = `projectedBoundsDiagonalPixels()`（画面上の対角線
+ *   ピクセル数）÷ BBOXのワールド対角長。「このノードのあたりで、ワールド1単位が
+ *   何ピクセルに見えるか」という、そのノードの位置・距離に依存するスケール
+ *
+ * この2つを掛けると、「点と点の間隔が画面上で何ピクセルに見えるか」になる。
+ * 1レベル下がると点間隔が1/2になり、他の項（距離由来のピクセル/ワールド単位）は
+ * 変わらないので、誤差もちょうど1/2になる。これで「1レベル深くなる」ことと
+ * 「距離が2倍近づく」ことが釣り合う、素直なスケーリングになる。
+ *
+ * `projectedBoundsDiagonalPixels` はニアプレーンのクリップ処理を含む
+ * 繊細なコード（M1-point-rendering.md M1-4の実機不具合対応）なので、
+ * ここでは中身を変えずそのまま再利用する。
  */
 export function screenSpaceError(
   viewProj: Mat4,
@@ -144,7 +178,12 @@ export function screenSpaceError(
   const dy = Math.max(boundsMax[1] - boundsMin[1], 1e-6);
   const dz = Math.max(boundsMax[2] - boundsMin[2], 1e-6);
   const volume = dx * dy * dz;
-  const density = Math.max(pointCount, 1) / volume;
+  const pointSpacing = Math.cbrt(volume / Math.max(pointCount, 1));
 
-  return sizePixels / density;
+  // BBOXのワールド対角長。sizePixelsはこのBBOXが画面上で占める対角線の長さなので、
+  // 割ればそのノードの位置での「ワールド1単位あたり何ピクセルか」が出る。
+  const worldDiagonal = Math.max(Math.hypot(dx, dy, dz), 1e-6);
+  const pixelsPerWorldUnit = sizePixels / worldDiagonal;
+
+  return pointSpacing * pixelsPerWorldUnit;
 }
