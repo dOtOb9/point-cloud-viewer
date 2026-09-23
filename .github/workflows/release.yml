@@ -1,0 +1,58 @@
+name: Release
+
+# タグ push (`v*`) の時だけ走る。ci.yml とは別ファイルにしてある理由は
+# TaskSheets/M3-release-and-update.md M3-1 参照（目的も所要時間も違うため）。
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # タグと tauri.conf.json の version が食い違ったまま Release を作ってしまうと、
+  # 利用者から見たバージョン表示が混乱する。ここで検査し、違っていたら他のジョブが
+  # 始まる前に落とす（黙って進めない。M3-1の受け入れ条件）。
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: タグと tauri.conf.json の version が一致することを確認する
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$tag" != "$conf_version" ]; then
+            echo "::error::タグ(${GITHUB_REF_NAME})とsrc-tauri/tauri.conf.jsonのversion(${conf_version})が一致しません。タグを打つ前にtauri.conf.jsonのversionを合わせてください。"
+            exit 1
+          fi
+          echo "OK: v${conf_version} でタグとversionが一致しています。"
+
+  # Windows向けのMSI/NSISインストーラをビルドし、GitHub Releasesに添付する。
+  #
+  # 所有者の方針(2026-09-23時点、ADR-0004追記4): 当面は署名鍵を作らない。
+  # そのためコード署名は行わず、TAURI_SIGNING_PRIVATE_KEY等のSecretsも参照しない
+  # (署名なしの自動更新manifestを作る意味が無いため、latest.jsonの生成もしない。
+  # 更新通知は自前のGitHub API確認に一本化した。src/datasource/update-check.ts参照)。
+  # 無署名のインストーラはWindows SmartScreenの警告が出る。これはリリース本文に明記する。
+  windows:
+    needs: check-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: tauri build (msi + nsis, 無署名)
+        run: npm run tauri build
+      - name: Upload installers to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          generate_release_notes: true
+          body: |
+            **このインストーラには署名がありません。** Windows SmartScreenが
+            「発行元不明」の警告を出す場合がありますが、これはコード署名証明書を
+            導入していないためです（ADR-0004参照）。
