@@ -3,57 +3,34 @@
 
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import type { CloudInfo, DataSource, HierarchyNodeInfo, OpenedCloud } from "./DataSource";
+import type { DataSource, OpenedCloud } from "./DataSource";
+import {
+  toCloudInfo,
+  toHierarchyNodeInfo,
+  type CloudInfoDto,
+  type HierarchyNodeDto,
+} from "./copc-dto";
+import { isTauriEnvironment } from "./environment";
 
-// `open_copc` (src-tauri/src/copc_state.rs) がJSONで返す形。フィールド名はRust側の
-// serdeデフォルト（snake_case）のまま受け取り、ここでDataSourceのcamelCase型に詰め替える。
-interface CloudInfoDto {
-  point_count: number;
-  min: [number, number, number];
-  max: [number, number, number];
-  scale: [number, number, number];
-  offset: [number, number, number];
-  has_color: boolean;
-}
-
-interface HierarchyNodeDto {
-  key: string;
-  point_count: number;
-  bounds_min: [number, number, number];
-  bounds_max: [number, number, number];
-}
-
+// `open_copc` (src-tauri/src/copc_state.rs) がJSONで返す形。DTOの中身とcamelCaseへの
+// 変換自体は`copc-dto.ts`にある（Web版の`pcv-wasm`も同じ形のJSONを返すため共有する）。
 interface OpenCopcResponseDto {
   info: CloudInfoDto;
   nodes: HierarchyNodeDto[];
-}
-
-function toCloudInfo(dto: CloudInfoDto): CloudInfo {
-  return {
-    pointCount: dto.point_count,
-    min: dto.min,
-    max: dto.max,
-    scale: dto.scale,
-    offset: dto.offset,
-    hasColor: dto.has_color,
-  };
-}
-
-function toHierarchyNodeInfo(dto: HierarchyNodeDto): HierarchyNodeInfo {
-  return {
-    key: dto.key,
-    pointCount: dto.point_count,
-    boundsMin: dto.bounds_min,
-    boundsMax: dto.bounds_max,
-  };
 }
 
 /**
  * M0 計測用の制御メッセージ。GUI を目視できない環境でも判断できるよう、
  * フロントの計測結果を Rust 側の標準出力にも出す（`npm run tauri dev` の stdout に出る）。
  * 大きいデータそのものはここを通さない（ADR-0001: invoke は制御メッセージ専用）。
+ *
+ * `useCopcViewer.ts`から環境を問わず（Web版でも）呼ばれるので、Tauriの
+ * webviewで動いていないときは何もせずに戻る（ブラウザにはこの`invoke`を
+ * 受け取るバックエンドが存在しないため）。呼び出し側に環境分岐を書かせず、
+ * ここ1箇所に閉じ込めることで、Web版のためにコールサイトを増やさずに済む。
  */
 export async function reportToBackendConsole(message: string): Promise<void> {
+  if (!isTauriEnvironment()) return;
   await invoke("report_diagnostic", { message });
 }
 
