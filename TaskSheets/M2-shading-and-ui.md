@@ -724,6 +724,75 @@ npm run tauri dev
   実際に画面がADR-0005の見た目通りになっているかは所有者の実機確認が必要
 - ガラス(`backdrop-blur`)の有無によるfps差は**未計測**。M2-4の担当
 
+### 追記: 自動点予算調整(ADR-0009)との隙間を埋めた
+
+UIシェルの実装と並行して、別エージェントが`src/renderer/point-budget.ts`と
+`point-cloud-renderer.ts`に「点予算をフレーム時間の閉ループで自動調整する」機能
+(タスクB、ADR-0009)を入れた。仕様は次の3点。
+
+- 既定で自動調整がオン(`PointCloudRenderer`の`autoPointBudgetEnabled = true`)
+- `setPointBudget()`を呼ぶと自動調整が**黙って**オフになる(手動設定を優先するため)
+- `setAutoPointBudgetEnabled(enabled)` / `getAutoPointBudgetEnabled()`で戻せる。
+  `RenderStats`に`autoPointBudgetEnabled: boolean`が追加されている
+
+このAPIが入った時点で`LayerPanel`の点予算欄は先に実装済みだったため、次の隙間が
+生まれていた。スライダーを動かすと自動調整が黙って止まるが、UI上にそれを示す
+表示も、戻す手段も無かった。さらに、自動調整が`pointBudget`を直接書き換える
+(`setPointBudget()`を経由しない)ため、`useCopcViewer.ts`の`pointBudget`state
+(手動設定時にしか更新していなかった)は自動調整が動くと古い値のまま固まっていた。
+
+**直した内容:**
+
+- `src/state/useCopcViewer.ts`
+  - `CopcViewerState`に`autoPointBudgetEnabled: boolean`と
+    `setAutoPointBudgetEnabled(enabled: boolean): void`を追加
+  - `onStatsUpdate`のコールバックで、`stats`だけでなく`pointBudget`と
+    `autoPointBudgetEnabled`もstatsから同期するようにした(自動調整は
+    `setPointBudget()`を経由せず値を書き換えるため、statsが唯一の
+    正しい値の出どころになる)
+  - `setPointBudget()`のラッパー内で`autoPointBudgetEnabled`をその場でfalseに
+    倒すようにした。renderer側の`setPointBudget()`も内部でfalseにするが、
+    その反映がUIに届くのは次のstats更新(最大`STATS_INTERVAL_MS`=500ms後)であり、
+    それを待つと一瞬黙って切り替わったように見えるため、即時反映を別に足した
+- `src/ui/shell/LayerPanel.tsx`
+  - 「点予算を自動調整する」チェックボックスを追加(`viewer.autoPointBudgetEnabled`
+    ⇄ `viewer.setAutoPointBudgetEnabled()`)
+  - 自動調整中は点予算の数値入力を`disabled`にし、ラベルに
+    「(自動調整中)」と表示。値自体は`viewer.pointBudget`(statsに追従)なので、
+    自動調整が動いている間は数値が自分で変わっていくのがそのまま見える
+  - チェックを外すと入力が編集可能に戻り、手動で変更すると
+    `setPointBudget()`が呼ばれる(実際のrenderer側の停止条件と一致)。
+    このときチェックボックス自体が即座に外れる(上記の即時反映のおかげ)ので、
+    自動調整が止まったことが画面から分かる
+
+**採用しなかった案:** 数値入力を常に編集可能にして、自動調整中にユーザーが
+値を変えた瞬間に自動的にオフへ切り替わる方式も検討した。実装は可能だが、
+自動調整中に0.5秒ごとに値が動く数値入力へ同時にユーザーが入力するという
+状態遷移が生まれ、挙動の説明が複雑になる。所有者が「実装を追えること」を
+優先しているため、自動調整中は読み取り専用・チェックを外すと編集可能という
+単純な2状態を選んだ。チェックを外す動作自体が「自動をやめる」という明確な
+意思表示になる点も理由。
+
+**触ったファイル:** `src/state/useCopcViewer.ts`、`src/ui/shell/LayerPanel.tsx`
+(`src/renderer/`配下は今回も触っていない)
+
+**確認手順の追加分:**
+
+```bash
+npm run tauri dev
+```
+
+- 起動直後、レイヤーパネルの点予算欄が「点予算(自動調整中)」と表示され、
+  入力が灰色(disabled)になっているか。ファイルを開いてカメラを動かし、
+  数値が時間とともに変化するか
+- 「点予算を自動調整する」のチェックを外すと、入力が編集可能になるか
+- 数値を編集すると、チェックが自動で外れる(自動調整オフになる)ことが
+  画面上で分かるか。再度チェックを入れると自動調整が再開するか
+
+**未確認:** 上記もGUIを持たないため未実施。`npm run typecheck`・
+`npm run lint`・`npm test`(68 tests)・`npm run build`はこのエージェントの
+環境で実行し全て通ることを確認済み。
+
 ### 受け入れ条件
 
 - [x] パネルを畳むと完全な全面ビューアになる — `LayerPanel`/`InfoPanel`とも
@@ -735,6 +804,8 @@ npm run tauri dev
       目視確認は未実施。所有者の実機確認待ち**
 - [x] 設定モーダルが不透明で、密なフォームが読める — `SettingsModal`は
       `backdrop-blur`を使わず`bg-white`/`dark:bg-slate-900`の単色。目視確認は所有者待ち
+- [x] 自動点予算調整(ADR-0009)のオン/オフがレイヤーパネルから見え、切り替えられる
+      — 上記「追記: 自動点予算調整(ADR-0009)との隙間を埋めた」参照。目視確認は所有者待ち
 
 ---
 
