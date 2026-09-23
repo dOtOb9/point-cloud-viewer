@@ -16,12 +16,16 @@
 point-cloud-viewer/
 ├─ TaskSheets/            設計判断(ADR)と作業記録
 ├─ crates/
-│   └─ pcv-core/          COPC読込・octree走査・解析アルゴリズム
-│                         → Tauri を知らない。wasm にもコンパイルできる
+│   ├─ pcv-core/          COPC読込・octree走査・解析アルゴリズム
+│   │                     → Tauri を知らない。wasm にもコンパイルできる
+│   └─ pcv-wasm/          pcv-core を wasm-bindgen で包む層(ADR-0012)
+│                         → wasm固有の依存(wasm-bindgen/web-sys)はここに閉じる。
+│                           ルートのCargoワークスペースには入れていない
 ├─ src-tauri/             Tauri アプリの Rust 側
 │                         → 薄く保つ。pcv:// の配信と制御コマンドだけ
 ├─ src/                   フロントエンド (TypeScript)
-│   ├─ datasource/        DataSource 抽象と実装
+│   ├─ datasource/        DataSource 抽象と実装(TauriSource / WebSource)
+│   ├─ wasm/pcv-wasm/     wasm-bindgenの生成物(コミット済み。ADR-0012参照)
 │   ├─ renderer/          点群レンダラ (WebGPU。ADR-0002によりWebGL2フォールバックは無し)
 │   │                     → node-selection.ts(描画ノードの判定・純粋関数)/
 │   │                       gpu-resources.ts(WebGPU API はここだけ)/
@@ -29,7 +33,7 @@ point-cloud-viewer/
 │   │                       に分割。責務の詳細は「守る規約」の下の注記参照
 │   ├─ state/             アプリ状態
 │   └─ ui/                React コンポーネント
-├─ Cargo.toml             cargo workspace
+├─ Cargo.toml             cargo workspace (pcv-wasmは含まない)
 └─ package.json
 ```
 
@@ -63,10 +67,11 @@ point-cloud-viewer/
 この4つが崩れると Web 版が出せなくなるか、実装が追えなくなる。
 
 1. **`pcv-core` は Tauri を知らない。** `tauri` への依存を足さない。ここが wasm で動く
-   ことが、Web 版のバックエンドを成立させる条件。
+   ことが、Web 版のバックエンドを成立させる条件。wasm-bindgen/web-sys等の
+   wasm固有の依存も`pcv-core`には入れず、`crates/pcv-wasm`（ADR-0012）に閉じる。
 2. **Tauri の API を import してよいのは `src/datasource/tauri.ts` だけ。**
-   他のファイルは `DataSource` インターフェースしか見ない。Web 版はここを `http.ts` に
-   差し替えるだけで動く。
+   他のファイルは `DataSource` インターフェースしか見ない。Web 版は
+   `src/datasource/web.ts`（`WebSource`）がこれを実装する（ADR-0012）。
 3. **`src/renderer/` は React を知らない。** canvas と `DataSource` だけを受け取る。
    逆に `src/ui/` はレンダラを直接触らず、`src/state/` を経由する。
 4. **大きいデータは `pcv://` カスタムプロトコルで運ぶ。`invoke` は制御メッセージ専用。**
@@ -109,3 +114,4 @@ point-cloud-viewer/
 | カラーマップ切替 | 実装済み（M2-2）: 色計算の純粋関数(`src/renderer/colormap.ts`、標高/強度のランプ・ASPRS分類コード表)、`LayerPanel`の着色モード選択、`gpu-resources.ts`の頂点シェーダでの結線(RGB/標高/強度/分類の4モード)まで完了。RGB無しファイルでの標高への自動フォールバックあり。`sofi.copc.laz`/`autzen-classified.copc.laz`等での実際の見え方は所有者の実機待ち。[M2](./M2-shading-and-ui.md) M2-2参照 |
 | WebGPU エラーの可視化 | 完了: `device.onuncapturederror`/`device.lost`の監視、初期化を`pushErrorScope`で区切っての箇所特定、画面への不透明なエラーバナー表示。EDL(M2-1)で「テスト・CIはすべて緑なのに画面は真っ黒になった」事故を受けて新設。[ADR-0011](./ADR-0011-gpu-error-visibility.md)参照 |
 | `point-cloud-renderer.ts` の分割 | 完了: 1,055行あったファイルを`node-selection.ts`（ノード選択、純粋関数）・`gpu-resources.ts`（WebGPU API はここだけ）・`point-cloud-renderer.ts`（フレームループ・外部公開API）に分割。詳細は「守る規約」の下の`src/renderer/`の内部構成を参照。`selectNodesForFrame`の単体テストを新設。公開APIは変更なし（`src/state/useCopcViewer.ts`に差分無し）。typecheck/lint/vitest/build 確認済み。実際の画面描画が分割前と同じに見えるかは所有者の目視待ち |
+| Web版（GitHub Pages） | 実装済み: `crates/pcv-wasm`が`pcv-core`をwasm-bindgenで包み、Web Worker（`src/datasource/copc.worker.ts`）内の同期I/O（`FileReaderSync`/同期XHR）で`Read + Seek`を実装。`WebSource`が`DataSource`を実装し、`useCopcViewer.ts`が実行環境（Tauri/ブラウザ）で`TauriSource`/`WebSource`を切り替える。並列化はまずWorker1本（複数化は必要が見えてから）。`.github/workflows/pages.yml`でCI上にwasmビルド・静的ビルドを追加済み。`sofi.copc.laz`（2.03GB）を実際にブラウザで開く確認は未実施。[ADR-0012](./ADR-0012-web-worker-sync-io.md)参照 |
