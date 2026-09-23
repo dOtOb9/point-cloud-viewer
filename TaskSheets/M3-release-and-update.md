@@ -146,6 +146,30 @@ gh secret list
 **確認できていないこと**（タグpush禁止のため）: このワークフロー自体をCIで
 実際に走らせて緑になることは未確認。YAML構文は目視で確認したのみ。
 
+### 追記（2026-09-23、実際にタグを打って判明した不具合と修正）
+
+所有者の許可を得て`v0.1.0`タグが実際にpushされ、`release.yml`が走った
+（run 35847261259）。`check-version`は成功したが、`windows`ジョブが以下で失敗した:
+
+```
+GitHub release failed with status: 403
+HttpError: Resource not accessible by integration
+```
+
+**原因**: `GITHUB_TOKEN`のデフォルト権限に`contents: write`が含まれておらず、
+`softprops/action-gh-release`がReleaseを作成・アセットを添付できなかった
+（このワークフローにはpermissionsの指定が元々無く、リポジトリ/組織のデフォルト
+設定に委ねていたため不足していた）。
+
+**修正**: `windows`ジョブと`android`ジョブ（どちらもReleaseへアセットを添付する）に
+`permissions: { contents: write }`を追加した。`check-version`ジョブは
+checkoutしかしないため権限追加は不要（既定のまま）。
+
+このタグpush・再現・修正はコーディネーターの指示によるもので、Sonnetがこの
+セッションで実際に確認した（推測ではない）。修正後の再実行はコーディネーター側で
+タグを打ち直して行う予定であり、**修正が実際に403を解消することはこのセッション
+ではまだ確認していない**。
+
 ---
 
 ## M3-2: デスクトップの更新通知（オプトイン。方針転換によりM3-4と共通実装）
@@ -276,6 +300,50 @@ Actionsのランナーは毎回まっさらな環境のため、キャッシュ�
 
 秘密鍵・keystoreは生成しない方針（このタスクの必須制約）を守っており、
 debug.keystoreの生成自体はGradleが行う（Sonnetが生成したものではない）。
+
+### 追記（2026-09-23、実際にタグを打って判明した不具合と修正）
+
+`v0.1.0`タグでの実行（run 35847261259）で`android`ジョブが以下で停止した:
+
+```
+Run android-actions/setup-android@v3
+Warning: Failed to find package 'tools'
+Error: The process '/usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager' failed with exit code 1
+```
+
+**原因**: `android-actions/setup-android@v3`の`packages`入力の既定値は
+`"tools platform-tools"`（`raw.githubusercontent.com`の`action.yml`で確認済み）
+だが、`tools`パッケージ（Android SDK Tools、レガシー）はGoogleのSDKリポジトリの
+配布リストから既に削除されており、既定のまま実行すると`sdkmanager`がこの
+パッケージを見つけられずに失敗する。
+
+**検討した2案（コーディネーターの提示どおり）**:
+
+| 案 | 採用 | 理由 |
+|---|---|---|
+| `packages`に`tools`を含めない値を明示する | **採用** | 変更が1行で済み、`accept-android-sdk-licenses`（既定true）によるライセンス受諾やANDROID_HOME設定など、このactionが担う他の役割をそのまま活かせる |
+| `setup-android`自体を外し、runner標準のANDROID_HOMEに頼る | 不採用 | ubuntu-latestランナーにAndroid SDKがある程度プリインストールされているのは事実だが、ライセンス受諾ファイルの状態や、後続の`tauri android build`（Gradle経由）が追加のSDKパッケージを要求した場合の自動取得可否を確認できておらず、変更が大きい割に不確実性が高いと判断した |
+
+**修正**: `packages: "platform-tools"`（`tools`を含めない）を明示した。
+
+**確認できたこと**: `curl`で`action.yml`を取得し、既定値が`"tools platform-tools"`
+であることを確認した。actionlint(v1.7.12)でこのワークフローファイル自体の
+静的検査を実行し、エラー0件だった（shellcheckは環境に無く、actionlintが
+それを使う部分の検査は行われていない）。
+
+**確認できていないこと**: `packages: "platform-tools"`への変更で実際に
+`sdkmanager`が成功し、後続の`tauri android init`/`tauri android build`が
+NDKや不足しているSDKパッケージ（compileSdkVersion等、生成される
+`src-tauri/gen/android/`のGradle設定が何を要求するかはCIを実際に走らせる
+までわからない）を問題なく解決できるかは、**このセッションでは確認していない**。
+コーディネーターがタグを打ち直して再実行する際に判明する。
+
+**あわせて追加したもの**: `on.workflow_dispatch: {}`を足し、タグを打たずに
+手動でこのワークフロー（windows・androidの両ビルド）を試せるようにした。
+`check-version`の検査ステップと、両ジョブのGitHub Releaseアップロードstepは
+`if: startsWith(github.ref, 'refs/tags/')`で止めているため、手動実行では
+ビルドの成否だけを確認でき、Releaseは作られない（コーディネーターの
+「Releaseを作らない経路であること」という要求どおり）。
 
 ---
 

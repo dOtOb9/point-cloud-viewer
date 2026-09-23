@@ -2,19 +2,31 @@ name: Release
 
 # タグ push (`v*`) の時だけ走る。ci.yml とは別ファイルにしてある理由は
 # TaskSheets/M3-release-and-update.md M3-1 参照（目的も所要時間も違うため）。
+#
+# workflow_dispatch: タグを打たずに手動で走らせる経路（2026-09-23追加）。
+# android ジョブは元々タグが無いと走らない（`push: tags`でしか起きない）ため、
+# 「androidのビルド部分だけを事前に試す」手段が無かった。手動実行の場合は
+# GitHub Releaseへのアップロードを行わない（下記の各アップロードstepを
+# `startsWith(github.ref, 'refs/tags/')`で止めている）。ビルドの成否だけを
+# 確認する経路であり、Releaseを作る経路ではない。
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch: {}
 
 jobs:
   # タグと tauri.conf.json の version が食い違ったまま Release を作ってしまうと、
   # 利用者から見たバージョン表示が混乱する。ここで検査し、違っていたら他のジョブが
   # 始まる前に落とす（黙って進めない。M3-1の受け入れ条件）。
+  #
+  # workflow_dispatchでの手動実行はタグ経由ではない（github.refがブランチになる）ため、
+  # この検査自体を意味を持たせられない。タグpush時だけ実行する。
   check-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: タグと tauri.conf.json の version が一致することを確認する
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           conf_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
@@ -34,6 +46,12 @@ jobs:
   windows:
     needs: check-version
     runs-on: windows-latest
+    # GitHub Releaseの作成・アセット添付にはデフォルトのGITHUB_TOKENに
+    # contents: write権限が要る（無いと"Resource not accessible by integration"の
+    # 403で失敗する。2026-09-23、実際にv0.1.0タグで再現した）。他の権限は使わないので
+    # 必要最小限としてcontents: writeだけをこのジョブに付ける。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -46,6 +64,8 @@ jobs:
       - name: tauri build (msi + nsis, 無署名)
         run: npm run tauri build
       - name: Upload installers to GitHub Release
+        # workflow_dispatchでの手動実行ではReleaseを作らない（ビルド確認だけの経路）。
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -66,6 +86,9 @@ jobs:
     needs: [check-version, windows]
     if: ${{ !cancelled() && needs.check-version.result == 'success' }}
     runs-on: ubuntu-latest
+    # windowsジョブと同じ理由（GitHub Releaseへのアセット添付にはcontents: writeが要る）。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -80,7 +103,20 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
+      # android-actions/setup-android@v3のpackages既定値は"tools platform-tools"だが、
+      # "tools"パッケージはGoogleのSDKリポジトリから既に削除されており、既定のまま
+      # 実行すると`sdkmanager`が"Failed to find package 'tools'"で失敗する
+      # (2026-09-23、run 35847261259で実際に再現した)。"tools"を含めず、
+      # 実際に使う"platform-tools"だけを明示して回避する。
+      #
+      # setup-android自体を外してrunner標準のANDROID_HOMEだけに頼る案も検討したが、
+      # このactionが担うライセンス受諾(accept-android-sdk-licenses)まで失うと、
+      # ビルド中にAndroid Gradle Pluginが未取得のSDKパッケージを取りに行った際に
+      # ライセンス未受諾で失敗するリスクがある。actionはそのまま使い、
+      # packagesの指定だけを直す方が変更が小さく確実だと判断した。
       - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
       - name: Setup Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
@@ -108,6 +144,8 @@ jobs:
       - name: tauri android build (debug署名)
         run: npm run tauri android build -- --debug --apk
       - name: Upload APK to GitHub Release
+        # workflow_dispatchでの手動実行ではReleaseを作らない（ビルド確認だけの経路）。
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
