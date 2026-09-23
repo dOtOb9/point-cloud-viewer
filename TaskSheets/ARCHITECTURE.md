@@ -23,6 +23,10 @@ point-cloud-viewer/
 ├─ src/                   フロントエンド (TypeScript)
 │   ├─ datasource/        DataSource 抽象と実装
 │   ├─ renderer/          点群レンダラ (WebGPU。ADR-0002によりWebGL2フォールバックは無し)
+│   │                     → node-selection.ts(描画ノードの判定・純粋関数)/
+│   │                       gpu-resources.ts(WebGPU API はここだけ)/
+│   │                       point-cloud-renderer.ts(フレームループ・外部公開API)
+│   │                       に分割。責務の詳細は「守る規約」の下の注記参照
 │   ├─ state/             アプリ状態
 │   └─ ui/                React コンポーネント
 ├─ Cargo.toml             cargo workspace
@@ -68,6 +72,24 @@ point-cloud-viewer/
 4. **大きいデータは `pcv://` カスタムプロトコルで運ぶ。`invoke` は制御メッセージ専用。**
    理由と実測値は ADR-0001 を参照。
 
+### `src/renderer/` の内部構成（規約3の補足）
+
+`point-cloud-renderer.ts` が1,055行まで肥大化し、性質の違う3つの関心事
+（ノード選択・フレームループ・GPUリソース管理）が同居して実装を追いにくく
+なっていたため、以下の3ファイルに分割した（振る舞いは変えていない）。
+
+- **`node-selection.ts`** — 「このフレームでどのノードを描くか」の判定
+  (`selectNodesForFrame`)。クラスのフィールドに触らない純粋関数で、WebGPU も
+  React も知らない。キャッシュへのアクセスは `NodeSelectionCache` インター
+  フェース越しに受け取るので、WebGPU を起動せずに vitest で検証できる。
+- **`gpu-resources.ts`** — デバイス・パイプライン・テクスチャ（深度・
+  オフスクリーン）・sky/grid/EDL の初期化・リサイズ・`drawFrame` のコマンド
+  エンコードを持つ。**`src/renderer/` の中でも WebGPU の API を直接叩くのは
+  このファイルだけ**にする。
+- **`point-cloud-renderer.ts`**（`PointCloudRenderer` クラス） — rAF・カメラ・
+  統計・点予算の自動調整の呼び出し、ローダーとの接続、そして外部公開 API
+  (`src/state/useCopcViewer.ts` が使う唯一の入り口)を持つオーケストレーション役。
+
 ## 現在の状態
 
 | 領域 | 状態 |
@@ -86,3 +108,4 @@ point-cloud-viewer/
 | EDL シェーディング | 実装済み（M2-1）、既定はオン: `src/renderer/edl.ts`。点群だけを描くオフスクリーンの色+深度テクスチャを新設し、`point-cloud-renderer.ts`の`drawFrame()`を2パス化(点群→オフスクリーン、空/グリッド+EDL合成→スワップチェーン)することで、EDLの陰影が空・グリッドに掛からないようにした。オン/オフのみUIから調整可能。強さは所有者が実機で確認して`0.05`に固定した(UIのスライダーは削除済み)。`sofi.copc.laz`での実際の見え方・fps実測は所有者の実機待ち。[M2](./M2-shading-and-ui.md) M2-1参照 |
 | カラーマップ切替 | 着手中（M2-2）: 色計算の純粋関数(`src/renderer/colormap.ts`、標高/強度のランプ・分類コード表)と`LayerPanel`の着色モード選択・`useCopcViewer.ts`のstateまで実装済み。`point-cloud-renderer.ts`の分割(別エージェント作業中)完了後、実際の描画色へ結線する。[M2](./M2-shading-and-ui.md) M2-2参照 |
 | WebGPU エラーの可視化 | 完了: `device.onuncapturederror`/`device.lost`の監視、初期化を`pushErrorScope`で区切っての箇所特定、画面への不透明なエラーバナー表示。EDL(M2-1)で「テスト・CIはすべて緑なのに画面は真っ黒になった」事故を受けて新設。[ADR-0011](./ADR-0011-gpu-error-visibility.md)参照 |
+| `point-cloud-renderer.ts` の分割 | 完了: 1,055行あったファイルを`node-selection.ts`（ノード選択、純粋関数）・`gpu-resources.ts`（WebGPU API はここだけ）・`point-cloud-renderer.ts`（フレームループ・外部公開API）に分割。詳細は「守る規約」の下の`src/renderer/`の内部構成を参照。`selectNodesForFrame`の単体テストを新設。公開APIは変更なし（`src/state/useCopcViewer.ts`に差分無し）。typecheck/lint/vitest/build 確認済み。実際の画面描画が分割前と同じに見えるかは所有者の目視待ち |
