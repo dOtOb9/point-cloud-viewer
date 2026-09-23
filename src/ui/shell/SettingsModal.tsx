@@ -1,4 +1,5 @@
 import type { ThemePreference, ThemeState } from "../../state/useTheme";
+import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { IpcBenchPanel } from "../IpcBenchPanel";
 import { NodeConcurrencyBenchPanel } from "../NodeConcurrencyBenchPanel";
 import { WebGpuProbePanel } from "../WebGpuProbePanel";
@@ -7,6 +8,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   theme: ThemeState;
+  update: UpdateCheckState;
 }
 
 const THEME_LABELS: Record<ThemePreference, string> = {
@@ -24,7 +26,7 @@ const THEME_LABELS: Record<ThemePreference, string> = {
  * 以前App.tsx直下の<details>にあったが、UIシェル導入でここへ移した
  * (機能は削っていない。折りたたみ式(<details>)なのは変わらず)。
  */
-export function SettingsModal({ open, onClose, theme }: Props) {
+export function SettingsModal({ open, onClose, theme, update }: Props) {
   if (!open) return null;
 
   return (
@@ -65,6 +67,26 @@ export function SettingsModal({ open, onClose, theme }: Props) {
             両テーマを確認できるよう、ここから手動固定もできる。
           </p>
           <p className="text-xs opacity-60">現在の表示: {theme.theme === "dark" ? "ダーク" : "ライト"}</p>
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold opacity-70">更新の確認</h3>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={update.enabled}
+              onChange={(e) => update.setEnabled(e.target.checked)}
+            />
+            起動時に新しいバージョンを確認する
+          </label>
+          <p className="text-xs opacity-60">
+            確認するだけで、ダウンロードとインストールは常に利用者の手作業
+            （GitHub Releasesの最新版と比較し、リリースページを開くところまで）。
+            開発中(`tauri dev`)はこの設定に関わらず確認しない。
+          </p>
+          {update.currentVersion && (
+            <p className="text-xs opacity-60">現在のバージョン: {update.currentVersion}</p>
+          )}
         </section>
 
         <details className="flex flex-col gap-3">

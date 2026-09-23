@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useCopcViewer } from "../../state/useCopcViewer";
 import { useTheme } from "../../state/useTheme";
+import { useUpdateCheck } from "../../state/useUpdateCheck";
 import { useWebGpuSupport } from "../../state/useWebGpuSupport";
 import { ViewerPanel } from "../ViewerPanel";
 import { Dock } from "./Dock";
@@ -9,6 +10,7 @@ import { InfoPanel } from "./InfoPanel";
 import { LayerPanel } from "./LayerPanel";
 import { SettingsModal } from "./SettingsModal";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
+import { UpdateNotice } from "./UpdateNotice";
 
 /**
  * M2-3: ADR-0005で決めたUIシェルの組み立て役。
@@ -23,6 +25,7 @@ export function AppShell() {
   const [canvasRef, viewer] = useCopcViewer();
   const theme = useTheme();
   const webGpuSupport = useWebGpuSupport();
+  const update = useUpdateCheck();
 
   const [layerOpen, setLayerOpen] = useState(true);
   const [infoOpen, setInfoOpen] = useState(true);
@@ -51,7 +54,10 @@ export function AppShell() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} update={update} />
+
+      {/* M3-2/M3-4: 更新通知。新しいバージョンがあるときだけ出る（デスクトップ・Android共通）。 */}
+      <UpdateNotice update={update} />
 
       {/* WebGPUのエラーバナー（新設）。z-50で他のすべての面より前面に出す
           （EDL(M2-1)の事故のように画面が真っ黒になっても、devtoolsを開かずに

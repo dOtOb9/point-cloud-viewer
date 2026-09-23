@@ -2,6 +2,7 @@
 // 他のファイルは DataSource インターフェースだけを見て、ここを直接 import しない。
 
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import type { CloudInfo, DataSource, HierarchyNodeInfo, OpenedCloud } from "./DataSource";
 
 // `open_copc` (src-tauri/src/copc_state.rs) がJSONで返す形。フィールド名はRust側の
@@ -54,6 +55,16 @@ function toHierarchyNodeInfo(dto: HierarchyNodeDto): HierarchyNodeInfo {
  */
 export async function reportToBackendConsole(message: string): Promise<void> {
   await invoke("report_diagnostic", { message });
+}
+
+/**
+ * M3-2/M3-4: 更新通知が「今動いているアプリのバージョン」と比較するために使う。
+ * `tauri.conf.json`の`version`（=ビルド時のCargo/バンドラのバージョン）をTauriが
+ * 実行時に返す値で、`package.json`の`version`とは独立している（両者は今のところ
+ * 手で一致させている）。
+ */
+export async function getAppVersion(): Promise<string> {
+  return await getVersion();
 }
 
 /**
