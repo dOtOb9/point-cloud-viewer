@@ -1,1 +1,17 @@
 @import "tailwindcss";
+
+/* M2-3 (ADR-0005): ダーク/ライトの判定に <html data-theme="..."> 属性を使う。
+   Tailwindの既定はprefers-color-schemeメディアクエリだが、設定画面から
+   手動でテーマを固定できるようにするため(既定値はOS追従="system"。
+   src/state/useTheme.ts参照)、属性ベースのカスタムvariantに差し替える。 */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ADR-0005: 3Dビューをウィンドウ全面に敷く(全面ビューア)。
+   html/body/#root がビューポート全体の高さを持たないと、canvasをabsolute inset-0
+   で敷いても全面にならない。 */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
