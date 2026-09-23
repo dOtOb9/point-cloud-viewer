@@ -120,6 +120,29 @@ export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
             />
             グリッド
           </label>
+
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={viewer.edlEnabled}
+                onChange={(e) => viewer.setEdlEnabled(e.target.checked)}
+              />
+              EDL（陰影で凹凸を強調）
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={2}
+              step={0.05}
+              value={viewer.edlStrength}
+              onChange={(e) => viewer.setEdlStrength(Number(e.target.value))}
+              disabled={!viewer.edlEnabled}
+              title="EDLの強さ（0で無効と同じ見た目になる）"
+              className="disabled:opacity-50"
+            />
+            <span className="text-xs opacity-60">強さ: {viewer.edlStrength.toFixed(2)}</span>
+          </div>
         </section>
       )}
 

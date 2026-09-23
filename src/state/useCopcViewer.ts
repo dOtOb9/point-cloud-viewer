@@ -4,6 +4,7 @@ import type { CloudInfo } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
+import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_STRENGTH } from "../renderer/edl";
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // BackgroundModeもここから再エクスポートする。
@@ -28,11 +29,19 @@ export interface CopcViewerState {
   stats: RenderStats | null;
   backgroundMode: BackgroundMode;
   gridEnabled: boolean;
+  /** M2-1: EDL(Eye-Dome Lighting)のオン/オフと強さ。既定はrendererの既定(オン)に
+   *  合わせている。RGBを持たない点群(sofi.copc.laz)でも形状を読めるようにする
+   *  必須機能なので、既定でオフにはしていない（TaskSheets/M2-shading-and-ui.md
+   *  M2-1参照）。 */
+  edlEnabled: boolean;
+  edlStrength: number;
   openFile: (path: string) => Promise<void>;
   setPointBudget: (budget: number) => void;
   setAutoPointBudgetEnabled: (enabled: boolean) => void;
   setBackgroundMode: (mode: BackgroundMode) => void;
   setGridEnabled: (enabled: boolean) => void;
+  setEdlEnabled: (enabled: boolean) => void;
+  setEdlStrength: (strength: number) => void;
 }
 
 /**
@@ -55,6 +64,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [stats, setStats] = useState<RenderStats | null>(null);
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
+  const [edlEnabled, setEdlEnabledState] = useState(DEFAULT_EDL_ENABLED);
+  const [edlStrength, setEdlStrengthState] = useState(DEFAULT_EDL_STRENGTH);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -87,6 +98,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         `autoPointBudget=${s.autoPointBudgetEnabled} ` +
         // M2-0c: 空/グリッドの有無でfpsを比較できるよう、一緒に出す。
         `backgroundMode=${s.backgroundMode} gridEnabled=${s.gridEnabled} ` +
+        // M2-1: EDLのオン/オフ・強さの切り替えがrendererまで届いているかを、
+        // 陰影の見た目を目視する前にstdoutだけでも確認できるようにする。
+        `edlEnabled=${s.edlEnabled} edlStrength=${s.edlStrength.toFixed(2)} ` +
         // M2-0b: GUIを目視できなくても、pitch=0が水平になっているか等をstdoutだけで
         // 機械的に確認できるようにカメラの向きも出す。
         `pitch=${s.cameraPitch.toFixed(3)} yaw=${s.cameraYaw.toFixed(3)} ` +
@@ -168,6 +182,16 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setGridEnabled(enabled);
   }, []);
 
+  const setEdlEnabled = useCallback((enabled: boolean) => {
+    setEdlEnabledState(enabled);
+    rendererRef.current?.setEdlEnabled(enabled);
+  }, []);
+
+  const setEdlStrength = useCallback((strength: number) => {
+    setEdlStrengthState(strength);
+    rendererRef.current?.setEdlStrength(strength);
+  }, []);
+
   const state: CopcViewerState = {
     status,
     error,
@@ -178,11 +202,15 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     stats,
     backgroundMode,
     gridEnabled,
+    edlEnabled,
+    edlStrength,
     openFile,
     setPointBudget,
     setAutoPointBudgetEnabled,
     setBackgroundMode,
     setGridEnabled,
+    setEdlEnabled,
+    setEdlStrength,
   };
   return [canvasRef, state];
 }
