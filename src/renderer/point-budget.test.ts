@@ -143,10 +143,10 @@ describe("evaluatePointBudget", () => {
   });
 
   it("不感帯（ミス割合がhitRatioToGrowとmissRatioToShrinkの間）では振動しない", () => {
-    // 20フレーム中1本だけがミス(5%)。hitRatioToGrow=0より大きく
-    // missRatioToShrink=0.1より小さいので、増やしも減らしもしない不感帯に入る。
-    const window = Array(WINDOW_SIZE - 1).fill(REFRESH_60HZ_MS);
-    window.push(REFRESH_60HZ_MS * 2);
+    // 20フレーム中2本がミス(10%)。hitRatioToGrow=0.05より大きく
+    // missRatioToShrink=0.15より小さいので、増やしも減らしもしない不感帯に入る。
+    const window = Array(WINDOW_SIZE - 2).fill(REFRESH_60HZ_MS);
+    window.push(REFRESH_60HZ_MS * 2, REFRESH_60HZ_MS * 2);
 
     let state: PointBudgetState = { budget: 3_000_000, consecutiveHits: 0 };
     for (let i = 0; i < 20; i++) {
@@ -154,6 +154,28 @@ describe("evaluatePointBudget", () => {
       expect(state.budget).toBe(3_000_000);
       expect(state.consecutiveHits).toBe(0); // 「間に合っている」とは数えていない
     }
+  });
+
+  it("20フレームの窓にミスが1枚混ざっても、「間に合っている」の積み上げが台無しにならない（ADR-0010追記分）", () => {
+    // 所有者の実機では、hitRatioToGrow=0（ミス0のときしか積まない）だと
+    // カメラ操作中の単発ミス（ノード到着等）でconsecutiveHitsが毎回0に
+    // リセットされ、sustainedHitsToGrow回連続でミス0を達成できる場面が
+    // ほとんど無く、点予算が実質一度も増えなかった。
+    // hitRatioToGrow=0.05（20フレーム中1枚まで許容）にしたことで、
+    // 1枚だけミスが混ざる状態が続いても連続ヒットが積み上がり、最終的に
+    // 上げる判断に到達することを確認する。
+    const window = Array(WINDOW_SIZE - 1).fill(REFRESH_60HZ_MS);
+    window.push(REFRESH_60HZ_MS * 2); // 20フレーム中1枚だけミス(5%)
+
+    let state: PointBudgetState = { budget: 1_000_000, consecutiveHits: 0 };
+    for (let i = 0; i < TUNING.sustainedHitsToGrow - 1; i++) {
+      state = evaluatePointBudget(state, window, REFRESH_60HZ_MS, TUNING);
+      expect(state.consecutiveHits).toBe(i + 1); // リセットされず積み上がる
+      expect(state.budget).toBe(1_000_000); // まだ上げる回数には達していない
+    }
+    // ちょうどsustainedHitsToGrow回目で、単発ミスが混ざったままでも上げる。
+    state = evaluatePointBudget(state, window, REFRESH_60HZ_MS, TUNING);
+    expect(state.budget).toBeGreaterThan(1_000_000);
   });
 
   it("間に合っている状態が sustainedHitsToGrow 回続くまでは上げない（緩やかに上げる）", () => {
@@ -222,6 +244,49 @@ describe("evaluatePointBudget", () => {
       expect(state.budget).toBe(3_000_000);
     },
   );
+
+  it("上限から始めてミスの多い列を与えると、数ステップで適正域まで落ちる（ADR-0010追記分: 楽観的に高く始める設計の確認）", () => {
+    // ADR-0010の追記: 所有者の実機での実際の症状は「点予算が一度も動かなかった」
+    // ことだった。修正方針は「低い値から上限を探り上げる」のではなく
+    // 「楽観的に上限から始めて、外したら即座に大きく下げる」に変えたので、
+    // 上限スタートでも実際に短時間で適正域まで落ちることを確認しておく
+    // （高く始める設計が「落ちるのに時間がかかりすぎる」形で破綻しないことの確認）。
+    const CAPACITY_POINTS = 500_000; // このモデルでの「ちょうど1周期に収まる」点数
+    const START_BUDGET = 6_710_886; // 旧デフォルトのメモリ予算(256MiB)から逆算した上限相当
+    const LIMITS = { min: 200_000, max: START_BUDGET };
+
+    function simulateFrameMs(budget: number): number {
+      const renderCostMs = REFRESH_60HZ_MS * (budget / CAPACITY_POINTS);
+      const vsyncMultiples = Math.max(1, Math.ceil(renderCostMs / REFRESH_60HZ_MS));
+      return vsyncMultiples * REFRESH_60HZ_MS;
+    }
+
+    const tuning: PointBudgetTuning = { ...TUNING, limits: LIMITS };
+    let state: PointBudgetState = { budget: START_BUDGET, consecutiveHits: 0 };
+    // 実機では、起動直後に重い点予算を試す前からすでに何フレームか描画しており、
+    // リフレッシュ周期の推定(updateRefreshIntervalEstimate)は真の値(16.7ms)を
+    // 既に掴んでいるはず。ここでもその前提を置く（初回サンプルがいきなり
+    // 過負荷なフレームだと、最小値そのものが過負荷値に汚染されてしまうため）。
+    let refreshEstimate: RefreshIntervalEstimate | null = { intervalMs: REFRESH_60HZ_MS };
+    let stepsToReachNearCapacity = -1;
+
+    for (let i = 0; i < 30; i++) {
+      const frameMs = simulateFrameMs(state.budget);
+      refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, frameMs);
+      const window = Array(WINDOW_SIZE).fill(frameMs);
+      state = evaluatePointBudget(state, window, refreshEstimate.intervalMs, tuning);
+      if (stepsToReachNearCapacity === -1 && state.budget <= CAPACITY_POINTS * 1.5) {
+        stepsToReachNearCapacity = i + 1;
+      }
+    }
+
+    // shrinkRateは持続要求なしで即座に効く(20%/回)ので、上限(6,710,886)から
+    // 適正域(CAPACITY_POINTSの1.5倍以内)まで、数ステップ(評価間隔500ms換算で
+    // 数秒)で落ちるはず。数十ステップもかかるようでは「楽観的に高く始める」
+    // 設計が実用にならない。
+    expect(stepsToReachNearCapacity).toBeGreaterThan(0);
+    expect(stepsToReachNearCapacity).toBeLessThanOrEqual(15);
+  });
 
   it("予算を増やした結果コマ落ちするようになったら下げ、その付近で落ち着く（際限なく増え続けない）", () => {
     // シミュレーション: 「描画コストは点予算に比例する」という単純なモデルを使う。
