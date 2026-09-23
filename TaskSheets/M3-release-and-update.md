@@ -444,11 +444,31 @@ signingConfigにデバッグキーストアを指定する」か「apksignerで�
   （"universal"はGradleのフレーバー名であり、含まれるABI数とは無関係）
 - APKサイズは493MB→6.8MB（署名前の未署名APKの時点）に縮小した
 
-**確認できていないこと**: 上記の「debug鍵を明示的に生成する」「zipalign→
-apksignerで署名する」というstepを追加した後、実際にビルドが成功し、
-署名済みAPKが生成されることは、**この記録を書いている時点ではまだ確認できて
-いない**（このコミットの直後にworkflow_dispatchで再実行して確認する。
-結果は本追記または追記3に書き足す）。
+### 追記3（2026-09-23、修正後にworkflow_dispatchで再確認した結果）
+
+上記の修正をpushした直後、タグを打たず`workflow_dispatch`で再実行し
+（run 35878230791）、windows・androidとも全stepがsuccessになることを確認した
+（Upload系の2stepは想定どおり"skipped"。手動実行ではReleaseへのアップロードを
+行わない設計のため）。ジョブのログ（`gh api .../jobs/<id>/logs`で取得）から、
+実際に以下を確認した:
+
+- windowsジョブの「ビルド成果物を確認する」stepで、
+  `target/release/bundle/msi/point-cloud-viewer_0.1.0_x64_en-US.msi`と
+  `target/release/bundle/nsis/point-cloud-viewer_0.1.0_x64-setup.exe`の
+  2ファイルが見つかった（M3-1追記2参照）
+- androidジョブの「APKにdebug鍵で署名する」stepで、build-toolsは
+  `/usr/local/lib/android/sdk/build-tools/37.0.0`が自動で見つかり
+  （sdkmanagerでの追加取得は不要だった）、`zipalign`→`apksigner sign`が成功した
+- 「生成されたAPKを確認する」stepで、
+  `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-debug-signed.apk`
+  （**7.6MB**）が1件だけ見つかった（署名前の未署名ファイルは削除済みで残っていない）
+
+**まとめ**: APKサイズは493MB（`--debug`、旧実装）→7.6MB（release最適化+
+arm64のみ+debug鍵署名、新実装）。約65分の1になった。この7.6MBが所有者の
+実機(OPPO Pad Air)でインストール・動作するかどうかは実機確認が必要
+（M3-7〜M3-9、所有者の実機作業）。署名がAndroidのインストーラに実際に
+受理されるか（apksignerが成功を返したことは確認したが、実機へのインストール
+そのものはこのセッションでは確認できない）も同様に実機待ち。
 
 ---
 
