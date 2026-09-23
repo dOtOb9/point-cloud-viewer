@@ -660,10 +660,108 @@ Android のスコープドストレージ越しに GB 級のファイルを読�
 
 ### 受け入れ条件
 
-- [ ] 実機で COPC ファイルを選択して開ける
-- [ ] `pcv://` 経由のノード配信が Android で機能する
-- [ ] 1 GB を超えるファイルで動作することを確認した
-- [ ] 端末へのデータ転送手順が記録されている
+- [ ] 実機で COPC ファイルを選択して開ける（**未確認**。GUIを目視できない環境での
+      作業だったため。下記「実施記録」参照）
+- [x] `pcv://` 経由のノード配信が Android で機能する — 変更なし。ノード配信は
+      引き続きファイルシステムパスの`CopcPool`が保持するファイルハンドル経由で、
+      ファイルを開く経路（パス/URI）に依存しない
+- [ ] 1 GB を超えるファイルで動作することを確認した（**未確認**。設計上は
+      範囲を問わず動くはずだが、実機での確認はしていない）
+- [x] 端末へのデータ転送手順が記録されている — 転送は不要になった。OSの
+      ファイル選択ダイアログ（Android標準のドキュメントピッカー）がそのまま使えるため、
+      端末のストレージに元々あるファイルをそのまま開ける
+
+### 実施記録（2026-09-23、Opus）
+
+**やったこと**: OSのファイル選択ダイアログ（`tauri-plugin-dialog`）を追加し、
+デスクトップ・Android共通の「ファイルを選ぶ」ボタンにした。Androidのダイアログが
+返す`content://` URIは、`tauri-plugin-fs`の`FsExt`（`AppHandle::fs()`）で開く。
+
+**Androidの`content://` URIをどう開くか（設計の核心）**:
+
+`tauri-plugin-fs` 2.5.2のソースを実際に読んで確認した（推測で使わないという
+約束のため）。
+
+- `src/desktop.rs`の`Fs::open`: デスクトップでは`std::fs::OpenOptions::open`を
+  そのまま呼ぶだけ。これまでの`CopcFile::open(path)`と等価
+- `src/android.rs`の`Fs::open`: `content://` URIの場合、
+  `run_mobile_plugin::<GetFileDescriptorResponse>("getFileDescriptor", ...)`で
+  ネイティブのKotlinプラグイン（`android/src/main/java/FsPlugin.kt`）を呼ぶ
+- `FsPlugin.kt`の`getFileDescriptor`: 通常の`content://`（Tauri自身のバンドル
+  アセット用の特殊プレフィックスではない方）は
+  `activity.contentResolver.openAssetFileDescriptor(Uri.parse(uri), mode)`で
+  解決し、得たfdを`detachFd()`で取り出すだけ。**ファイルをコピーする処理は無い**
+  （コピーが発生するのは、Tauri自身の圧縮された内蔵アセットを開こうとして
+  直接fdが取れなかった場合のフォールバックだけで、ユーザーが選んだ
+  `content://`ファイルはこの分岐を通らない）
+- Rust側は`std::fs::File::from_raw_fd(fd)`でこの生fdを包んで返す
+  （`android.rs`の`resolve_content_uri`）
+
+つまり、Androidでも実際のディスクI/Oは変わらず「1つのファイルディスクリプタを
+`Read + Seek`として使う」だけで、**2GB級のファイルを一度もメモリ/キャッシュに
+コピーしない**。`crates/pcv-core`側の`CopcFile<R: Read + Seek + Send>`
+（Web版対応のため既に汎用化済み。`TaskSheets/ADR-0012-web-worker-sync-io.md`参照）に
+そのまま渡せる。
+
+**`CopcPool`の変更**: `CopcPool::open_path(path, pool_size)`（従来どおり
+`std::fs::File`を直接開く。`AppHandle`不要）と`CopcPool::open_uri(app, uri,
+pool_size)`（`tauri-plugin-fs`経由。`AppHandle`が要る）に分けた。
+`open_copc`コマンドが受け取った文字列を`FilePath::from_str`（`tauri-plugin-fs`が
+持つ、URIかパスかの判別ロジック。scheme長が1文字＝Windowsのドライブレターは
+パス扱いになる）で振り分ける。どちらの経路も**リーダーごとに新しく開き直す**
+（`File::try_clone()`は使わない。複製ハンドルはシーク位置を共有してしまい、
+`ADR-0007`のプール並列読みの前提が壊れるため）。
+
+**なぜ`open_path`/`open_uri`を分けたか（テストの都合）**: 当初は両方を
+`app.fs().open()`に統一する設計にしていたが、この開発機では
+`tauri::test::mock_app()`（`MockRuntime`）を使うテストバイナリが
+`STATUS_ENTRYPOINT_NOT_FOUND`で起動できないという、コードの正しさとは無関係な
+環境要因の問題に当たった（`tauri`本体・`tauri-plugin-fs`単体では発生せず、
+`tauri::test`モジュールを実際に使うコードを含めた場合にのみ再現することを
+最小構成まで切り分けて確認したが、原因の特定（Windows 11 25H2 相当のビルドでの
+`windows-sys`系クレートとの相性等）までは至らなかった）。`AppHandle`が要らない
+`open_path`を独立させたことで、**この環境問題を回避しつつ**、パス側の
+ユニットテストを維持できた。
+
+**受け入れ条件で追加したテスト**（`src-tauri/src/copc_state.rs`）:
+- `copc_pool_open_path_builds_pool_with_requested_size`: パスから指定サイズの
+  プールが組め、借りたリーダーで実際にノードを読めることを確認
+- `independently_opened_file_handles_have_independent_seek_positions`:
+  `File::try_clone()`はシーク位置を共有してしまうこと、独立に`open()`し直すと
+  シーク位置が独立することを、対比する形で直接確認する（`content://` URIは
+  実機でしか作れないため、`open_uri`自体はユニットテストの対象にしていない）
+
+**規約2の遵守**: `@tauri-apps/plugin-dialog`をimportするのは
+`src/datasource/tauri.ts`だけ（`pickLocalFile()`を新設）。`LayerPanel.tsx`は
+`pickLocalFile()`をimportして呼ぶだけで、プラグインを直接importしない。
+`capabilities/default.json`に`dialog:allow-open`と`fs:read-files`
+（読み取り専用の権限。書き込み系は加えていない）を追加した。
+
+**UIの変更**: `LayerPanel.tsx`のファイルパス手入力欄を、デスクトップ・Android
+共通の「ファイルを選ぶ…」ボタン（OSダイアログ）に置き換えた。開発中に同じ
+ファイルを繰り返し開きたい場合のための、パス直指定の入力欄は
+`SettingsModal.tsx`の診断パネル内（`!viewer.isBrowser`のときだけ表示）に残した。
+Web版（`viewer.isBrowser`）の挙動は変更していない。
+
+**ドラッグ&ドロップ（デスクトップ、任意項目）**: 実装していない。ダイアログ
+ボタンだけで受け入れ条件を満たせると判断し、追加の複雑さ（`useCopcViewer.ts`は
+カラーマップ担当との並行編集があり、変更箇所を最小限にしたかった）を避けた。
+
+**未確認の項目（確かめていないことを「確認した」と書かないという約束のため、
+明記する）**:
+- 実機（Android端末・エミュレータ、およびWindows/macOS/Linuxのデスクトップ）で
+  実際にダイアログが開き、ファイルを選べることは確認していない
+  （GUIを目視できない環境での作業だったため）。`npm run build`でのフロントの
+  ビルド成功、`cargo test --workspace`でのRust側のテスト成功までは確認した
+- 1GB超のファイル（`sofi.copc.laz`等）をAndroidの`content://`経由で開けるかは
+  未確認。設計上（生fdをそのまま`Read+Seek`として使う）は可能なはずだが、
+  ContentResolverが返すfdが常にシーク可能とは限らない（クラウドストレージ等、
+  プロバイダによってはパイプ的な非シークfdを返す可能性がある）。ローカル
+  ストレージ上のファイルであれば問題ないはずだが、これも実機で確認していない
+- `tauri::test::mock_app()`が起動できない根本原因（この開発機固有の問題か、
+  CI（windows-latest）でも起きるかを含む）は特定していない。もしCIの`rust`
+  ジョブ（`cargo test --workspace`）で同様の失敗が起きた場合は、この節の
+  テスト設計（`open_path`/`open_uri`の分離）を見直す必要がある
 
 ---
 
