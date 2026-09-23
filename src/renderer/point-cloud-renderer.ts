@@ -33,6 +33,7 @@ import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./grou
 import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
 import { FAR, FOV_Y_RADIANS, GpuResources, NEAR } from "./gpu-resources";
 import { DEFAULT_COLOR_MODE, extendRange, type ColorMode, type ValueRange } from "./colormap";
+import { computeSceneBounds, elevationRangeFromCloudBounds } from "./scene-bounds";
 
 // WebGPUのエラーを画面に出す仕組み(新設)。蓄積・重複抑制のロジック自体は
 // GPUに依存しないgpu-error-log.tsに切り出してあり、このファイルはWebGPUの
@@ -223,9 +224,14 @@ export class PointCloudRenderer {
    *  `resolveColorMode`で行う。ここでは渡された値をそのまま使うだけにする
    *  （所有者が実装を追えるよう、フォールバックの判断を1箇所に閉じるため）。 */
   private colorMode: ColorMode = DEFAULT_COLOR_MODE;
-  /** M2-2: 標高の正規化に使うレンジ。`setHierarchy()`で点群のバウンディング
-   *  ボックス(Z成分)から即座に決まる（`CloudInfo`相当の情報がここでは
-   *  `HierarchyNodeInfo[]`のboundsMin/boundsMaxとして手に入るため、それを使う）。 */
+  /** M2-2: 標高の正規化に使うレンジ。**ノードのbounds(octreeセル、立方体)
+   *  ではなく、LASヘッダーの実データ範囲(`CloudInfo.min`/`max`)から決める。**
+   *  `setHierarchy()`が受け取る`HierarchyNodeInfo[]`のboundsMin/boundsMaxを
+   *  誤って使うと、COPCのoctreeが立方体であるためZ範囲が水平方向の広さまで
+   *  引き伸ばされ、標高の色がほぼ一色に潰れる不具合になる
+   *  （実機不具合の詳細は`scene-bounds.ts`ファイル冒頭のコメント、
+   *  TaskSheets/M2-shading-and-ui.md M2-2参照）。呼び出し側`useCopcViewer.ts`が
+   *  `openFile`成功後に`setElevationRange()`でCloudInfoの値を渡す。 */
   private elevationRange: ValueRange = { min: 0, max: 0 };
   /** M2-2: 強度の正規化に使うレンジ。標高と違い、開いた時点では分からない
    *  （`CloudInfo`は強度のレンジを持たない）。ノードが届くたびに
@@ -276,49 +282,53 @@ export class PointCloudRenderer {
     );
   }
 
-  /** octreeのノード一覧をセットする。データ点群を開き直したら呼ぶ。 */
+  /** octreeのノード一覧をセットする。データ点群を開き直したら呼ぶ。
+   *
+   *  **標高の正規化レンジはここでは設定しない。** ノードのbounds由来の値
+   *  （このメソッドが使うのは、あくまでカメラ位置・グリッド尺度決めのため）を
+   *  標高に転用すると実機不具合になるため、`setElevationRange()`を別に設け、
+   *  呼び出し側がLASヘッダーの実データ範囲を明示的に渡す設計にした
+   *  （`elevationRange`フィールドのコメント、`scene-bounds.ts`参照）。 */
   setHierarchy(nodes: HierarchyNodeInfo[]): void {
     this.hierarchy = nodes;
 
     // M2-2: 強度のレンジは実データからノードを読み込むたびに広げていく方式
     // (colorMode.private.intensityRangeのコメント参照)。新しいファイルを開いたら、
-    // 前のファイルの観測値を引きずらないようリセットする。標高のレンジは
-    // このメソッドの下でバウンディングボックスから即座に決め直すため、
-    // 個別にリセットする必要はない。
+    // 前のファイルの観測値を引きずらないようリセットする。
     this.intensityRange = null;
 
-    if (nodes.length > 0) {
-      const min: [number, number, number] = [Infinity, Infinity, Infinity];
-      const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-      for (const node of nodes) {
-        for (let axis = 0; axis < 3; axis++) {
-          min[axis] = Math.min(min[axis], node.boundsMin[axis]);
-          max[axis] = Math.max(max[axis], node.boundsMax[axis]);
-        }
-      }
-      const center: [number, number, number] = [
-        (min[0] + max[0]) / 2,
-        (min[1] + max[1]) / 2,
-        (min[2] + max[2]) / 2,
-      ];
-      const diagonal = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 100;
-      this.camera.target = center;
-      this.camera.distance = diagonal;
-      this.camera.setSceneScale(diagonal);
-
-      // M2-2: 標高の正規化レンジ。LASの座標系ではZ(index 2)が常に標高
-      // （upAxisはカメラの表示上の向きの話で、データそのものの高さ軸とは別
-      // 概念のため、upAxisに関わらずZを使う）。
-      this.elevationRange = { min: min[2], max: max[2] };
+    // カメラの初期位置・グリッドの尺度決めに使うシーンのバウンディングボックス。
+    // **この`bounds`は標高カラーマップには使わない**（ノードのbounds=octreeセルは
+    // 立方体で、Z範囲が水平方向の広さまで引き伸ばされているため。
+    // scene-bounds.tsファイル冒頭のコメント参照）。
+    const bounds = computeSceneBounds(nodes);
+    if (bounds) {
+      this.camera.target = bounds.center;
+      this.camera.distance = bounds.diagonal;
+      this.camera.setSceneScale(bounds.diagonal);
 
       // M2-0c補強B: グリッドの間隔・フェード距離・高さをシーンのスケールから
       // 決め直す（固定値にしないため、タスクシートの要求）。高さは上方向(upAxis)
       // 成分でのバウンディングボックス底面（点群の一番下）に置く。
       const upAxis = this.camera.getUpAxis();
-      this.gridGroundHeight = min[0] * upAxis[0] + min[1] * upAxis[1] + min[2] * upAxis[2];
-      this.gridCellSize = niceGridCellSize(diagonal);
-      this.gridFadeDistance = gridFadeDistance(diagonal);
+      this.gridGroundHeight = bounds.min[0] * upAxis[0] + bounds.min[1] * upAxis[1] + bounds.min[2] * upAxis[2];
+      this.gridCellSize = niceGridCellSize(bounds.diagonal);
+      this.gridFadeDistance = gridFadeDistance(bounds.diagonal);
     }
+  }
+
+  /**
+   * M2-2: 標高カラーマップの正規化レンジを、LASヘッダーの実データ範囲
+   * (`CloudInfo.min`/`max`)から設定する。**`setHierarchy()`のノードbounds
+   * (octreeセル、立方体)は使わないこと。** COPCのoctreeはルートが立方体な
+   * ため、ノードのZ範囲は水平方向の広さまで引き伸ばされており、これを
+   * 標高に使うと実機で「標高が全部紫になる」不具合になる（詳細は
+   * `scene-bounds.ts`ファイル冒頭のコメント、TaskSheets/M2-shading-and-ui.md
+   * M2-2参照）。呼び出し側(`useCopcViewer.ts`)が`openFile`成功直後、
+   * `CloudInfo.min`/`max`をそのまま渡す。
+   */
+  setElevationRange(cloudMin: readonly [number, number, number], cloudMax: readonly [number, number, number]): void {
+    this.elevationRange = elevationRangeFromCloudBounds(cloudMin, cloudMax);
   }
 
   /** キャッシュをすべて捨てる。別のファイルを開いたときに呼ぶ。 */

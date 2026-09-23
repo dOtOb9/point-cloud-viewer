@@ -214,6 +214,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       const opened = await source.open(path);
       renderer.clearCache();
       renderer.setHierarchy(opened.nodes);
+      // M2-2実機不具合の修正: 標高の正規化レンジは、ノードのbounds(octreeセル、
+      // 立方体でZ範囲が水平方向に引き伸ばされる)ではなく、LASヘッダーの
+      // 実データ範囲(CloudInfo.min/max)から設定する（renderer側の
+      // `setElevationRange`のコメント、`src/renderer/scene-bounds.ts`参照）。
+      renderer.setElevationRange(opened.info.min, opened.info.max);
       setCloudInfo(opened.info);
       setNodeCount(opened.nodes.length);
       setStatus("ready");
