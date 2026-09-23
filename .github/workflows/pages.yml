@@ -1,0 +1,108 @@
+name: Pages
+
+# Web版(pcv-core を wasm でビルドし、Worker内で動かす版)をGitHub Pagesへ公開する。
+# 既存の`ci.yml`とはあえて別ファイルにしてある。デスクトップ/Android向けの
+# `rust`/`build`ジョブ(windows-latest、Rustのwasm32ターゲットやwasm-bindgen-cliを
+# 前提にしていない)に、このワークフローの前提を混ぜて壊したくないため。
+#
+# 設計の経緯・検討して採らなかった案は TaskSheets/ADR-0012-web-worker-sync-io.md を参照。
+#
+# 所有者がやること(1回だけ): GitHubのリポジトリ設定 → Pages → "Build and deployment"の
+# Sourceを"GitHub Actions"にする。これをしないと、このワークフローが成功しても
+# 実際には公開されない。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同時に複数のPagesデプロイが走らないようにする(Pagesの標準的な作法)。
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # crates/pcv-wasm はルートのワークスペースに入っていない(pcv-core・src-tauriと
+      # 依存グラフが別、Cargo.lockも別)ため、rust-cacheにも別ワークスペースとして
+      # 明示的に教える。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "crates/pcv-wasm -> target"
+
+      # pcv-wasmのWorker/JSに依存しない部分(範囲読みのバイト計算など)のユニットテスト。
+      # ネイティブターゲットで動く(wasm-bindgen/web-sysはJSを実際に呼ばない限り
+      # ネイティブでもコンパイル・リンクできる)。
+      - name: pcv-wasmのユニットテスト(ネイティブ、Worker非依存部分のみ)
+        run: cargo test --manifest-path crates/pcv-wasm/Cargo.toml
+
+      - name: pcv-wasmのfmt/clippy
+        run: |
+          cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check
+          cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+
+      # wasm-bindgen CLIはCargo.lockの`wasm-bindgen`クレートと**完全に同じ
+      # バージョン**でないと動かない。ハードコードすると更新時に食い違って
+      # 気づかないまま壊れるので、Cargo.lockから実際のバージョンを読む。
+      - name: wasm-bindgen-cliのバージョンをCargo.lockに合わせて決定する
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' crates/pcv-wasm/Cargo.lock | tail -1 | cut -d '"' -f2)
+          echo "WASM_BINDGEN_VERSION=$version" >> "$GITHUB_ENV"
+      - name: wasm-bindgen-cliのインストール
+        run: cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
+
+      # crates/pcv-wasm を release ビルドし、wasm-bindgenでJSグルー(ESM)を生成する。
+      # 出力先(src/wasm/pcv-wasm/)は普段はコミット済みの生成物を使う
+      # (既存のci.ymlのfrontend/buildジョブがRustツールチェインを前提にしないで済むように
+      # するため。ADR-0012参照)が、ここでは実際にソースからビルドし直して上書きする。
+      - name: pcv-wasm を release ビルド
+        run: cargo build --manifest-path crates/pcv-wasm/Cargo.toml --release --target wasm32-unknown-unknown
+      - name: wasm-bindgenでJSグルーを生成
+        run: |
+          wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm \
+            crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+
+      # GitHub PagesはリポジトリのサブパスURL(https://<owner>.github.io/point-cloud-viewer/)
+      # で配信される。`GITHUB_PAGES_BUILD=true`でvite.config.tsの`base`をそのサブパスに
+      # 切り替える(Tauri版のビルドはこの環境変数を立てないので、既定の"/"のまま影響しない)。
+      - name: 静的ビルド(vite build、Pagesのサブパス向け)
+        run: npm run build
+        env:
+          GITHUB_PAGES_BUILD: "true"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
