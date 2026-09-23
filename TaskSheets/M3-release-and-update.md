@@ -170,6 +170,55 @@ checkoutしかしないため権限追加は不要（既定のまま）。
 タグを打ち直して行う予定であり、**修正が実際に403を解消することはこのセッション
 ではまだ確認していない**。
 
+### 追記2（2026-09-23、403修正後の再タグで判明した不具合）
+
+上記の403を直した状態で改めて`v0.1.0`を打ち直し（コーディネーターが実施、
+run 35873949393）、全ジョブがsuccessになりReleaseが作られた。**しかし
+Windowsのインストーラが1つもReleaseに添付されていなかった。** アップロード
+stepのログに以下があった:
+
+```
+🤔 Pattern 'src-tauri/target/release/bundle/msi/*.msi' does not match any files.
+🤔 Pattern 'src-tauri/target/release/bundle/nsis/*.exe' does not match any files.
+...
+🎉 Release ready at .../releases/tag/v0.1.0
+```
+
+**原因**: ルートの`Cargo.toml`が`members = ["crates/pcv-core", "src-tauri"]`の
+ワークスペースであり、cargoはワークスペースルート直下の1つの`target/`に成果物を
+まとめる。`src-tauri/target/`という個別クレート単位のtargetは存在しない。
+このworktreeでローカルに`cargo build --workspace`を実行した後、
+`ls target`は成功し`ls src-tauri/target`は"No such file or directory"に
+なることを実際に確認した（推測ではなく、このセッションで確認済み）。
+
+**さらに問題だったのは**、`softprops/action-gh-release`が既定では
+「添付ファイルが1つも見つからなくても失敗しない」ため、**インストーラ抜きの
+Releaseが「成功」として公開されてしまっていたこと。** テスト・CIが緑でも
+実は壊れている、という同じ形の不具合をこのプロジェクトで繰り返し踏んでいる
+（`HANDOFF.md`参照）ため、これを機械的に検出できるようにする対処を入れた。
+
+**修正**:
+- パスを`target/release/bundle/msi/*.msi`・`target/release/bundle/nsis/*.exe`
+  に直した
+- windows/android両方のアップロードstepに`fail_on_unmatched_files: true`を追加
+- windows/androidの両方に、ビルド成果物を`find`で列挙して毎回ログに残すstepを追加
+
+**修正の確認**: タグを打たず`workflow_dispatch`で手動実行し(run 35875956360)、
+windowsジョブの「ビルド成果物を確認する」stepのログで実際に以下2ファイルが
+見つかることを確認した（`gh api .../jobs/<id>/logs`で取得したログそのものから
+確認。推測ではない）:
+
+```
+target/release/bundle/msi/point-cloud-viewer_0.1.0_x64_en-US.msi
+target/release/bundle/nsis/point-cloud-viewer_0.1.0_x64-setup.exe
+```
+
+Android側の確認結果はM3-3の追記2を参照。
+
+**もう1つの問題（APKが493MBのdebugビルド）と対処もあわせてM3-3の追記2に記録した
+（windows/androidで同時に直したため、release.ymlへの変更は1コミットにまとめて
+いるが、記録は各節に分けて書く）。**
+
 ---
 
 ## M3-2: デスクトップの更新通知（オプトイン。方針転換によりM3-4と共通実装）
@@ -344,6 +393,62 @@ NDKや不足しているSDKパッケージ（compileSdkVersion等、生成され
 `if: startsWith(github.ref, 'refs/tags/')`で止めているため、手動実行では
 ビルドの成否だけを確認でき、Releaseは作られない（コーディネーターの
 「Releaseを作らない経路であること」という要求どおり）。
+
+### 追記2（2026-09-23、403修正後の再タグで判明した不具合: 493MBのdebug APK）
+
+403修正後に打ち直した`v0.1.0`（run 35873949393、success）で作られたAPKが
+**493,220,488バイト（約493MB）の`--debug`ビルドだった。** `--debug`は
+Gradleのビルドタイプだけでなく**Rust側もdebugプロファイル（最適化なし）**に
+してしまい、実機でのLAZ展開が大幅に遅くなる（点群ビューアとして致命的）。
+universal（全ABI同梱）だったこともサイズを押し上げていた。
+
+**方針**: コーディネーターの指示どおり、「Rustはリリースプロファイルで最適化
+してビルドし、署名だけデバッグ用のキーストアで行う」。対象ABIはarm64
+（所有者の実機OPPO Pad Air, Snapdragon 680）に絞る。
+
+**やったこと**:
+1. `rust-toolchain`の`targets`を`aarch64-linux-android`だけに絞った
+2. `tauri android build`から`--debug`を外し、`--target aarch64`を追加した。
+   `tauri android build --help`の説明冒頭に「Build your app in release mode
+   for Android」とあり、`--debug`を付けなければ既定でリリース(最適化)ビルド
+   になることを確認した
+3. **署名を後付けするstepを追加した。** 当初「Tauriが生成するAndroidプロジェクトの
+   "release"ビルドタイプは既定でdebugのsigningConfigを指すはず」と考え、
+   `--debug`を外すだけで済むとタスクシートにも一度書いたが、**これは誤りだった**
+   （下記「確認できたこと」参照）。実際には署名されないため、`zipalign`→
+   `apksigner sign`でdebug鍵を使って署名を後付けするstepを追加した。
+   debug鍵自体も、`--debug`ビルドをしないと自動生成されないことが分かったため、
+   `keytool -genkeypair`で（Android Gradle Pluginが自動生成するのとまったく同じ
+   固定パラメータ: storepass/keypass"android"、alias"androiddebugkey"で）
+   明示的に用意するstepを足した
+
+**検討したが確認を要した点**: コーディネーターは「Gradleのrelease用
+signingConfigにデバッグキーストアを指定する」か「apksignerで後から署名する」の
+どちらでもよいとしていた。前者（Gradle設定の変更）は`src-tauri/gen/android/`が
+`tauri android init`のたびに生成され直す（.gitignore済みでリポジトリに
+コミットしない）ため、生成後の`build.gradle.kts`を都度sedで書き換える必要があり
+壊れやすいと判断し、後者（apksignerで後付け）を採用した。
+
+**確認できたこと（run 35875956360、workflow_dispatchでの手動実行のログから）**:
+- `--debug`を外した1回目の試行で生成されたAPKは
+  `app-universal-release-**unsigned**.apk`（6.8MB）だった。ファイル名に
+  "unsigned"と入っており、実際に未署名だった
+- 同じ実行で`~/.android/debug.keystore`のキャッシュ保存が
+  `Path Validation Error: Path(s) specified in the action for caching
+  do(es) not exist, hence no cache is being saved`で失敗しており、
+  debug.keystore自体が生成されていないことを確認した
+- つまり「releaseビルドタイプは既定でdebug鍵を使う」という当初の想定は誤りで、
+  タスクシートの記述も本追記で訂正した
+- ビルドログで、jniLibsに`arm64-v8a`向けの`.so`しか含まれていないことを確認し、
+  `--target aarch64`によるABI絞り込みが実際に効いていることを確認した
+  （"universal"はGradleのフレーバー名であり、含まれるABI数とは無関係）
+- APKサイズは493MB→6.8MB（署名前の未署名APKの時点）に縮小した
+
+**確認できていないこと**: 上記の「debug鍵を明示的に生成する」「zipalign→
+apksignerで署名する」というstepを追加した後、実際にビルドが成功し、
+署名済みAPKが生成されることは、**この記録を書いている時点ではまだ確認できて
+いない**（このコミットの直後にworkflow_dispatchで再実行して確認する。
+結果は本追記または追記3に書き足す）。
 
 ---
 

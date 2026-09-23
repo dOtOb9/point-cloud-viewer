@@ -147,24 +147,44 @@ jobs:
           link-to-sdk: true
       - name: NDK_HOME を設定する
         run: echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
-      # debug署名鍵(~/.android/debug.keystore)はGradleが初回に自動生成する。
-      # CIランナーは毎回まっさらなので、キャッシュしないと実行のたびに鍵が変わり、
-      # 「新しい版を上書きインストールできず、いったんアンインストールが必要になる」
-      # (Androidは署名が変わったAPKの上書きインストールを拒否する)。
-      # 秘密鍵・keystoreは生成しない方針(タスクシート参照)のため、ここでは
-      # 「初回に生成されたdebug鍵をキャッシュして使い回す」ことで対処する
-      # (debug鍵はAndroid標準の固定パスワードのみで保護される低リスクな鍵であり、
-      # ADR-0004が言う「秘密鍵」とは性質が異なる。詳細はM3-3の記録を参照)。
-      #
-      # 2026-09-23追記: 下の「tauri android build」から`--debug`を外した後も、
-      # Tauriが生成するAndroidプロジェクトの既定では"release"ビルドタイプの
-      # signingConfigが"debug"のものを指す(未署名では配布できないため)。
-      # つまり`--debug`を外してもこのdebug.keystoreは変わらず使われる。
+      # debug署名鍵(~/.android/debug.keystore)。CIランナーは毎回まっさらなので、
+      # キャッシュしないと実行のたびに鍵が変わり、「新しい版を上書きインストールできず、
+      # いったんアンインストールが必要になる」(Androidは署名が変わったAPKの
+      # 上書きインストールを拒否する)。秘密鍵・keystoreは生成しない方針(タスクシート
+      # 参照)のため、ここでは「一度作ったdebug鍵をキャッシュして使い回す」ことで
+      # 対処する(debug鍵はAndroid標準の固定パスワードのみで保護される低リスクな鍵
+      # であり、ADR-0004が言う「秘密鍵」とは性質が異なる。詳細はM3-3の記録を参照)。
       - name: debug.keystore をキャッシュする
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
           key: android-debug-keystore-v1
+      # 2026-09-23追記: 当初「Tauriが生成するAndroidプロジェクトの"release"ビルドタイプは
+      # 既定でdebugのsigningConfigを指す」と考えていたが、実際にrun 35875956360で
+      # 確認したところ誤りだった。`--debug`を外すとGradleは"release"ビルドタイプを
+      # 使うが、signingConfigは未設定のままで、`app-universal-release-unsigned.apk`
+      # という**未署名**のAPKが生成され、かつ`~/.android/debug.keystore`自体も
+      # 生成されなかった(そのビルドでは"debug"ビルドタイプを一切使わないため、
+      # Android Gradle Pluginの自動生成が起きない。actions/cacheのログにも
+      # "Path Validation Error: ...do(es) not exist, hence no cache is being saved"
+      # と出た)。そのため、鍵が無ければここで明示的に用意する。
+      # keytool -genkeypairでの生成はAndroid Gradle Pluginが自らdebug鍵を
+      # 自動生成する際とまったく同じ固定パラメータ(store/keyパスワード"android"、
+      # alias"androiddebugkey")を使っており、新しい秘密の運用ルールを持ち込むもの
+      # ではない(このタスクの「秘密鍵・keystoreを生成しない」制約は、更新manifest用の
+      # 署名鍵やAndroidのリリース用keystoreのような、失われたり漏れたりすると
+      # 困る秘密鍵についての制約であり、公開されたパスワードしか持たないdebug鍵は
+      # 対象外と判断した)。
+      - name: debug.keystore が無ければ生成する
+        shell: bash
+        run: |
+          if [ ! -f ~/.android/debug.keystore ]; then
+            mkdir -p ~/.android
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
       - run: npm ci
       - name: tauri android init
         run: npm run tauri android init
@@ -173,12 +193,37 @@ jobs:
       # 実機でのLAZ展開が大幅に遅くなる(点群ビューアとして致命的)。
       # `tauri android build`は`--debug`を付けなければ既定でRust/Gradleとも
       # リリース(最適化)ビルドになる（`tauri android build --help`の説明冒頭に
-      # 明記されている）。署名は上記のとおりGradle側の既定(release→debug鍵)に
-      # 任せる。`--target aarch64`で対象ABIを所有者の実機(arm64)だけに絞り、
-      # 使わないarmv7/i686/x86_64向けの分でAPKが膨らまないようにする
-      # (x86_64はエミュレータ向けで実機では使わない)。
-      - name: tauri android build (release最適化、arm64のみ、debug鍵で署名)
+      # 明記されている。実際にビルド時間・APKサイズの両方でdebugビルドとの違いを
+      # run 35875956360で確認した: 493MB→6.8MB)。署名は下のstepでdebug鍵を使って
+      # 後付けする(上記のとおりGradle側は未署名のまま出すため)。`--target aarch64`で
+      # 対象ABIを所有者の実機(arm64)だけに絞り、使わないarmv7/i686/x86_64向けの分で
+      # APKが膨らまないようにする(x86_64はエミュレータ向けで実機では使わない。
+      # ビルドログでarm64-v8a向けの.soしかjniLibsに入っていないことを確認済み)。
+      - name: tauri android build (release最適化、arm64のみ)
         run: npm run tauri android build -- --target aarch64 --apk
+      - name: APKにdebug鍵で署名する(zipalign→apksigner)
+        shell: bash
+        run: |
+          set -euo pipefail
+          UNSIGNED=$(find src-tauri/gen/android/app/build/outputs/apk -name '*-unsigned.apk')
+          OUT_DIR=$(dirname "$UNSIGNED")
+          BUILD_TOOLS_DIR=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -1)
+          if [ -z "$BUILD_TOOLS_DIR" ]; then
+            echo "build-toolsがランナーに見つからないため、sdkmanagerで取得します"
+            SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 2 -name sdkmanager | head -1)
+            yes | "$SDKMANAGER" "build-tools;35.0.0"
+            BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/35.0.0"
+          fi
+          echo "using build-tools: $BUILD_TOOLS_DIR"
+          ALIGNED="$OUT_DIR/app-aligned.apk"
+          SIGNED="$OUT_DIR/app-universal-release-debug-signed.apk"
+          "$BUILD_TOOLS_DIR/zipalign" -f -p 4 "$UNSIGNED" "$ALIGNED"
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks ~/.android/debug.keystore --ks-pass pass:android \
+            --key-pass pass:android --ks-key-alias androiddebugkey \
+            --out "$SIGNED" "$ALIGNED"
+          # 署名前のファイルを残すと後続のuploadで未署名APKまで拾ってしまうため消す。
+          rm -f "$UNSIGNED" "$ALIGNED"
       - name: 生成されたAPKを確認する
         shell: bash
         run: |
