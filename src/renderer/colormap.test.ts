@@ -5,14 +5,14 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  ELEVATION_RAMP,
-  INTENSITY_RAMP,
+  ELEVATION_INTENSITY_RAMP,
   UNKNOWN_CLASSIFICATION_COLOR,
   classificationToColor,
   elevationToColor,
   extendRange,
   intensityToColor,
   normalizeValue,
+  rampToWgslFunction,
   resolveColorMode,
   sampleRamp,
   type RGB,
@@ -102,44 +102,81 @@ describe("sampleRamp", () => {
   });
 });
 
-/** 相対輝度（知覚的な明るさ）の簡易近似。単調性の検証だけが目的なので、
- *  厳密な色空間変換(sRGB→線形化)はせず、係数付きの加重和で十分とする。 */
-function relativeLuma([r, g, b]: RGB): number {
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
+describe("ELEVATION_INTENSITY_RAMP: CloudCompare風の青→緑→黄→赤", () => {
+  // 所有者の要望「CloudCompareのように、青→緑→赤で標高とIntensityは表示しよう」。
+  // 緑→赤を直接つなぐと濁ったオリーブ色になるため(colormap.tsファイル冒頭の
+  // コメント参照)、CloudCompareと同じく黄色を挟んだ4点になっている。
+  it("両端は青と赤、途中に緑と黄が来る", () => {
+    expect(ELEVATION_INTENSITY_RAMP[0].color).toEqual([0, 0, 1]); // 青
+    expect(ELEVATION_INTENSITY_RAMP[ELEVATION_INTENSITY_RAMP.length - 1].color).toEqual([1, 0, 0]); // 赤
 
-describe("ELEVATION_RAMP / INTENSITY_RAMP: 明度の単調性", () => {
-  // タスクシートの必須要件:「配色は明度が単調に変化するものを選ぶこと。虹色(jet)は
-  // 明度が非単調で、実際には無い構造が見えてしまう」。制御点を順に見て、
-  // 明度が後戻りしない(単調非減少)ことを機械的に確認する。
-  it.each([
-    ["ELEVATION_RAMP", ELEVATION_RAMP],
-    ["INTENSITY_RAMP", INTENSITY_RAMP],
-  ])("%sの明度は制御点順に単調非減少", (_name, ramp) => {
-    const lumas = ramp.map((stop) => relativeLuma(stop.color));
-    for (let i = 1; i < lumas.length; i++) {
-      expect(lumas[i]).toBeGreaterThanOrEqual(lumas[i - 1] - 1e-9);
+    const middleColors = ELEVATION_INTENSITY_RAMP.slice(1, -1).map((stop) => stop.color);
+    expect(middleColors).toContainEqual([0, 1, 0]); // 緑
+    expect(middleColors).toContainEqual([1, 1, 0]); // 黄
+  });
+
+  it("制御点のtは0から1まで昇順である(sampleRampの前提)", () => {
+    const ts = ELEVATION_INTENSITY_RAMP.map((stop) => stop.t);
+    expect(ts[0]).toBe(0);
+    expect(ts[ts.length - 1]).toBe(1);
+    for (let i = 1; i < ts.length; i++) {
+      expect(ts[i]).toBeGreaterThan(ts[i - 1]);
     }
   });
 });
 
 describe("elevationToColor", () => {
-  it("レンジの下端・上端でELEVATION_RAMPの最初・最後の色になる", () => {
+  it("レンジの下端・上端でELEVATION_INTENSITY_RAMPの最初・最後の色になる", () => {
     const range = { min: 0, max: 100 };
-    expect(elevationToColor(0, range)).toEqual(ELEVATION_RAMP[0].color);
-    expect(elevationToColor(100, range)).toEqual(ELEVATION_RAMP[ELEVATION_RAMP.length - 1].color);
+    expect(elevationToColor(0, range)).toEqual(ELEVATION_INTENSITY_RAMP[0].color);
+    expect(elevationToColor(100, range)).toEqual(
+      ELEVATION_INTENSITY_RAMP[ELEVATION_INTENSITY_RAMP.length - 1].color,
+    );
   });
 });
 
 describe("intensityToColor", () => {
-  it("レンジの下端は暗い色、上端は白になる（純黒にはしない。ファイル冒頭コメント参照）", () => {
+  it("レンジの下端・上端でELEVATION_INTENSITY_RAMPの最初・最後の色になる", () => {
     const range = { min: 0, max: 65535 };
-    const dark = intensityToColor(0, range);
-    const bright = intensityToColor(65535, range);
-    expect(dark).toEqual(INTENSITY_RAMP[0].color);
-    expect(bright).toEqual([1, 1, 1]);
-    // 純黒(0,0,0)ではないことを明示的に確認する。
-    expect(dark.some((c) => c > 0)).toBe(true);
+    expect(intensityToColor(0, range)).toEqual(ELEVATION_INTENSITY_RAMP[0].color);
+    expect(intensityToColor(65535, range)).toEqual(
+      ELEVATION_INTENSITY_RAMP[ELEVATION_INTENSITY_RAMP.length - 1].color,
+    );
+  });
+
+  it("標高(elevationToColor)と全く同じ色を返す(所有者の要望: 標高とIntensityを同じランプにする)", () => {
+    const range = { min: 0, max: 100 };
+    for (const v of [0, 10, 25, 50, 75, 90, 100]) {
+      expect(intensityToColor(v, range)).toEqual(elevationToColor(v, range));
+    }
+  });
+});
+
+describe("rampToWgslFunction", () => {
+  it("2制御点から、両端の色と1つのif文を持つWGSL関数を生成する", () => {
+    const src = rampToWgslFunction("testRamp", [
+      { t: 0, color: [0, 0, 0] },
+      { t: 1, color: [1, 1, 1] },
+    ]);
+    expect(src).toContain("fn testRamp(t: f32) -> vec3<f32>");
+    expect(src).toContain("vec3<f32>(0.0, 0.0, 0.0)");
+    expect(src).toContain("vec3<f32>(1.0, 1.0, 1.0)");
+    expect((src.match(/if \(/g) ?? []).length).toBe(1);
+  });
+
+  it("ELEVATION_INTENSITY_RAMP(4制御点)の4色すべてを、生成したWGSLの中に見つけられる" +
+    "(TS側の値がそのままWGSLへ埋め込まれていることの確認)", () => {
+    const src = rampToWgslFunction("elevationOrIntensityRampColor", ELEVATION_INTENSITY_RAMP);
+    expect(src).toContain("vec3<f32>(0.0, 0.0, 1.0)"); // 青
+    expect(src).toContain("vec3<f32>(0.0, 1.0, 0.0)"); // 緑
+    expect(src).toContain("vec3<f32>(1.0, 1.0, 0.0)"); // 黄
+    expect(src).toContain("vec3<f32>(1.0, 0.0, 0.0)"); // 赤
+    // 4制御点なら区間は3つ、つまりif文は3つになるはず(sampleRampのロジックと対応)。
+    expect((src.match(/if \(/g) ?? []).length).toBe(3);
+  });
+
+  it("制御点が1つ以下だとエラーにする", () => {
+    expect(() => rampToWgslFunction("bad", [{ t: 0, color: [0, 0, 0] }])).toThrow();
   });
 });
 

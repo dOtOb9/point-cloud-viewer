@@ -1035,6 +1035,154 @@ npm run tauri dev
       ときは元のRGB属性をそのまま使うだけで、M1時点からの見た目を変えていない）。
       **所有者の実機確認待ち**
 
+### 追記: 実機不具合の修正と配色をCloudCompare風に変更（所有者フィードバック）
+
+上記の受け入れ条件を所有者が実機で確認した結果、不具合1件と配色の要望が
+出た。
+
+#### 不具合: 標高が全部紫になる
+
+**症状:** `sofi.copc.laz`を開いて着色を「標高」にすると、地形の起伏に関わらず
+ほぼ全ての点が同じ色（当時のランプの最初の色＝紫）になった。
+
+**原因:** `point-cloud-renderer.ts`の`setHierarchy()`は、カメラの初期位置
+決め用に「ノードのbounds(`HierarchyNodeInfo.boundsMin`/`boundsMax`)の
+和集合」を計算していたが、この同じ`min`/`max`を標高の正規化レンジにも
+そのまま使い回していた。COPCのoctreeは**ルートが立方体**（`crates/pcv-core/
+src/copc.rs`の`voxel_bounds`が返すノードのboundsは、その立方体を素直に
+分割したセル）なので、Z方向の範囲は水平方向の広さに合わせて大きく
+引き伸ばされる。航空測量データ（`sofi.copc.laz`）は水平方向が数km、
+実際の標高差は数十mしかないため、標高の正規化レンジが実際の何十倍にも
+広がってしまい、全点の正規化値`t`がほぼ0（レンジの下端）に張り付いていた。
+
+**直し方:** カメラ位置決め用の「シーンのバウンディングボックス」（ノードの
+bounds由来。**この用途では立方体のままで問題無いため変更していない**）と、
+標高カラーマップ用の「標高の正規化レンジ」（LASヘッダーの実データ範囲、
+`CloudInfo.min`/`max`のZ成分。`crates/pcv-core/src/copc.rs`の
+`build_cloud_info`がLASヘッダーの`min_z`/`max_z`をそのまま入れている）を、
+新設した`src/renderer/scene-bounds.ts`の別々の純粋関数（`computeSceneBounds`/
+`elevationRangeFromCloudBounds`）にはっきり分離した。同じ`min`/`max`変数を
+2つの用途に使い回していたことが混同の原因だったため、`elevationRangeFromCloudBounds`
+のシグネチャ自体が「ノードのboundsを一切受け取らない」ことを示す形にした。
+`PointCloudRenderer`に`setElevationRange(cloudMin, cloudMax)`を新設し、
+`useCopcViewer.ts`の`openFile()`が`renderer.setHierarchy(opened.nodes)`とは
+別に、`renderer.setElevationRange(opened.info.min, opened.info.max)`を呼ぶ
+よう結線した。
+
+**テスト:** `scene-bounds.test.ts`に、ノードのセル範囲（水平±1000mに合わせて
+Z方向も-900〜1100まで引き伸ばされた想定）とヘッダーの実データ範囲（Z=100〜150）
+を両方与え、`elevationRangeFromCloudBounds`の結果がヘッダー側（100〜150）に
+なり、ノードのセル範囲とは一致しないことを確認する回帰テストを追加した。
+
+**触ったファイル:** 追加: `src/renderer/scene-bounds.ts`,
+`src/renderer/scene-bounds.test.ts`。変更: `src/renderer/point-cloud-renderer.ts`
+（`setHierarchy()`から標高レンジの計算を除き`computeSceneBounds`を使うよう
+簡略化、`setElevationRange()`新設）、`src/state/useCopcViewer.ts`
+（`setElevationRange()`の呼び出しを追加）。
+
+**確認したこと:** `npm run typecheck`/`lint`/`test`/`build`が通ることを確認した。
+**確認していないこと:** 実際に`sofi.copc.laz`で標高の色が地形に沿って変化する
+見た目になっているかは、GUIを持たないため未確認。所有者の実機確認待ち。
+
+#### 配色をCloudCompare風（青→緑→黄→赤）に変更
+
+所有者の要望:「CloudCompareのように、青→緑→赤で標高とIntensityは表示しよう」。
+
+**変更内容:**
+
+- 標高・強度で**別々だったランプ（標高=viridis風、強度=グレースケール）を
+  1つに統合**し、`src/renderer/colormap.ts`の`ELEVATION_INTENSITY_RAMP`
+  （青→緑→黄→赤の4点）にした。`elevationToColor`/`intensityToColor`は
+  どちらもこの1つのランプを参照する
+- 分類の配色（ASPRS標準）は変更していない（所有者の要望も「分類の色は
+  今のまま」）
+
+**なぜ緑→赤の間に黄色を挟むか（所有者の「青→緑→赤」をそのまま3点の
+ランプにしなかった理由）:** 緑(0,1,0)と赤(1,0,0)をRGB空間でそのまま線形
+補間すると、中間点は(0.5, 0.5, 0)になる。これは彩度の高い黄色ではなく、
+**暗く濁ったオリーブ色（茶色がかった黄緑）**に見える。正反対の原色
+（緑=G成分のみ、赤=R成分のみ）を直線でつなぐと、通過点はどちらの性質も
+弱め合った暗い色になるためである。CloudCompareの実際の既定配色も、
+公式には「Blue > Green > Yellow > Red」と黄色を挟んだ4点であり、同じ
+理由（濁りを避けるため）と考えられる。所有者の要望（CloudCompareのように、
+かつ青→緑→赤で）を両立させるため、CloudCompareの実際の配色（黄色を挟んだ
+4点）をそのまま採用した。
+
+**明度は単調ではないことの記録:** M2-2着手当初に立てていた「配色は明度が
+単調に変化するものを選ぶこと（虹色/jetは明度が非単調で、実際には無い
+構造が見えてしまうため避ける）」という指針からすると、この配色は
+黄(1,1,0)の相対輝度≈0.93に対し赤(1,0,0)は≈0.21で、黄→赤の間で明度が
+大きく下がる非単調な配色である。これは当初の指針とは厳密には矛盾するが、
+今回は**所有者が実機の使用経験（CloudCompareを日常的に使っている）から
+名指しで要望した配色であり、所有者自身の判断を当初の一般的な指針より
+優先した。** CloudCompare自体がこの配色を既定にしており、点群業界で
+広く使われている実績のある配色でもある。
+
+**TS/WGSLの制御点を一致させる仕組み:** これまでEDL(`edl.ts`)などでは、
+WGSL側のロジックをTypeScript側の対応する純粋関数と手で一致させ、コメントで
+対応を明記する、という方針を採ってきた。しかし色のランプでは「片方だけ
+値を変えてもう片方を直し忘れる」事故が起きやすい（実際、変更前の
+`gpu-resources.ts`は標高・強度それぞれのランプの数値をWGSLの文字列に
+手で書き写しており、値の食い違いを検出する手段が無かった）。そこで
+`src/renderer/colormap.ts`に`rampToWgslFunction(fnName, stops)`を新設し、
+**制御点の定義を`ELEVATION_INTENSITY_RAMP`の1箇所だけに持ち、WGSLのコードは
+そこから生成する**ようにした。`gpu-resources.ts`はこの関数の戻り値を
+`SHADER_SRC`のテンプレートリテラル内へ直接埋め込んでいる（文字列としては
+2箇所に同じランプのコードがあるが、生成元は1つ、という構造）。生成される
+WGSL関数のロジックは`sampleRamp`と等価（両端はクランプ、区間ごとに`mix`で
+線形補間）。
+
+**テスト:** `colormap.test.ts`に次を追加した。
+- `ELEVATION_INTENSITY_RAMP`の両端が青(0,0,1)・赤(1,0,0)で、途中に
+  緑(0,1,0)・黄(1,1,0)が来ることの確認
+- `intensityToColor`が`elevationToColor`と全く同じ色を返すこと（標高と
+  強度が同じランプを使うことの確認）
+- `rampToWgslFunction`が生成したWGSLの文字列に、制御点として渡した色が
+  そのまま(`vec3<f32>(0.0, 0.0, 1.0)`のような形で)含まれることの確認
+  （TS側の値がWGSLへ正しく転記されることの確認。生成されたWGSLをこの
+  環境ではコンパイル・実行できないため、文字列としての内容確認に留まる）
+
+**触ったファイル:** 変更: `src/renderer/colormap.ts`
+（`ELEVATION_RAMP`/`INTENSITY_RAMP`を`ELEVATION_INTENSITY_RAMP`に統合、
+`rampToWgslFunction`新設）、`src/renderer/colormap.test.ts`
+（明度単調性のテストを削除しCloudCompare配色の形状テストに置き換え、
+`rampToWgslFunction`のテストを追加）、`src/renderer/gpu-resources.ts`
+（手書きの`elevationRampColor`/`intensityRampColor`を`rampToWgslFunction`の
+生成結果に置き換え）。
+
+**確認したこと:** `npm run typecheck`/`lint`/`test`/`build`が通ることを確認した。
+生成されたWGSLのソース文字列を手元で出力し、期待通りの
+`if`分岐・色定数（青・緑・黄・赤）になっていることを目視で確認した
+（コンパイル・実行はGPUが要るため未確認）。
+**確認していないこと:** 実際の画面での配色の見た目・濁りの有無は、
+GUIを持たないため未確認。所有者の実機確認待ち。
+
+**確認手順の追加分:**
+
+```bash
+npm run tauri dev
+```
+
+- `sofi.copc.laz`を開き、着色を「標高」にする。地形の起伏に沿って
+  青（低い）→緑→黄→赤（高い）のグラデーションになっているか
+  （修正前は全点がほぼ同じ色だった）
+- 着色を「強度」に切り替え、標高と同じ青→緑→黄→赤の配色になっているか
+  （グレースケールに戻っていないか）
+- 緑から赤へ変わる途中が、濁った茶色/オリーブ色ではなく、はっきりした
+  黄色を経由しているか
+
+**気づいたこと（今回の修正範囲外。所有者への報告事項）:** 強度のレンジは
+現在も「実際に読み込んだ点のintensityのmin/max」（`extendRange`）を
+そのまま使っている。**外れ値が1点でもあると（例: センサーの異常値で
+intensity=65535が1点だけ混ざる）、レンジ全体がその外れ値まで広がり、
+残り全ての点が下端付近の色（今回の配色では青寄り）に沈んで見えてしまう
+可能性がある。** パーセンタイルクリップ（例: 上下1%を外れ値として無視する）
+などの対策が考えられるが、今回のタスク（実機不具合の修正と配色変更）の
+範囲外のため直していない。標高側は`CloudInfo`のヘッダー値を使うため
+この問題は起きない（ヘッダーの標高min/maxは通常LASエンコーダがファイル
+全体をスキャンして書き込む値で、1点の外れ値ではなく実データの範囲その
+ものであるため）。
+
 ---
 
 ## M2-3: UI シェル

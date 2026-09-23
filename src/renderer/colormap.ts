@@ -154,46 +154,97 @@ export function sampleRamp(stops: readonly RampStop[], t: number): RGB {
 }
 
 /**
- * 標高用の色ランプ。**明度が単調に増加するviridis風の配色**を採用した
- * （タスクシート「配色は明度が単調に変化するものを選ぶこと。虹色(jet)は明度が
- * 非単調で、実際には無い構造が見えてしまう」に対応）。viridisは科学可視化で
- * 標準的に使われる、明度単調増加かつ色覚多様性に配慮した配色。ここでは
- * 公開されているviridisのサンプル値をt=0, 0.25, 0.5, 0.75, 1.0の5点に間引いて
- * 埋め込んでいる（完全な256段のテーブルを持つ必要は無く、5点の線形補間で
- * 十分滑らかに見える）。
+ * 標高・強度の両方に使う色ランプ。**CloudCompareの既定配色（青→緑→黄→赤）に
+ * ならった。** 所有者の要望は「CloudCompareのように、青→緑→赤で標高とIntensity
+ * は表示しよう」（標高と強度を同じランプにする、CloudCompareに寄せる）。
+ *
+ * **なぜ黄色を挟むか（所有者の「青→緑→赤」をそのまま3点にしなかった理由）:**
+ * 緑(0,1,0)と赤(1,0,0)をRGB空間でそのまま線形補間すると、中間点は
+ * (0.5, 0.5, 0)になる。これは彩度の高い黄色ではなく、**暗く濁ったオリーブ色
+ * (茶色がかった黄緑)**に見える（緑と赤という正反対の原色を直線でつなぐと、
+ * 通過点が両方の性質を弱め合った濁った色になるため）。CloudCompareの既定配色も
+ * 実際には青→緑→黄→赤の4点で、緑と赤の間に彩度の高い黄色(1,1,0)を挟むことで
+ * この濁りを避けている。所有者の要望（CloudCompareのように、かつ青→緑→赤）を
+ * 両立させるため、CloudCompareの実際の配色（黄色を挟んだ4点）をそのまま採用した。
+ *
+ * かつては標高にviridis風、強度にグレースケールという別々のランプを使っていたが、
+ * 所有者の要望により統合した（「標高とIntensityは表示しよう」＝同じ見た目で
+ * 統一する）。
+ *
+ * **明度は単調ではない**（黄(1,1,0)の相対輝度≈0.93に対し、赤(1,0,0)は≈0.21で、
+ * 黄→赤の間で暗くなる）。これは以前のタスク（M2-1/M2-2着手当初）で立てていた
+ * 「配色は明度が単調に変化するものを選ぶこと（虹色/jetは避ける）」という指針とは
+ * 厳密には矛盾するが、所有者が実機の使用経験から名指しで要望した配色であり、
+ * 所有者自身の判断を優先した。CloudCompare自体もこの配色を既定にしており、
+ * 点群業界で広く使われている実績のある配色でもある。
  */
-export const ELEVATION_RAMP: readonly RampStop[] = [
-  { t: 0.0, color: [0.267, 0.005, 0.329] }, // 濃い紫（低い）
-  { t: 0.25, color: [0.253, 0.265, 0.53] }, // 青紫
-  { t: 0.5, color: [0.164, 0.471, 0.558] }, // 青緑
-  { t: 0.75, color: [0.478, 0.821, 0.318] }, // 黄緑
-  { t: 1.0, color: [0.993, 0.906, 0.144] }, // 黄（高い）
+export const ELEVATION_INTENSITY_RAMP: readonly RampStop[] = [
+  { t: 0, color: [0, 0, 1] }, // 青（低い/弱い）
+  { t: 1 / 3, color: [0, 1, 0] }, // 緑
+  { t: 2 / 3, color: [1, 1, 0] }, // 黄
+  { t: 1, color: [1, 0, 0] }, // 赤（高い/強い）
 ];
 
-/** `z`を`range`（開いたファイルのバウンディングボックスのz成分）で正規化し、`ELEVATION_RAMP`から色を引く。 */
+/** `z`を`range`（LASヘッダーの実データ範囲。`src/renderer/scene-bounds.ts`の
+ *  `elevationRangeFromCloudBounds`参照）で正規化し、`ELEVATION_INTENSITY_RAMP`から色を引く。 */
 export function elevationToColor(z: number, range: ValueRange): RGB {
-  return sampleRamp(ELEVATION_RAMP, normalizeValue(z, range));
+  return sampleRamp(ELEVATION_INTENSITY_RAMP, normalizeValue(z, range));
+}
+
+/** `intensity`を`range`（`extendRange`で実データから求めたレンジ）で正規化し、`ELEVATION_INTENSITY_RAMP`から色を引く。 */
+export function intensityToColor(intensity: number, range: ValueRange): RGB {
+  return sampleRamp(ELEVATION_INTENSITY_RAMP, normalizeValue(intensity, range));
 }
 
 /**
- * 強度用の色ランプ。グレースケール（暗い灰色→白）。標高と見た目をはっきり
- * 区別できるよう、あえて無彩色にした（両方をviridisにすると「今どちらの
- * モードを見ているか」が紛らわしくなる。強度は昔ながらのモノクロ強度画像に
- * 近い見た目が直感的でもある）。
+ * `stops`（`sampleRamp`と同じ形式、t昇順）から、同じ区分線形補間をするWGSLの
+ * 関数定義を文字列として生成する。
  *
- * 下端を純黒(0,0,0)ではなく暗い灰色(0.08)にしてあるのは、このプロジェクトの
- * 既定の背景（`sky.ts`の単色(暗) = およそ(0.05, 0.05, 0.08)）に対して、
- * 強度最小の点が背景と見分けられなくなることを避けるため。単調増加という
- * 要件は保ったまま、最小値でも背景から視認できるようにしている。
+ * **なぜ生成するのか（TSとWGSLのランプが食い違わないようにする仕組み）:**
+ * このプロジェクトはGPUに依存する処理をvitestで直接検証できないため、
+ * WGSL側のロジックをTypeScript側の対応する純粋関数と手で一致させ、コメントで
+ * 対応を明記する、という方針を採ってきた（`edl.ts`の`linearizeDepth`/
+ * `edlShadingFactor`と`EDL_SHADER_SRC`内の同名ロジックが先例）。しかし色の
+ * ランプについては、コメントによる対応だけでは「片方だけ値を変えて
+ * もう片方を直し忘れる」事故を防げない（実際、この関数を作る前は
+ * `gpu-resources.ts`のWGSL文字列に色の数値を手で書き写しており、値の
+ * 食い違いを検出する手段が無かった）。そこで**制御点の定義をこのファイル
+ * 側に1つだけ持ち、WGSLのコードはその定義から生成する**ことで、
+ * 「2箇所に同じランプがあるが、生成元は1つ」という構造にした
+ * （`gpu-resources.ts`の`SHADER_SRC`はこの関数の戻り値をテンプレートリテラル内へ
+ * 直接埋め込む。`colormap.test.ts`の`rampToWgslFunction`のテストも参照）。
+ *
+ * 生成されるWGSL関数のロジックは`sampleRamp`と等価（両端はクランプ、
+ * 区間ごとに`mix`で線形補間）。
  */
-export const INTENSITY_RAMP: readonly RampStop[] = [
-  { t: 0.0, color: [0.08, 0.08, 0.08] },
-  { t: 1.0, color: [1.0, 1.0, 1.0] },
-];
+export function rampToWgslFunction(fnName: string, stops: readonly RampStop[]): string {
+  if (stops.length < 2) {
+    throw new Error("rampToWgslFunction: stops must have at least 2 entries");
+  }
 
-/** `intensity`を`range`（`extendRange`で実データから求めたレンジ）で正規化し、`INTENSITY_RAMP`から色を引く。 */
-export function intensityToColor(intensity: number, range: ValueRange): RGB {
-  return sampleRamp(INTENSITY_RAMP, normalizeValue(intensity, range));
+  // WGSLの浮動小数点リテラルは小数点を要求する("1"ではなく"1.0")。
+  const fmt = (n: number): string => {
+    const rounded = Number(n.toFixed(6));
+    const s = rounded.toString();
+    return s.includes(".") || s.includes("e") ? s : `${s}.0`;
+  };
+  const colorLiteral = (c: RGB): string => `vec3<f32>(${fmt(c[0])}, ${fmt(c[1])}, ${fmt(c[2])})`;
+
+  const lines: string[] = [`fn ${fnName}(t: f32) -> vec3<f32> {`];
+  stops.forEach((stop, i) => {
+    lines.push(`  let c${i} = ${colorLiteral(stop.color)};`);
+  });
+  lines.push(`  let tc = clamp(t, 0.0, 1.0);`);
+  // sampleRampと同じ順序で区間を試す。最後の区間の条件が外れた場合
+  // (tc >= 最後の制御点のt)は最後の色を返す(sampleRampの「上端はクランプ」と同じ)。
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i];
+    const b = stops[i + 1];
+    lines.push(`  if (tc < ${fmt(b.t)}) { return mix(c${i}, c${i + 1}, (tc - ${fmt(a.t)}) / ${fmt(b.t - a.t)}); }`);
+  }
+  lines.push(`  return c${stops.length - 1};`);
+  lines.push(`}`);
+  return lines.join("\n");
 }
 
 /**

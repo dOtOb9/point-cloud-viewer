@@ -19,7 +19,7 @@ import { clearColorForMode, SkyBackground, type BackgroundMode } from "./sky";
 import { floorMod, GroundGrid } from "./ground-grid";
 import { horizontalBasis, type Vec3 } from "./up-axis";
 import { EdlPass } from "./edl";
-import type { ColorMode, ValueRange } from "./colormap";
+import { ELEVATION_INTENSITY_RAMP, rampToWgslFunction, type ColorMode, type ValueRange } from "./colormap";
 
 const POINT_SIZE_PX = 4;
 /** WebGPUのFOV/near/far。orchestrator側（point-cloud-renderer.ts）が投影行列を
@@ -59,6 +59,22 @@ const COLOR_MODE_INDEX: Record<ColorMode, number> = {
 const COLOR_SETTINGS_UNIFORM_FLOATS = 8; // mode, elevationMin, elevationMax, intensityMin, intensityMax, pad*3
 const COLOR_SETTINGS_UNIFORM_BYTES = COLOR_SETTINGS_UNIFORM_FLOATS * 4;
 
+/**
+ * M2-2実機不具合の修正: 標高・強度の色ランプ(青→緑→黄→赤、CloudCompare風)は
+ * `colormap.ts`の`ELEVATION_INTENSITY_RAMP`だけに定義を持ち、WGSL側の関数は
+ * `rampToWgslFunction`で**そこから生成する**。
+ *
+ * 以前はこの関数の値をWGSLの文字列へ手で書き写しており（`edl.ts`の
+ * `linearizeDepth`と同じ「TS側を正としてWGSL側は手で再実装し、コメントで
+ * 対応を明記する」という以前の方針）、TSとWGSLの制御点が食い違う懸念があった
+ * （`colormap.ts`の`rampToWgslFunction`のコメント参照）。制御点を1箇所
+ * （`ELEVATION_INTENSITY_RAMP`）だけに持ち、WGSLはそこから生成することで、
+ * 「2箇所に同じランプがあるが、生成元は1つ」という構造にし、食い違いを
+ * 仕組みで防ぐ。
+ */
+const ELEVATION_INTENSITY_RAMP_WGSL_FN = "elevationOrIntensityRampColor";
+const ELEVATION_INTENSITY_RAMP_WGSL_SRC = rampToWgslFunction(ELEVATION_INTENSITY_RAMP_WGSL_FN, ELEVATION_INTENSITY_RAMP);
+
 const SHADER_SRC = /* wgsl */ `
 struct Uniforms {
   mvp: mat4x4<f32>,
@@ -77,10 +93,14 @@ struct Uniforms {
 // gpu-resources.tsのdrawFrame()が毎フレーム書き込む（point-cloud-renderer.tsの
 // 状態を渡すだけの経路。EDLの強さ・半径と同じ形）。
 //
-// **色の計算式はsrc/renderer/colormap.tsの純粋関数(sampleRamp/elevationToColor/
-// intensityToColor/classificationToColor)を手で再実装したもの。** GPUが無いと
-// 直接テストできないため(edl.tsのlinearizeDepthと同じ事情)、値が一致している
-// ことはコメントで対応させ、TypeScript側はcolormap.test.tsで担保する。
+// 色の計算式はsrc/renderer/colormap.tsの純粋関数に対応する。GPUが無いと
+// 直接テストできないため(edl.tsのlinearizeDepthと同じ事情)、TypeScript側は
+// colormap.test.tsで担保する。標高・強度のランプ(sampleRamp/
+// ELEVATION_INTENSITY_RAMP)はWGSLの文字列を手で書き写すのではなく
+// rampToWgslFunction()で生成し値の食い違いを防いでいる(下の
+// ELEVATION_INTENSITY_RAMP_WGSL_SRC参照)。分類コード→色(classificationToColor)は
+// 表の構造上生成の恩恵が薄いため、従来どおり手で再実装し、値が一致している
+// ことをコメントで対応させている。
 struct ColorSettings {
   mode: f32,          // COLOR_MODE_INDEXの値(0=rgb,1=elevation,2=intensity,3=classification)
   elevationMin: f32,
@@ -112,25 +132,12 @@ struct VertexOut {
   @location(1) uv: vec2<f32>,
 };
 
-// 標高用のランプ(colormap.tsのELEVATION_RAMPと同じ5点のviridis風配色を、
-// 区分線形で手で再実装。値はcolormap.tsからコピー、変更したら両方直すこと)。
-fn elevationRampColor(t: f32) -> vec3<f32> {
-  let c0 = vec3<f32>(0.267, 0.005, 0.329);
-  let c1 = vec3<f32>(0.253, 0.265, 0.53);
-  let c2 = vec3<f32>(0.164, 0.471, 0.558);
-  let c3 = vec3<f32>(0.478, 0.821, 0.318);
-  let c4 = vec3<f32>(0.993, 0.906, 0.144);
-  let tc = clamp(t, 0.0, 1.0);
-  if (tc < 0.25) { return mix(c0, c1, tc / 0.25); }
-  if (tc < 0.5)  { return mix(c1, c2, (tc - 0.25) / 0.25); }
-  if (tc < 0.75) { return mix(c2, c3, (tc - 0.5) / 0.25); }
-  return mix(c3, c4, (tc - 0.75) / 0.25);
-}
-
-// 強度用のランプ(colormap.tsのINTENSITY_RAMPと同じ、暗い灰色→白の2点グレースケール)。
-fn intensityRampColor(t: f32) -> vec3<f32> {
-  return mix(vec3<f32>(0.08, 0.08, 0.08), vec3<f32>(1.0, 1.0, 1.0), clamp(t, 0.0, 1.0));
-}
+// 標高・強度で共有する色ランプ(青→緑→黄→赤、CloudCompare風)。
+// **手書きではなく、colormap.tsのELEVATION_INTENSITY_RAMPから
+// rampToWgslFunction()で生成している**（このファイル上部の定数、
+// および生成元のコメント参照）。標高・強度の両方が同じ関数
+// (${ELEVATION_INTENSITY_RAMP_WGSL_FN})を呼ぶ(下のcolorForVertex参照)。
+${ELEVATION_INTENSITY_RAMP_WGSL_SRC}
 
 // 分類コード→色(colormap.tsのASPRS_CLASSIFICATION_COLORS/UNKNOWN_CLASSIFICATION_COLORと
 // 同じ値。表に無いコードはdefaultでシアンにフォールバックする)。
@@ -176,7 +183,7 @@ fn colorForVertex(in: VertexIn) -> vec4<f32> {
     if (range > 0.0) {
       t = clamp((worldZ - cs.elevationMin) / range, 0.0, 1.0);
     }
-    return vec4<f32>(elevationRampColor(t), in.color.a);
+    return vec4<f32>(${ELEVATION_INTENSITY_RAMP_WGSL_FN}(t), in.color.a);
   }
   if (mode == 2) {
     let range = cs.intensityMax - cs.intensityMin;
@@ -184,7 +191,7 @@ fn colorForVertex(in: VertexIn) -> vec4<f32> {
     if (range > 0.0) {
       t = clamp((f32(intensityRaw) - cs.intensityMin) / range, 0.0, 1.0);
     }
-    return vec4<f32>(intensityRampColor(t), in.color.a);
+    return vec4<f32>(${ELEVATION_INTENSITY_RAMP_WGSL_FN}(t), in.color.a);
   }
   if (mode == 3) {
     return vec4<f32>(classificationColor(classificationRaw), in.color.a);
