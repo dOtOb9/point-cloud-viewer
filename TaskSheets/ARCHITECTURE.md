@@ -78,7 +78,7 @@ point-cloud-viewer/
 | CI | 完了（M0-4）: 全ジョブ緑を実測。規約1/規約2 をCIで機械的に強制している |
 | COPC 読込 | 完了（M1-1）。`copc-reader` は vendor/ でパッチ済み（[ADR-0003](./ADR-0003-copc-crate.md)） |
 | 点群のWebGPU描画 | 完了（M1-3）: point spriteパイプライン・orbitカメラ。[M1](./M1-point-rendering.md) |
-| octree LOD / 点予算 | 完了（M1-4）。3.6億点を 13MB / 32ms で開けることを実測 |
+| octree LOD / 点予算 | 完了（M1-4）。3.6億点を 13MB / 32ms で開けることを実測。**優先度の式は次元が合っておらず深いレベルが事実上ロードされない不具合があったため直した。点予算もADR-0009に沿ってフレーム時間の閉ループで自動調整するようにした（手動設定も従来どおり可能）。**[ADR-0010](./ADR-0010-lod-priority-and-point-budget.md) 参照 |
 | `pcv://` 並行リクエストの直列化解消 | 完了（M2先頭）: 非同期プロトコルハンドラ + `CopcFile`のリーダープールに変更。並行数8でスループットが改修前比4.2〜10倍。[ADR-0007](./ADR-0007-pcv-protocol-concurrency.md) 参照 |
 | カーソル位置へのズーム | 完了（M1-5）: octreeのノードAABBへの粗いレイキャストでカーソル下の点を求め、そこへ`target`を寄せながらズームする。パン速度にシーンスケール由来の下限を追加。カメラの数式部分はvitestで確認済みだが、実際の画面での操作感はGUI目視待ち。[M1](./M1-point-rendering.md) M1-5参照 |
 | 上方向(up軸)の集約 | 完了（M2-0b）: `src/renderer/up-axis.ts`にupAxisを1箇所へ集約し、既定をZ-up（`[0, 0, 1]`）に変更。カメラ(`eye()`/`viewMatrix()`)・パンがすべて同じ値を参照する。`pitch=0`が水平になることと`setUpAxis()`への追従はvitestで確認済み。実機での「地面が水平に見える」目視確認は所有者待ち。[M2](./M2-shading-and-ui.md) M2-0b参照 |
