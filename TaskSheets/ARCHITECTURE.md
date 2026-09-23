@@ -83,5 +83,5 @@ point-cloud-viewer/
 | カーソル位置へのズーム | 完了（M1-5）: octreeのノードAABBへの粗いレイキャストでカーソル下の点を求め、そこへ`target`を寄せながらズームする。パン速度にシーンスケール由来の下限を追加。カメラの数式部分はvitestで確認済みだが、実際の画面での操作感はGUI目視待ち。[M1](./M1-point-rendering.md) M1-5参照 |
 | 上方向(up軸)の集約 | 完了（M2-0b）: `src/renderer/up-axis.ts`にupAxisを1箇所へ集約し、既定をZ-up（`[0, 0, 1]`）に変更。カメラ(`eye()`/`viewMatrix()`)・パンがすべて同じ値を参照する。`pitch=0`が水平になることと`setUpAxis()`への追従はvitestで確認済み。実機での「地面が水平に見える」目視確認は所有者待ち。[M2](./M2-shading-and-ui.md) M2-0b参照 |
 | 空の背景・地面グリッド | 実装済み（M2-0c）、既定はオフ: `src/renderer/sky.ts`（手続き的グラデーション+地平線の線）と`src/renderer/ground-grid.ts`（スケール自動追従のグリッド）。どちらも深度を書かず点群より奥に描かれる。UIから「空/単色(暗)/単色(明)」とグリッドのon/offを切り替え可能。地平線の見え方・fps実測は所有者の実機待ち。[M2](./M2-shading-and-ui.md) M2-0c参照 |
-| EDL シェーディング | 未着手（M2 に送った） |
+| EDL シェーディング | 実装済み（M2-1）、既定はオン: `src/renderer/edl.ts`。点群だけを描くオフスクリーンの色+深度テクスチャを新設し、`point-cloud-renderer.ts`の`drawFrame()`を2パス化(点群→オフスクリーン、空/グリッド+EDL合成→スワップチェーン)することで、EDLの陰影が空・グリッドに掛からないようにした。強さ・オン/オフをUIから調整可能。`sofi.copc.laz`での実際の見え方・fps実測は所有者の実機待ち。[M2](./M2-shading-and-ui.md) M2-1参照 |
 | カラーマップ切替 | 未着手（M2 に送った） |
