@@ -240,10 +240,38 @@ export class EdlPass {
   private bindGroup: GPUBindGroup | null = null;
   private readonly uniformData = new Float32Array(EDL_UNIFORM_FLOATS);
 
-  /** スワップチェーンと同じフォーマットへ書き込む（このパスはスワップチェーンの
-   *  レンダーパスの中で、空・グリッドの後・最後に呼ばれる）。深度は読むだけで
-   *  書かないので、depthStencilは持たない（パスの深度アタッチメントには影響しない）。 */
-  init(device: GPUDevice, format: GPUTextureFormat): void {
+  /**
+   * スワップチェーンと同じフォーマットへ書き込む（このパスはスワップチェーンの
+   * レンダーパスの中で、空・グリッドの後・最後に呼ばれる）。
+   *
+   * `depthFormat`は、このパスが実際に描き込まれるレンダーパス
+   * （point-cloud-renderer.tsのdrawFrame()パス2）の`depthStencilAttachment`と
+   * 同じフォーマット（`DEPTH_FORMAT`）を渡すこと。
+   *
+   * **実機不具合の修正:** 当初はこのパイプラインに`depthStencil`を一切
+   * 指定していなかった。「深度を読むだけで書かないのだから、深度アタッチメントに
+   * 関わる設定は不要のはず」という誤った理解によるもので、実際には
+   * **画面が真っ黒になり何も描画されなくなる**不具合として現れた
+   * （TaskSheets/M2-shading-and-ui.md M2-1参照）。
+   *
+   * 原因はWebGPUのパイプライン/レンダーパス互換性の要件にある。
+   * レンダーパスが`depthStencilAttachment`を持つ場合、そのパス内で使う
+   * すべてのパイプラインは、**同じdepth-stencilフォーマットの`depthStencil`を
+   * 宣言していなければならない**（宣言しない＝そのパイプラインはdepth-stencil
+   * 無しのパスとしか互換にならない）。EDLの合成パスは空・グリッドと同じ
+   * レンダーパス（`depthStencilAttachment`を持つ、drawFrame()パス2）の中で
+   * 呼ばれるため、`depthStencil`を宣言していないこのパイプラインは
+   * そのパスと非互換になる。**非互換なパイプラインでdrawするとバリデーション
+   * エラーになり、そのコマンドエンコーダ全体が無効になる**
+   * （`encoder.finish()`が無効なコマンドバッファを返し、`submit()`で
+   * そのフレームがまるごと捨てられる）。これが「画面が真っ黒」の直接の原因。
+   *
+   * 直し方は`sky.ts`/`ground-grid.ts`と同じ: 深度を書かないパイプラインでも
+   * `depthStencil: { format, depthWriteEnabled: false, depthCompare: "always" }`を
+   * 明示的に宣言する（「深度に触れない」ことと「depthStencilの宣言が要らない」
+   * ことは別の話だった、という教訓）。
+   */
+  init(device: GPUDevice, format: GPUTextureFormat, depthFormat: GPUTextureFormat): void {
     this.bindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
@@ -258,11 +286,12 @@ export class EdlPass {
       vertex: { module: shaderModule, entryPoint: "vs_main" },
       fragment: { module: shaderModule, entryPoint: "fs_main", targets: [{ format }] },
       primitive: { topology: "triangle-list" },
-      // depthStencilを指定しない = このパイプラインは深度の読み書きを一切しない。
-      // 呼び出し元のレンダーパスがdepthStencilAttachmentを持っていても
-      // (空・グリッドのパイプラインが使うため)、このパイプラインには影響しない
-      // （WebGPUの仕様上、depthStencilを宣言しないパイプラインはパスの深度
-      // アタッチメントを無視できる）。
+      // 深度は読むだけで書かないが、呼び出し元のレンダーパス（空・グリッドと
+      // 同じ、depthStencilAttachmentを持つパス）と互換にするため、
+      // sky.ts/ground-grid.tsと同じ「書かない・常に通す」設定を明示的に宣言する
+      // 必要がある（init()のコメント参照。この宣言を省略すると、パスの深度
+      // アタッチメントと非互換になりdrawがまるごと無効になる不具合があった）。
+      depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: "always" },
     });
 
     this.uniformBuffer = device.createBuffer({

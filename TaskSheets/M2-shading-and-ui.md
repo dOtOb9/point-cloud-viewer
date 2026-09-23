@@ -623,6 +623,58 @@ Potree が採用している。sofi のような RGB 無しデータを判読可
 - 変更: `src/ui/shell/LayerPanel.tsx`（EDLのチェックボックスと強さスライダーを
   グリッドのチェックボックスと同じ形で追加）
 
+### 実機不具合: 画面が真っ黒になる（パイプライン/レンダーパスの互換性を誤解していた）
+
+最初の実装をリリースした後、所有者の実機で次が報告された。
+
+> 「画面が真っ黒になり、何も描画されなくなった」
+
+**原因はEDL合成パス(`EdlPass`)のパイプラインが`depthStencil`を宣言していな
+かったこと。** 当初のコメントにはこう書いていた。
+
+> depthStencilを指定しない = このパイプラインは深度の読み書きを一切しない。
+> 呼び出し元のレンダーパスがdepthStencilAttachmentを持っていても
+> (空・グリッドのパイプラインが使うため)、このパイプラインには影響しない
+> （WebGPUの仕様上、depthStencilを宣言しないパイプラインはパスの深度
+> アタッチメントを無視できる）。
+
+**この理解が誤りだった。** WebGPUでは、レンダーパスが`depthStencilAttachment`を
+持つ場合、そのパス内で`draw`するすべてのパイプラインは**同じdepth-stencil
+フォーマットの`depthStencil`を宣言していなければパスと互換にならない**
+（「深度を読み書きしないから宣言不要」ではなく、「パスとパイプラインの
+フォーマットの組み合わせが一致するか」という別の要件だった）。EDLの合成パスは
+空・グリッドと同じレンダーパス（`point-cloud-renderer.ts`の`drawFrame()`パス2、
+`depthStencilAttachment`を持つ）の中で呼ばれるため、`depthStencil`を宣言
+していないこのパイプラインはそのパスと非互換になる。**非互換なパイプラインで
+`draw`するとバリデーションエラーになり、そのコマンドエンコーダ全体が無効になる**
+（`encoder.finish()`が無効なコマンドバッファを返し、`submit()`でそのフレームが
+まるごと捨てられる）。空・グリッド・点群のすべてが同じ`encoder`・同じ`pass`に
+乗っていたため、EDL合成の呼び出し1つが失敗しただけで**フレーム全体**が
+描画されなくなっていた。これが「画面が真っ黒」の直接の原因。
+
+**直し方:** `sky.ts`/`ground-grid.ts`が最初から正しくやっていた通り
+（`depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare:
+"always" }`）、深度に触れないパイプラインでも、パスの深度アタッチメントと
+同じフォーマットの`depthStencil`を明示的に宣言する必要がある。`EdlPass.init()`
+のシグネチャに`depthFormat`引数を追加し（`sky.ts`/`ground-grid.ts`と同じ形）、
+呼び出し側`point-cloud-renderer.ts`の`this.edl.init(device, this.format)`を
+`this.edl.init(device, this.format, DEPTH_FORMAT)`に直した。誤っていた
+コメントも、上記の正しい理解に書き直した（`src/renderer/edl.ts`の`init()`の
+コメント参照）。
+
+**教訓（次に踏みやすい罠）:** 「このパイプラインは深度を読み書きしないから、
+`depthStencil`の宣言は不要」という直感は誤り。`depthStencil`の宣言は
+「このパイプラインが深度に触れるかどうか」ではなく、「このパイプラインを
+使うレンダーパスがどんな深度アタッチメントの構成か」で決まる、パイプラインと
+パスの**互換性の要件**である。深度に触れないパイプラインでも、深度
+アタッチメントを持つパスで使うなら、`depthWriteEnabled: false, depthCompare:
+"always"`という「触れない」ことを明示する`depthStencil`を宣言しなければ
+ならない。`ground-grid.ts`も同じ全画面パスの構成だが、こちらは最初から
+正しく宣言されていたため、同じ誤りは無かった（確認済み）。
+
+**この修正が実際に効いたかどうかはGUIを持たないため確認できていない。
+所有者の実機確認待ち。**
+
 ### 受け入れ条件
 
 - [x] EDL のオン/オフが左パネルから切り替えられる — `LayerPanel`のチェックボックス

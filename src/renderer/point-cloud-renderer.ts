@@ -325,8 +325,11 @@ export class PointCloudRenderer {
     this.grid.init(device, this.format, DEPTH_FORMAT);
     // EDLの合成パスはスワップチェーンのレンダーパスの中、空・グリッドの後の
     // 最後に呼ばれる(drawFrame()のパス2参照)ので、出力フォーマットはスワップ
-    // チェーンに合わせる。
-    this.edl.init(device, this.format);
+    // チェーンに合わせる。深度フォーマットも渡す必要がある(sky.ts/ground-grid.ts
+    // と同じ理由。実機不具合の修正、edl.tsのinit()コメント参照: パスが
+    // depthStencilAttachmentを持つ以上、このパイプラインも同じフォーマットの
+    // depthStencilを宣言しないとパスと非互換になり、drawがまるごと無効になる)。
+    this.edl.init(device, this.format, DEPTH_FORMAT);
 
     this.resize(this.canvas.clientWidth || this.canvas.width, this.canvas.clientHeight || this.canvas.height);
     this.detachControls = attachOrbitControls(this.canvas, this.camera, {
