@@ -13,7 +13,7 @@
 // 受け取る。UIから触るときは `src/state/` を経由すること。
 
 import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
-import { NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
+import { computeIntensityRange, NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
 import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { multiply, perspective, type Mat4 } from "./mat4";
 import { frustumPlanes } from "./frustum";
@@ -32,6 +32,7 @@ import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
 import { FAR, FOV_Y_RADIANS, GpuResources, NEAR } from "./gpu-resources";
+import { DEFAULT_COLOR_MODE, extendRange, type ColorMode, type ValueRange } from "./colormap";
 
 // WebGPUのエラーを画面に出す仕組み(新設)。蓄積・重複抑制のロジック自体は
 // GPUに依存しないgpu-error-log.tsに切り出してあり、このファイルはWebGPUの
@@ -147,6 +148,9 @@ export interface RenderStats {
    *  自体は目視でしか確認できないが、状態が正しく伝わっているかは機械的に見える）。 */
   edlEnabled: boolean;
   edlStrength: number;
+  /** M2-2: 現在の着色モード。EDLと同じく、UIの操作がrendererまで届いているかを
+   *  stdoutで機械的に確認できるようにする。 */
+  colorMode: ColorMode;
 }
 
 export class PointCloudRenderer {
@@ -214,6 +218,22 @@ export class PointCloudRenderer {
   private edlStrength = DEFAULT_EDL_STRENGTH;
   private edlRadiusPx = DEFAULT_EDL_RADIUS_PX;
 
+  /** M2-2: 着色モード。既定はRGB。RGBを持たないファイルへのフォールバックは
+   *  呼び出し側（`src/state/useCopcViewer.ts`）が`colormap.ts`の
+   *  `resolveColorMode`で行う。ここでは渡された値をそのまま使うだけにする
+   *  （所有者が実装を追えるよう、フォールバックの判断を1箇所に閉じるため）。 */
+  private colorMode: ColorMode = DEFAULT_COLOR_MODE;
+  /** M2-2: 標高の正規化に使うレンジ。`setHierarchy()`で点群のバウンディング
+   *  ボックス(Z成分)から即座に決まる（`CloudInfo`相当の情報がここでは
+   *  `HierarchyNodeInfo[]`のboundsMin/boundsMaxとして手に入るため、それを使う）。 */
+  private elevationRange: ValueRange = { min: 0, max: 0 };
+  /** M2-2: 強度の正規化に使うレンジ。標高と違い、開いた時点では分からない
+   *  （`CloudInfo`は強度のレンジを持たない）。ノードが届くたびに
+   *  `computeIntensityRange`でそのノード内のmin/maxを求め、`extendRange`で
+   *  少しずつ広げていく（colormap.tsのコメント参照）。まだ1件もノードが
+   *  届いていない間は`null`（`renderOnce`で`{min:0,max:0}`にフォールバックする）。 */
+  private intensityRange: ValueRange | null = null;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.camera = new OrbitCamera([0, 0, 0], 100);
@@ -260,6 +280,13 @@ export class PointCloudRenderer {
   setHierarchy(nodes: HierarchyNodeInfo[]): void {
     this.hierarchy = nodes;
 
+    // M2-2: 強度のレンジは実データからノードを読み込むたびに広げていく方式
+    // (colorMode.private.intensityRangeのコメント参照)。新しいファイルを開いたら、
+    // 前のファイルの観測値を引きずらないようリセットする。標高のレンジは
+    // このメソッドの下でバウンディングボックスから即座に決め直すため、
+    // 個別にリセットする必要はない。
+    this.intensityRange = null;
+
     if (nodes.length > 0) {
       const min: [number, number, number] = [Infinity, Infinity, Infinity];
       const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
@@ -278,6 +305,11 @@ export class PointCloudRenderer {
       this.camera.target = center;
       this.camera.distance = diagonal;
       this.camera.setSceneScale(diagonal);
+
+      // M2-2: 標高の正規化レンジ。LASの座標系ではZ(index 2)が常に標高
+      // （upAxisはカメラの表示上の向きの話で、データそのものの高さ軸とは別
+      // 概念のため、upAxisに関わらずZを使う）。
+      this.elevationRange = { min: min[2], max: max[2] };
 
       // M2-0c補強B: グリッドの間隔・フェード距離・高さをシーンのスケールから
       // 決め直す（固定値にしないため、タスクシートの要求）。高さは上方向(upAxis)
@@ -371,6 +403,20 @@ export class PointCloudRenderer {
     return this.edlRadiusPx;
   }
 
+  /**
+   * M2-2: 着色モードを切り替える。RGBを持たないファイルでの`"rgb"`の
+   * フォールバックはここでは行わない（呼び出し側`useCopcViewer.ts`の
+   * `resolveColorMode`が既に解決した値を渡してくる前提。理由は
+   * `colorMode`フィールドのコメント参照）。
+   */
+  setColorMode(mode: ColorMode): void {
+    this.colorMode = mode;
+  }
+
+  getColorMode(): ColorMode {
+    return this.colorMode;
+  }
+
   /** 統計（描画点数・ロード中ノード数・fpsなど）が更新されるたびに呼ばれる。 */
   onStatsUpdate(callback: (stats: RenderStats) => void): void {
     this.onStats = callback;
@@ -429,6 +475,15 @@ export class PointCloudRenderer {
     const cached = this.gpu.createCachedNode(key, node);
     if (!cached) return;
     this.cache.set(cached);
+
+    // M2-2: 強度のレンジを実データから広げていく（colorMode.private.intensityRangeの
+    // コメント、colormap.tsの`extendRange`参照）。ノードが届くたびにそのノード内の
+    // min/maxを求め、既知のレンジをその2値ぶんだけ広げる（狭まることはない）。
+    const nodeIntensityRange = computeIntensityRange(node);
+    if (nodeIntensityRange) {
+      this.intensityRange = extendRange(this.intensityRange, nodeIntensityRange.min);
+      this.intensityRange = extendRange(this.intensityRange, nodeIntensityRange.max);
+    }
   }
 
   private renderOnce(time: number): void {
@@ -477,6 +532,12 @@ export class PointCloudRenderer {
       cameraEye: this.camera.eye(),
       cameraTarget: this.camera.target,
       upAxis: this.camera.getUpAxis(),
+      colorMode: this.colorMode,
+      elevationRange: this.elevationRange,
+      // まだ1件もノードが届いていない間はnull。0..0の縮退レンジを渡せば
+      // gpu-resources.tsのcolorForVertex()側で「レンジ無し→常にt=0」に
+      // 安全にフォールバックする（colormap.tsのnormalizeValueと同じ契約）。
+      intensityRange: this.intensityRange ?? { min: 0, max: 0 },
     });
 
     this.updateStats(selection.toDraw, time);
@@ -510,6 +571,7 @@ export class PointCloudRenderer {
       autoPointBudgetEnabled: this.autoPointBudgetEnabled,
       edlEnabled: this.edlEnabled,
       edlStrength: this.edlStrength,
+      colorMode: this.colorMode,
     });
   }
 

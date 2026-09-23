@@ -94,3 +94,30 @@ export function parseNodeBuffer(buffer: ArrayBuffer): ParsedNode {
     pointsBytes,
   };
 }
+
+/**
+ * ノード内の点のintensity(u16、点配列オフセット16)の最小値・最大値を求める。
+ *
+ * M2-2のカラーマップ（強度モード）で使う。強度はセンサー・ファイルごとに
+ * 実際の値域が大きく異なり（u16のフルレンジ0-65535を使うとは限らない）、
+ * `CloudInfo`のような固定のメタデータからは分からないため、実際に読み込んだ
+ * 点のintensityから動的にレンジを求める必要がある（`src/renderer/colormap.ts`の
+ * `extendRange`と組み合わせて使う想定: 呼び出し側がノードを読み込むたびに
+ * この関数でノード内のmin/maxを求め、`extendRange`で全体のレンジへ広げていく）。
+ *
+ * 点が1つも無いノードでは範囲が定義できないため`null`を返す。
+ */
+export function computeIntensityRange(node: ParsedNode): { min: number; max: number } | null {
+  if (node.pointCount === 0) return null;
+
+  const bytes = node.pointsBytes;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < node.pointCount; i++) {
+    const intensity = view.getUint16(i * NODE_POINT_STRIDE + 16, true);
+    if (intensity < min) min = intensity;
+    if (intensity > max) max = intensity;
+  }
+  return { min, max };
+}

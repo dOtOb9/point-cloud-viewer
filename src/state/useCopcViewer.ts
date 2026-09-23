@@ -52,11 +52,9 @@ export interface CopcViewerState {
    *  理由は`src/renderer/colormap.ts`の`FALLBACK_COLOR_MODE_WITHOUT_RGB`
    *  のコメントに記録してある）。
    *
-   *  **レンダラへの結線は未実装（このコミットの時点）。** `point-cloud-renderer.ts`を
-   *  分割中の別エージェントの作業と衝突しないよう、着色モードの計算
-   *  (`src/renderer/colormap.ts`)とこのstate・UIだけを先に用意した
-   *  （TaskSheets/M2-shading-and-ui.md M2-2参照）。実際に点の色が変わるのは
-   *  分割が完了し、rendererに`setColorMode`相当のAPIが追加されてから。 */
+   *  レンダラへの結線は`point-cloud-renderer.ts`の分割(node-selection.ts/
+   *  gpu-resources.ts/point-cloud-renderer.tsへの3分割)が完了した後に行った
+   *  （TaskSheets/M2-shading-and-ui.md M2-2「段階2」参照）。 */
   colorMode: ColorMode;
   /** WebGPUのエラー（新設）。`device.onuncapturederror`・デバイス消失・初期化時の
    *  バリデーションエラーがここに蓄積される。蓄積・重複抑制のロジック自体は
@@ -137,6 +135,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         // M2-1: EDLのオン/オフ・強さの切り替えがrendererまで届いているかを、
         // 陰影の見た目を目視する前にstdoutだけでも確認できるようにする。
         `edlEnabled=${s.edlEnabled} edlStrength=${s.edlStrength.toFixed(2)} ` +
+        // M2-2: 着色モードの切り替えがrendererまで届いているかを、色の見た目を
+        // 目視する前にstdoutだけでも確認できるようにする。
+        `colorMode=${s.colorMode} ` +
         // M2-0b: GUIを目視できなくても、pitch=0が水平になっているか等をstdoutだけで
         // 機械的に確認できるようにカメラの向きも出す。
         `pitch=${s.cameraPitch.toFixed(3)} yaw=${s.cameraYaw.toFixed(3)} ` +
@@ -198,10 +199,14 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("ready");
       // M2-2: 開いたファイルがRGBを持たない場合、現在"rgb"を選んでいれば
       // 自動的に標高へ落とす（colormap.tsの`resolveColorMode`/
-      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。関数形の更新にしているのは、
-      // このコールバック自体が`[]`依存の`useCallback`で、閉じ込めた古い
-      // `colorMode`を読まないようにするため。
-      setColorModeState((prev) => resolveColorMode(prev, opened.info.hasColor));
+      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。renderer側にも同じ解決結果を
+      // 伝える（rendererは`resolveColorMode`を知らず、渡された値をそのまま
+      // 使うだけの設計にしてある。point-cloud-renderer.tsのcolorModeフィールド
+      // コメント参照）。この関数は`colorMode`に依存するため、下の`useCallback`の
+      // 依存配列に`colorMode`を含めている。
+      const resolvedColorMode = resolveColorMode(colorMode, opened.info.hasColor);
+      setColorModeState(resolvedColorMode);
+      renderer.setColorMode(resolvedColorMode);
 
       const summary = `[M1] opened ${path}: points=${opened.info.pointCount} nodes=${opened.nodes.length}`;
       console.log(summary);
@@ -210,7 +215,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, []);
+  }, [colorMode]);
 
   const setPointBudget = useCallback((budget: number) => {
     setPointBudgetState(budget);
@@ -250,12 +255,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // 選んだときに分かる形で別モードに落ちる」）。`LayerPanel`側でも"rgb"の
       // 選択肢自体をdisabledにしているため、通常はここに到達しないが、
       // 二重の安全策として関数側でも解決する。
-      setColorModeState(resolveColorMode(mode, cloudInfo?.hasColor ?? false));
-      // TODO(M2-2): point-cloud-renderer.tsの分割が完了したら、ここで
-      // rendererRef.current?.setColorMode(...)相当のAPIを呼んで実際の描画色を
-      // 切り替える。分割中の別エージェントの作業と衝突しないよう、このコミットの
-      // 時点ではstateを更新するだけに留めている（TaskSheets/M2-shading-and-ui.md
-      // M2-2参照）。
+      const resolved = resolveColorMode(mode, cloudInfo?.hasColor ?? false);
+      setColorModeState(resolved);
+      rendererRef.current?.setColorMode(resolved);
     },
     [cloudInfo],
   );

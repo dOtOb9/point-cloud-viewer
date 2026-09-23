@@ -19,6 +19,7 @@ import { clearColorForMode, SkyBackground, type BackgroundMode } from "./sky";
 import { floorMod, GroundGrid } from "./ground-grid";
 import { horizontalBasis, type Vec3 } from "./up-axis";
 import { EdlPass } from "./edl";
+import type { ColorMode, ValueRange } from "./colormap";
 
 const POINT_SIZE_PX = 4;
 /** WebGPUのFOV/near/far。orchestrator側（point-cloud-renderer.ts）が投影行列を
@@ -39,7 +40,24 @@ const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
  */
 const OFFSCREEN_COLOR_FORMAT: GPUTextureFormat = "rgba8unorm";
 
-const UNIFORM_BUFFER_SIZE = 80; // mat4(64) + pointSizePx(4) + viewportWidth(4) + viewportHeight(4) + pad(4)
+const UNIFORM_BUFFER_SIZE = 80; // mat4(64) + pointSizePx(4) + viewportWidth(4) + viewportHeight(4) + originZ(4)
+
+/**
+ * M2-2: 着色モードの数値対応。`ColorSettings.mode`（f32）にこの値を書き込み、
+ * シェーダ側は`i32(round(mode))`で整数に戻して比較する（このプロジェクトの
+ * uniformバッファは既存のsky.ts/edl.tsと同じくすべてf32で統一しており、
+ * 整数型のuniformを別途持ち込まない方針を踏襲した）。
+ */
+const COLOR_MODE_INDEX: Record<ColorMode, number> = {
+  rgb: 0,
+  elevation: 1,
+  intensity: 2,
+  classification: 3,
+};
+
+/** M2-2: 着色設定のuniformバッファのバイト数。EDL(edl.ts)と同じく8個のf32(32B)に揃えた。 */
+const COLOR_SETTINGS_UNIFORM_FLOATS = 8; // mode, elevationMin, elevationMax, intensityMin, intensityMax, pad*3
+const COLOR_SETTINGS_UNIFORM_BYTES = COLOR_SETTINGS_UNIFORM_FLOATS * 4;
 
 const SHADER_SRC = /* wgsl */ `
 struct Uniforms {
@@ -47,14 +65,45 @@ struct Uniforms {
   pointSizePx: f32,
   viewportWidth: f32,
   viewportHeight: f32,
-  _pad: f32,
+  // M2-2: ノード原点のワールドZ座標。標高着色に使う(下のcolorForVertex参照)。
+  // mvpの平行移動にも同じ値が畳み込まれているが、行列からは単独で取り出せない
+  // ため、標高計算専用にここへ別途渡す。
+  originZ: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+// M2-2: 着色モードの設定。ノードごとではなく1フレームに1つ（全ノード共通）の
+// 値なので、ノードのuniform(binding 0)とは別のbindingに分けた。値そのものは
+// gpu-resources.tsのdrawFrame()が毎フレーム書き込む（point-cloud-renderer.tsの
+// 状態を渡すだけの経路。EDLの強さ・半径と同じ形）。
+//
+// **色の計算式はsrc/renderer/colormap.tsの純粋関数(sampleRamp/elevationToColor/
+// intensityToColor/classificationToColor)を手で再実装したもの。** GPUが無いと
+// 直接テストできないため(edl.tsのlinearizeDepthと同じ事情)、値が一致している
+// ことはコメントで対応させ、TypeScript側はcolormap.test.tsで担保する。
+struct ColorSettings {
+  mode: f32,          // COLOR_MODE_INDEXの値(0=rgb,1=elevation,2=intensity,3=classification)
+  elevationMin: f32,
+  elevationMax: f32,
+  intensityMin: f32,
+  intensityMax: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
+};
+@group(0) @binding(1) var<uniform> cs: ColorSettings;
 
 struct VertexIn {
   @builtin(vertex_index) vertexIndex: u32,
   @location(0) position: vec3<f32>,
   @location(1) color: vec4<f32>,
+  // M2-2: intensity(u16)とclassification(u8)を1つのu32属性として読む
+  // (crates/pcv-core/src/node_format.rsのオフセット16、リトルエンディアン4バイト
+  // をそのままuint32として読み、シェーダ側でビット演算で分解する)。
+  //   bits[0:16)  = intensity
+  //   bits[16:24) = classification
+  //   bits[24:32) = padding(未使用)
+  @location(2) packed: u32,
 };
 
 struct VertexOut {
@@ -62,6 +111,88 @@ struct VertexOut {
   @location(0) color: vec4<f32>,
   @location(1) uv: vec2<f32>,
 };
+
+// 標高用のランプ(colormap.tsのELEVATION_RAMPと同じ5点のviridis風配色を、
+// 区分線形で手で再実装。値はcolormap.tsからコピー、変更したら両方直すこと)。
+fn elevationRampColor(t: f32) -> vec3<f32> {
+  let c0 = vec3<f32>(0.267, 0.005, 0.329);
+  let c1 = vec3<f32>(0.253, 0.265, 0.53);
+  let c2 = vec3<f32>(0.164, 0.471, 0.558);
+  let c3 = vec3<f32>(0.478, 0.821, 0.318);
+  let c4 = vec3<f32>(0.993, 0.906, 0.144);
+  let tc = clamp(t, 0.0, 1.0);
+  if (tc < 0.25) { return mix(c0, c1, tc / 0.25); }
+  if (tc < 0.5)  { return mix(c1, c2, (tc - 0.25) / 0.25); }
+  if (tc < 0.75) { return mix(c2, c3, (tc - 0.5) / 0.25); }
+  return mix(c3, c4, (tc - 0.75) / 0.25);
+}
+
+// 強度用のランプ(colormap.tsのINTENSITY_RAMPと同じ、暗い灰色→白の2点グレースケール)。
+fn intensityRampColor(t: f32) -> vec3<f32> {
+  return mix(vec3<f32>(0.08, 0.08, 0.08), vec3<f32>(1.0, 1.0, 1.0), clamp(t, 0.0, 1.0));
+}
+
+// 分類コード→色(colormap.tsのASPRS_CLASSIFICATION_COLORS/UNKNOWN_CLASSIFICATION_COLORと
+// 同じ値。表に無いコードはdefaultでシアンにフォールバックする)。
+fn classificationColor(code: u32) -> vec3<f32> {
+  switch code {
+    case 0u:  { return vec3<f32>(0.6, 0.6, 0.6); }
+    case 1u:  { return vec3<f32>(0.78, 0.78, 0.78); }
+    case 2u:  { return vec3<f32>(0.55, 0.4, 0.22); }
+    case 3u:  { return vec3<f32>(0.62, 0.82, 0.35); }
+    case 4u:  { return vec3<f32>(0.32, 0.66, 0.28); }
+    case 5u:  { return vec3<f32>(0.1, 0.42, 0.16); }
+    case 6u:  { return vec3<f32>(0.85, 0.32, 0.22); }
+    case 7u:  { return vec3<f32>(1.0, 0.0, 1.0); }
+    case 8u:  { return vec3<f32>(0.5, 0.5, 0.5); }
+    case 9u:  { return vec3<f32>(0.15, 0.4, 0.85); }
+    case 10u: { return vec3<f32>(0.4, 0.4, 0.45); }
+    case 11u: { return vec3<f32>(0.25, 0.25, 0.28); }
+    case 12u: { return vec3<f32>(0.58, 0.58, 0.58); }
+    case 13u: { return vec3<f32>(0.8, 0.6, 0.1); }
+    case 14u: { return vec3<f32>(0.9, 0.72, 0.2); }
+    case 15u: { return vec3<f32>(0.7, 0.42, 0.12); }
+    case 16u: { return vec3<f32>(0.82, 0.55, 0.32); }
+    case 17u: { return vec3<f32>(0.62, 0.32, 0.7); }
+    case 18u: { return vec3<f32>(1.0, 0.15, 0.15); }
+    default:  { return vec3<f32>(0.0, 0.9, 0.9); }
+  }
+}
+
+// M2-2: 着色モードに応じてこの頂点(点)の基本色を決める。EDLはこの色に対して
+// 深度差から求めた陰影係数を後段(edl.ts、別のレンダーパス)で掛けるだけなので、
+// ここでは陰影を一切考えない「素の色」を返す(着色→EDLで陰影、の順序)。
+fn colorForVertex(in: VertexIn) -> vec4<f32> {
+  let mode = i32(round(cs.mode));
+  let intensityRaw = in.packed & 0xffffu;
+  let classificationRaw = (in.packed >> 16u) & 0xffu;
+
+  if (mode == 1) {
+    // 標高: ノード原点のワールドZ + 頂点のノードローカル相対Z = ワールドZ
+    // (node_format.rsのencode_node: rel_z = z - origin_rounded[2]の逆算)。
+    let worldZ = u.originZ + in.position.z;
+    let range = cs.elevationMax - cs.elevationMin;
+    var t = 0.0;
+    if (range > 0.0) {
+      t = clamp((worldZ - cs.elevationMin) / range, 0.0, 1.0);
+    }
+    return vec4<f32>(elevationRampColor(t), in.color.a);
+  }
+  if (mode == 2) {
+    let range = cs.intensityMax - cs.intensityMin;
+    var t = 0.0;
+    if (range > 0.0) {
+      t = clamp((f32(intensityRaw) - cs.intensityMin) / range, 0.0, 1.0);
+    }
+    return vec4<f32>(intensityRampColor(t), in.color.a);
+  }
+  if (mode == 3) {
+    return vec4<f32>(classificationColor(classificationRaw), in.color.a);
+  }
+  // mode == 0 (rgb)、またはそれ以外の想定外の値はRGB属性のままにする
+  // (フォールバックとして安全側: 何も表示されなくなるより、元のRGBが出るほうがよい)。
+  return in.color;
+}
 
 @vertex
 fn vs_main(in: VertexIn) -> VertexOut {
@@ -80,7 +211,7 @@ fn vs_main(in: VertexIn) -> VertexOut {
 
   var out: VertexOut;
   out.clipPosition = vec4<f32>(clip.xy + corner * ndcHalf * clip.w, clip.z, clip.w);
-  out.color = in.color;
+  out.color = colorForVertex(in);
   out.uv = corner;
   return out;
 }
@@ -113,6 +244,12 @@ export interface DrawFrameOptions {
   cameraEye: readonly [number, number, number];
   cameraTarget: readonly [number, number, number];
   upAxis: Vec3;
+  /** M2-2: 着色モードと、標高/強度を正規化するための実データレンジ。
+   *  レンジの決め方はcolormap.tsのコメント参照(標高はCloudInfoのバウンディング
+   *  ボックス、強度はノード読み込み時に動的に広げていく)。 */
+  colorMode: ColorMode;
+  elevationRange: ValueRange;
+  intensityRange: ValueRange;
 }
 
 export class GpuResources {
@@ -123,6 +260,13 @@ export class GpuResources {
   private uniformLayout: GPUBindGroupLayout | null = null;
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
+
+  /** M2-2: 着色モードの設定(mode/elevationRange/intensityRange)。ノードごとではなく
+   *  フレームごとに1つで全ノード共通のため、点群パイプラインのbinding(1)として
+   *  ノードのuniform(binding 0)とは別に持つ。`drawFrame()`が毎フレーム内容を
+   *  書き換える(バッファそのものは作り直さない。既存の各ノードのbindGroupは
+   *  このバッファを固定で参照しているため、作り直すと参照が壊れる)。 */
+  private colorSettingsBuffer: GPUBuffer | null = null;
 
   /** 空の背景（M2-0c）。既定は単色(暗)のままで、"sky"を選んだときだけ描く。 */
   private readonly sky = new SkyBackground();
@@ -207,6 +351,13 @@ export class GpuResources {
             visibility: GPUShaderStage.VERTEX,
             buffer: { type: "uniform" },
           },
+          // M2-2: 着色設定(binding 1)。ノードごとのuniform(binding 0)とは別に、
+          // フレーム全体で共有する1つのuniformバッファを追加する。
+          {
+            binding: 1,
+            visibility: GPUShaderStage.VERTEX,
+            buffer: { type: "uniform" },
+          },
         ],
       });
 
@@ -223,6 +374,10 @@ export class GpuResources {
               attributes: [
                 { shaderLocation: 0, offset: 0, format: "float32x3" },
                 { shaderLocation: 1, offset: 12, format: "unorm8x4" },
+                // M2-2: intensity(u16)+classification(u8)+padding(u8)の4バイトを
+                // 1つのuint32属性として読む(node_format.rsのオフセット16参照。
+                // シェーダ側でビット演算により分解する。SHADER_SRCのVertexIn参照)。
+                { shaderLocation: 2, offset: 16, format: "uint32" },
               ],
             },
           ],
@@ -237,6 +392,15 @@ export class GpuResources {
         },
         primitive: { topology: "triangle-list" },
         depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
+      });
+
+      // M2-2: 着色設定の共有uniformバッファ。全ノードのbindGroup(binding 1)が
+      // 同じバッファを参照する。内容は`drawFrame()`が毎フレーム`writeBuffer`で
+      // 書き換える(バッファそのものの再生成はしない。既存ノードのbindGroupが
+      // このバッファを固定で参照しているため、作り直すと参照が壊れる)。
+      this.colorSettingsBuffer = device.createBuffer({
+        size: COLOR_SETTINGS_UNIFORM_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
     });
 
@@ -282,7 +446,7 @@ export class GpuResources {
   /** 描画に必要な一式（device/context/pipeline/深度ビュー）が揃っているか。
    *  呼び出し側はこれをrenderOnce()の入り口で確認し、揃うまで描画をスキップする。 */
   isReady(): boolean {
-    return !!(this.device && this.context && this.pipeline && this.depthView);
+    return !!(this.device && this.context && this.pipeline && this.depthView && this.colorSettingsBuffer);
   }
 
   resize(width: number, height: number): void {
@@ -322,7 +486,7 @@ export class GpuResources {
    *  作って`CachedNode`として返す。device/uniformLayoutがまだ無い（初期化前・
    *  破棄後）場合はnullを返す。キャッシュへ格納するかどうかは呼び出し側の責務。 */
   createCachedNode(key: string, node: ParsedNode): CachedNode | null {
-    if (!this.device || !this.uniformLayout) return null;
+    if (!this.device || !this.uniformLayout || !this.colorSettingsBuffer) return null;
     const device = this.device;
 
     const vertexBuffer = device.createBuffer({
@@ -345,7 +509,13 @@ export class GpuResources {
     });
     const bindGroup = device.createBindGroup({
       layout: this.uniformLayout,
-      entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuffer } },
+        // M2-2: 着色設定は全ノード共有の1つのバッファ(binding 1)を参照する
+        // (このバッファ自体はGpuResourcesが1つだけ持ち、内容はdrawFrame()が
+        // 毎フレーム書き換える。上のcolorSettingsBufferのコメント参照)。
+        { binding: 1, resource: { buffer: this.colorSettingsBuffer } },
+      ],
     });
 
     return {
@@ -384,7 +554,21 @@ export class GpuResources {
     const depthView = this.depthView;
     const offscreenColorView = this.offscreenColorView;
     const offscreenDepthView = this.offscreenDepthView;
-    if (!device || !context || !pipeline || !depthView || !offscreenColorView || !offscreenDepthView) return;
+    const colorSettingsBuffer = this.colorSettingsBuffer;
+    if (!device || !context || !pipeline || !depthView || !offscreenColorView || !offscreenDepthView || !colorSettingsBuffer) {
+      return;
+    }
+
+    // M2-2: 着色設定は全ノード共通で1フレームに1回だけ書けばよい(ノードごとの
+    // uniform=binding 0とは違い、こちらはbinding 1として全ノードのbindGroupが
+    // 同じバッファを参照している)。
+    const colorSettingsData = new Float32Array(COLOR_SETTINGS_UNIFORM_FLOATS);
+    colorSettingsData[0] = COLOR_MODE_INDEX[options.colorMode];
+    colorSettingsData[1] = options.elevationRange.min;
+    colorSettingsData[2] = options.elevationRange.max;
+    colorSettingsData[3] = options.intensityRange.min;
+    colorSettingsData[4] = options.intensityRange.max;
+    device.queue.writeBuffer(colorSettingsBuffer, 0, colorSettingsData.buffer, colorSettingsData.byteOffset, colorSettingsData.byteLength);
 
     const encoder = device.createCommandEncoder();
 
@@ -420,7 +604,9 @@ export class GpuResources {
       uniformData[16] = POINT_SIZE_PX;
       uniformData[17] = width;
       uniformData[18] = height;
-      uniformData[19] = 0;
+      // M2-2: 標高着色のため、ノード原点のワールドZをそのまま渡す
+      // (SHADER_SRCのUniforms.originZ、colorForVertex()参照)。
+      uniformData[19] = node.origin[2];
       device.queue.writeBuffer(
         node.uniformBuffer,
         0,
@@ -541,5 +727,6 @@ export class GpuResources {
     this.depthTexture?.destroy();
     this.offscreenColorTexture?.destroy();
     this.offscreenDepthTexture?.destroy();
+    this.colorSettingsBuffer?.destroy();
   }
 }

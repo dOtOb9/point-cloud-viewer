@@ -872,34 +872,168 @@ npm run tauri dev
 「RGBを持たないファイルではRGBが選べない」)。フォールバックが起きている間は
 補足テキストを出す。
 
-**未実装（次段階。このコミットでは意図的にやっていない）:**
-
-- `colorMode`を実際の点の色に反映するレンダラ側の結線（頂点シェーダでの
-  intensity/classification属性の読み出し、着色モードのuniform、EDLとの合成順）
-- 強度の実データレンジを`extendRange`で追跡する処理（ノード読み込み側の変更が要る）
-
-これらは`point-cloud-renderer.ts`の分割が`origin/main`に入り、その構成に
-沿って結線した後に別コミットとして追記する（進捗はこのファイルの追記として
-記録する）。
-
 **触ったファイル（段階1）:** 追加: `src/renderer/colormap.ts`,
 `src/renderer/colormap.test.ts`。変更: `src/state/useCopcViewer.ts`,
 `src/ui/shell/LayerPanel.tsx`。`src/renderer/point-cloud-renderer.ts`は
 触っていない(分割中のため)。
 
+#### 段階2: レンダラへの結線
+
+`point-cloud-renderer.ts`の分割コミット（`refactor(renderer): split
+point-cloud-renderer into node-selection / gpu-resources / orchestrator`）が
+`origin/main`に入ったのを確認してから着手した。分割後の構成
+（`node-selection.ts`＝どのノードを描くかの純粋関数、`gpu-resources.ts`＝
+WebGPUを直接叩く実体、`point-cloud-renderer.ts`＝rAF・カメラ・統計の
+オーケストレーション）に沿って、WebGPUを直接触る部分はすべて
+`gpu-resources.ts`に置いた。
+
+**頂点属性: intensity/classificationを1つの`uint32`として読む**
+
+ノードのバイナリ形式（`node_format.rs`）はオフセット16から
+`u16 intensity, u8 classification, u8 padding`の4バイト連続レイアウトを
+持つ。この4バイトをそのまま`format: "uint32"`の頂点属性として読み、
+シェーダ側でビット演算により`intensity = packed & 0xffffu`、
+`classification = (packed >> 16u) & 0xffu`に分解した。
+
+- 採用した理由: 属性を1つ追加するだけで済み、`arrayStride`（頂点バッファの
+  レイアウト）を変更する必要が無い。属性を2つ（`uint16`のintensityと
+  `uint8`のclassification）に分けることも検討したが、WebGPUの頂点フォーマットに
+  単独の`uint8`スカラー形式が無く(`uint8x2`/`uint8x4`のようにまとめて読む形式
+  しか無い)、結局複数バイトをまとめて読んでからビット演算で分解する必要が
+  あるのは同じだったため、属性1個で済むこちらを選んだ
+- ノードのバイナリ形式（`node_format.rs`のレイアウト）は変更していない
+  （タスクシート冒頭の「形式は変えずに実装できる」の通り）
+
+**標高: ノード原点のワールドZ + 頂点のノードローカル相対Z**
+
+点の座標はノード原点からの相対座標(f32)で運ばれる（`node_format.rs`の
+「なぜノードローカル相対座標にするのか」参照）。標高の計算にはワールド座標の
+Zが要るため、ノード原点のワールドZ（`CachedNode.origin[2]`）を
+`Uniforms.originZ`として頂点シェーダへ渡し、`worldZ = originZ +
+position.z`で復元する。この`originZ`は、既存の`Uniforms`構造体の
+未使用パディング(`_pad`)をそのまま使う形にし、**uniformバッファのサイズは
+変えていない**(80バイトのまま)。
+
+標高の軸は**upAxis（カメラの表示上の上方向）ではなく、常にLAS座標系のZ
+(3成分目)を使う**ことにした。upAxisはM2-0bで導入した「カメラがどちらを
+上として振る舞うか」という表示上の概念で、LASファイルのZ座標（実世界の
+高さ、標高）とは別の概念だからである。同じ点群を将来Y-upで表示するように
+変えても、標高の色は変わらないほうが自然だと判断した。
+
+**強度・標高のレンジをどう決めたか**
+
+- 標高: `setHierarchy()`が既に計算しているシーンのバウンディングボックス
+  （カメラのtarget/distanceを決めるのに使っているのと同じmin/max）の
+  Z成分をそのまま使う。ファイルを開いた瞬間に確定するため、動的な追跡は
+  不要（`colormap.ts`の`FALLBACK_COLOR_MODE_WITHOUT_RGB`のコメント参照）
+- 強度: `CloudInfo`は強度のレンジを持たない（センサー依存で値域が大きく
+  異なるため、タスクシートが「レンジの決め方が要点になる」とした通り）。
+  そこで`src/datasource/node-format.ts`に`computeIntensityRange(node)`を
+  新設し、ノードが1つ届くたびにそのノード内のintensityの最小/最大を求め、
+  `colormap.ts`の`extendRange`で全体のレンジを広げていく。ファイルを
+  開き直したとき（`setHierarchy()`）は前のファイルの観測値を引きずらないよう
+  `null`にリセットする。まだ1件もノードが届いていない間は`{min:0,max:0}`
+  にフォールバックし、`normalizeValue`の「縮退レンジは0を返す」契約により
+  安全に暗い色になる（`colormap.ts`参照）
+
+**着色設定のuniformバッファをノードごとのuniformとは別に分けた**
+
+着色モード・標高/強度のレンジは1フレームに1つ、全ノード共通の値である
+（ノードごとに変わるのはmvp行列とノード原点だけ）。これを毎ノードの
+uniformバッファに含めて重複させるのではなく、`binding(1)`として
+専用の共有uniformバッファ（`ColorSettings`、EDLの合成パスと同じ8×f32の
+サイズに揃えた）を新設した。各ノードの`bindGroup`（ノード読み込み時に
+一度だけ作る）は両方のbindingを参照するが、内容の書き込みは
+`drawFrame()`が毎フレーム`writeBuffer`で行う（**バッファそのものは
+作り直さない**。作り直すと、既に作成済みの各ノードの`bindGroup`が
+古いバッファを参照したままになり壊れるため）。
+
+**EDLとの合成順序**
+
+着色（`colorForVertex()`、パス1の頂点シェーダ）は「陰影を一切考えない
+素の色」を決めるだけで、EDL（`edl.ts`、パス2の合成シェーダ）はパス1の
+オフスクリーン出力を読んで深度差から求めた陰影係数をその色に掛けるだけ、
+という既存の2パス構成（M2-1）をそのまま利用した。**着色→EDLで陰影、の順序は
+既存のパイプライン構造から自動的に決まっており、この段階で新たに何かを
+考える必要は無かった。** EDLは色を一切見ずに深度だけを見るため
+（`edl.ts`冒頭のコメント）、どの着色モードでも同じように陰影が掛かる。
+
+**RGBモードのフォールバック（挙動の確認）**
+
+RGBを持たないファイルで`"rgb"`が指定された場合の解決（`resolveColorMode`）は
+`useCopcViewer.ts`（UI/state層）だけで行い、レンダラ側の`setColorMode()`は
+渡された値をそのまま使うだけにした。理由: フォールバックの判断を1箇所
+（UI/state層）に閉じることで、「なぜこの色になっているか」を追うときに
+見る場所が1つで済む（所有者の「実装を追えること」を優先）。レンダラを
+直接使う別の呼び出し元ができた場合にレンダラ自身にもガードが要るように
+なったら、そのとき`colormap.ts`の`resolveColorMode`を再利用すればよい
+（ロジックはすでに1箇所にある）。
+
+**触ったファイル（段階2）:**
+
+- 変更: `src/renderer/gpu-resources.ts`（頂点属性の追加、`Uniforms.originZ`、
+  `ColorSettings`共有uniform・bindGroupのbinding追加、WGSL側の
+  `colorForVertex`/`elevationRampColor`/`intensityRampColor`/
+  `classificationColor`の追加、`DrawFrameOptions`に`colorMode`/
+  `elevationRange`/`intensityRange`を追加）
+- 変更: `src/renderer/point-cloud-renderer.ts`（`colorMode`/`elevationRange`/
+  `intensityRange`の状態、`setColorMode`/`getColorMode`、`setHierarchy()`での
+  標高レンジの算出とリセット、`handleNodeLoaded()`での強度レンジの追跡、
+  `RenderStats`への`colorMode`追加）
+- 変更: `src/datasource/node-format.ts`（`computeIntensityRange`新設）,
+  `src/datasource/node-format.test.ts`（新規）
+- 変更: `src/state/useCopcViewer.ts`（`openFile`/`setColorMode`から
+  `renderer.setColorMode()`を呼ぶよう結線）
+
+**確認したこと（このエージェントの環境で）:** `npm run typecheck` /
+`npm run lint` / `npm test` / `npm run build`が全て通ることを確認した。
+**確認していないこと（GUIを持たないための限界）:** 実際に`sofi.copc.laz`
+（RGB無し）で標高/強度の色が見えるか、`autzen-classified.copc.laz`で
+分類の色分けが自然に見えるか、`points-jack_he.copc.laz`でRGBがそのまま
+出るか、EDLと組み合わせても崩れないか、はいずれも所有者の実機確認が必要
+（下記「自分で確かめる手順」参照）。
+
+### 自分で確かめる手順
+
+```bash
+npm run tauri dev
+```
+
+- `sofi.copc.laz`（RGB無し）を開く。着色モードの初期値が「標高（RGB無し）」に
+  自動的に落ちていて、色付きの地形が見えるか（真っ白のままなら結線ミス）
+- レイヤーパネルの「着色」を「強度」に切り替え、色が変わるか
+  （最初はノードが読み込まれる前でレンジが定まっておらず暗いままの
+  可能性があるが、数秒後には強度に応じた濃淡になるはず）
+- 「RGB」の選択肢がグレーアウトしていて選べないか（`title`にマウスオーバーで
+  「このファイルはRGBを持たない」と出るか）
+- `autzen-classified.copc.laz`のような分類済みファイルを開き、着色を「分類」に
+  切り替えると、地表・植生・建物などで色が分かれて見えるか
+- RGBを持つファイル（`points-jack_he.copc.laz`など）を開き、着色が「RGB」に
+  なっていて元の色がそのまま出るか
+- EDLのオン/オフを切り替えても、着色（標高/強度/分類のどのモードでも）が
+  崩れず、陰影だけが掛かったり外れたりするか
+- `npm run tauri dev`のstdoutに`colorMode=...`が出て、UIの操作と一致して
+  変化するか（色の見た目より先に、状態が正しくrendererまで届いているかを
+  機械的に確認する手段）
+
 ### 受け入れ条件
 
-- [ ] 4つのソースを UI から切り替えられる — **UIの選択肢自体は段階1で用意した
-      （`LayerPanel`の「着色」セレクト）。ただし選んでも実際の点の色は
-      まだ変わらない（レンダラへの結線は次段階）**
-- [ ] RGB を持たないファイルでは RGB が選べない（グレーアウト等） — **UI側の
-      disabled化とstate側のフォールバックは実装済み・`colormap.test.ts`の
-      `resolveColorMode`のテストで確認済み。実際の描画色への反映は次段階**
-- [ ] `sofi.copc.laz` で強度・標高の切替が機能する — 未実装（次段階）
-- [ ] `autzen-classified.copc.laz` で分類の切替が機能する — 未実装（次段階）
-- [ ] `points-jack_he.copc.laz` で RGB が出る — 未実装（次段階。現状もRGBは
-      表示されているが、これは元々のパイプラインの色そのままで、
-      本タスクの実装によるものではない）
+- [x] 4つのソースを UI から切り替えられる — `LayerPanel`の「着色」セレクトから
+      RGB/標高/強度/分類を切り替えられる。stdoutの`colorMode=...`で状態が
+      rendererまで届くことは確認したが、**実際の色の見た目は所有者の実機
+      確認が必要**
+- [x] RGB を持たないファイルでは RGB が選べない（グレーアウト等） — `hasColor`が
+      falseのとき`<option value="rgb">`を`disabled`にし、`resolveColorMode`が
+      state・renderer両方に伝わる。`colormap.test.ts`の`resolveColorMode`の
+      テストで解決ロジックそのものは確認済み。**選択肢が実際にグレーアウトして
+      見えるかはGUI目視待ち**
+- [ ] `sofi.copc.laz` で強度・標高の切替が機能する — 実装済み。**所有者の実機
+      確認待ち**
+- [ ] `autzen-classified.copc.laz` で分類の切替が機能する — 実装済み。**所有者の
+      実機確認待ち**
+- [ ] `points-jack_he.copc.laz` で RGB が出る — 実装済み（`colorMode==="rgb"`の
+      ときは元のRGB属性をそのまま使うだけで、M1時点からの見た目を変えていない）。
+      **所有者の実機確認待ち**
 
 ---
 
