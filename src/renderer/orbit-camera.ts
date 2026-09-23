@@ -4,6 +4,7 @@
 
 import { lookAt, type Mat4 } from "./mat4";
 import { DEFAULT_UP_AXIS, horizontalBasis, type Vec3 } from "./up-axis";
+import { computeTwoPointerGesture, type TouchPoint } from "./touch-gesture";
 
 const MIN_DISTANCE = 0.01;
 const MAX_DISTANCE = 1e9; // COPCの世界座標は大きいことがあるので、上限は緩くしておく
@@ -209,44 +210,85 @@ export interface OrbitControlsOptions {
   getCursorDirection?: (screenX: number, screenY: number) => [number, number, number] | null;
 }
 
+/** 追跡中の1ポインタの状態。マウスもタッチも同じ形で扱う。 */
+interface TrackedPointer extends TouchPoint {
+  /**
+   * pointerdown時のe.button。タッチは常に0になる（Pointer Events仕様）ため、
+   * 「左ドラッグ=0」の分岐は指1本のタッチでもそのまま回転として働く。
+   * 中ドラッグ(button===1)はマウス専用（タッチでは発生しない値）。
+   */
+  button: number;
+}
+
 /**
  * canvasにポインタ/ホイールイベントを張り、OrbitCameraを操作できるようにする。
  * 返り値のdispose()でイベントを外せる。
+ *
+ * M3-6: マウスとタッチを同じコードで扱うため、`pointerType`では分岐せず、
+ * **同時に押されているポインタの数**で操作を決める（タスクシート M3-6参照）。
+ * - 1本（指1本 or マウス左ボタン）: 回転
+ * - 1本（マウス中ボタン）: パン（button===1はタッチでは発生しないので、
+ *   この分岐に指が迷い込むことはない）
+ * - 2本（ピンチ/2本指ドラッグ）: ズーム（中点が先）とパンを同時に行う
+ *   （現実の2本指操作は「広げながらずらす」ことが普通にあるため。
+ *   ズーム倍率とパン量の計算そのものは`touch-gesture.ts`の純粋関数に切り出してある）
+ * - 3本以上: 何もしない（スコープ外）
  */
 export function attachOrbitControls(
   canvas: HTMLCanvasElement,
   camera: OrbitCamera,
   options: OrbitControlsOptions = {},
 ): () => void {
-  let dragButton: number | null = null;
-  let lastX = 0;
-  let lastY = 0;
+  // ブラウザ標準のタッチジェスチャ（ページのスクロール・ピンチズーム）が
+  // 自前のジェスチャ処理と競合しないようにする。マウスには影響しない。
+  canvas.style.touchAction = "none";
+
+  const pointers = new Map<number, TrackedPointer>();
 
   const onPointerDown = (e: PointerEvent) => {
-    dragButton = e.button;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button });
     canvas.setPointerCapture(e.pointerId);
   };
 
   const onPointerMove = (e: PointerEvent) => {
-    if (dragButton === null) return;
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    const prevPoint = pointers.get(e.pointerId);
+    if (!prevPoint) return; // pointerdownより前(ホバー等)のmoveは無視
 
-    if (dragButton === 0) {
-      // 左ドラッグ: 回転
-      camera.rotate(-dx * ROTATE_SPEED, dy * ROTATE_SPEED);
-    } else if (dragButton === 1) {
-      // 中ドラッグ: パン
-      camera.pan(dx, dy);
+    if (pointers.size === 1) {
+      const dx = e.clientX - prevPoint.x;
+      const dy = e.clientY - prevPoint.y;
+      if (prevPoint.button === 0) {
+        // 左ドラッグ or 指1本: 回転
+        camera.rotate(-dx * ROTATE_SPEED, dy * ROTATE_SPEED);
+      } else if (prevPoint.button === 1) {
+        // 中ドラッグ: パン
+        camera.pan(dx, dy);
+      }
+    } else if (pointers.size === 2) {
+      const otherId = [...pointers.keys()].find((id) => id !== e.pointerId);
+      const other = otherId !== undefined ? pointers.get(otherId) : undefined;
+      if (other) {
+        const prevPair: [TouchPoint, TouchPoint] = [prevPoint, other];
+        const currPair: [TouchPoint, TouchPoint] = [{ x: e.clientX, y: e.clientY }, other];
+        const gesture = computeTwoPointerGesture(prevPair, currPair);
+
+        camera.pan(gesture.panDeltaX, gesture.panDeltaY);
+
+        const rect = canvas.getBoundingClientRect();
+        const cursorDirection =
+          options.getCursorDirection?.(gesture.midpoint.x - rect.left, gesture.midpoint.y - rect.top) ??
+          undefined;
+        camera.zoom(gesture.zoomFactor, cursorDirection);
+      }
     }
+    // 3本以上は無視する（このポインタの位置だけは更新し、指が離れて2本に戻ったときに
+    // 破綻しないようにする）。
+
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: prevPoint.button });
   };
 
   const onPointerUp = (e: PointerEvent) => {
-    dragButton = null;
+    pointers.delete(e.pointerId);
     canvas.releasePointerCapture(e.pointerId);
   };
 
@@ -270,6 +312,10 @@ export function attachOrbitControls(
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", onPointerUp);
+  // pointercancel（OSのジェスチャ認識に取られる等）でもポインタを確実に外す。
+  // 外し忘れると、次にその指番号が再利用されたときに古い位置が残って
+  // 「遷移で操作が破綻する」原因になる。
+  canvas.addEventListener("pointercancel", onPointerUp);
   canvas.addEventListener("wheel", onWheel, { passive: false });
   canvas.addEventListener("contextmenu", onContextMenu);
 
@@ -277,6 +323,7 @@ export function attachOrbitControls(
     canvas.removeEventListener("pointerdown", onPointerDown);
     canvas.removeEventListener("pointermove", onPointerMove);
     canvas.removeEventListener("pointerup", onPointerUp);
+    canvas.removeEventListener("pointercancel", onPointerUp);
     canvas.removeEventListener("wheel", onWheel);
     canvas.removeEventListener("contextmenu", onContextMenu);
   };
