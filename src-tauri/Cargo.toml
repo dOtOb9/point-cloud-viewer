@@ -25,6 +25,8 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pcv-core = { path = "../crates/pcv-core" }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
 
 [dev-dependencies]
 # open_copc/read_node_bytes をテストするために、その場で極小のCOPCを生成する。
