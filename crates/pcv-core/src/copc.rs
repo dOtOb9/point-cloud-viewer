@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -157,15 +157,42 @@ impl Hierarchy {
 }
 
 /// 開いたCOPCファイル。
-pub struct CopcFile {
-    reader: CopcReader<BufReader<File>>,
+///
+/// `R`は`Read + Seek + Send`を満たす任意の入力源。既定値は`BufReader<File>`
+/// （ネイティブ、`std::fs::File`をシークして読む）で、`src-tauri`側のコードは
+/// 型引数を書かずに`CopcFile`とだけ書けば今までどおり動く（下の`impl
+/// CopcFile<BufReader<File>>`が`open(path)`を提供する）。
+///
+/// Web版（`crates/pcv-wasm`）はここに、Worker内の同期I/O
+/// （ローカルファイルの範囲読み・HTTP Rangeのいずれか。設計は
+/// `TaskSheets/ADR-0012-web-worker-sync-io.md`参照）を実装した型を渡す。
+/// `pcv-core`自体はその実装を知らない（wasm固有の依存を持たない。規約1）。
+pub struct CopcFile<R: Read + Seek + Send = BufReader<File>> {
+    reader: CopcReader<R>,
     info: CloudInfo,
     hierarchy: Hierarchy,
 }
 
-impl CopcFile {
+impl CopcFile<BufReader<File>> {
+    /// ネイティブ経路。`std::fs::File`をパスから開く。
     pub fn open(path: &Path) -> Result<Self> {
         let reader = CopcReader::from_path(path).map_err(CopcError::Open)?;
+        let info = build_cloud_info(&reader);
+        let hierarchy = build_hierarchy(&reader);
+        Ok(Self {
+            reader,
+            info,
+            hierarchy,
+        })
+    }
+}
+
+impl<R: Read + Seek + Send> CopcFile<R> {
+    /// Web版経路。すでに開いている（あるいは開いたのと同等の）`Read + Seek`を
+    /// そのまま受け取る。ファイル全体を読むかどうか・どこからバイト列を
+    /// 取ってくるかは`R`の実装次第で、`pcv-core`はここでは関知しない。
+    pub fn from_reader(reader: R) -> Result<Self> {
+        let reader = CopcReader::open(reader).map_err(CopcError::Open)?;
         let info = build_cloud_info(&reader);
         let hierarchy = build_hierarchy(&reader);
         Ok(Self {
