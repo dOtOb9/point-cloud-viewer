@@ -608,11 +608,133 @@ npm run tauri dev
 - **tint はテーマごとに別の値を持つ。** ライトテーマ × 暗い点群 × 白いガラスが最も破綻しやすい
 - ドックのアクティブなツールは明確なハイライトで示す（モード状態の表現が弱いため）
 
+### 実装
+
+`src/ui/shell/` にADR-0005の5面をそれぞれ独立したコンポーネントとして実装した。
+
+- **`AppShell.tsx`**: 組み立て役。`useCopcViewer()`と`useTheme()`をここで一度だけ呼び、
+  `canvasRef`とviewer状態を各パネルへpropsで配る。以前は`ViewerPanel`が
+  `useCopcViewer()`を自分で呼び、HUDのテキストも自分で描いていたが、パネルを
+  複数に分けるにはどこか1箇所で状態を持って配る必要があるため、ここへ引き上げた。
+  全パネルは`ViewerPanel`(canvas, `absolute inset-0`)の上に重ねた絶対配置の層。
+- **`ViewerPanel.tsx`**: `canvasRef`を受け取って`<canvas>`を`absolute inset-0`で
+  敷くだけのdumbな部品にした（ADR-0005の「全面ビューア」）。HUDは全部後述のパネルへ移した。
+- **`Dock.tsx`**: 下部中央のフローティングドック。中身はレイヤー/情報パネルの
+  開閉ボタンと設定ボタンの3つだけ。選択・計測・断面のようなモード切替ツールは
+  まだ無い(M3以降)ため、今それらの分の場所を先取りして確保することはしなかった
+  （ADRの「やりすぎないこと」の精神と、所有者の「実装を追えること」を優先）。
+  開いている側のボタンは背景色反転でハイライトする(ADR-0005が指摘した「ドックは
+  モード状態が見えにくい」への対処)。
+- **`LayerPanel.tsx`**（左）/ **`InfoPanel.tsx`**（右）: 折りたたみ可能な2枚。
+  開閉ボタンは畳んだ状態でも常に画面内に残る(パネル本体とは別要素にした)ので、
+  畳んだ後に開き直す手段が必ずある。
+- **`SettingsModal.tsx`**: 唯一の不透明な面。`backdrop-blur`もtintも使わず、
+  単色の背景(`bg-white` / `dark:bg-slate-900`)にした。
+
+### 既存機能の移し先（機能は削っていない）
+
+以前`ViewerPanel`のHUDに直書きしていたものを、次のように配置し直した。
+
+| 既存機能 | 前の場所 | 新しい場所 |
+|---|---|---|
+| COPCファイルパス入力・開くボタン | `ViewerPanel`直書き | `LayerPanel` |
+| 点予算(`setPointBudget`) | 同上 | `LayerPanel` |
+| 背景モード(`setBackgroundMode`) | 同上 | `LayerPanel` |
+| グリッドon/off(`setGridEnabled`) | 同上 | `LayerPanel` |
+| エラー表示 | 同上 | `LayerPanel`（開くボタンの近く） |
+| cloudInfo(points/nodes/hasColor) | 同上 | `InfoPanel` |
+| RenderStats(drawn/loading/queued/cached/fps/pointBudget) | 同上 | `InfoPanel` |
+| カメラ姿勢(pitch/yaw/upAxis/eye) | 同上 | `InfoPanel` |
+| M0診断パネル(WebGPU probe / IPC bench / node concurrency bench) | `App.tsx`直下の`<details>` | `SettingsModal`内の`<details>` |
+
+`useCopcViewer.ts`の`stdout`出力（`reportToBackendConsole`経由でRust側stdoutへ
+fps・ロード状況・カメラ姿勢を出す処理）はそのまま変更していない。GUIを目視できない
+環境での確認手段は今回のUIシェル変更後も同じ方法で使える。
+
+### ガラスの質感（tint）
+
+`src/ui/shell/glass.ts`に`GLASS_SURFACE`として1箇所に集約した。
+`backdrop-blur-md`の上に`bg-white/65`(ライト)・`dark:bg-slate-950/70`(ダーク)の
+tintを重ねる。値をやや高め(65〜70%)にしたのは、ADR-0005が挙げたリスク
+「点群は色が任意・高周波ノイズがあり、tintが薄いと文字が背景依存で読めなくなる」
+への対処で、特にライト×暗い点群×白いガラスが最も破綻しやすいとADRに明記されて
+いたため、ライト側のtintも薄くしなかった。**この不透明度は設計時の判断であり、
+fpsは測っていない。**`backdrop-filter`の描画コスト実測はM2-4の担当。
+
+ダーク/ライトの切り替えは`src/state/useTheme.ts`が担う。ADR-0005の決定である
+「OS設定に追従」を既定(`preference="system"`)として維持しつつ、所有者が実機で
+OSの設定を変えずに両テーマを見比べられるよう、設定モーダルから手動固定
+(`system`/`dark`/`light`)も選べるようにした。これはADRの決定を覆すものではなく、
+既定値は変えていない。判定ロジック(`resolveTheme()`)はDOM/localStorageに触れない
+純関数として切り出し、`useTheme.test.ts`でvitestから直接検証している
+（OSの`prefers-color-scheme`メディアクエリの発火自体はGUI側の確認が要るため、
+そこは目視待ち。下記「自分で確認する手順」参照）。
+
+### 他の選択肢を採らなかった理由
+
+- **状態を各パネルの中で個別に`useCopcViewer()`するのではなく、`AppShell`で
+  一度だけ呼んでpropsで配る構成にした。** `useCopcViewer()`の`useEffect`は
+  `canvasRef.current`に対して`PointCloudRenderer`を1つだけ生成する前提で
+  書かれており、複数箇所で呼ぶとレンダラが複数生成されてしまう。所有者が
+  「実装を追えること」を優先する方針とも合う(状態の出どころが1箇所で分かる)。
+- **UIライブラリは追加していない。** 既存のTailwindだけで済んだ(ADR-0005が
+  求める見た目は角丸・半透明・ぼかしのような基本的なユーティリティの組み合わせで
+  表現できるため、コンポーネントライブラリを足す理由が無い)。
+- **テーマの適用は`prefers-color-scheme`のメディアクエリ直接ではなく、
+  `<html data-theme>`属性 + Tailwindのカスタムvariantにした。** 設定画面からの
+  手動固定(OSの設定を変えずに両テーマを確認したいという、GUIを目視できない
+  制作環境ならではの要求)を素直に実装するには、CSS側の分岐を「OSの状態」ではなく
+  「アプリが決めた1つの値」に一本化する必要があったため。
+
+### 触ったファイル
+
+- 追加: `src/state/useTheme.ts`, `src/state/useTheme.test.ts`,
+  `src/ui/shell/AppShell.tsx`, `src/ui/shell/Dock.tsx`, `src/ui/shell/LayerPanel.tsx`,
+  `src/ui/shell/InfoPanel.tsx`, `src/ui/shell/SettingsModal.tsx`, `src/ui/shell/glass.ts`
+- 変更: `src/App.tsx`(`AppShell`を描画するだけに簡略化)、
+  `src/ui/ViewerPanel.tsx`(canvasだけのdumbな部品に変更)、
+  `src/index.css`(`@custom-variant dark`の追加、`html/body/#root`を全面表示用に`height:100%`)
+- `src/renderer/`配下は触っていない(他エージェントの作業と競合しないため。指示通り)
+
+### 自分で確認する手順
+
+```bash
+npm run tauri dev
+```
+
+- 起動直後、画面全体が3Dビュー(黒背景)で埋まり、左にレイヤーパネル・右に情報パネル・
+  下部中央にドックが浮いて見えるか
+- レイヤーパネル/情報パネルそれぞれの開閉ボタン(◀/▶)、ドックの「レイヤー」「情報」
+  ボタンで開閉できるか。両方畳むと3Dビューだけになるか
+- ドックの「設定」ボタンで不透明なモーダルが開き、他のパネルと質感が明確に違うか
+  (ガラス系はぼかし+半透明、設定モーダルは単色で不透明)
+- 設定モーダルの「テーマ」でダーク/ライトを切り替え、両方でパネル上の文字が読めるか
+  (特にライトテーマ時、点群が背景にある状態でレイヤー/情報パネルの文字が読めるか)
+- レイヤーパネルからCOPCファイルを開き、点予算・背景・グリッドを変更できるか
+  (以前と同じ挙動になっているか)
+- 情報パネルにpoints/nodes/hasColor、drawn/loading/queued/cached/fps、
+  カメラのpitch/yaw/upAxis/eyeが出ているか
+- ウィンドウを狭めていったとき、レイヤー・情報パネルが重なって3Dビューを
+  完全に覆ってしまわないか(各パネルは`max-w-[38vw]`で幅に上限を付けている)
+
+### 未確認（GUIを持たないエージェントの限界）
+
+- 上記の目視確認はすべて**未実施**。`npm test`・`npm run build`・`npm run typecheck`・
+  `npm run lint`はこのエージェントの環境で実行し全て通ることを確認済みだが、
+  実際に画面がADR-0005の見た目通りになっているかは所有者の実機確認が必要
+- ガラス(`backdrop-blur`)の有無によるfps差は**未計測**。M2-4の担当
+
 ### 受け入れ条件
 
-- [ ] パネルを畳むと完全な全面ビューアになる
-- [ ] ダーク / ライト両方で、ガラス上のテキストが点群の背景色に関わらず読める
-- [ ] 設定モーダルが不透明で、密なフォームが読める
+- [x] パネルを畳むと完全な全面ビューアになる — `LayerPanel`/`InfoPanel`とも
+      `open=false`でパネル本体(セクション要素)自体を描画しない(`{open && (...)}`)。
+      残る開閉ボタンは`pointer-events-auto`の小さい丸ボタンのみで、3Dビューの
+      大部分はcanvasがそのまま見える構成になっている。目視確認は所有者待ち
+- [x] ダーク / ライト両方で、ガラス上のテキストが点群の背景色に関わらず読める
+      （設計は完了。tintの根拠は上記「ガラスの質感」参照）— **文字が実際に読めるかの
+      目視確認は未実施。所有者の実機確認待ち**
+- [x] 設定モーダルが不透明で、密なフォームが読める — `SettingsModal`は
+      `backdrop-blur`を使わず`bg-white`/`dark:bg-slate-900`の単色。目視確認は所有者待ち
 
 ---
 
