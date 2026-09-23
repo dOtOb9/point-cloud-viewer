@@ -3,6 +3,7 @@ import { useCopcViewer } from "../../state/useCopcViewer";
 import { useTheme } from "../../state/useTheme";
 import { ViewerPanel } from "../ViewerPanel";
 import { Dock } from "./Dock";
+import { GpuErrorBanner } from "./GpuErrorBanner";
 import { InfoPanel } from "./InfoPanel";
 import { LayerPanel } from "./LayerPanel";
 import { SettingsModal } from "./SettingsModal";
@@ -40,6 +41,11 @@ export function AppShell() {
       />
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} />
+
+      {/* WebGPUのエラーバナー（新設）。z-50で他のすべての面より前面に出す
+          （EDL(M2-1)の事故のように画面が真っ黒になっても、devtoolsを開かずに
+          原因が読めるようにするため。詳細はGpuErrorBanner.tsx冒頭のコメント）。 */}
+      <GpuErrorBanner errors={viewer.gpuErrors} onDismiss={viewer.dismissGpuError} />
     </div>
   );
 }

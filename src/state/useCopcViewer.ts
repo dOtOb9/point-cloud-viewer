@@ -5,6 +5,11 @@ import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-re
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
 import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_STRENGTH } from "../renderer/edl";
+import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
+
+// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
+// GpuErrorEntryもここから再エクスポートする。
+export type { GpuErrorEntry };
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // BackgroundModeもここから再エクスポートする。
@@ -35,6 +40,12 @@ export interface CopcViewerState {
    *  M2-1参照）。 */
   edlEnabled: boolean;
   edlStrength: number;
+  /** WebGPUのエラー（新設）。`device.onuncapturederror`・デバイス消失・初期化時の
+   *  バリデーションエラーがここに蓄積される。蓄積・重複抑制のロジック自体は
+   *  `GpuErrorLog`（renderer/gpu-error-log.ts、GPUに依存しない純粋なクラス）に
+   *  切り出してあり、ここではそのスナップショットを保持するだけ。表示は
+   *  `src/ui/shell/GpuErrorBanner.tsx`が担当する（規約3）。 */
+  gpuErrors: GpuErrorEntry[];
   openFile: (path: string) => Promise<void>;
   setPointBudget: (budget: number) => void;
   setAutoPointBudgetEnabled: (enabled: boolean) => void;
@@ -42,6 +53,8 @@ export interface CopcViewerState {
   setGridEnabled: (enabled: boolean) => void;
   setEdlEnabled: (enabled: boolean) => void;
   setEdlStrength: (strength: number) => void;
+  /** バナーの「閉じる」ボタンから呼ぶ。指定したエラーだけを消す。 */
+  dismissGpuError: (id: number) => void;
 }
 
 /**
@@ -53,6 +66,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<PointCloudRenderer | null>(null);
   const sourceRef = useRef<TauriSource | null>(null);
+  // GpuErrorLog自体はReactのstateではない（GPUに依存しない蓄積・重複抑制ロジックの
+  // 実体、renderer/gpu-error-log.ts参照）。useRefで1個だけ持ち、reportのたびに
+  // list()のスナップショットをgpuErrors stateへコピーしてReactに再描画させる。
+  const gpuErrorLogRef = useRef(new GpuErrorLog());
 
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +83,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
   const [edlEnabled, setEdlEnabledState] = useState(DEFAULT_EDL_ENABLED);
   const [edlStrength, setEdlStrengthState] = useState(DEFAULT_EDL_STRENGTH);
+  const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -106,6 +124,20 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         `pitch=${s.cameraPitch.toFixed(3)} yaw=${s.cameraYaw.toFixed(3)} ` +
         `upAxis=${fmt3(s.cameraUpAxis)} eye=${fmt3(s.cameraEye)}`;
       reportToBackendConsole(summary).catch((e) => console.error("reportToBackendConsole failed", e));
+    });
+
+    // WebGPUのエラーを画面に出す仕組み（新設）。EDL(M2-1)の事故で「テスト・CIは
+    // すべて緑なのに画面は真っ黒になった」という反省から、rendererが拾った
+    // エラーを蓄積・重複抑制した上でUI(GpuErrorBanner)へ渡す。実際の蓄積ロジックは
+    // GpuErrorLogに任せ、ここではlist()のスナップショットをstateにコピーするだけ。
+    renderer.onGpuErrorReported((message) => {
+      gpuErrorLogRef.current.report(message);
+      setGpuErrors(gpuErrorLogRef.current.list());
+      // GUIを目視できない環境でも、devtoolsを開かなくてもRust側stdoutから
+      // WebGPUのエラーを追えるようにする（onStatsUpdateのstdout連携と同じ狙い）。
+      reportToBackendConsole(`[gpu-error] ${message}`).catch((e) =>
+        console.error("reportToBackendConsole failed", e),
+      );
     });
 
     let cancelled = false;
@@ -192,6 +224,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setEdlStrength(strength);
   }, []);
 
+  const dismissGpuError = useCallback((id: number) => {
+    gpuErrorLogRef.current.dismiss(id);
+    setGpuErrors(gpuErrorLogRef.current.list());
+  }, []);
+
   const state: CopcViewerState = {
     status,
     error,
@@ -204,6 +241,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     gridEnabled,
     edlEnabled,
     edlStrength,
+    gpuErrors,
     openFile,
     setPointBudget,
     setAutoPointBudgetEnabled,
@@ -211,6 +249,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setGridEnabled,
     setEdlEnabled,
     setEdlStrength,
+    dismissGpuError,
   };
   return [canvasRef, state];
 }
