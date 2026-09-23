@@ -17,6 +17,12 @@ const COLOR_MODE_LABELS: Record<ColorMode, string> = {
   classification: "分類",
 };
 
+// CORSとHTTP Rangeに対応した公開COPCのサンプル(TaskSheets/TEST-DATA.mdのautzen)。
+// `curl -sI -H "Origin: https://example.com" -H "Range: bytes=0-1" <URL>`で
+// `Access-Control-Allow-Origin: *`と`Accept-Ranges: bytes`を実際に確認した
+// (2026-09-23)。ワンクリックでWeb版の動作を試せるようにするためのボタン用。
+const SAMPLE_COPC_URL = "https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz";
+
 interface Props {
   viewer: CopcViewerState;
   open: boolean;
@@ -42,6 +48,7 @@ interface Props {
  */
 export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
   const [pathInput, setPathInput] = useState("");
+  const [urlInput, setUrlInput] = useState("");
 
   return (
     <div className="pointer-events-none absolute inset-y-3 left-3 z-10 flex items-start gap-2">
@@ -53,21 +60,64 @@ export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
 
           <div className="flex flex-col gap-1">
             <label className="text-xs opacity-70">COPCファイル</label>
-            <input
-              type="text"
-              value={pathInput}
-              onChange={(e) => setPathInput(e.target.value)}
-              placeholder="絶対パス (.laz)"
-              className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit dark:border-white/10 dark:bg-black/30"
-            />
-            <button
-              type="button"
-              onClick={() => void viewer.openFile(pathInput)}
-              disabled={viewer.status === "opening" || pathInput.trim() === ""}
-              className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 disabled:opacity-50 dark:bg-white/90 dark:text-slate-900"
-            >
-              {viewer.status === "opening" ? "開いています…" : "開く"}
-            </button>
+            {viewer.isBrowser ? (
+              // Web版: ファイルパスという概念が無いので、ローカルファイル選択と
+              // URL入力に置き換える(TaskSheets/ADR-0012-web-worker-sync-io.md参照)。
+              <>
+                <input
+                  type="file"
+                  accept=".laz,.copc.laz"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void viewer.openFile(file);
+                    e.target.value = "";
+                  }}
+                  disabled={viewer.status === "opening"}
+                  className="rounded border border-black/10 bg-white/60 px-2 py-1 text-xs text-inherit file:mr-2 file:rounded file:border-0 file:bg-slate-900/90 file:px-2 file:py-1 file:text-white dark:border-white/10 dark:bg-black/30"
+                />
+                <input
+                  type="text"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="COPCのURL (CORS+Rangeが必要)"
+                  className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit dark:border-white/10 dark:bg-black/30"
+                />
+                <button
+                  type="button"
+                  onClick={() => void viewer.openFile(urlInput)}
+                  disabled={viewer.status === "opening" || urlInput.trim() === ""}
+                  className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 disabled:opacity-50 dark:bg-white/90 dark:text-slate-900"
+                >
+                  {viewer.status === "opening" ? "開いています…" : "URLを開く"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void viewer.openFile(SAMPLE_COPC_URL)}
+                  disabled={viewer.status === "opening"}
+                  className="rounded border border-black/10 px-2 py-1 text-xs hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/10"
+                >
+                  サンプル(autzen)を開く
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  value={pathInput}
+                  onChange={(e) => setPathInput(e.target.value)}
+                  placeholder="絶対パス (.laz)"
+                  className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit dark:border-white/10 dark:bg-black/30"
+                />
+                <button
+                  type="button"
+                  onClick={() => void viewer.openFile(pathInput)}
+                  disabled={viewer.status === "opening" || pathInput.trim() === ""}
+                  className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 disabled:opacity-50 dark:bg-white/90 dark:text-slate-900"
+                >
+                  {viewer.status === "opening" ? "開いています…" : "開く"}
+                </button>
+              </>
+            )}
             {viewer.error && <p className="text-xs text-red-600 dark:text-red-400">{viewer.error}</p>}
           </div>
 

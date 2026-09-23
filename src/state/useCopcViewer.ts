@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { TauriSource, reportToBackendConsole } from "../datasource/tauri";
-import type { CloudInfo } from "../datasource/DataSource";
+import { WebSource } from "../datasource/web";
+import { isTauriEnvironment } from "../datasource/environment";
+import type { CloudInfo, DataSource } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
@@ -62,7 +64,10 @@ export interface CopcViewerState {
    *  切り出してあり、ここではそのスナップショットを保持するだけ。表示は
    *  `src/ui/shell/GpuErrorBanner.tsx`が担当する（規約3）。 */
   gpuErrors: GpuErrorEntry[];
-  openFile: (path: string) => Promise<void>;
+  /** Tauri版はパス文字列、Web版はURL文字列か、ドラッグ&ドロップ/選択した`File`を渡す。 */
+  openFile: (pathOrFile: string | File) => Promise<void>;
+  /** LayerPanelがTauri用のパス入力とWeb用のファイル選択/URL入力を切り替えるための判定。 */
+  isBrowser: boolean;
   setPointBudget: (budget: number) => void;
   setAutoPointBudgetEnabled: (enabled: boolean) => void;
   setBackgroundMode: (mode: BackgroundMode) => void;
@@ -81,7 +86,9 @@ export interface CopcViewerState {
 export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewerState] {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<PointCloudRenderer | null>(null);
-  const sourceRef = useRef<TauriSource | null>(null);
+  // TauriのwebviewかブラウザかでTauriSource/WebSourceを選ぶ（Web版はこの1箇所だけの
+  // 分岐で切り替わる。TaskSheets/ADR-0012-web-worker-sync-io.md参照）。
+  const sourceRef = useRef<DataSource | null>(null);
   // GpuErrorLog自体はReactのstateではない（GPUに依存しない蓄積・重複抑制ロジックの
   // 実体、renderer/gpu-error-log.ts参照）。useRefで1個だけ持ち、reportのたびに
   // list()のスナップショットをgpuErrors stateへコピーしてReactに再描画させる。
@@ -106,7 +113,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     if (!canvas) return;
 
     const renderer = new PointCloudRenderer(canvas);
-    const source = new TauriSource();
+    const source: DataSource = isTauriEnvironment() ? new TauriSource() : new WebSource();
     rendererRef.current = renderer;
     sourceRef.current = source;
     renderer.setDataSource(source);
@@ -183,7 +190,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     };
   }, []);
 
-  const openFile = useCallback(async (path: string) => {
+  const openFile = useCallback(async (pathOrFile: string | File) => {
     const renderer = rendererRef.current;
     const source = sourceRef.current;
     if (!renderer || !source) return;
@@ -191,6 +198,19 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setStatus("opening");
     setError(null);
     try {
+      // Web版のローカルファイル選択は`File`を受け取る。`DataSource.open()`は
+      // 文字列しか取らないので、先に`WebSource.registerFile()`でキーへ変換する
+      // （TauriSourceにはFileを渡す経路が無い。ファイル選択UIはWeb版でしか
+      // 出さないので、ここに来る時点でsourceは必ずWebSourceのはず）。
+      let path: string;
+      if (typeof pathOrFile === "string") {
+        path = pathOrFile;
+      } else if (source instanceof WebSource) {
+        path = source.registerFile(pathOrFile);
+      } else {
+        throw new Error("ローカルファイルの選択はWeb版でのみサポートしています");
+      }
+
       const opened = await source.open(path);
       renderer.clearCache();
       renderer.setHierarchy(opened.nodes);
@@ -208,7 +228,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setColorModeState(resolvedColorMode);
       renderer.setColorMode(resolvedColorMode);
 
-      const summary = `[M1] opened ${path}: points=${opened.info.pointCount} nodes=${opened.nodes.length}`;
+      const label = typeof pathOrFile === "string" ? pathOrFile : pathOrFile.name;
+      const summary = `[M1] opened ${label}: points=${opened.info.pointCount} nodes=${opened.nodes.length}`;
       console.log(summary);
       await reportToBackendConsole(summary);
     } catch (e) {
@@ -281,6 +302,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     colorMode,
     gpuErrors,
     openFile,
+    isBrowser: !isTauriEnvironment(),
     setPointBudget,
     setAutoPointBudgetEnabled,
     setBackgroundMode,
