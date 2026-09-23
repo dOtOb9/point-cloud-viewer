@@ -11,7 +11,13 @@ import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { cameraBasis, multiply, perspective, translation, type Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
-import { medianOf, nextPointBudget, DEFAULT_POINT_BUDGET_TUNING } from "./point-budget";
+import {
+  evaluatePointBudget,
+  pointBudgetMaxFromMemoryBudget,
+  updateRefreshIntervalEstimate,
+  DEFAULT_POINT_BUDGET_TUNING,
+  type RefreshIntervalEstimate,
+} from "./point-budget";
 import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
@@ -24,22 +30,46 @@ const DEFAULT_POINT_BUDGET = 3_000_000;
 const CACHE_BUDGET_MULTIPLIER = 2;
 
 /**
- * タスクB（ADR-0009）: 自動調整（`nextPointBudget`）が動かせる下限・上限。
+ * タスクB（ADR-0010で刷新）: 点キャッシュに割り当てる想定メモリ予算(バイト)。
  *
- * **この2つの数値は実測していない。** 下限は「これより粗いと点群として意味が
- * 無い」という経験的な最低ライン、上限は「これまでの固定の点予算
- * （開発機のRTX 4070を前提に決めた値）を、自動調整が勝手にそれ以上へ増やさない」
- * という保守的な選択であって、対象端末（OPPO Pad Air等）の実測値ではない。
- * 端末情報から上限を決める仕組み（ADR-0009が言う「静的情報の使いどころ」）は
- * このタスクの範囲外で、[M3-8](../../TaskSheets/M3-release-and-update.md)の
- * 端末適応作業に送る。
+ * **この数値は実測していない、未検証の初期値。** ADR-0009の対象端末
+ * （OPPO Pad Air / RAM 4GB）を念頭に、点群キャッシュ以外にOS・アプリ本体・
+ * UI・テクスチャ等が別途メモリを使うことを踏まえ、4GBを丸ごと点キャッシュに
+ * 割り当てるのは無理があるという保守的な見立てで256MiBとした。
+ * 実機での検証は[M3-8](../../TaskSheets/M3-release-and-update.md)に送る。
+ */
+const POINT_CACHE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
+
+/**
+ * タスクB（ADR-0009）: 自動調整（`evaluatePointBudget`）が動かせる下限・上限。
+ *
+ * 下限（`AUTO_POINT_BUDGET_MIN`）は「これより粗いと点群として意味が無い」
+ * という経験的な最低ラインで、実測ではない。
+ *
+ * 上限（`AUTO_POINT_BUDGET_MAX`）は、`POINT_CACHE_MEMORY_BUDGET_BYTES`から
+ * 逆算する。`node-cache.ts`のキャッシュは点予算そのものではなく
+ * `点予算 × CACHE_BUDGET_MULTIPLIER`点分のGPUバッファを保持するので、
+ * 上限点数はメモリ予算をその倍率で割ったものになる
+ * （式の説明は`point-budget.ts`の`pointBudgetMaxFromMemoryBudget`参照）。
+ * 端末情報（`adapter.limits`等）から`POINT_CACHE_MEMORY_BUDGET_BYTES`自体を
+ * 動的に決める仕組みは、このタスクの範囲外で
+ * [M3-8](../../TaskSheets/M3-release-and-update.md)の端末適応作業に送る。
  */
 const AUTO_POINT_BUDGET_MIN = 200_000;
-const AUTO_POINT_BUDGET_MAX = DEFAULT_POINT_BUDGET;
+const AUTO_POINT_BUDGET_MAX = pointBudgetMaxFromMemoryBudget(
+  POINT_CACHE_MEMORY_BUDGET_BYTES,
+  NODE_POINT_STRIDE,
+  CACHE_BUDGET_MULTIPLIER,
+);
 
 /** 自動調整の判断に使う直近フレームの本数。ADR-0009:「判断は数フレームの中央値で
  *  行う。単発の重いフレーム（ノード到着時など）に反応しない」。 */
 const AUTO_POINT_BUDGET_FRAME_HISTORY = 20;
+/** まだ1フレームも記録していない起動直後だけ使うフォールバック値。
+ *  `updateRefreshIntervalEstimate`で実際の値が1回でも記録されればすぐに
+ *  上書きされる（60Hz相当を仮の初期値にしているだけで、決め打ちの目標では
+ *  ない）。 */
+const FALLBACK_REFRESH_INTERVAL_MS = 1000 / 60;
 const POINT_SIZE_PX = 4;
 const FOV_Y_RADIANS = Math.PI / 3;
 const NEAR = 0.01;
@@ -159,11 +189,19 @@ export class PointCloudRenderer {
   /** タスクB（ADR-0009）: 自動調整のオン/オフ。`setPointBudget()`で手動設定すると
    *  自動でoffになる（手動設定を自動調整より常に優先するため）。 */
   private autoPointBudgetEnabled = true;
-  /** 自動調整の判断に使う直近フレームの所要時間(ms)。中央値を取ってから
-   *  `nextPointBudget`に渡す（単発の重いフレームに反応しないため）。 */
+  /** 自動調整の判断に使う直近フレームの所要時間(ms)。`evaluatePointBudget`に
+   *  ウィンドウごと渡し、「vsyncを落としたフレームの割合」を判定させる
+   *  （単発の重いフレームに反応しないため。ADR-0010）。 */
   private recentFrameDeltasMs: number[] = [];
   private previousFrameTime: number | null = null;
   private lastAutoBudgetAdjustAt = 0;
+  /** タスクB（ADR-0010）: 「間に合っている」評価が何回連続で続いているか。
+   *  `evaluatePointBudget`の`PointBudgetState.consecutiveHits`をここに保持する。 */
+  private autoPointBudgetConsecutiveHits = 0;
+  /** タスクB（ADR-0010）: 推定したディスプレイのリフレッシュ周期。
+   *  `recordFrameDelta`で毎フレーム`updateRefreshIntervalEstimate`により
+   *  更新する（「これまでの最小値」を覚え続ける。詳細は`point-budget.ts`）。 */
+  private refreshIntervalEstimate: RefreshIntervalEstimate | null = null;
   private rafHandle = 0;
   private disposed = false;
 
@@ -509,28 +547,34 @@ export class PointCloudRenderer {
   }
 
   /**
-   * タスクB（ADR-0009）: 直近フレームの所要時間(ms)を`recentFrameDeltasMs`に
-   * 記録する。`nextPointBudget`に渡す中央値の材料。`frameTimestamps`
+   * タスクB（ADR-0010）: 直近フレームの所要時間(ms)を`recentFrameDeltasMs`に
+   * 記録する。`evaluatePointBudget`に渡すウィンドウの材料。`frameTimestamps`
    * （fps計算用、直近1秒分をすべて保持）とは別に、こちらは直近
    * `AUTO_POINT_BUDGET_FRAME_HISTORY`本だけを保持する短い窓にする
-   * （中央値を「今どれくらい重いか」の指標にするには、古いフレームを
+   * （「今vsyncに間に合っているか」の指標にするには、古いフレームを
    * 引きずらないほうがよいため）。
    */
   private recordFrameDelta(time: number): void {
     if (this.previousFrameTime !== null) {
-      this.recentFrameDeltasMs.push(time - this.previousFrameTime);
+      const deltaMs = time - this.previousFrameTime;
+      this.recentFrameDeltasMs.push(deltaMs);
       if (this.recentFrameDeltasMs.length > AUTO_POINT_BUDGET_FRAME_HISTORY) {
         this.recentFrameDeltasMs.shift();
       }
+      // リフレッシュ周期の推定は、上のrecentFrameDeltasMs（短い窓、ミス割合の
+      // 判定用）とは別に、アプリ起動からの「これまでの最小値」を使う
+      // （負荷が長く続く区間だけを見てしまう問題を避けるため。point-budget.ts参照）。
+      this.refreshIntervalEstimate = updateRefreshIntervalEstimate(this.refreshIntervalEstimate, deltaMs);
     }
     this.previousFrameTime = time;
   }
 
   /**
-   * タスクB（ADR-0009）: フレーム時間の閉ループで点予算を調整する。
-   * 実際の計算（不感帯・変化量の制限・上限下限）はすべて`nextPointBudget`
-   * （純粋関数、`point-budget.ts`）に任せ、ここでは「いつ・何を渡すか」だけを
-   * 決める（規約: このファイルは呼ぶだけにする）。
+   * タスクB（ADR-0010）: 「vsyncに間に合っているか」を信号にしたAIMDで
+   * 点予算を調整する。実際の計算（ミス割合の判定・不感帯・変化量の制限・
+   * 上限下限）はすべて`evaluatePointBudget`（純粋関数、`point-budget.ts`）に
+   * 任せ、ここでは「いつ・何を渡すか」だけを決める（規約: このファイルは
+   * 呼ぶだけにする）。
    */
   private autoAdjustPointBudget(time: number): void {
     if (!this.autoPointBudgetEnabled) return;
@@ -538,14 +582,23 @@ export class PointCloudRenderer {
     if (this.recentFrameDeltasMs.length === 0) return;
     this.lastAutoBudgetAdjustAt = time;
 
-    const recentFrameMs = medianOf(this.recentFrameDeltasMs);
-    const next = nextPointBudget(this.pointBudget, recentFrameMs, {
-      ...DEFAULT_POINT_BUDGET_TUNING,
-      limits: { min: AUTO_POINT_BUDGET_MIN, max: AUTO_POINT_BUDGET_MAX },
-    });
+    // 固定の1000/60msを目標にせず、recordFrameDeltaで継続的に更新している
+    // 推定リフレッシュ周期を使う（60Hzでも144Hzでも正しく動かすため。ADR-0010）。
+    const refreshIntervalMs = this.refreshIntervalEstimate?.intervalMs ?? FALLBACK_REFRESH_INTERVAL_MS;
 
-    if (next !== this.pointBudget) {
-      this.pointBudget = next;
+    const result = evaluatePointBudget(
+      { budget: this.pointBudget, consecutiveHits: this.autoPointBudgetConsecutiveHits },
+      this.recentFrameDeltasMs,
+      refreshIntervalMs,
+      {
+        ...DEFAULT_POINT_BUDGET_TUNING,
+        limits: { min: AUTO_POINT_BUDGET_MIN, max: AUTO_POINT_BUDGET_MAX },
+      },
+    );
+    this.autoPointBudgetConsecutiveHits = result.consecutiveHits;
+
+    if (result.budget !== this.pointBudget) {
+      this.pointBudget = result.budget;
       this.cache.maxPoints = this.pointBudget * CACHE_BUDGET_MULTIPLIER;
     }
   }
