@@ -26,20 +26,24 @@ import { DEFAULT_GRID_ENABLED, floorMod, gridFadeDistance, GroundGrid, niceGridC
 import { horizontalBasis, type Vec3 } from "./up-axis";
 import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH, EdlPass } from "./edl";
 
-const DEFAULT_POINT_BUDGET = 3_000_000;
 /** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
 const CACHE_BUDGET_MULTIPLIER = 2;
 
 /**
  * タスクB（ADR-0010で刷新）: 点キャッシュに割り当てる想定メモリ予算(バイト)。
  *
- * **この数値は実測していない、未検証の初期値。** ADR-0009の対象端末
- * （OPPO Pad Air / RAM 4GB）を念頭に、点群キャッシュ以外にOS・アプリ本体・
- * UI・テクスチャ等が別途メモリを使うことを踏まえ、4GBを丸ごと点キャッシュに
- * 割り当てるのは無理があるという保守的な見立てで256MiBとした。
- * 実機での検証は[M3-8](../../TaskSheets/M3-release-and-update.md)に送る。
+ * **この数値は実測していない、未検証の初期値。** 当初は256MiBにしていたが、
+ * 所有者の実機（RTX 4070、VRAM 12GB）で「近くのチャンクが精緻にならない」
+ * 症状の原因がまさに点予算(≒このメモリ予算から逆算される上限)の不足だった
+ * ことが確定したため、1GiBへ引き上げた。`sofi.copc.laz`はレベル6だけで
+ * 4,431ノード・ノードあたり約25,000点あるため、この程度の余裕を見ても
+ * 全レベルを賄いきれるわけではないが、旧256MiB(=旧DEFAULT_POINT_BUDGETの
+ * 2.2倍)よりは大幅に改善する。ADR-0009の対象端末（OPPO Pad Air / RAM 4GB）
+ * では1GiBは大きすぎる可能性が高いが、端末ごとにこの値を変える仕組みは
+ * まだ無く（[M3-8](../../TaskSheets/M3-release-and-update.md)に送る）、
+ * 現状は開発機基準の値になっている。
  */
-const POINT_CACHE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
+const POINT_CACHE_MEMORY_BUDGET_BYTES = 1024 * 1024 * 1024;
 
 /**
  * タスクB（ADR-0009）: 自動調整（`evaluatePointBudget`）が動かせる下限・上限。
@@ -62,6 +66,31 @@ const AUTO_POINT_BUDGET_MAX = pointBudgetMaxFromMemoryBudget(
   NODE_POINT_STRIDE,
   CACHE_BUDGET_MULTIPLIER,
 );
+
+/**
+ * 起動直後の点予算。**旧実装は固定で3,000,000だったが、これが所有者の実機で
+ * 「近くのチャンクが精緻にならない」症状の直接の原因だった**
+ * （`sofi.copc.laz`はノードあたり約25,000点なので、3,000,000点では
+ * 約120ノード分しか描けず、レベル6だけで4,431ノードあるこのファイルでは
+ * 全く足りない）。
+ *
+ * 低い値から上限を探り上げる（成長は`growRate`/`sustainedHitsToGrow`で
+ * ゆっくりにしてある）のではなく、**楽観的に上限から始めて、外したら
+ * 即座に大きく下げる側（`shrinkRate`、持続要求なし）で実機に合った値を
+ * 素早く見つける**ほうが体感が良いと判断し、上限(`AUTO_POINT_BUDGET_MAX`)に
+ * 連動させた。
+ *
+ * 到達秒数（`AUTO_POINT_BUDGET_INTERVAL_MS`=500msごとに評価する前提の計算値。
+ * 実測ではない。`npx tsx`で`evaluatePointBudget`を実際に呼んで数えた具体的な
+ * ステップ数を基にしている）:
+ * - 上限(起動時の開始値)→下限: 約11秒（下げは持続要求が無く、20%/回で
+ *   即座に効くため速い）
+ * - 下限→上限: 約78秒（上げは`sustainedHitsToGrow`=3回(1.5秒)の持続を
+ *   要求したうえで10%/回。ただし開始値がすでに上限なので、これは
+ *   「一度下限まで落ちた後に完全回復する」という稀なケースの所要時間であり、
+ *   通常発生する経路ではない）
+ */
+const DEFAULT_POINT_BUDGET = AUTO_POINT_BUDGET_MAX;
 
 /** 自動調整の判断に使う直近フレームの本数。ADR-0009:「判断は数フレームの中央値で
  *  行う。単発の重いフレーム（ノード到着時など）に反応しない」。 */
