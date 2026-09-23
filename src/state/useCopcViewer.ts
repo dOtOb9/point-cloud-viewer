@@ -4,7 +4,7 @@ import type { CloudInfo } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
-import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_STRENGTH } from "../renderer/edl";
+import { DEFAULT_EDL_ENABLED } from "../renderer/edl";
 import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
@@ -34,12 +34,12 @@ export interface CopcViewerState {
   stats: RenderStats | null;
   backgroundMode: BackgroundMode;
   gridEnabled: boolean;
-  /** M2-1: EDL(Eye-Dome Lighting)のオン/オフと強さ。既定はrendererの既定(オン)に
+  /** M2-1: EDL(Eye-Dome Lighting)のオン/オフ。既定はrendererの既定(オン)に
    *  合わせている。RGBを持たない点群(sofi.copc.laz)でも形状を読めるようにする
    *  必須機能なので、既定でオフにはしていない（TaskSheets/M2-shading-and-ui.md
-   *  M2-1参照）。 */
+   *  M2-1参照）。強さは所有者が実機で確認して0.05に固定したため、UIから
+   *  調整する手段は無い（`src/renderer/edl.ts`の`DEFAULT_EDL_STRENGTH`参照）。 */
   edlEnabled: boolean;
-  edlStrength: number;
   /** WebGPUのエラー（新設）。`device.onuncapturederror`・デバイス消失・初期化時の
    *  バリデーションエラーがここに蓄積される。蓄積・重複抑制のロジック自体は
    *  `GpuErrorLog`（renderer/gpu-error-log.ts、GPUに依存しない純粋なクラス）に
@@ -52,7 +52,6 @@ export interface CopcViewerState {
   setBackgroundMode: (mode: BackgroundMode) => void;
   setGridEnabled: (enabled: boolean) => void;
   setEdlEnabled: (enabled: boolean) => void;
-  setEdlStrength: (strength: number) => void;
   /** バナーの「閉じる」ボタンから呼ぶ。指定したエラーだけを消す。 */
   dismissGpuError: (id: number) => void;
 }
@@ -82,7 +81,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
   const [edlEnabled, setEdlEnabledState] = useState(DEFAULT_EDL_ENABLED);
-  const [edlStrength, setEdlStrengthState] = useState(DEFAULT_EDL_STRENGTH);
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
 
   useEffect(() => {
@@ -219,11 +217,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setEdlEnabled(enabled);
   }, []);
 
-  const setEdlStrength = useCallback((strength: number) => {
-    setEdlStrengthState(strength);
-    rendererRef.current?.setEdlStrength(strength);
-  }, []);
-
   const dismissGpuError = useCallback((id: number) => {
     gpuErrorLogRef.current.dismiss(id);
     setGpuErrors(gpuErrorLogRef.current.list());
@@ -240,7 +233,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     backgroundMode,
     gridEnabled,
     edlEnabled,
-    edlStrength,
     gpuErrors,
     openFile,
     setPointBudget,
@@ -248,7 +240,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setBackgroundMode,
     setGridEnabled,
     setEdlEnabled,
-    setEdlStrength,
     dismissGpuError,
   };
   return [canvasRef, state];

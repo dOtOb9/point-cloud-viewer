@@ -62,13 +62,17 @@ export type Vec3 = readonly [number, number, number];
 export const DEFAULT_EDL_ENABLED = true;
 
 /**
- * EDLの強さの既定値。**未検証の初期値。** Potreeの既定値(edlStrength、
- * バージョンにより0.4〜1.0)を参考にしたが、本プロジェクトの深度レンジ
- * (NEAR=0.01, FAR=1e7、point-cloud-renderer.ts参照)やsofi.copc.lazでの
- * 見え方は実測していない。強すぎる/弱すぎる場合はUIのスライダーで
- * その場で調整できる。
+ * EDLの強さの既定値。**所有者が実機で確認して決めた値。**
+ * 当初はPotreeの既定値(edlStrength、バージョンにより0.4〜1.0)を参考にした
+ * 未検証の値(1.0)を置き、UIのスライダーで調整できるようにしていたが、
+ * 所有者が実機(`sofi.copc.laz`)でスライダーを動かして確認した結果、
+ * **0.05で固定して問題ない**との判断が出た。1.0はこのプロジェクトの深度レンジ
+ * (NEAR=0.01, FAR=1e7、point-cloud-renderer.ts参照)に対しては強すぎ、
+ * 陰影が潰れて逆に見えにくくなっていた。この確認を受け、強さのスライダーは
+ * `LayerPanel`から削除し、EDLはオン/オフだけをUIから切り替える形にした
+ * （TaskSheets/M2-shading-and-ui.md M2-1「強さ固定の経緯」参照）。
  */
-export const DEFAULT_EDL_STRENGTH = 1.0;
+export const DEFAULT_EDL_STRENGTH = 0.05;
 
 /**
  * EDLが近傍として見る距離（スクリーンピクセル単位）の既定値。**未検証の初期値。**

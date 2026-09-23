@@ -30,8 +30,8 @@ describe("DEFAULT_EDL_ENABLED / DEFAULT_EDL_STRENGTH / DEFAULT_EDL_RADIUS_PX", (
     expect(DEFAULT_EDL_ENABLED).toBe(true);
   });
 
-  it("強さ・半径は未検証だが、意味のある正の値が入っている", () => {
-    expect(DEFAULT_EDL_STRENGTH).toBeGreaterThan(0);
+  it("強さは所有者が実機で確認した0.05、半径は未検証だが、どちらも意味のある正の値が入っている", () => {
+    expect(DEFAULT_EDL_STRENGTH).toBe(0.05);
     expect(DEFAULT_EDL_RADIUS_PX).toBeGreaterThan(0);
   });
 });
