@@ -63,14 +63,31 @@ jobs:
       - run: npm ci
       - name: tauri build (msi + nsis, 無署名)
         run: npm run tauri build
+      # ルートのCargo.tomlが`members = ["crates/pcv-core", "src-tauri"]`のワークスペース
+      # なので、ビルド成果物は`src-tauri/target/`ではなく**リポジトリ直下の`target/`**に出る
+      # (cargoはワークスペースルートを1つのtarget/にまとめる)。2026-09-23、v0.1.0タグの
+      # run 35847261259で`src-tauri/target/release/bundle/...`を指定していたために
+      # ファイルが1つも見つからず(action-gh-releaseが既定ではそれをエラーにしないため)、
+      # インストーラ抜きのReleaseが「成功」として公開される事故があった。
+      # このstepで実際の出力を毎回ログに残し、次に同じ形の不具合が起きても
+      # 気付けるようにする。
+      - name: ビルド成果物を確認する
+        shell: bash
+        run: |
+          echo "--- target/release/bundle 以下 ---"
+          find target/release/bundle -type f 2>&1 || echo "(target/release/bundle が見つかりません)"
       - name: Upload installers to GitHub Release
         # workflow_dispatchでの手動実行ではReleaseを作らない（ビルド確認だけの経路）。
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+          # 添付対象のファイルが1つも見つからない場合、既定ではこのstep自体は
+          # 「成功」してしまい、インストーラ抜きのReleaseがそのまま公開される
+          # (実際に2026-09-23、v0.1.0で発生した)。必ずジョブを落として気付けるようにする。
+          fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
             **このインストーラには署名がありません。** Windows SmartScreenが
@@ -99,9 +116,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # 所有者の実機(OPPO Pad Air, Snapdragon 680)はarm64のみなので、CIでビルドする
+      # Rustターゲットもaarch64-linux-androidだけに絞る(2026-09-23追記。以前は
+      # armv7/i686/x86_64も含む4アーキ全部をビルドしていたが、実機で使わない
+      # x86_64(エミュレータ向け)等を含めるとビルド時間とAPKサイズが無駄に増えるだけ
+      # だった)。
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
       # android-actions/setup-android@v3のpackages既定値は"tools platform-tools"だが、
       # "tools"パッケージはGoogleのSDKリポジトリから既に削除されており、既定のまま
@@ -133,6 +155,11 @@ jobs:
       # 「初回に生成されたdebug鍵をキャッシュして使い回す」ことで対処する
       # (debug鍵はAndroid標準の固定パスワードのみで保護される低リスクな鍵であり、
       # ADR-0004が言う「秘密鍵」とは性質が異なる。詳細はM3-3の記録を参照)。
+      #
+      # 2026-09-23追記: 下の「tauri android build」から`--debug`を外した後も、
+      # Tauriが生成するAndroidプロジェクトの既定では"release"ビルドタイプの
+      # signingConfigが"debug"のものを指す(未署名では配布できないため)。
+      # つまり`--debug`を外してもこのdebug.keystoreは変わらず使われる。
       - name: debug.keystore をキャッシュする
         uses: actions/cache@v4
         with:
@@ -141,11 +168,28 @@ jobs:
       - run: npm ci
       - name: tauri android init
         run: npm run tauri android init
-      - name: tauri android build (debug署名)
-        run: npm run tauri android build -- --debug --apk
+      # 2026-09-23追記: 従来`--debug`を付けていたが、`--debug`はGradleのビルドタイプ
+      # だけでなくRust側もdebugプロファイル(最適化なし)でビルドしてしまい、
+      # 実機でのLAZ展開が大幅に遅くなる(点群ビューアとして致命的)。
+      # `tauri android build`は`--debug`を付けなければ既定でRust/Gradleとも
+      # リリース(最適化)ビルドになる（`tauri android build --help`の説明冒頭に
+      # 明記されている）。署名は上記のとおりGradle側の既定(release→debug鍵)に
+      # 任せる。`--target aarch64`で対象ABIを所有者の実機(arm64)だけに絞り、
+      # 使わないarmv7/i686/x86_64向けの分でAPKが膨らまないようにする
+      # (x86_64はエミュレータ向けで実機では使わない)。
+      - name: tauri android build (release最適化、arm64のみ、debug鍵で署名)
+        run: npm run tauri android build -- --target aarch64 --apk
+      - name: 生成されたAPKを確認する
+        shell: bash
+        run: |
+          echo "--- src-tauri/gen/android/app/build/outputs/apk 以下 ---"
+          find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' -exec ls -lh {} \; 2>&1 || echo "(APKが見つかりません)"
       - name: Upload APK to GitHub Release
         # workflow_dispatchでの手動実行ではReleaseを作らない（ビルド確認だけの経路）。
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          # windowsジョブと同じ理由。ファイルが1つも見つからない場合に黙って
+          # 「成功」させない。
+          fail_on_unmatched_files: true
