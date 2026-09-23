@@ -23,11 +23,14 @@ export interface CopcViewerState {
   cloudInfo: CloudInfo | null;
   nodeCount: number;
   pointBudget: number;
+  /** タスクB(ADR-0009)の自動調整のオン/オフ。既定値はrendererの既定(true)に合わせている。 */
+  autoPointBudgetEnabled: boolean;
   stats: RenderStats | null;
   backgroundMode: BackgroundMode;
   gridEnabled: boolean;
   openFile: (path: string) => Promise<void>;
   setPointBudget: (budget: number) => void;
+  setAutoPointBudgetEnabled: (enabled: boolean) => void;
   setBackgroundMode: (mode: BackgroundMode) => void;
   setGridEnabled: (enabled: boolean) => void;
 }
@@ -47,6 +50,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [cloudInfo, setCloudInfo] = useState<CloudInfo | null>(null);
   const [nodeCount, setNodeCount] = useState(0);
   const [pointBudget, setPointBudgetState] = useState(DEFAULT_POINT_BUDGET);
+  // rendererの既定(PointCloudRenderer内 private autoPointBudgetEnabled = true)と合わせる。
+  const [autoPointBudgetEnabled, setAutoPointBudgetEnabledState] = useState(true);
   const [stats, setStats] = useState<RenderStats | null>(null);
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
@@ -62,6 +67,14 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     renderer.setDataSource(source);
     renderer.onStatsUpdate((s) => {
       setStats(s);
+      // タスクB(ADR-0009)の自動調整は`PointCloudRenderer`の内部でpointBudgetを
+      // 直接書き換える(setPointBudget()を経由しない)ので、UI側の表示値は
+      // 手動設定時と同じくstatsから同期する。これで「自動調整中は数値が自分で
+      // 動く」ことがLayerPanelの点予算欄にそのまま表れる(最大STATS_INTERVAL_MSの
+      // 遅延はあるが、手動設定の直後はsetPointBudget側で即時反映するので体感の
+      // ずれはない)。
+      setPointBudgetState(s.pointBudget);
+      setAutoPointBudgetEnabledState(s.autoPointBudgetEnabled);
       // GUIを目視できない環境でも`npm run tauri dev`のRust側stdoutから
       // 描画点数・ロード中ノード数・fpsを追えるようにする（M1-4の必須要件）。
       const fmt3 = (v: readonly [number, number, number]) => `[${v.map((x) => x.toFixed(2)).join(",")}]`;
@@ -131,7 +144,18 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
 
   const setPointBudget = useCallback((budget: number) => {
     setPointBudgetState(budget);
+    // ADR-0009:「手で変えたら自動調整は止まる」。renderer.setPointBudget()自体が
+    // 内部でautoPointBudgetEnabledをfalseにするが、その反映は次のstats更新
+    // (最大STATS_INTERVAL_MS=500ms後)まで待つと「黙って切り替わった」ように
+    // 見えてしまう。ここで同期的にfalseへ倒し、LayerPanelのチェックボックスが
+    // 即座に外れるようにする。
+    setAutoPointBudgetEnabledState(false);
     rendererRef.current?.setPointBudget(budget);
+  }, []);
+
+  const setAutoPointBudgetEnabled = useCallback((enabled: boolean) => {
+    setAutoPointBudgetEnabledState(enabled);
+    rendererRef.current?.setAutoPointBudgetEnabled(enabled);
   }, []);
 
   const setBackgroundMode = useCallback((mode: BackgroundMode) => {
@@ -150,11 +174,13 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     cloudInfo,
     nodeCount,
     pointBudget,
+    autoPointBudgetEnabled,
     stats,
     backgroundMode,
     gridEnabled,
     openFile,
     setPointBudget,
+    setAutoPointBudgetEnabled,
     setBackgroundMode,
     setGridEnabled,
   };

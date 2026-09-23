@@ -19,6 +19,15 @@ interface Props {
  * 以前ViewerPanelのHUDに直書きしていた、ファイルパス入力・点予算・背景モード・
  * グリッドのon/offをそのままここへ移した(機能は減らしていない)。
  *
+ * 点予算は並行して入ったタスクB(ADR-0009)の自動調整と組み合わさっている。
+ * 自動調整中は入力を読み取り専用にして現在値だけを表示し(値は
+ * `viewer.pointBudget`経由でstatsからほぼリアルタイムに追従する)、
+ * チェックボックスで自動調整のon/offを切り替える。チェックを外して手動で
+ * 数値を変えると`setPointBudget()`が呼ばれ、それ自体が自動調整を止める
+ * (renderer側の既定動作)。このチェックボックスは`viewer.autoPointBudgetEnabled`
+ * にすぐ追従するので、「手動設定すると自動調整が黙って止まる」という挙動が
+ * 画面上でも同時に見える。
+ *
  * 折りたたみ可能: `open=false`のときはパネル本体を消し、開閉ボタンだけを残す。
  * ボタンは常に画面内に残るので、畳んだ状態からでも必ず開き直せる。
  */
@@ -54,15 +63,38 @@ export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs opacity-70">点予算</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs opacity-70">
+                点予算{viewer.autoPointBudgetEnabled ? "（自動調整中）" : ""}
+              </label>
+            </div>
             <input
               type="number"
               min={1000}
               step={100_000}
               value={viewer.pointBudget}
               onChange={(e) => viewer.setPointBudget(Number(e.target.value) || 0)}
-              className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit dark:border-white/10 dark:bg-black/30"
+              disabled={viewer.autoPointBudgetEnabled}
+              title={
+                viewer.autoPointBudgetEnabled
+                  ? "自動調整中のため読み取り専用。下のチェックを外すと手動で変更できる"
+                  : undefined
+              }
+              className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit disabled:opacity-60 dark:border-white/10 dark:bg-black/30"
             />
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={viewer.autoPointBudgetEnabled}
+                onChange={(e) => viewer.setAutoPointBudgetEnabled(e.target.checked)}
+              />
+              点予算を自動調整する
+            </label>
+            {!viewer.autoPointBudgetEnabled && (
+              <p className="text-xs opacity-60">
+                手動設定中（自動調整は停止中）。チェックを入れると自動調整を再開する
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col gap-1">
