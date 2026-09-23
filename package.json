@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:wasm": "cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
