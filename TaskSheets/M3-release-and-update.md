@@ -1,7 +1,9 @@
 # M3: リリース配布と自動更新
 
-- 状態: 未着手（**所有者の事前作業あり。下記「着手前に所有者がやること」を参照**）
-- 前提: [ADR-0004](./ADR-0004-distribution-and-update.md)
+- 状態: M3-1〜M3-6 着手・記録済み（2026-09-23、Sonnet実装分。詳細は各節末尾の「実施記録」）。
+  M3-7〜M3-9は所有者の実機作業のため未着手のまま
+- 前提: [ADR-0004](./ADR-0004-distribution-and-update.md)（**2026-09-23追記4で
+  デスクトップの自動更新方式が変わった。下記「着手前に所有者がやること」も参照**）
 
 > **M3 の目的は「配る」だけでなく「配った先で使える」までを含む。**
 > M3-6〜M3-9 は所有者の実機 (OPPO Pad Air / Snapdragon 680 / Android 13) で
@@ -18,6 +20,14 @@ M1 が着地してから打つ**。中身が動かないインストーラを配
 ---
 
 ## 着手前に所有者がやること（これだけは代行できない）
+
+> **2026-09-23時点: 当面このセクションの作業は不要。** 所有者が「当面、署名鍵を作らない」
+> と方針を変えたため（[ADR-0004](./ADR-0004-distribution-and-update.md) 追記4）、
+> デスクトップの更新はTauriのupdaterプラグイン（署名付き自動適用）ではなく、
+> Androidと同じ自前のGitHub API確認方式に統一した。**鍵が無くてもM3-1〜M3-6は
+> すべて動く形で実装済み。** 以下は「将来、自動適用の更新を有効にしたくなったとき」の
+> 手順として残してある（消していない）。実際に何を戻す必要があるかは
+> [ADR-0004の追記4](./ADR-0004-distribution-and-update.md)に一覧がある。
 
 更新マニフェストの署名鍵を生成し、GitHub Secrets に登録する。**秘密鍵は誰にも渡さず、
 リポジトリにもコミットしない。** この鍵を失うと既存ユーザに更新を配れなくなるので、
@@ -48,6 +58,38 @@ gh secret list
 
 ---
 
+## 所有者が鍵を登録したあとにやること（まとめ）
+
+**2026-09-23時点では不要**（当面署名鍵を作らない方針。上記参照）。将来、
+デスクトップの自動更新を有効にしたくなったときのために、やることを1か所に
+まとめておく。技術的な変更点の詳細リストは
+[ADR-0004の追記4](./ADR-0004-distribution-and-update.md)にある。ここでは
+「所有者が実際に手を動かす手順」だけを書く。
+
+1. **鍵を作る**（このファイル冒頭「着手前に所有者がやること」の手順どおり）。
+   `npx @tauri-apps/cli signer generate` で生成し、`gh secret set` で
+   `TAURI_SIGNING_PRIVATE_KEY` と `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` を登録する
+2. **公開鍵を貼る場所**: 生成時に出力される `Public key:` の値を、
+   `src-tauri/tauri.conf.json` の `plugins.updater.pubkey` に入れる
+   （`plugins.updater`自体、現時点では存在しないので新設することになる。
+   ADR-0004追記4の手順2〜5を参照）
+3. **要る Secrets**: `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+   （更新マニフェスト署名用）。Androidのリリース用keystoreを別途用意する場合は
+   keystore本体・パスワード・key alias・keyパスワードも追加で要る
+   （`gh secret list`で登録状況を確認できる）
+4. **実装側に依頼すること**: 上記2つのSecretsを登録したら、実装担当（Sonnet/Opus）に
+   「鍵を登録した」と伝える。`tauri-plugin-updater`の導入・`release.yml`への
+   env追加・デスクトップ側の自動適用ダイアログの実装はADR-0004追記4の手順どおり
+   コードを書く必要があるため、鍵の登録だけでは自動的に有効にならない
+   （M3タスクシートの当初の想定とは異なり、現在の実装はTauriのupdaterプラグイン
+   自体を導入していないため）
+5. **最初のタグの打ち方**: `src-tauri/tauri.conf.json`の`version`を上げてから
+   `git tag v0.1.0 && git push origin v0.1.0`（`package.json`の`version`とも
+   合わせておくこと）。`release.yml`の`check-version`ジョブがタグと
+   `tauri.conf.json`の不一致を検査するので、ずれていればそこで落ちる
+
+---
+
 ## M3-1: リリースワークフロー（Windows）
 
 ### やること
@@ -62,6 +104,11 @@ gh secret list
 - `TAURI_SIGNING_PRIVATE_KEY` / `..._PASSWORD` を env に渡す（これが無いと `latest.json` の
   署名が作られず、updater が更新を拒否する）
 
+> **2026-09-23実施時点の変更**: 上記のうち`latest.json`の生成と
+> `TAURI_SIGNING_PRIVATE_KEY`系のenvは実装していない。[ADR-0004追記4](./ADR-0004-distribution-and-update.md)
+> のとおり、当面署名鍵を作らない方針になったため。`.msi`/`.nsis`をビルドして
+> Releaseに添付するところまでを無署名で行う。
+
 ### バージョンの扱い
 
 タグ `v0.1.0` と `tauri.conf.json` の `version` が食い違うと、updater が更新を検知できない
@@ -70,21 +117,45 @@ gh secret list
 
 ### 受け入れ条件
 
-- [ ] `v0.0.1-test` のようなテストタグを打つと Release が作られ、`.msi` / `.nsis` /
-      `latest.json` が添付される
-- [ ] `latest.json` に署名（`signature` フィールド）が入っている
+- [x] ~~`v0.0.1-test` のようなテストタグを打つと Release が作られ、`.msi` / `.nsis` /
+      `latest.json` が添付される~~ → `latest.json`は方針転換により対象外（追記4参照）。
+      `.msi`/`.nsis`が添付される部分はワークフローとして実装したが、**タグを実際に
+      pushして確認することは今回行っていない**（タグ`v*`のpushはリリースを走らせて
+      しまうため、担当範囲外の作業として指示されていた。**未確認**）
+- [x] ~~`latest.json` に署名（`signature` フィールド）が入っている~~ → 対象外（追記4）
 - [ ] タグと `tauri.conf.json` の version が食い違うとワークフローが落ちる（**実際に試すこと**）
-- [ ] テストタグと Release は確認後に削除する
+      → ロジックは実装した（`check-version`ジョブ）が、**実際にタグを打って試すことは
+      していない。未確認**
+- [ ] テストタグと Release は確認後に削除する → 上記の理由でテストタグ自体を打っていない
 
 ### コミット単位
 
 `ci: add release workflow for windows installers`
 
+### 実施記録（2026-09-23、Sonnet）
+
+`.github/workflows/release.yml`を新設。`check-version`ジョブでタグと
+`tauri.conf.json`のversionの一致を検査し、`windows`ジョブで`tauri build`
+（`bundle.targets`は`["msi","nsis"]`に変更）を実行してGitHub Releasesに添付する。
+署名なし（ADR-0004追記4）。SmartScreenの警告が出ることをリリース本文に明記した。
+
+**確認できたこと**: `npm run build`・`cargo build --workspace`・CI(`ci.yml`)は
+このワークフロー追加後も緑（`tauri.conf.json`の`bundle.targets`変更は`tauri build`
+時にしか使われないため、通常のビルド・テストには影響しない）。
+
+**確認できていないこと**（タグpush禁止のため）: このワークフロー自体をCIで
+実際に走らせて緑になることは未確認。YAML構文は目視で確認したのみ。
+
 ---
 
-## M3-2: デスクトップの自動更新（オプトイン）
+## M3-2: デスクトップの更新通知（オプトイン。方針転換によりM3-4と共通実装）
 
-### やること
+> **2026-09-23の方針転換（[ADR-0004追記4](./ADR-0004-distribution-and-update.md)）**:
+> `tauri-plugin-updater`による署名付き自動適用は実装しない。所有者が当面署名鍵を
+> 作らないと決めたため。以下の元の「やること」は履歴として残すが、**実際に実装したのは
+> 節末の「実施記録」に書いた、Androidと共通の自前実装**である。
+
+### やること（元の計画。上記の理由で採用していない）
 
 `tauri-plugin-updater` を導入し、**起動時チェック → ダイアログ → 同意したときだけ適用**の
 導線を作る。
@@ -95,39 +166,63 @@ gh secret list
 3. ダイアログには新バージョン番号とリリースノートを出す。「今すぐ更新」「後で」を選べる
 4. 同意されたらダウンロード進捗を出し、完了後に再起動を促す
 
-### 守ること
+### 守ること（採用した実装でも守っている）
 
 - **黙って更新しない。** 同意なしにダウンロードもインストールもしない（ADR-0004）
 - **開発中（`tauri dev`）はチェックしない。** 毎回ダイアログが出て邪魔になる
 - チェックが失敗しても（オフライン等）**アプリは普通に起動する。** 更新チェックの失敗で
   起動を止めない
-- 規約2 は updater にも適用される。`@tauri-apps/plugin-updater` の import も
-  `src/datasource/` 配下か、それに準じた1ファイルに閉じ込めること。
-  **Web 版にはそもそも updater が不要なので、Web ビルドで剥がせる形にする**
+- 規約2 は更新通知にも適用される。`@tauri-apps/plugin-opener` の import は
+  `src/datasource/update-check.ts` に閉じ込めた。
 
-### 受け入れ条件
+### 受け入れ条件（実際に採用した設計に合わせて改訂）
 
-- [ ] 古いバージョンをインストールした状態で起動すると更新ダイアログが出る
-- [ ] 「後で」を選ぶと何もダウンロードされず、アプリが普通に使える
-- [ ] 「今すぐ更新」で更新が適用され、再起動後にバージョンが上がっている
-- [ ] オフラインで起動してもエラーダイアログを出さずに普通に起動する
-- [ ] `tauri dev` では更新チェックが走らない
-- [ ] CI の invariants ジョブが緑のまま（規約2 を壊していない）
-
-### 自分で確かめる手順
-
-```bash
-# 1. v0.0.1-test をリリースする
-# 2. その installer をインストールする
-# 3. version を上げて v0.0.2-test をリリースする
-# 4. インストール済みアプリを起動 → ダイアログが出るか
-# 5. 「後で」→ 普通に使えるか / 再起動 → また出るか
-# 6. 「今すぐ更新」→ 更新されるか
-```
+- [ ] 古いバージョンで起動すると更新通知が出る → ロジック（`isNewerVersion`）は
+      単体テストで確認済み。**実際に古いバージョンをインストールして確認することは
+      していない（GUIでの目視確認が必要。所有者に依頼）**
+- [x] 「後で」を選ぶと何もダウンロードされず、アプリが普通に使える →
+      `dismiss()`はUIの状態を変えるだけで、`openRelease()`を呼ばない限り
+      何もfetchしない。コードレビューでは満たしている
+- [ ] ~~「今すぐ更新」で更新が適用され、再起動後にバージョンが上がっている~~ →
+      **自動適用はしない設計に変更**（追記4）。「リリースページを開く」までで、
+      インストールは利用者の手作業
+- [x] オフラインで起動してもエラーダイアログを出さずに普通に起動する →
+      `fetchLatestRelease()`は例外・非200応答をすべて`null`にして返す
+      （`src/datasource/update-check.ts`）。**実機オフラインでの確認はしていない**
+- [x] `tauri dev` では更新チェックが走らない → `import.meta.env.DEV`で判定
+      （`src/state/useUpdateCheck.ts`）。ビルド設定上そうなることは確認したが、
+      実際に`tauri dev`を起動して目視することはしていない
+- [x] CI の invariants ジョブが緑のまま（規約2 を壊していない） → **確認済み**
+      （`@tauri-apps/plugin-opener`の import は `src/datasource/update-check.ts`
+      のみ。`@tauri-apps/api`の import は`src/datasource/tauri.ts`のみで規約2は
+      別ロジックでチェックしている）
+- [x] 追加: 起動時チェック自体を設定でオフにできる（オプトイン） → `SettingsModal`に
+      トグルを追加
 
 ### コミット単位
 
-`feat: add opt-in updater on desktop`
+`feat: add update notice on desktop and android (shared, opt-in)`
+（M3-4と同一コミット。理由は下記実施記録参照）
+
+### 実施記録（2026-09-23、Sonnet）
+
+所有者の方針転換を受け、デスクトップの更新通知をM3-4（Android）と**同じコードで**
+実装した。「同じことを2回書かない」という指示のとおり、プラットフォーム分岐は
+`src/datasource/update-check.ts`の`openReleasePage()`一箇所（内部で使う
+`@tauri-apps/plugin-opener`の`openUrl()`がデスクトップ・Android両対応）に閉じている。
+
+追加したファイル:
+- `src/datasource/update-check.ts`: GitHub Releases APIのfetchと`openUrl`
+- `src/datasource/version-compare.ts` + `.test.ts`: バージョン比較の純粋関数
+- `src/state/useUpdateCheck.ts`: 起動時チェックのフック（DEV判定・オプトイン設定を含む）
+- `src/ui/shell/UpdateNotice.tsx`: 通知UI
+- `SettingsModal.tsx`にトグルを追加
+
+`src/datasource/tauri.ts`に`getAppVersion()`を追加（`@tauri-apps/api/app`の
+`getVersion()`。規約2どおりこのファイルに閉じ込めた）。
+
+`useCopcViewer.ts`・`LayerPanel.tsx`は触っていない（カラーマップ担当との並行作業を
+配慮。AppShell.tsxとSettingsModal.tsxのみ変更）。
 
 ---
 
@@ -145,13 +240,42 @@ gh secret list
 
 ### 受け入れ条件
 
-- [ ] タグを打つと APK が Release に添付される
-- [ ] `src-tauri/gen/` がリポジトリにコミットされていない
-- [ ] Android ジョブが落ちても Windows のリリースは成立する（ジョブを独立させる）
+- [ ] タグを打つと APK が Release に添付される → ワークフローは実装したが、
+      **タグをpushしてCIを実際に走らせることはしていない（未確認）**
+- [x] `src-tauri/gen/` がリポジトリにコミットされていない → 既存の`.gitignore`
+      （`src-tauri/gen/`）で確認済み。今回の変更でも触れていない
+- [x] Android ジョブが落ちても Windows のリリースは成立する（ジョブを独立させる）→
+      `android`ジョブは`windows`の成否に依存しない設計にした（詳細は実施記録）
 
 ### コミット単位
 
 `ci: build android apk on release`
+
+### 実施記録（2026-09-23、Sonnet）
+
+`release.yml`に`android`ジョブを追加。JDK17・Android SDK・NDK(r26d)・Rustの
+androidターゲットをセットアップし、`tauri android init`→`tauri android build
+--debug --apk`でdebug署名のAPKを作りReleaseに添付する。
+
+`android`ジョブは`needs: [check-version, windows]`だが、`if`で
+`check-version`の成功だけを条件にしている（`windows`の成否は見ない）。これは
+「独立させる」の要求と一見矛盾するように見えるが、意図は「GitHub Release
+自体へのアセット追加が2ジョブの同時実行で競合しないようにする順序付け」であり、
+「windowsが失敗したらandroidも失敗させる」という依存ではない
+（`!cancelled()`により、windowsが失敗してもandroidは実行される）。
+
+**重要な帰結（記録。ADR-0004追記4とも関連）**: Androidのdebug署名鍵
+(`~/.android/debug.keystore`)はGradleが初回ビルド時に自動生成する。GitHub
+Actionsのランナーは毎回まっさらな環境のため、キャッシュしないと**タグを打つ
+たびに鍵が変わり、既存ユーザは新しいAPKを上書きインストールできず、
+いったんアンインストールしてから入れ直す必要が生じる可能性が高い**。
+今回`actions/cache`（固定キー`android-debug-keystore-v1`）でこの鍵を
+使い回す対処を入れたが、**実際にキャッシュが効いて2回目以降のリリースで
+同じ鍵が使われるかどうかは、タグを2回以上pushしてCIを走らせないと
+確認できない。このセッションでは確認していない（未確認）**。
+
+秘密鍵・keystoreは生成しない方針（このタスクの必須制約）を守っており、
+debug.keystoreの生成自体はGradleが行う（Sonnetが生成したものではない）。
 
 ---
 
@@ -172,14 +296,36 @@ gh secret list
 
 ### 受け入れ条件
 
-- [ ] 古いバージョンの APK で起動すると更新通知が出る
-- [ ] 「後で」で普通に使える
-- [ ] オフラインでもエラーを出さずに起動する
-- [ ] GitHub API のレート制限（未認証 60req/h）に当たっても起動を妨げない
+- [ ] 古いバージョンの APK で起動すると更新通知が出る → **実機（またはエミュレータ）が
+      無いため未確認**。ロジック（`isNewerVersion`によるtag_nameとの比較）は
+      単体テストで確認済み
+- [x] 「後で」で普通に使える → M3-2と同じコードなので同様に満たす（`dismiss()`は
+      状態を変えるだけ）
+- [x] オフラインでもエラーを出さずに起動する → `fetchLatestRelease()`が
+      例外・非200をすべて`null`にする。**実機での確認はしていない**
+- [x] GitHub API のレート制限（未認証 60req/h）に当たっても起動を妨げない →
+      `res.ok`が`false`（403等）の場合も`null`を返すので同じ経路で処理される。
+      **実際にレート制限を発生させて確認することはしていない**
 
 ### コミット単位
 
-`feat: add update check on android`
+`feat: add update notice on desktop and android (shared, opt-in)`
+（M3-2と同一コミット）
+
+### 実施記録（2026-09-23、Sonnet）
+
+M3-2の実施記録を参照。デスクトップと**完全に同じコード**（`src/datasource/update-check.ts`
+・`src/state/useUpdateCheck.ts`・`src/ui/shell/UpdateNotice.tsx`）を使う設計にしたため、
+Android専用のコードは書いていない。「デスクトップ側とUIを共通化し、適用手段だけを
+差し替える」というタスクシートの要求を、当初想定より一歩進めて「適用手段（`openUrl`）
+すら共通の`@tauri-apps/plugin-opener`で賄えたため、プラットフォーム分岐そのものが
+無い」形で満たした。
+
+APKのURLではなく**リリースページのURL**を開く設計にした（タスクシート原文は
+「APKのURLをブラウザで開く」だったが、GitHub Releases APIの`html_url`は
+リリースページを指し、個別アセット(APK)のダウンロードURLではないため。
+リリースページから該当のAPKをダウンロードしてもらう形にした。デスクトップの
+インストーラ配布と同じ導線になるため、これも設計として妥当と判断した）。
 
 ---
 
@@ -197,12 +343,31 @@ ADR-0002 で WebGL2 フォールバックを書かないと決めたため、Web
 
 ### 受け入れ条件
 
-- [ ] WebGPU を無効化した状態で起動すると、白画面ではなく説明画面が出る
-- [ ] 説明画面に必要条件と診断情報が出ている
+- [x] WebGPU を無効化した状態で起動すると、白画面ではなく説明画面が出る →
+      コードレビュー上は満たす（`AppShell`が`useWebGpuSupport()`の結果を見て
+      `UnsupportedDeviceScreen`に差し替える）。**実際にWebGPUを無効化した
+      ブラウザ/環境で目視することはしていない（未確認）**
+- [x] 説明画面に必要条件と診断情報が出ている → `reason`・`navigator.gpu`の有無・
+      `userAgent`を表示（コードレビューで確認。目視は未確認）
 
 ### コミット単位
 
 `feat: show unsupported-device screen when webgpu is unavailable`
+
+### 実施記録（2026-09-23、Sonnet）
+
+`src/state/useWebGpuSupport.ts`（描画テストをしない軽量プローブ）と
+`src/ui/shell/UnsupportedDeviceScreen.tsx`を追加し、`AppShell.tsx`の先頭で
+非対応が確定した場合に画面ごと差し替える。`useCopcViewer()`自体はReactの
+フック規約上そのまま呼ぶが、`<canvas>`をDOMに出さないことで内部のeffectは
+実質何もしない（`canvasRef.current`が`null`のまま）。
+
+判定が終わるまでの一瞬（`status: "checking"`の間）は通常のUIがそのまま
+描画される。これは意図した設計判断で、判定は`navigator.gpu.requestAdapter()`
+の解決を待つだけなので通常は非常に短く、それを待つための専用のローディング
+画面を挟むとかえってちらつきが増えると判断した。**この間に一瞬レンダラの
+初期化が走る（エラーになる場合は`viewer.error`に格納されるだけで、画面には
+表示され続けない）ことは目視で確認していない**。
 
 ---
 
@@ -265,11 +430,47 @@ M3-1 〜 M3-5 は「配る」ための項目だった。以下は **「配った
 
 ### 受け入れ条件
 
-- [ ] 1本指で回転、2本指ピンチでズーム、2本指ドラッグでパンができる
-- [ ] ピンチのズーム先が2本指の中点になっている（画面中心ではない）
-- [ ] マウス操作（左ドラッグ回転・中ドラッグパン・ホイールズーム）が壊れていない
-- [ ] ポインタ数の遷移（1本→2本→1本）で操作が破綻しない
-- [ ] 単体テストがある。**マウスとタッチの両方について**
+- [x] 1本指で回転、2本指ピンチでズーム、2本指ドラッグでパンができる → 実装した。
+      **実機/タッチデバイスでの目視確認はしていない**（jsdomが無くPointerEventの
+      DOM配線自体は自動テストできないため。下の実施記録参照）
+- [x] ピンチのズーム先が2本指の中点になっている（画面中心ではない）→
+      `computeTwoPointerGesture()`の`midpoint`を`getCursorDirection`に渡している。
+      単体テストで中点の計算自体は確認済み
+- [x] マウス操作（左ドラッグ回転・中ドラッグパン・ホイールズーム）が壊れていない →
+      既存の`orbit-camera.test.ts`(rotate/pan/zoomの単体テスト)がそのまま通っている。
+      ホイール周りのコードは変更していない
+- [x] ポインタ数の遷移（1本→2本→1本）で操作が破綻しない → 各ポインタの位置は
+      そのポインタ自身の直近moveでのみ更新するため、遷移時に古い位置を使って
+      跳ぶことがない設計にした（コードコメント参照）。**実機での目視確認は
+      していない**
+- [x] 単体テストがある。**マウスとタッチの両方について** →
+      マウス操作(rotate/pan/zoom)は既存の`orbit-camera.test.ts`で確認済み。
+      タッチ(2本指)の計算は新設の`touch-gesture.test.ts`で確認済み。
+      **`attachOrbitControls`自体（DOMへのイベント配線）は、このリポジトリに
+      jsdom等のDOM環境が導入されていないためvitestで直接テストできない
+      （既存のテストもすべてOrbitCameraクラスの純粋なメソッド呼び出しのみを
+      検証しており、DOM配線を対象にしたテストはM3-6以前から存在しない）。
+      ジェスチャの計算そのものを純粋関数に切り出してテストする、という
+      タスクシートの要求は満たしているが、「配線が正しくDOMイベントに反応する」
+      ところまでは自動テストの対象外である**
+
+### 実施記録（2026-09-23、Sonnet）
+
+`src/renderer/touch-gesture.ts`に`computeTwoPointerGesture()`を新設（2本指の
+座標列→パン量・ズーム倍率の純粋関数、`touch-gesture.test.ts`で6ケース確認）。
+`attachOrbitControls`（`orbit-camera.ts`）を、`e.button`単独の分岐から
+「同時に押されているポインタの数」ベースの分岐に書き換えた。1本の場合は
+`button`で回転/パンを分ける（タッチは常に`button===0`なので回転側に乗る）。
+2本の場合は中点のパンとズームを同時に計算する。`canvas.style.touchAction =
+"none"`を追加し、ブラウザ標準のタッチジェスチャ（ページスクロール等）との
+競合を防いだ。
+
+タスクシート原文は「`pickPointUnderCursor`をそのまま流用できる」としているが、
+現在の実装（M1-5で書き直し済み）はその関数を使っておらず、`OrbitControlsOptions.
+getCursorDirection`（カーソル方向のレイを返す関数）を使う設計になっている。
+ピンチズームもこれに合わせて、2本指の中点をこの`getCursorDirection`に渡す形にした
+（タスクシート記述が古い。`orbit-camera.ts`冒頭の`zoom()`のコメントに、
+なぜ「点」ではなく「方向」を使うかの経緯が詳しく書いてある）。
 
 ---
 
@@ -402,14 +603,24 @@ Android のスコープドストレージ越しに GB 級のファイルを読�
 
 **「配る」だけでなく「配った先で使える」までを M3 の完了とする。**
 
+> **2026-09-23実施分（M3-1〜M3-6）の状況まとめ。** 詳しくは各節の「実施記録」参照。
+> コードとしては実装・テスト・CIの緑を確認したが、**タグpush・実機・GUI目視が
+> 要る項目はすべて所有者の確認待ち**（このセッションでは行っていない/行えない）。
+
 ### 配布（M3-1 〜 M3-5）
 
-- [ ] タグを打つと MSI / NSIS / APK が Release に出る
-- [ ] デスクトップで起動時チェック → オプトイン更新が動く（実際に更新して確認済み）
-- [ ] Android で起動時チェック → 通知が出る
-- [ ] WebGPU 非対応環境で「未対応」と分かる
-- [ ] 秘密鍵・keystore・パスワードがリポジトリに一切入っていない
-- [ ] テストタグと Release が削除されている
+- [ ] タグを打つと MSI / NSIS / APK が Release に出る → ワークフローは実装したが
+      **タグを打って確認することはしていない**（タグpush禁止のため）
+- [ ] ~~デスクトップで起動時チェック → オプトイン更新が動く（実際に更新して確認済み）~~ →
+      **方針転換によりデスクトップの自動適用は実装していない**（ADR-0004追記4）。
+      「起動時チェック→通知→リリースページを開く（適用は手動）」は実装したが、
+      **実機での目視確認は未実施**
+- [ ] Android で起動時チェック → 通知が出る → コードはデスクトップと共通で実装。
+      **実機/エミュレータでの確認は未実施**
+- [ ] WebGPU 非対応環境で「未対応」と分かる → 実装済み。**目視確認は未実施**
+- [x] 秘密鍵・keystore・パスワードがリポジトリに一切入っていない →
+      このセッションでは鍵・keystoreを一切生成・コミットしていない（確認済み）
+- [ ] テストタグと Release が削除されている → テストタグ自体を打っていないので該当なし
 
 ### 実機で使える（M3-6 〜 M3-9）
 
