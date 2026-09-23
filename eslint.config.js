@@ -5,7 +5,10 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist", "src-tauri", "target"] },
+  // .claude/worktrees/配下にエージェント用の別worktree(このリポジトリ自身の
+  // フルコピー)が作られることがある。無視しないと、ルートでのlintがworktree内の
+  // ファイルまで二重に検査してしまう。
+  { ignores: ["dist", "src-tauri", "target", ".claude"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

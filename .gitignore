@@ -34,6 +34,11 @@ Thumbs.db
 *.njsproj
 *.sln
 
+# エージェント用worktree(このリポジトリ自身のフルコピーが.claude/worktrees/配下に
+# 作られる)。誤ってコミットされないように、また npm test / eslint が二重に
+# 拾わないように無視する。
+.claude/
+
 # 点群データ（大きいのでコミットしない）
 *.las
 *.laz
