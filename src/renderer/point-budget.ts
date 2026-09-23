@@ -100,10 +100,51 @@ export interface PointBudgetTuning {
   limits: PointBudgetLimits;
 }
 
+/**
+ * `updateRefreshIntervalEstimate`が推定に使う「1世代」の長さ(ms)。
+ *
+ * ADR-0010追記3で見つかった不具合（後述）への対策として、推定を
+ * 「これまで全期間の最小値」から「直近一定期間の最小値」に変えた。
+ * この期間をどれだけ長くするかのトレードオフ:
+ *
+ * - **短すぎる** と、負荷が続く区間（所有者の実機で数秒単位）を
+ *   ウィンドウがまるごと覆ってしまい、その区間の遅い間隔自体を
+ *   誤ってリフレッシュ周期だと推定してしまう（最初のバグと同じ問題）
+ * - **長すぎる** と、異常値やディスプレイの切り替えからの回復が遅くなる
+ *
+ * 所有者の実機で確認された負荷継続時間（数秒）を十分に上回る値として、
+ * 2世代分=30秒（1世代=15秒）を選んだ。**この長さは実測していない、
+ * 未検証の初期値。**
+ */
+export const REFRESH_ESTIMATE_GENERATION_MS = 15_000;
+
+/**
+ * `updateRefreshIntervalEstimate`が推定に使う下限(ms)。これより短い観測値は
+ * 計測の異常とみなし、推定の更新に使わない。
+ *
+ * 250Hz（4ms）は、既存の民生ディスプレイのリフレッシュレートとしては
+ * かなり高い部類（一般的なゲーミングモニタでも144〜240Hz程度）だが、
+ * 将来さらに高いリフレッシュレートの端末が出てくる可能性はあるため、
+ * **この値は実測ではなく、いったんの安全側の設計判断。** 万一この値より
+ * 高いリフレッシュレートの端末で動かした場合、真のリフレッシュ周期より
+ * 少しだけ長く見積もることになるが、それ自体は「ミス判定の閾値が
+ * 少し厳しめになる」だけで、下記の一方向ラチェットのような致命的な
+ * 壊れ方はしない。
+ */
+export const MIN_PLAUSIBLE_REFRESH_INTERVAL_MS = 4;
+
 /** `updateRefreshIntervalEstimate`が持つ推定状態。 */
 export interface RefreshIntervalEstimate {
-  /** 推定したリフレッシュ周期(ms)。 */
+  /** 推定したリフレッシュ周期(ms)。呼び出し側はこれだけを読む。 */
   intervalMs: number;
+  /** 現在集計中の世代の最小値。 */
+  currentGenerationMinMs: number;
+  /** 1つ前の世代の最小値。まだ1世代分経っていなければ`Infinity`
+   *  （「まだ無い」を表す。`Math.min`にそのまま使えるようにするため）。 */
+  previousGenerationMinMs: number;
+  /** 現在の世代が始まった時刻(ms)。呼び出し側が渡す`nowMs`と同じ時間軸
+   *  （`requestAnimationFrame`のタイムスタンプを想定）。 */
+  currentGenerationStartMs: number;
 }
 
 /**
@@ -111,51 +152,84 @@ export interface RefreshIntervalEstimate {
  * 推定する。60Hzなら約16.7ms、144Hzなら約6.9msになるはずで、固定値
  * 1000/60を目標にすることをやめるためにこの関数を用意した。
  *
- * **「これまでに観測した最小の間隔」を使う。** 理由: vsync環境では、
- * 1フレームの所要時間は物理的にリフレッシュ周期を下回れない
- * （下回るとしたら1周期のちょうど整数倍か、タイマーの分解能によるごく
- * わずかな誤差のみ）。つまりどれだけ描画が重くても、間隔がリフレッシュ
- * 周期より短くなることは無い。逆に言えば、**一度でも「詰まっていない」
- * フレームに出会えれば、そのときの間隔がほぼ正確なリフレッシュ周期になる。**
+ * ## 「これまで全期間の最小値」をやめた経緯（ADR-0010追記3）
  *
- * 直近の短いウィンドウだけを見て最頻値・最小値を取る方式も検討したが、
- * 「負荷が続いている区間全体を短いウィンドウで見てしまうと、その区間の
- * 遅い間隔自体を誤ってリフレッシュ周期だと推定してしまう」という問題が
- * vitestで実際に再現した（`point-budget.test.ts`の回復テストが最初は
- * この理由で失敗した）。負荷が数秒単位で続くことは珍しくない
- * （所有者の診断どおり）ため、ウィンドウの長さでは解決できない。
- * 「一度観測した最小値を覚えておいて、それより小さい値が来たときだけ
- * 更新する」ようにすれば、負荷が続いている間はその値に引きずられず、
- * 一度でも空いた瞬間の値を正しく覚え続けられる。
+ * 最初の実装は、一度観測した最小値をそのまま覚え続ける「全期間の最小値」
+ * だった。理由: vsync環境では1フレームの所要時間が物理的にリフレッシュ
+ * 周期を下回れないため、一度でも「詰まっていない」フレームに出会えれば、
+ * その間隔がほぼ正確な周期になるはずだった。
  *
- * 呼び出し側は毎フレーム、直近フレームの所要時間(ms)でこの関数を呼び、
- * 戻り値を次回の`previous`として渡し続けること（`recordFrameDelta`の中で
- * 呼ぶ想定）。
+ * **しかしこれは「今回直したのと同じ形の、逆向きのラチェット」だった。**
+ * 異常に短い間隔（ウィンドウが非表示から復帰した直後のrAF連続発火、
+ * より高リフレッシュレートのディスプレイへウィンドウを移動した直後、
+ * WebView2のリサイズ・オクルージョン変化に伴う不規則なタイミングなど）が
+ * **一度でも**観測されると、その小さい値に永久に固定される。推定値が
+ * 例えば2msに固定されると、`missThresholdMultiplier`(1.5)によりミス判定の
+ * 閾値が3msになり、60Hzの通常の16.7msフレームが**すべて**ミス扱いになる。
+ * その結果`missRatio`が常に1.0となって点予算が下限に張り付き、増加条件
+ * （`missRatio ≤ hitRatioToGrow`）は推定値が壊れている限り永久に満たせない
+ * ため、二度と回復しない。所有者に見える症状は最初のラチェットと同じ
+ * （「近くのチャンクが精緻にならない」）になる。
+ *
+ * ## 新しい設計: 直近2世代（既定30秒）の最小値
+ *
+ * 「全期間」ではなく「直近一定時間」の最小値にすることで、異常値がいずれ
+ * 期間の外へ出ていき、推定値が**上にも戻れる**ようにした。
+ * `REFRESH_ESTIMATE_GENERATION_MS`(15秒)ごとに世代を交代し、常に
+ * 「現世代」と「1つ前の世代」の2世代分の最小値を持つ。推定値は両世代の
+ * 最小値のうち小さいほう。こうすると、ウィンドウが短すぎて負荷継続区間を
+ * 誤検出する問題（最初のバグ）を避けつつ、異常値も高々2世代（最大30秒）で
+ * 押し出される。
+ *
+ * あわせて、`MIN_PLAUSIBLE_REFRESH_INTERVAL_MS`より短い観測値は
+ * 計測異常とみなして推定の材料にしない（一方向ラチェットへの二重の備え）。
+ *
+ * 呼び出し側は毎フレーム、直近フレームの所要時間(ms)と現在時刻(ms、
+ * `requestAnimationFrame`のタイムスタンプ)でこの関数を呼び、戻り値を
+ * 次回の`previous`として渡し続けること（`recordFrameDelta`の中で呼ぶ想定）。
  *
  * 既知の制限（このタスクの範囲外、[M3-8](../../TaskSheets/M3-release-and-update.md)
  * に送る）:
- * - アプリ実行中にウィンドウを別のリフレッシュレートのディスプレイへ
- *   移動した場合、前のディスプレイで観測した最小値が残り続けて追従しない。
- * - **起動直後の最初の1フレーム目が異常に遅い場合**（シェーダのコンパイル・
- *   パイプライン構築中のGPUストール等）、その値がそのまま推定値として
- *   固定され、以後しばらく本来より緩い(遅い)閾値でミス判定することになる。
- *   ADR-0010で開始値を上限に変更したこととの組み合わせで理論上は起こり得るが、
- *   実際には点群のロード自体に時間がかかるため、開始直後の数フレームは
- *   キャッシュが埋まっておらず描画コスト自体が軽いことが多い
- *   （所有者の実機報告でも、この経路が問題として顕在化した形跡は無い）。
+ * - リフレッシュレートの変化（ディスプレイの切り替え等）への追従には、
+ *   最悪の場合`REFRESH_ESTIMATE_GENERATION_MS`の2倍（既定30秒）かかる。
+ *   これは意図的なトレードオフ（短くしすぎると最初のバグが再発するため）
+ * - `MIN_PLAUSIBLE_REFRESH_INTERVAL_MS`(4ms)より高いリフレッシュレートの
+ *   端末では、真の周期よりわずかに長く見積もる（上記コメント参照）
  */
 export function updateRefreshIntervalEstimate(
   previous: RefreshIntervalEstimate | null,
   observedFrameDeltaMs: number,
+  nowMs: number,
 ): RefreshIntervalEstimate {
-  if (observedFrameDeltaMs <= 0) {
-    // 計測誤差等でありえない値が来ても壊れないようにする（防御的）。
-    return previous ?? { intervalMs: observedFrameDeltaMs };
+  // 物理的にありえない短さは計測異常とみなし、下限で切り上げる。
+  const clampedDeltaMs = Math.max(observedFrameDeltaMs, MIN_PLAUSIBLE_REFRESH_INTERVAL_MS);
+
+  if (previous === null) {
+    return {
+      intervalMs: clampedDeltaMs,
+      currentGenerationMinMs: clampedDeltaMs,
+      previousGenerationMinMs: Infinity, // まだ1つ前の世代が無い
+      currentGenerationStartMs: nowMs,
+    };
   }
-  if (previous === null || observedFrameDeltaMs < previous.intervalMs) {
-    return { intervalMs: observedFrameDeltaMs };
+
+  let { currentGenerationMinMs, previousGenerationMinMs, currentGenerationStartMs } = previous;
+
+  if (nowMs - currentGenerationStartMs >= REFRESH_ESTIMATE_GENERATION_MS) {
+    // 世代交代: 現世代を「1つ前」に格上げし、新しい世代をこの観測値から始める。
+    previousGenerationMinMs = currentGenerationMinMs;
+    currentGenerationMinMs = clampedDeltaMs;
+    currentGenerationStartMs = nowMs;
+  } else {
+    currentGenerationMinMs = Math.min(currentGenerationMinMs, clampedDeltaMs);
   }
-  return previous;
+
+  return {
+    intervalMs: Math.min(currentGenerationMinMs, previousGenerationMinMs),
+    currentGenerationMinMs,
+    previousGenerationMinMs,
+    currentGenerationStartMs,
+  };
 }
 
 /**

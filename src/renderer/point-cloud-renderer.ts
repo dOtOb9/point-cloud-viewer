@@ -249,7 +249,9 @@ export class PointCloudRenderer {
   private autoPointBudgetConsecutiveHits = 0;
   /** タスクB（ADR-0010）: 推定したディスプレイのリフレッシュ周期。
    *  `recordFrameDelta`で毎フレーム`updateRefreshIntervalEstimate`により
-   *  更新する（「これまでの最小値」を覚え続ける。詳細は`point-budget.ts`）。 */
+   *  更新する（直近2世代・既定30秒の最小値。全期間の最小値だと異常に短い
+   *  観測値に永久に固定される一方向ラチェットになるため期限付きにした。
+   *  詳細は`point-budget.ts`）。 */
   private refreshIntervalEstimate: RefreshIntervalEstimate | null = null;
   private rafHandle = 0;
   private disposed = false;
@@ -775,9 +777,11 @@ export class PointCloudRenderer {
         this.recentFrameDeltasMs.shift();
       }
       // リフレッシュ周期の推定は、上のrecentFrameDeltasMs（短い窓、ミス割合の
-      // 判定用）とは別に、アプリ起動からの「これまでの最小値」を使う
-      // （負荷が長く続く区間だけを見てしまう問題を避けるため。point-budget.ts参照）。
-      this.refreshIntervalEstimate = updateRefreshIntervalEstimate(this.refreshIntervalEstimate, deltaMs);
+      // 判定用）とは別に、直近2世代（既定30秒）の最小値を使う。ADR-0010追記3:
+      // 「これまで全期間の最小値」は、異常に短い間隔が一度でも来ると
+      // 永久に固定される一方向ラチェットだったため、期限付きに直した
+      // （point-budget.ts参照）。`time`をnowMsとして渡し、世代交代の判定に使う。
+      this.refreshIntervalEstimate = updateRefreshIntervalEstimate(this.refreshIntervalEstimate, deltaMs, time);
     }
     this.previousFrameTime = time;
   }

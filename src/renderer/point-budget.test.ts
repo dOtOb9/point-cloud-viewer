@@ -8,6 +8,8 @@ import {
   pointBudgetMaxFromMemoryBudget,
   updateRefreshIntervalEstimate,
   DEFAULT_POINT_BUDGET_TUNING,
+  MIN_PLAUSIBLE_REFRESH_INTERVAL_MS,
+  REFRESH_ESTIMATE_GENERATION_MS,
   type PointBudgetState,
   type PointBudgetTuning,
   type RefreshIntervalEstimate,
@@ -44,18 +46,21 @@ function makeWindow() {
 
 /** `updateRefreshIntervalEstimate`を配列の値で順番に呼び、最終状態を返す。
  *  point-cloud-rendererの`recordFrameDelta`が毎フレーム行っているのと同じ
- *  「継続的な更新」を、テストの中で再現するためのヘルパー。 */
-function estimateFromSequence(deltasMs: readonly number[]): RefreshIntervalEstimate | null {
+ *  「継続的な更新」を、テストの中で再現するためのヘルパー。`nowMs`は
+ *  実際のrAFタイムスタンプと同じく、各フレームの所要時間だけ進める。 */
+function estimateFromSequence(deltasMs: readonly number[], startMs = 0): RefreshIntervalEstimate | null {
   let estimate: RefreshIntervalEstimate | null = null;
+  let nowMs = startMs;
   for (const deltaMs of deltasMs) {
-    estimate = updateRefreshIntervalEstimate(estimate, deltaMs);
+    nowMs += deltaMs;
+    estimate = updateRefreshIntervalEstimate(estimate, deltaMs, nowMs);
   }
   return estimate;
 }
 
 describe("updateRefreshIntervalEstimate", () => {
   it("最初の観測値をそのまま推定値にする", () => {
-    const estimate = updateRefreshIntervalEstimate(null, REFRESH_60HZ_MS);
+    const estimate = updateRefreshIntervalEstimate(null, REFRESH_60HZ_MS, 0);
     expect(estimate.intervalMs).toBe(REFRESH_60HZ_MS);
   });
 
@@ -71,26 +76,61 @@ describe("updateRefreshIntervalEstimate", () => {
     expect(estimate!.intervalMs).toBeLessThan(REFRESH_60HZ_MS / 2);
   });
 
-  it("一度小さい値を観測したら、その後ずっと大きい値（コマ落ち）が続いても推定値は下がらない", () => {
-    // これが「最小値を使う」設計の核心: 負荷が続く区間だけを見て
-    // リフレッシュ周期そのものを誤推定してしまわないようにする。
-    let estimate = updateRefreshIntervalEstimate(null, REFRESH_60HZ_MS);
-    for (let i = 0; i < 100; i++) {
-      estimate = updateRefreshIntervalEstimate(estimate, REFRESH_60HZ_MS * 2); // ずっとコマ落ち
+  it("同じ世代の中では、後から大きい値（コマ落ち）が続いても推定値は下がらない（数秒程度の負荷継続を誤検出しない）", () => {
+    // これが「世代内の最小値を使う」設計の核心: 負荷が続く区間（所有者の
+    // 実機で確認された規模=数秒単位）だけを見て、リフレッシュ周期そのものを
+    // 誤推定しないようにする。REFRESH_ESTIMATE_GENERATION_MS(15秒)は
+    // この「数秒」を十分に上回るようにしてあるので、6秒程度コマ落ちが
+    // 続いても同じ世代の中に収まり、最初に掴んだ16.7msのままになるはず。
+    let estimate = updateRefreshIntervalEstimate(null, REFRESH_60HZ_MS, 0);
+    let nowMs = 0;
+    const LOAD_DURATION_MS = 6_000; // 所有者の実機で確認された負荷継続時間の規模
+    while (nowMs < LOAD_DURATION_MS) {
+      nowMs += REFRESH_60HZ_MS * 2;
+      estimate = updateRefreshIntervalEstimate(estimate, REFRESH_60HZ_MS * 2, nowMs); // ずっとコマ落ち
     }
+    expect(nowMs).toBeLessThan(REFRESH_ESTIMATE_GENERATION_MS); // 前提: まだ同じ世代の中
     expect(estimate.intervalMs).toBe(REFRESH_60HZ_MS);
   });
 
   it("さらに小さい値が来たら更新する", () => {
-    let estimate = updateRefreshIntervalEstimate(null, REFRESH_60HZ_MS);
-    estimate = updateRefreshIntervalEstimate(estimate, REFRESH_144HZ_MS);
+    let estimate = updateRefreshIntervalEstimate(null, REFRESH_60HZ_MS, 0);
+    estimate = updateRefreshIntervalEstimate(estimate, REFRESH_144HZ_MS, REFRESH_60HZ_MS);
     expect(estimate.intervalMs).toBe(REFRESH_144HZ_MS);
   });
 
-  it("0以下の異常値では前の推定値を保つ（防御的）", () => {
-    const estimate = updateRefreshIntervalEstimate({ intervalMs: REFRESH_60HZ_MS }, -5);
-    expect(estimate.intervalMs).toBe(REFRESH_60HZ_MS);
+  it("0以下や物理的にありえない短さの異常値は、下限（MIN_PLAUSIBLE_REFRESH_INTERVAL_MS）にクランプされる", () => {
+    const estimate = updateRefreshIntervalEstimate(null, -5, 0);
+    expect(estimate.intervalMs).toBe(MIN_PLAUSIBLE_REFRESH_INTERVAL_MS);
   });
+
+  it(
+    "【最重要】異常に短い間隔を1回混ぜた後、通常の間隔が続く列を与えると、" +
+      "推定値が元の水準へ戻る（一方向ラチェットの修正確認）",
+    () => {
+      // 直す前の実装（「これまで全期間の最小値」）は、この入力ではintervalMsが
+      // 異常値（クランプ後で4ms）に永久に固定されたままになり、このテストは
+      // 必ず失敗する。ウィンドウが非表示から復帰した直後のrAF連続発火や、
+      // より高いリフレッシュレートのディスプレイへの一時的な移動などで、
+      // 異常に短い間隔は実際に起こりうる。
+      let estimate: RefreshIntervalEstimate | null = null;
+      let nowMs = 0;
+
+      // 最初のフレームで異常に短い間隔(1ms)が来る（クランプ後は4msになる）。
+      estimate = updateRefreshIntervalEstimate(estimate, 1, nowMs);
+      expect(estimate.intervalMs).toBe(MIN_PLAUSIBLE_REFRESH_INTERVAL_MS);
+
+      // その後、2世代分を確実に超える時間、通常の60Hz(16.7ms)が続く。
+      // 2世代目に入れば異常値は両世代から押し出され、推定値が回復するはず。
+      const durationMs = REFRESH_ESTIMATE_GENERATION_MS * 2 + 5_000; // 余裕を持たせる
+      while (nowMs < durationMs) {
+        nowMs += REFRESH_60HZ_MS;
+        estimate = updateRefreshIntervalEstimate(estimate, REFRESH_60HZ_MS, nowMs);
+      }
+
+      expect(estimate.intervalMs).toBeCloseTo(REFRESH_60HZ_MS, 1);
+    },
+  );
 });
 
 describe("evaluatePointBudget", () => {
@@ -206,19 +246,23 @@ describe("evaluatePointBudget", () => {
       // 二度と回復しない（このテストは失敗する）。
       //
       // 新実装は「間隔の絶対値」ではなく「vsyncに間に合っているか」を信号に
-      // する。さらにリフレッシュ周期の推定を「これまでの最小値」にすることで
-      // （`updateRefreshIntervalEstimate`）、コマ落ちが続く区間の間隔自体を
-      // 誤ってリフレッシュ周期だと推定してしまう問題も避けている
-      // （このテストを書く過程で、直近ウィンドウの最頻値から推定する版では
-      // このテストが失敗することを実際にvitestで確認した）。
+      // する。さらにリフレッシュ周期の推定を「直近2世代（既定30秒）の最小値」
+      // にすることで（`updateRefreshIntervalEstimate`）、コマ落ちが続く区間の
+      // 間隔自体を誤ってリフレッシュ周期だと推定してしまう問題を避けている
+      // （このテストを書く過程で、直近ウィンドウの最頻値から推定する版・
+      // 全期間の最小値のままにする版のどちらでもこのテストが失敗することを
+      // 実際にvitestで確認した。全期間版は別の一方向ラチェットになる。
+      // ADR-0010追記3参照）。
 
       const window = makeWindow();
       let state: PointBudgetState = { budget: 3_000_000, consecutiveHits: 0 };
       let refreshEstimate: RefreshIntervalEstimate | null = null;
+      let nowMs = 0;
 
       function stepOnce(deltaMs: number): void {
+        nowMs += deltaMs;
         window.push(deltaMs);
-        refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, deltaMs);
+        refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, deltaMs, nowMs);
         state = evaluatePointBudget(state, window.get(), refreshEstimate.intervalMs, TUNING);
       }
 
@@ -245,6 +289,38 @@ describe("evaluatePointBudget", () => {
     },
   );
 
+  it("推定が異常値で壊れても、点予算が下限に張り付いたまま戻らなくならない（ADR-0010追記3）", () => {
+    // updateRefreshIntervalEstimateが「これまで全期間の最小値」のままだと、
+    // 異常に短い間隔が一度でも来た時点でintervalMsが永久に固定され、
+    // missThresholdMultiplier(1.5)により通常の60Hzフレームがすべてミス扱いに
+    // なる。結果、点予算が下限に張り付いたまま二度と回復しない
+    // （このテストは、直す前の実装なら失敗する）。
+    const window = makeWindow();
+    let budgetState: PointBudgetState = { budget: TUNING.limits.max, consecutiveHits: 0 };
+    let refreshEstimate: RefreshIntervalEstimate | null = null;
+    let nowMs = 0;
+
+    // 異常に短い間隔が混ざる。
+    window.push(1);
+    refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, 1, nowMs);
+    budgetState = evaluatePointBudget(budgetState, window.get(), refreshEstimate.intervalMs, TUNING);
+
+    // その後、2世代分を確実に超える時間、通常の60Hzフレームが続く。
+    const durationMs = REFRESH_ESTIMATE_GENERATION_MS * 2 + 5_000;
+    while (nowMs < durationMs) {
+      nowMs += REFRESH_60HZ_MS;
+      window.push(REFRESH_60HZ_MS);
+      refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, REFRESH_60HZ_MS, nowMs);
+      budgetState = evaluatePointBudget(budgetState, window.get(), refreshEstimate.intervalMs, TUNING);
+    }
+
+    // 推定が回復すれば、以後の通常フレームは「間に合っている」と判定され、
+    // 点予算は下限に張り付いたままにはならない（このテストでは開始値を
+    // 上限にしているので、壊れている間に一度下限まで落ちても、推定が
+    // 回復した後は増加に転じ、下限より大きい値になっているはず）。
+    expect(budgetState.budget).toBeGreaterThan(TUNING.limits.min);
+  });
+
   it("上限から始めてミスの多い列を与えると、数ステップで適正域まで落ちる（ADR-0010追記分: 楽観的に高く始める設計の確認）", () => {
     // ADR-0010の追記: 所有者の実機での実際の症状は「点予算が一度も動かなかった」
     // ことだった。修正方針は「低い値から上限を探り上げる」のではなく
@@ -263,16 +339,18 @@ describe("evaluatePointBudget", () => {
 
     const tuning: PointBudgetTuning = { ...TUNING, limits: LIMITS };
     let state: PointBudgetState = { budget: START_BUDGET, consecutiveHits: 0 };
+    let nowMs = 0;
     // 実機では、起動直後に重い点予算を試す前からすでに何フレームか描画しており、
     // リフレッシュ周期の推定(updateRefreshIntervalEstimate)は真の値(16.7ms)を
     // 既に掴んでいるはず。ここでもその前提を置く（初回サンプルがいきなり
-    // 過負荷なフレームだと、最小値そのものが過負荷値に汚染されてしまうため）。
-    let refreshEstimate: RefreshIntervalEstimate | null = { intervalMs: REFRESH_60HZ_MS };
+    // 過負荷なフレームだと、その世代の最小値が過負荷値に汚染されてしまうため）。
+    let refreshEstimate: RefreshIntervalEstimate | null = updateRefreshIntervalEstimate(null, REFRESH_60HZ_MS, nowMs);
     let stepsToReachNearCapacity = -1;
 
     for (let i = 0; i < 30; i++) {
       const frameMs = simulateFrameMs(state.budget);
-      refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, frameMs);
+      nowMs += frameMs;
+      refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, frameMs, nowMs);
       const window = Array(WINDOW_SIZE).fill(frameMs);
       state = evaluatePointBudget(state, window, refreshEstimate.intervalMs, tuning);
       if (stepsToReachNearCapacity === -1 && state.budget <= CAPACITY_POINTS * 1.5) {
@@ -305,12 +383,14 @@ describe("evaluatePointBudget", () => {
     const tuning: PointBudgetTuning = { ...TUNING, limits: LIMITS };
     let state: PointBudgetState = { budget: 200_000, consecutiveHits: 0 };
     let refreshEstimate: RefreshIntervalEstimate | null = null;
+    let nowMs = 0;
     let sawDecreaseAfterGrowth = false;
     let maxBudgetSeen = state.budget;
 
     for (let i = 0; i < 500; i++) {
       const frameMs = simulateFrameMs(state.budget);
-      refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, frameMs);
+      nowMs += frameMs;
+      refreshEstimate = updateRefreshIntervalEstimate(refreshEstimate, frameMs, nowMs);
       const window = Array(WINDOW_SIZE).fill(frameMs);
       const before = state.budget;
       state = evaluatePointBudget(state, window, refreshEstimate.intervalMs, tuning);
