@@ -1,0 +1,59 @@
+# 空の[workspace]テーブル: このCargo.tomlを、それ自身を根とする独立した
+# 1クレートのワークスペースにする。ルート側のexcludeだけに頼ると、ディレクトリの
+# 親をさらに辿った先(このリポジトリをgit worktreeとして複数チェックアウトしている
+# 場合の、外側のチェックアウトなど)に別の[workspace]が見つかってしまうことがあり、
+# 「そのワークスペースのメンバーでもexclude対象でもない」という曖昧な状態になって
+# cargoがエラーにする。空の[workspace]を明示することで、どこに置かれても
+# このCargo.tomlより上を探しに行かなくなる。
+[workspace]
+
+[package]
+name = "pcv-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["dOtOb9"]
+repository = "https://github.com/dOtOb9/point-cloud-viewer"
+description = "pcv-core を wasm-bindgen で包み、Web Worker から呼べるようにする層。wasm 固有の依存(wasm-bindgen/js-sys/web-sys)はここに閉じ、pcv-core には持ち込まない(ARCHITECTURE.md 規約1)"
+
+# ルートのワークスペースには入れていない(ルート Cargo.toml の exclude を参照)。
+# そのためここは自分自身が根になる、1クレートだけの独立したワークスペースとして扱われる
+# ([patch.crates-io] が効くのもそのため)。ビルドは
+# `cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown`。
+
+[lib]
+# cdylib: wasm-bindgen が読む .wasm バイナリを作るのに必要。
+# rlib: pcv-wasm 自身のユニットテスト(cargo test、ネイティブターゲット)をこのクレート内で
+# 動かすのに必要(範囲読みのバイト計算など、Worker/JSに依存しない部分だけをテストする。
+# TaskSheets/ADR-0012-web-worker-sync-io.md 参照)。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pcv-core = { path = "../pcv-core" }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "File",
+  "Blob",
+  "FileReaderSync",
+  "XmlHttpRequest",
+  "XmlHttpRequestResponseType",
+  "console",
+]
+
+# pcv-core と同じ理由(vendor/copc-reader/PATCH.md参照): 上流の copc-reader 0.9.0 は
+# hierarchyが複数ページに分かれる大規模COPC(sofi.copc.laz等)を開けない欠陥がある。
+# pcv-wasmはルートワークスペースの外にあるため、この[patch]もルートとは別に必要。
+# 忘れるとWeb版は「小さいファイルは開けるが大きいファイルだけ壊れる」という、
+# ADR-0003が既に踏んだのと同じ罠にはまる。
+[patch.crates-io]
+copc-reader = { path = "../../vendor/copc-reader" }
+
+[profile.release]
+opt-level = "s"
+lto = true

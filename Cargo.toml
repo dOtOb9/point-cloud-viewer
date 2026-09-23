@@ -1,7 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["crates/pcv-core", "src-tauri"]
-exclude = ["vendor"]
+# crates/pcv-wasm はここには入れない。wasm-bindgen 系の依存はwasm32専用で、
+# ネイティブの `cargo test --workspace` / `cargo clippy --workspace` (CIの rust ジョブ、
+# windows-latest) に巻き込むと壊れる。vendor/ と同じ理由でワークスペース外に置く
+# (TaskSheets/ADR-0012-web-worker-sync-io.md 参照)。ビルドは
+# `cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown`
+# のように明示的なmanifest-pathで行う。
+exclude = ["vendor", "crates/pcv-wasm"]
 
 # 全クレート共通のメタデータ。各メンバーは license.workspace = true で継承する。
 [workspace.package]
