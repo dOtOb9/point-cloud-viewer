@@ -13,13 +13,13 @@
 // 受け取る。UIから触るときは `src/state/` を経由すること。
 
 import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
-import { computeIntensityRange, NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
+import { computeIntensityRange, type ParsedNode } from "../datasource/node-format";
 import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { multiply, perspective, type Mat4 } from "./mat4";
 import { frustumPlanes } from "./frustum";
 import {
+  CACHE_BUDGET_MULTIPLIER,
   evaluatePointBudget,
-  pointBudgetMaxFromMemoryBudget,
   updateRefreshIntervalEstimate,
   DEFAULT_POINT_BUDGET_TUNING,
   type RefreshIntervalEstimate,
@@ -31,10 +31,12 @@ import { formatNodeLoadErrorMessage } from "./node-load-error";
 import { selectNodesForFrame } from "./node-selection";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
-import { DEFAULT_EDL_ENABLED, DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
+import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
 import { FAR, FOV_Y_RADIANS, GpuResources, NEAR } from "./gpu-resources";
 import { DEFAULT_COLOR_MODE, extendRange, type ColorMode, type ValueRange } from "./colormap";
 import { computeSceneBounds, elevationRangeFromCloudBounds } from "./scene-bounds";
+import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "./device-profile";
+import { computeCanvasBackingSize } from "./render-scale";
 
 // WebGPUのエラーを画面に出す仕組み(ADR-0011)。蓄積・重複抑制のロジック自体は
 // GPUに依存しないgpu-error-log.tsに切り出してあり、このファイルはWebGPUの
@@ -46,71 +48,21 @@ import { computeSceneBounds, elevationRangeFromCloudBounds } from "./scene-bound
 // コールバック(onNodeLoadErrorReported)で外へ渡す。メッセージの組み立ては
 // node-load-error.tsの純粋関数に任せる(詳しくはTaskSheets/ADR-0013参照)。
 
-/** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
-const CACHE_BUDGET_MULTIPLIER = 2;
-
 /**
- * タスクB（ADR-0010で刷新）: 点キャッシュに割り当てる想定メモリ予算(バイト)。
+ * タスクB（ADR-0009）: 自動調整（`evaluatePointBudget`）が動かせる下限。
+ * 「これより粗いと点群として意味が無い」という経験的な最低ラインで、
+ * 実測ではない。デスクトップ・モバイルで共通の絶対的な下限として扱う
+ * （上限は端末ごとに変わるが、下限は変えていない）。
  *
- * **この数値は実測していない、未検証の初期値。** 当初は256MiBにしていたが、
- * 所有者の実機（RTX 4070、VRAM 12GB）で「近くのチャンクが精緻にならない」
- * 症状の原因がまさに点予算(≒このメモリ予算から逆算される上限)の不足だった
- * ことが確定したため、1GiBへ引き上げた。`sofi.copc.laz`はレベル6だけで
- * 4,431ノード・ノードあたり約25,000点あるため、この程度の余裕を見ても
- * 全レベルを賄いきれるわけではないが、旧256MiB(=旧DEFAULT_POINT_BUDGETの
- * 2.2倍)よりは大幅に改善する。ADR-0009の対象端末（OPPO Pad Air / RAM 4GB）
- * では1GiBは大きすぎる可能性が高いが、端末ごとにこの値を変える仕組みは
- * まだ無く（[M3-8](../../TaskSheets/M3-release-and-update.md)に送る）、
- * 現状は開発機基準の値になっている。
- */
-const POINT_CACHE_MEMORY_BUDGET_BYTES = 1024 * 1024 * 1024;
-
-/**
- * タスクB（ADR-0009）: 自動調整（`evaluatePointBudget`）が動かせる下限・上限。
- *
- * 下限（`AUTO_POINT_BUDGET_MIN`）は「これより粗いと点群として意味が無い」
- * という経験的な最低ラインで、実測ではない。
- *
- * 上限（`AUTO_POINT_BUDGET_MAX`）は、`POINT_CACHE_MEMORY_BUDGET_BYTES`から
- * 逆算する。`node-cache.ts`のキャッシュは点予算そのものではなく
- * `点予算 × CACHE_BUDGET_MULTIPLIER`点分のGPUバッファを保持するので、
- * 上限点数はメモリ予算をその倍率で割ったものになる
- * （式の説明は`point-budget.ts`の`pointBudgetMaxFromMemoryBudget`参照）。
- * 端末情報（`adapter.limits`等）から`POINT_CACHE_MEMORY_BUDGET_BYTES`自体を
- * 動的に決める仕組みは、このタスクの範囲外で
- * [M3-8](../../TaskSheets/M3-release-and-update.md)の端末適応作業に送る。
+ * 上限（`autoPointBudgetMax`、インスタンスフィールド）は、M3-8で
+ * `device-profile.ts`の`defaultRenderSettings()`が返す値を使うように変わった。
+ * 以前はここでモジュール定数として1GiBから直接計算していたが、モバイルでは
+ * `navigator.deviceMemory`から算出した別の予算を使う必要があるため、
+ * 「デスクトップかどうか」を知っている`defaultRenderSettings()`に計算を
+ * 一本化した（コンストラクタ参照。デスクトップの計算式・値そのものは
+ * device-profile.tsのコメントに書いた通り、以前とまったく同じ）。
  */
 const AUTO_POINT_BUDGET_MIN = 200_000;
-const AUTO_POINT_BUDGET_MAX = pointBudgetMaxFromMemoryBudget(
-  POINT_CACHE_MEMORY_BUDGET_BYTES,
-  NODE_POINT_STRIDE,
-  CACHE_BUDGET_MULTIPLIER,
-);
-
-/**
- * 起動直後の点予算。**旧実装は固定で3,000,000だったが、これが所有者の実機で
- * 「近くのチャンクが精緻にならない」症状の直接の原因だった**
- * （`sofi.copc.laz`はノードあたり約25,000点なので、3,000,000点では
- * 約120ノード分しか描けず、レベル6だけで4,431ノードあるこのファイルでは
- * 全く足りない）。
- *
- * 低い値から上限を探り上げる（成長は`growRate`/`sustainedHitsToGrow`で
- * ゆっくりにしてある）のではなく、**楽観的に上限から始めて、外したら
- * 即座に大きく下げる側（`shrinkRate`、持続要求なし）で実機に合った値を
- * 素早く見つける**ほうが体感が良いと判断し、上限(`AUTO_POINT_BUDGET_MAX`)に
- * 連動させた。
- *
- * 到達秒数（`AUTO_POINT_BUDGET_INTERVAL_MS`=500msごとに評価する前提の計算値。
- * 実測ではない。`npx tsx`で`evaluatePointBudget`を実際に呼んで数えた具体的な
- * ステップ数を基にしている）:
- * - 上限(起動時の開始値)→下限: 約11秒（下げは持続要求が無く、20%/回で
- *   即座に効くため速い）
- * - 下限→上限: 約78秒（上げは`sustainedHitsToGrow`=3回(1.5秒)の持続を
- *   要求したうえで10%/回。ただし開始値がすでに上限なので、これは
- *   「一度下限まで落ちた後に完全回復する」という稀なケースの所要時間であり、
- *   通常発生する経路ではない）
- */
-const DEFAULT_POINT_BUDGET = AUTO_POINT_BUDGET_MAX;
 
 /** 自動調整の判断に使う直近フレームの本数。ADR-0009:「判断は数フレームの中央値で
  *  行う。単発の重いフレーム（ノード到着時など）に反応しない」。 */
@@ -158,6 +110,14 @@ export interface RenderStats {
   /** M2-2: 現在の着色モード。EDLと同じく、UIの操作がrendererまで届いているかを
    *  stdoutで機械的に確認できるようにする。 */
   colorMode: ColorMode;
+  /** M3-8: モバイル最適化の各手段の現在値。GUIを目視できなくても
+   *  `npm run tauri dev`のstdoutから確認できるようにする(既存のedlEnabled等と
+   *  同じ狙い)。`isMobile`/`pointBudgetMax`は端末プロファイルから決まる値で、
+   *  セッション中は変わらない(手動で変更する手段は今回設けていない)。 */
+  renderScale: number;
+  pointShape: PointShape;
+  isMobile: boolean;
+  pointBudgetMax: number;
 }
 
 export class PointCloudRenderer {
@@ -176,10 +136,16 @@ export class PointCloudRenderer {
    *  レイを作るために、フレームをまたいで持っておく（M1-5）。 */
   private lastViewProj: Mat4 | null = null;
 
-  private pointBudget = DEFAULT_POINT_BUDGET;
+  /** M3-8: コンストラクタで`defaultRenderSettings()`の`pointBudgetStart`から
+   *  設定する（デスクトップは変更前と同じ値、モバイルはdeviceMemoryから算出）。 */
+  private pointBudget: number;
   /** タスクB（ADR-0009）: 自動調整のオン/オフ。`setPointBudget()`で手動設定すると
    *  自動でoffになる（手動設定を自動調整より常に優先するため）。 */
   private autoPointBudgetEnabled = true;
+  /** M3-8: 自動調整が動ける点予算の上限。コンストラクタで`defaultRenderSettings()`
+   *  の`pointBudgetMax`から設定する（デスクトップは変更前と同じ値、モバイルは
+   *  deviceMemoryから算出。詳細はdevice-profile.tsのコメント参照）。 */
+  private readonly autoPointBudgetMax: number;
   /** 自動調整の判断に使う直近フレームの所要時間(ms)。`evaluatePointBudget`に
    *  ウィンドウごと渡し、「vsyncを落としたフレームの割合」を判定させる
    *  （単発の重いフレームに反応しないため。ADR-0010）。 */
@@ -224,11 +190,29 @@ export class PointCloudRenderer {
   private gridFadeDistance = 100;
   private gridGroundHeight = 0;
 
-  /** EDL陰影(M2-1)のオン/オフ・強さ・半径。既定はオン。実際の描画（陰影の計算・
-   *  合成パイプライン）はgpu-resources.tsの`GpuResources`が持つ。 */
-  private edlEnabled = DEFAULT_EDL_ENABLED;
+  /** EDL陰影(M2-1)のオン/オフ・強さ・半径。実際の描画（陰影の計算・合成
+   *  パイプライン）はgpu-resources.tsの`GpuResources`が持つ。
+   *  **既定値はM3-8でコンストラクタに移った**（デスクトップはオン=変更前と
+   *  同じ、モバイルはオフ。`defaultRenderSettings()`参照）。 */
+  private edlEnabled: boolean;
   private edlStrength = DEFAULT_EDL_STRENGTH;
   private edlRadiusPx = DEFAULT_EDL_RADIUS_PX;
+
+  /** M3-8: レンダースケール(内部解像度 = 表示サイズ×devicePixelRatio×この値)。
+   *  変更するとキャンバスの描画バッファを作り直す必要があるため、
+   *  `setRenderScale()`経由でのみ変更し、そのたびに`applyCanvasSize()`を呼ぶ。 */
+  private renderScale: number;
+  /** M3-8: 点の形（丸/四角）。gpu-resources.tsが起動時に両方のパイプラインを
+   *  作成済みなので、切り替えにリソースの作り直しは要らない
+   *  (`setPointShape()`参照)。 */
+  private pointShape: PointShape;
+  /** M3-8: モバイル判定の結果。コンストラクタで一度だけ決め、以後は変えない
+   *  (実行中に`navigator.deviceMemory`や入力デバイスが変わることは想定しない)。 */
+  private readonly isMobileProfile: boolean;
+  /** M3-8: レンダースケール変更時にキャンバスサイズを再計算するために、
+   *  直近の`resize()`呼び出しの表示サイズ(CSS px)を覚えておく。 */
+  private lastDisplayWidthCss = 1;
+  private lastDisplayHeightCss = 1;
 
   /** M2-2: 着色モード。既定はRGB。RGBを持たないファイルへのフォールバックは
    *  呼び出し側（`src/state/useCopcViewer.ts`）が`colormap.ts`の
@@ -254,6 +238,21 @@ export class PointCloudRenderer {
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.camera = new OrbitCamera([0, 0, 0], 100);
+
+    // M3-8: モバイル判定と各最適化手段の既定値を、端末プロファイル
+    // (device-profile.ts)からまとめて決める。`src/state/useCopcViewer.ts`も
+    // 同じ`defaultRenderSettings(readDeviceProfileInput())`を同じ入力(実行中の
+    // ブラウザの状態は変わらない)で呼ぶため、ハンドシェイクなしで両者の初期値が
+    // 一致する（既存のDEFAULT_EDL_STRENGTH等、モジュール定数をimportして揃える
+    // やり方と同じ考え方を、値ではなく「同じ純粋関数の呼び出し」に広げたもの）。
+    const deviceProfile = defaultRenderSettings(readDeviceProfileInput());
+    this.isMobileProfile = deviceProfile.isMobile;
+    this.renderScale = deviceProfile.renderScale;
+    this.pointShape = deviceProfile.pointShape;
+    this.edlEnabled = deviceProfile.edlEnabled;
+    this.autoPointBudgetMax = deviceProfile.pointBudgetMax;
+    this.pointBudget = deviceProfile.pointBudgetStart;
+
     this.cache = new NodeCache(this.pointBudget * CACHE_BUDGET_MULTIPLIER);
     this.gpu = new GpuResources((message) => this.reportGpuError(message));
   }
@@ -423,6 +422,43 @@ export class PointCloudRenderer {
   }
 
   /**
+   * M3-8: レンダースケール(内部解像度 = 表示サイズ×devicePixelRatio×この値)を
+   * 変更する。キャンバスの描画バッファ(depth/オフスクリーンのテクスチャを含む)
+   * を作り直す必要があるため、`applyCanvasSize()`（`resize()`と共通）を呼ぶ。
+   */
+  setRenderScale(scale: number): void {
+    this.renderScale = Math.max(0.05, scale);
+    this.applyCanvasSize();
+  }
+
+  getRenderScale(): number {
+    return this.renderScale;
+  }
+
+  /**
+   * M3-8: 点の形（丸/四角）。gpu-resources.tsが起動時に丸・四角の両方の
+   * パイプラインを作成済みなので、ここではフィールドを書き換えるだけで
+   * リソースの作り直しは不要（次のdrawFrame()呼び出しから反映される）。
+   */
+  setPointShape(shape: PointShape): void {
+    this.pointShape = shape;
+  }
+
+  getPointShape(): PointShape {
+    return this.pointShape;
+  }
+
+  /** M3-8: モバイル判定の結果(コンストラクタで一度だけ決めた値)。 */
+  getIsMobile(): boolean {
+    return this.isMobileProfile;
+  }
+
+  /** M3-8: 自動調整が動ける点予算の上限(端末プロファイルから決めた値)。 */
+  getAutoPointBudgetMax(): number {
+    return this.autoPointBudgetMax;
+  }
+
+  /**
    * M2-2: 着色モードを切り替える。RGBを持たないファイルでの`"rgb"`の
    * フォールバックはここでは行わない（呼び出し側`useCopcViewer.ts`の
    * `resolveColorMode`が既に解決した値を渡してくる前提。理由は
@@ -472,12 +508,41 @@ export class PointCloudRenderer {
     this.onNodeLoadError?.(message);
   }
 
-  resize(width: number, height: number): void {
-    const w = Math.max(1, Math.floor(width));
-    const h = Math.max(1, Math.floor(height));
-    this.canvas.width = w;
-    this.canvas.height = h;
-    this.gpu.resize(w, h);
+  /**
+   * 表示サイズ(CSS px、通常は`canvas.clientWidth`/`clientHeight`)を渡す。
+   * **M3-8**: 以前はこの値をそのまま`canvas.width`/`height`(描画バッファの
+   * サイズ)に使っていたが、レンダースケール導入により
+   * 「表示サイズ×devicePixelRatio×レンダースケール」を計算してから使うように
+   * 変えた(`applyCanvasSize()`参照)。表示サイズ自体は`lastDisplayWidthCss`/
+   * `lastDisplayHeightCss`に覚えておき、`setRenderScale()`で倍率だけが
+   * 変わったときも同じ計算を再利用する。
+   */
+  resize(displayWidthCss: number, displayHeightCss: number): void {
+    this.lastDisplayWidthCss = Math.max(1, displayWidthCss);
+    this.lastDisplayHeightCss = Math.max(1, displayHeightCss);
+    this.applyCanvasSize();
+  }
+
+  /**
+   * 表示サイズ(CSS px)・devicePixelRatio・レンダースケールから、キャンバスの
+   * 描画バッファ(internal resolution)を計算し直す。計算そのものは
+   * `render-scale.ts`の`computeCanvasBackingSize`（純粋関数、単体テスト済み）に
+   * 任せ、ここでは結果を`canvas.width`/`height`と`gpu.resize()`へ反映するだけ
+   * にする。「表示サイズが変わったとき」(`resize()`)と「レンダースケールだけ
+   * 変わったとき」(`setRenderScale()`)の両方がこのメソッドを通ることで、
+   * 処理が分岐しないようにしてある。
+   */
+  private applyCanvasSize(): void {
+    const devicePixelRatio = typeof window !== "undefined" && window.devicePixelRatio ? window.devicePixelRatio : 1;
+    const { width, height } = computeCanvasBackingSize(
+      this.lastDisplayWidthCss,
+      this.lastDisplayHeightCss,
+      devicePixelRatio,
+      this.renderScale,
+    );
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.gpu.resize(width, height);
   }
 
   start(): void {
@@ -565,6 +630,8 @@ export class PointCloudRenderer {
       edlEnabled: this.edlEnabled,
       edlStrength: this.edlStrength,
       edlRadiusPx: this.edlRadiusPx,
+      renderScale: this.renderScale,
+      pointShape: this.pointShape,
       cameraEye: this.camera.eye(),
       cameraTarget: this.camera.target,
       upAxis: this.camera.getUpAxis(),
@@ -608,6 +675,10 @@ export class PointCloudRenderer {
       edlEnabled: this.edlEnabled,
       edlStrength: this.edlStrength,
       colorMode: this.colorMode,
+      renderScale: this.renderScale,
+      pointShape: this.pointShape,
+      isMobile: this.isMobileProfile,
+      pointBudgetMax: this.autoPointBudgetMax,
     });
   }
 
@@ -659,7 +730,7 @@ export class PointCloudRenderer {
       refreshIntervalMs,
       {
         ...DEFAULT_POINT_BUDGET_TUNING,
-        limits: { min: AUTO_POINT_BUDGET_MIN, max: AUTO_POINT_BUDGET_MAX },
+        limits: { min: AUTO_POINT_BUDGET_MIN, max: this.autoPointBudgetMax },
       },
     );
     this.autoPointBudgetConsecutiveHits = result.consecutiveHits;

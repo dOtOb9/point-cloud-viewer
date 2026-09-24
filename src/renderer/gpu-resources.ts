@@ -20,6 +20,7 @@ import { floorMod, GroundGrid } from "./ground-grid";
 import { horizontalBasis, type Vec3 } from "./up-axis";
 import { EdlPass } from "./edl";
 import { ELEVATION_INTENSITY_RAMP, rampToWgslFunction, type ColorMode, type ValueRange } from "./colormap";
+import type { PointShape } from "./device-profile";
 
 const POINT_SIZE_PX = 4;
 /** WebGPUのFOV/near/far。orchestrator側（point-cloud-renderer.ts）が投影行列を
@@ -27,8 +28,18 @@ const POINT_SIZE_PX = 4;
 export const FOV_Y_RADIANS = Math.PI / 3;
 export const NEAR = 0.01;
 export const FAR = 1e7;
-/** 深度バッファのフォーマット。点群パイプラインと空パイプライン(sky.ts)の両方が
- *  同じレンダーパスに参加するので、1箇所にまとめて食い違いを防ぐ。 */
+/**
+ * 深度バッファのフォーマット。点群パイプラインと空パイプライン(sky.ts)の両方が
+ * 同じレンダーパスに参加するので、1箇所にまとめて食い違いを防ぐ。
+ *
+ * **M3-8: EDLオン(2パス)・EDLオフ(1パス、drawFrame()参照)のどちらの経路でも、
+ * 深度テクスチャ(`depthTexture`/`offscreenDepthTexture`、resize()参照)と
+ * 点群パイプライン4つ・sky/grid/EDLの各パイプラインの`depthStencil.format`が
+ * すべてこの1つの定数を参照する。** 以前EDL合成パイプラインが`depthStencil`
+ * そのものを宣言し忘れ、パスと非互換になって画面が真っ黒になる事故があった
+ * (edl.tsのinit()コメント参照)。新しい深度テクスチャやパイプラインを足すときは
+ * 必ずこの定数を使うこと（別の値を書かないこと）で、同じ事故を構造的に防ぐ。
+ */
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 /**
  * M2-1: 点群だけを描くオフスクリーンの色テクスチャのフォーマット。スワップチェーンの
@@ -223,12 +234,32 @@ fn vs_main(in: VertexIn) -> VertexOut {
   return out;
 }
 
+// M3-8: 点の形（丸/四角）は、同じフラグメントシェーダの中でif分岐して
+// discardを迂回するのではなく、エントリポイントそのものを2つに分けた
+// (fs_main_round/fs_main_square)。理由: discardは実行時にどちらへ進むかに
+// 関わらず、シェーダの中に存在するというだけでGPU(特にAdreno等のタイル
+// ベースGPU)のEarly-Z/隠面消去の最適化を無効化しうる。pointShapeをuniformで
+// 受け取ってif (pointShapeIsRound) { discard; }と書いても、コンパイラは
+// 実行時の値を静的に知らないため「discardされないことがある」余地を消せず、
+// 四角形を選んでも最適化が有効に戻らない可能性が高い。エントリポイントごと
+// 分ければ、四角形用のパイプラインのシェーダバイナリにはdiscard命令
+// そのものが存在しない、という静的な保証になる。
+//
+// パイプラインは(このエントリポイント2つ)×(描画先2つ、下のGpuResourcesの
+// フィールドコメント参照)の4つを初期化時にまとめて作っておき、切り替えは
+// 「どのパイプラインをbindするか」を選ぶだけにする(再作成不要。
+// drawFrame()参照)。
 @fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+fn fs_main_round(in: VertexOut) -> @location(0) vec4<f32> {
   // 四角形を円形に抜く。
   if (dot(in.uv, in.uv) > 1.0) {
     discard;
   }
+  return in.color;
+}
+
+@fragment
+fn fs_main_square(in: VertexOut) -> @location(0) vec4<f32> {
   return in.color;
 }
 `;
@@ -248,6 +279,17 @@ export interface DrawFrameOptions {
   edlEnabled: boolean;
   edlStrength: number;
   edlRadiusPx: number;
+  /**
+   * M3-8: レンダースケール(内部解像度 = 表示サイズ×devicePixelRatio×この値)。
+   * 点のサイズ・EDLの半径はどちらも「内部バッファのピクセル数」を基準にした
+   * 値なので、スケールを掛けて補正しないと、スケールを下げたときに画面上の
+   * 見た目のサイズが変わってしまう(補正の理由はdrawPoints()のコメント参照)。
+   * デスクトップの既定値1.0では、この補正は実質何もしない(変更前と同じ)。
+   */
+  renderScale: number;
+  /** M3-8: 点の形（丸/四角）。どちらのパイプラインを使うかをここで選ぶだけで、
+   *  パイプライン自体はinit()で両方作成済み(切り替えのたびに再作成しない)。 */
+  pointShape: PointShape;
   cameraEye: readonly [number, number, number];
   cameraTarget: readonly [number, number, number];
   upAxis: Vec3;
@@ -263,7 +305,23 @@ export class GpuResources {
   private device: GPUDevice | null = null;
   private context: GPUCanvasContext | null = null;
   private format: GPUTextureFormat = "bgra8unorm";
-  private pipeline: GPURenderPipeline | null = null;
+  /**
+   * M3-8: 点群パイプラインは「丸/四角」×「描画先(オフスクリーン/スワップ
+   * チェーン直接)」の組み合わせで4つ持つ。
+   *
+   * 描画先を分ける理由: オフスクリーン向け(`OFFSCREEN_COLOR_FORMAT`
+   * =`rgba8unorm`固定)とスワップチェーン向け(`this.format`、環境依存)では
+   * フラグメントターゲットのフォーマットが異なり、WebGPUはレンダーパスの
+   * 色アタッチメントとパイプラインの宣言フォーマットが厳密に一致することを
+   * 要求するため、1つのパイプラインで両方を兼ねることはできない
+   * (EDLオン=2パスならオフスクリーン向け、EDLオフ=1パスならスワップ
+   * チェーン向けを使う。drawFrame()参照)。
+   * 丸/四角を分ける理由はWGSL側のコメント(fs_main_round/fs_main_square)参照。
+   */
+  private pipelineOffscreenRound: GPURenderPipeline | null = null;
+  private pipelineOffscreenSquare: GPURenderPipeline | null = null;
+  private pipelineSwapchainRound: GPURenderPipeline | null = null;
+  private pipelineSwapchainSquare: GPURenderPipeline | null = null;
   private uniformLayout: GPUBindGroupLayout | null = null;
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
@@ -369,37 +427,50 @@ export class GpuResources {
       });
 
       const shaderModule = device.createShaderModule({ code: SHADER_SRC });
-      this.pipeline = device.createRenderPipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [this.uniformLayout] }),
-        vertex: {
-          module: shaderModule,
-          entryPoint: "vs_main",
-          buffers: [
-            {
-              arrayStride: NODE_POINT_STRIDE,
-              stepMode: "instance",
-              attributes: [
-                { shaderLocation: 0, offset: 0, format: "float32x3" },
-                { shaderLocation: 1, offset: 12, format: "unorm8x4" },
-                // M2-2: intensity(u16)+classification(u8)+padding(u8)の4バイトを
-                // 1つのuint32属性として読む(node_format.rsのオフセット16参照。
-                // シェーダ側でビット演算により分解する。SHADER_SRCのVertexIn参照)。
-                { shaderLocation: 2, offset: 16, format: "uint32" },
-              ],
-            },
-          ],
-        },
-        fragment: {
-          module: shaderModule,
-          entryPoint: "fs_main",
-          // M2-1: 点群はもうスワップチェーンへ直接描かない。EDLの合成パス(edl.ts)が
-          // 「点が描かれたピクセルだけ」を判定できるよう、点群専用のオフスクリーン
-          // テクスチャへ描く（drawFrame()のパス1参照）。
-          targets: [{ format: OFFSCREEN_COLOR_FORMAT }],
-        },
-        primitive: { topology: "triangle-list" },
-        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
-      });
+      const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [this.uniformLayout] });
+      const vertexState: GPUVertexState = {
+        module: shaderModule,
+        entryPoint: "vs_main",
+        buffers: [
+          {
+            arrayStride: NODE_POINT_STRIDE,
+            stepMode: "instance",
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x3" },
+              { shaderLocation: 1, offset: 12, format: "unorm8x4" },
+              // M2-2: intensity(u16)+classification(u8)+padding(u8)の4バイトを
+              // 1つのuint32属性として読む(node_format.rsのオフセット16参照。
+              // シェーダ側でビット演算により分解する。SHADER_SRCのVertexIn参照)。
+              { shaderLocation: 2, offset: 16, format: "uint32" },
+            ],
+          },
+        ],
+      };
+
+      // M3-8: 丸/四角 × オフスクリーン/スワップチェーンの4通り。フィールドの
+      // コメント、およびWGSL側のfs_main_round/fs_main_squareのコメントに
+      // 理由を書いてある。`depthStencil`は4つとも同じDEPTH_FORMAT(このファイル
+      // 冒頭の定数コメント参照)を使う。
+      const buildPointsPipeline = (fragmentEntryPoint: string, targetFormat: GPUTextureFormat): GPURenderPipeline =>
+        device.createRenderPipeline({
+          layout: pipelineLayout,
+          vertex: vertexState,
+          fragment: {
+            module: shaderModule,
+            entryPoint: fragmentEntryPoint,
+            targets: [{ format: targetFormat }],
+          },
+          primitive: { topology: "triangle-list" },
+          depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
+        });
+
+      // M2-1: EDLオン(2パス)のときは、点群をスワップチェーンへ直接描かず、
+      // 専用のオフスクリーンテクスチャへ描く（drawFrame()のパス1参照）。
+      this.pipelineOffscreenRound = buildPointsPipeline("fs_main_round", OFFSCREEN_COLOR_FORMAT);
+      this.pipelineOffscreenSquare = buildPointsPipeline("fs_main_square", OFFSCREEN_COLOR_FORMAT);
+      // M3-8: EDLオフ(1パス)のときは、点群をスワップチェーンへ直接描く。
+      this.pipelineSwapchainRound = buildPointsPipeline("fs_main_round", this.format);
+      this.pipelineSwapchainSquare = buildPointsPipeline("fs_main_square", this.format);
 
       // M2-2: 着色設定の共有uniformバッファ。全ノードのbindGroup(binding 1)が
       // 同じバッファを参照する。内容は`drawFrame()`が毎フレーム`writeBuffer`で
@@ -453,7 +524,16 @@ export class GpuResources {
   /** 描画に必要な一式（device/context/pipeline/深度ビュー）が揃っているか。
    *  呼び出し側はこれをrenderOnce()の入り口で確認し、揃うまで描画をスキップする。 */
   isReady(): boolean {
-    return !!(this.device && this.context && this.pipeline && this.depthView && this.colorSettingsBuffer);
+    return !!(
+      this.device &&
+      this.context &&
+      this.pipelineOffscreenRound &&
+      this.pipelineOffscreenSquare &&
+      this.pipelineSwapchainRound &&
+      this.pipelineSwapchainSquare &&
+      this.depthView &&
+      this.colorSettingsBuffer
+    );
   }
 
   resize(width: number, height: number): void {
@@ -536,33 +616,50 @@ export class GpuResources {
   }
 
   /**
-   * M2-1: 点群・空・グリッドを2つのレンダーパスに分けて描く。
+   * M2-1 → M3-8で分岐を追加: 点群・空・グリッドを描く。
    *
-   * なぜ分けたか（EDLの陰影を点群にだけ掛け、空・グリッドには掛けないという
-   * タスクシートの必須要件のため）: EDLは「このピクセルと隣のピクセルの深度差」
-   * から陰影を作る。空・グリッドと点群を同じ深度バッファに描いてしまうと、
-   * フラグメントシェーダの中で「このピクセルは点由来か背景由来か」を区別する
-   * 手段が無くなる。そこで点群だけを独立したオフスクリーンの色+深度テクスチャに
-   * 先に描き(パス1)、その後スワップチェーンへ空・グリッド・EDL合成済みの点群を
-   * 順に描く(パス2)。パス2の最後に呼ぶEDL合成(this.edl.draw())は、オフスクリーンの
-   * 深度がクリア値のまま(=点が無い)のピクセルをdiscardするので、空・グリッドの
-   * ピクセルには一切書き込まない(edl.tsファイル冒頭のコメント参照)。
+   * **EDLオンのときは従来通り2パス**（点群→オフスクリーン、背景+EDL合成→
+   * スワップチェーン）。EDLは「このピクセルと隣のピクセルの深度差」から
+   * 陰影を作るため、点群にだけ陰影を掛けたいなら「このピクセルは点由来か
+   * 背景由来か」をフラグメントシェーダで区別できる必要があり、それには
+   * 点群を独立したオフスクリーンに先に描くのが一番素直（設計判断の詳細は
+   * edl.tsファイル冒頭のコメント参照。ここでは変えていない）。
    *
-   * 他に検討した案: 深度バッファに1ビット立てて判定する/ステンシルバッファを
-   * 使う、なども考えたが、色・深度を別テクスチャに分けたほうが「オフスクリーンに
-   * 何が入っているか」がテクスチャの宣言から素直に読み取れ、既存のsky.ts/
-   * ground-grid.tsのコードに一切手を入れずに済む（所有者の「実装を追えること」を
-   * 優先）。
+   * **EDLオフのときは1パスにする（M3-8、モバイル最適化の1つ）。** EDLを
+   * 使わないなら「点由来か背景由来か」を区別する理由自体が無いので、
+   * オフスクリーンを経由する必然性が無い。背景→点群を同じパスでスワップ
+   * チェーンへ直接描くことで、オフスクリーンへの描画・テクスチャ読み込み・
+   * EDL合成パスの分だけメモリ帯域の往復が減る。
+   *
+   * **パイプライン/パスの深度フォーマットの一致（重要、実機不具合の再発防止）**:
+   * 以前EDL合成パイプラインが`depthStencil`を宣言し忘れ、パスと非互換になって
+   * 画面が真っ黒になる事故があった(edl.tsのinit()コメント参照)。同じ事故を
+   * この1パス経路でも起こさないよう、すべての深度テクスチャ・すべての
+   * 点群パイプラインが`DEPTH_FORMAT`という同じ1つの定数を参照するように
+   * してある(このファイル冒頭のDEPTH_FORMAT宣言のコメント参照)。2パス経路は
+   * オフスクリーンの深度(`offscreenDepthView`)、1パス経路はスワップチェーンの
+   * 深度(`depthView`)を使うが、どちらも同じDEPTH_FORMATで作られているため、
+   * パイプラインの宣言と実際のパスのアタッチメントが常に一致する。
    */
   drawFrame(viewProj: Mat4, width: number, height: number, nodes: CachedNode[], options: DrawFrameOptions): void {
     const device = this.device;
     const context = this.context;
-    const pipeline = this.pipeline;
     const depthView = this.depthView;
     const offscreenColorView = this.offscreenColorView;
     const offscreenDepthView = this.offscreenDepthView;
     const colorSettingsBuffer = this.colorSettingsBuffer;
-    if (!device || !context || !pipeline || !depthView || !offscreenColorView || !offscreenDepthView || !colorSettingsBuffer) {
+    if (
+      !device ||
+      !context ||
+      !depthView ||
+      !offscreenColorView ||
+      !offscreenDepthView ||
+      !colorSettingsBuffer ||
+      !this.pipelineOffscreenRound ||
+      !this.pipelineOffscreenSquare ||
+      !this.pipelineSwapchainRound ||
+      !this.pipelineSwapchainSquare
+    ) {
       return;
     }
 
@@ -579,36 +676,206 @@ export class GpuResources {
 
     const encoder = device.createCommandEncoder();
 
-    // --- パス1: 点群だけをオフスクリーンへ描く ---
-    // 色はクリア時にalpha=0にしておく(「まだ点が描かれていない」の目印。ただし
-    // EDL合成側の判定は深度のクリア値で行っており、このalphaは直接は使っていない。
-    // 深度のほうを判定に使う理由: 頂点シェーダが円形マスクの外側をdiscardしても
-    // 深度は必ずクリア値のまま残るため、"点が1つも無い"ことをより確実に表す)。
-    const pointsPass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: offscreenColorView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: "clear",
-          storeOp: "store",
+    if (options.edlEnabled) {
+      // --- パス1: 点群だけをオフスクリーンへ描く ---
+      // 色はクリア時にalpha=0にしておく(「まだ点が描かれていない」の目印。ただし
+      // EDL合成側の判定は深度のクリア値で行っており、このalphaは直接は使っていない。
+      // 深度のほうを判定に使う理由: 頂点シェーダが円形マスクの外側をdiscardしても
+      // 深度は必ずクリア値のまま残るため、"点が1つも無い"ことをより確実に表す)。
+      const pointsPass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: offscreenColorView,
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+        depthStencilAttachment: {
+          view: offscreenDepthView,
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
         },
-      ],
-      depthStencilAttachment: {
-        view: offscreenDepthView,
-        depthClearValue: 1.0,
-        depthLoadOp: "clear",
-        depthStoreOp: "store",
-      },
-    });
+      });
+      const pointsPipeline = options.pointShape === "square" ? this.pipelineOffscreenSquare : this.pipelineOffscreenRound;
+      this.drawPoints(device, pointsPass, pointsPipeline, viewProj, width, height, nodes, options.renderScale);
+      pointsPass.end();
 
-    pointsPass.setPipeline(pipeline);
+      // --- パス2: 背景(空/グリッド/単色)を描いてから、EDL陰影付きの点群を合成する ---
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            // "sky"のときは全画面がSkyBackgroundで上書きされるので、このclearValueは
+            // 実質使われない。単色モードのときだけ見えるので、そちらの色にしておく。
+            clearValue: clearColorForMode(options.backgroundMode),
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
+      });
+      this.drawBackground(device, pass, options, width, height);
 
+      // EDL合成(M2-1): パス1でオフスクリーンに描いた点群の色+深度を読み、隣接
+      // ピクセルとの深度差から陰影を作って合成する。空・グリッドを描いた
+      // 直後・最後に呼ぶことで、点群を空・グリッドの手前に不透明合成する
+      // (discardしたピクセルは背景がそのまま残る)。このブランチは
+      // options.edlEnabled===trueのときだけ通るので、強さは常にそのまま渡す
+      // (以前あった「オフなら0を渡す」ためのif文は、EDLオフ側が下のelseへ
+      // 完全に分かれたことで不要になった)。
+      this.edl.draw(
+        device,
+        pass,
+        options.edlStrength,
+        options.edlRadiusPx * options.renderScale,
+        NEAR,
+        FAR,
+        width,
+        height,
+      );
+
+      pass.end();
+    } else {
+      // --- 1パス(M3-8): 背景→点群を同じパスでスワップチェーンへ直接描く ---
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            clearValue: clearColorForMode(options.backgroundMode),
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
+      });
+      this.drawBackground(device, pass, options, width, height);
+      const pointsPipeline = options.pointShape === "square" ? this.pipelineSwapchainSquare : this.pipelineSwapchainRound;
+      this.drawPoints(device, pass, pointsPipeline, viewProj, width, height, nodes, options.renderScale);
+      pass.end();
+    }
+
+    device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * 空・グリッドを描く（M2-0c）。EDLオン(2パス)のパス2・EDLオフ(1パス、M3-8)の
+   * どちらのスワップチェーンパスからも同じ内容で呼べるよう共通化してある
+   * （元はdrawFrame()に直書きだった。ロジックは変えていない）。
+   *
+   * 空・グリッドは点より必ず奥に描く（M2-0c）。どちらも深度を書かない
+   * (depthWriteEnabled=false, depthCompare="always")ので、この後に描く点群は
+   * 常に手前に残る。
+   */
+  private drawBackground(
+    device: GPUDevice,
+    pass: GPURenderPassEncoder,
+    options: DrawFrameOptions,
+    width: number,
+    height: number,
+  ): void {
+    if (options.backgroundMode !== "sky" && !options.gridEnabled) return;
+
+    const upAxis = options.upAxis;
+    const eye = options.cameraEye;
+
+    // 実機不具合の修正（2回。TaskSheets/M2-shading-and-ui.md M2-0c、
+    // scripts/diag-sky-ray.ts参照）:
+    // 1回目 - ワールド空間のinvViewProjをそのままf32でGPUに渡すと、NEAR/FAR
+    //         (0.01/1e7)のダイナミックレンジとautzenのような大きなワールド座標が
+    //         重なってwが桁落ちし、全ピクセルNaNになっていた
+    // 2回目 - 1回目の対策（全画面三角形の3頂点のレイ方向を線形補間する方式）も
+    //         壊れていた。NDC=3（三角形の頂点）は画面中心から70度以上離れており、
+    //         正規化済みの単位ベクトルをこの角度で線形補間すると弦を取ることに
+    //         なって長さが縮み、条件によってはNaNに戻っていた
+    //         （sky.tsファイル冒頭のコメント参照）
+    //
+    // 対策: 行列もレイ方向の補間も使わない。カメラ基底(forward/right/up)と
+    // FOV/アスペクト比から、画素ごとに`dir = normalize(forward + ndc.x*rightScaled
+    // + ndc.y*upScaled)`でレイ方向を組み立てる（sky.ts/ground-grid.tsのフラグメント
+    // シェーダ参照）。ここではその基底をf64で計算するだけ。扱う数値はどれも
+    // 大きさ~1で、f32にキャストしても精度は落ちない。
+    const { forward, right, up } = cameraBasis(eye, options.cameraTarget, upAxis);
+    const aspect = width / Math.max(height, 1);
+    const tanHalfFovY = Math.tan(FOV_Y_RADIANS / 2);
+    const rightScaled: Vec3 = [right[0] * aspect * tanHalfFovY, right[1] * aspect * tanHalfFovY, right[2] * aspect * tanHalfFovY];
+    const upScaled: Vec3 = [up[0] * tanHalfFovY, up[1] * tanHalfFovY, up[2] * tanHalfFovY];
+
+    if (options.backgroundMode === "sky") {
+      this.sky.draw(device, pass, forward, rightScaled, upScaled, upAxis);
+    }
+    if (options.gridEnabled) {
+      // グリッドは空を描いた後（or 単色クリアの後）に、半透明で重ねる。
+      // ここから先もすべてカメラ相対（ワールド座標の絶対値をf32で渡さない。
+      // ground-grid.tsのdraw()コメント参照）。gridRight/gridForwardは
+      // カメラ基底(right/up)とは別物で、シーンのupAxisに直交する水平基底
+      // （グリッド平面に沿った2D座標を作るためのもの）。
+      const { right: gridRight, forward: gridForward } = horizontalBasis(upAxis);
+      const eyeHeight = eye[0] * upAxis[0] + eye[1] * upAxis[1] + eye[2] * upAxis[2];
+      const eyeGridRight = eye[0] * gridRight[0] + eye[1] * gridRight[1] + eye[2] * gridRight[2];
+      const eyeGridForward = eye[0] * gridForward[0] + eye[1] * gridForward[1] + eye[2] * gridForward[2];
+      this.grid.draw(
+        device,
+        pass,
+        forward,
+        rightScaled,
+        upScaled,
+        upAxis,
+        gridRight,
+        gridForward,
+        options.gridGroundHeight - eyeHeight,
+        options.gridCellSize,
+        options.gridFadeDistance,
+        floorMod(eyeGridRight, options.gridCellSize),
+        floorMod(eyeGridForward, options.gridCellSize),
+      );
+    }
+  }
+
+  /**
+   * 点群ノードの一覧を1つのレンダーパスへ描く。EDLオン(2パス)のパス1・
+   * EDLオフ(1パス、M3-8)のどちらからも呼べるよう共通化してある（元は
+   * drawFrame()に直書きだった。ノードの描画ロジック自体は変えていない）。
+   *
+   * `renderScale`で`POINT_SIZE_PX`を補正する理由（M3-8）: 頂点シェーダは
+   * `pointSizePx / viewportWidth`でNDC上の半径を決める(SHADER_SRCのvs_main
+   * 参照)。`viewportWidth`はここでは内部バッファの解像度(width引数、
+   * `renderScale`だけ縮小済み)なので、`POINT_SIZE_PX`をそのまま渡すと、
+   * CSSで表示サイズへ引き伸ばされたときに`1/renderScale`倍だけ大きく見えて
+   * しまう(バッファを半分に縮小すると、引き伸ばし倍率が2倍になるため)。
+   * `POINT_SIZE_PX * renderScale`を渡せば、引き伸ばし後の見た目のピクセル
+   * サイズが`renderScale`の値によらず一定になる。デスクトップの既定値
+   * renderScale=1.0では`POINT_SIZE_PX`のまま、つまり変更前と同じになる。
+   */
+  private drawPoints(
+    device: GPUDevice,
+    pass: GPURenderPassEncoder,
+    pipeline: GPURenderPipeline,
+    viewProj: Mat4,
+    width: number,
+    height: number,
+    nodes: CachedNode[],
+    renderScale: number,
+  ): void {
+    pass.setPipeline(pipeline);
+    const scaledPointSizePx = POINT_SIZE_PX * renderScale;
     const uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
     for (const node of nodes) {
       const model = translation(node.origin[0], node.origin[1], node.origin[2]);
       const mvp = multiply(viewProj, model);
       uniformData.set(mvp, 0);
-      uniformData[16] = POINT_SIZE_PX;
+      uniformData[16] = scaledPointSizePx;
       uniformData[17] = width;
       uniformData[18] = height;
       // M2-2: 標高着色のため、ノード原点のワールドZをそのまま渡す
@@ -622,112 +889,10 @@ export class GpuResources {
         uniformData.byteLength,
       );
 
-      pointsPass.setBindGroup(0, node.bindGroup);
-      pointsPass.setVertexBuffer(0, node.vertexBuffer);
-      pointsPass.draw(6, node.pointCount);
+      pass.setBindGroup(0, node.bindGroup);
+      pass.setVertexBuffer(0, node.vertexBuffer);
+      pass.draw(6, node.pointCount);
     }
-
-    pointsPass.end();
-
-    // --- パス2: 背景(空/グリッド/単色)を描いてから、EDL陰影付きの点群を合成する ---
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: context.getCurrentTexture().createView(),
-          // "sky"のときは全画面がSkyBackgroundで上書きされるので、このclearValueは
-          // 実質使われない。単色モードのときだけ見えるので、そちらの色にしておく。
-          clearValue: clearColorForMode(options.backgroundMode),
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-      depthStencilAttachment: {
-        view: depthView,
-        depthClearValue: 1.0,
-        depthLoadOp: "clear",
-        depthStoreOp: "store",
-      },
-    });
-
-    // 空・グリッドは点より必ず奥に描く（M2-0c）。どちらも深度を書かない
-    // (depthWriteEnabled=false, depthCompare="always")ので、この後に合成する点群
-    // (EDL合成パスがdiscardしない限り必ず不透明に上書きする)は常に手前に残る。
-    if (options.backgroundMode === "sky" || options.gridEnabled) {
-      const upAxis = options.upAxis;
-      const eye = options.cameraEye;
-
-      // 実機不具合の修正（2回。TaskSheets/M2-shading-and-ui.md M2-0c、
-      // scripts/diag-sky-ray.ts参照）:
-      // 1回目 - ワールド空間のinvViewProjをそのままf32でGPUに渡すと、NEAR/FAR
-      //         (0.01/1e7)のダイナミックレンジとautzenのような大きなワールド座標が
-      //         重なってwが桁落ちし、全ピクセルNaNになっていた
-      // 2回目 - 1回目の対策（全画面三角形の3頂点のレイ方向を線形補間する方式）も
-      //         壊れていた。NDC=3（三角形の頂点）は画面中心から70度以上離れており、
-      //         正規化済みの単位ベクトルをこの角度で線形補間すると弦を取ることに
-      //         なって長さが縮み、条件によってはNaNに戻っていた
-      //         （sky.tsファイル冒頭のコメント参照）
-      //
-      // 対策: 行列もレイ方向の補間も使わない。カメラ基底(forward/right/up)と
-      // FOV/アスペクト比から、画素ごとに`dir = normalize(forward + ndc.x*rightScaled
-      // + ndc.y*upScaled)`でレイ方向を組み立てる（sky.ts/ground-grid.tsのフラグメント
-      // シェーダ参照）。ここではその基底をf64で計算するだけ。扱う数値はどれも
-      // 大きさ~1で、f32にキャストしても精度は落ちない。
-      const { forward, right, up } = cameraBasis(eye, options.cameraTarget, upAxis);
-      const aspect = width / Math.max(height, 1);
-      const tanHalfFovY = Math.tan(FOV_Y_RADIANS / 2);
-      const rightScaled: Vec3 = [right[0] * aspect * tanHalfFovY, right[1] * aspect * tanHalfFovY, right[2] * aspect * tanHalfFovY];
-      const upScaled: Vec3 = [up[0] * tanHalfFovY, up[1] * tanHalfFovY, up[2] * tanHalfFovY];
-
-      if (options.backgroundMode === "sky") {
-        this.sky.draw(device, pass, forward, rightScaled, upScaled, upAxis);
-      }
-      if (options.gridEnabled) {
-        // グリッドは空を描いた後（or 単色クリアの後）に、半透明で重ねる。
-        // ここから先もすべてカメラ相対（ワールド座標の絶対値をf32で渡さない。
-        // ground-grid.tsのdraw()コメント参照）。gridRight/gridForwardは
-        // カメラ基底(right/up)とは別物で、シーンのupAxisに直交する水平基底
-        // （グリッド平面に沿った2D座標を作るためのもの）。
-        const { right: gridRight, forward: gridForward } = horizontalBasis(upAxis);
-        const eyeHeight = eye[0] * upAxis[0] + eye[1] * upAxis[1] + eye[2] * upAxis[2];
-        const eyeGridRight = eye[0] * gridRight[0] + eye[1] * gridRight[1] + eye[2] * gridRight[2];
-        const eyeGridForward = eye[0] * gridForward[0] + eye[1] * gridForward[1] + eye[2] * gridForward[2];
-        this.grid.draw(
-          device,
-          pass,
-          forward,
-          rightScaled,
-          upScaled,
-          upAxis,
-          gridRight,
-          gridForward,
-          options.gridGroundHeight - eyeHeight,
-          options.gridCellSize,
-          options.gridFadeDistance,
-          floorMod(eyeGridRight, options.gridCellSize),
-          floorMod(eyeGridForward, options.gridCellSize),
-        );
-      }
-    }
-
-    // EDL合成(M2-1): パス1でオフスクリーンに描いた点群の色+深度を読み、隣接
-    // ピクセルとの深度差から陰影を作って合成する。「オフでも同じ見た目になる」
-    // という受け入れ条件は、オフのときstrength=0を渡すことで満たす
-    // (edlShadingFactor()がstrength=0で常に無変化を返すため。edl.ts参照)。
-    // 空・グリッドを描いた直後・最後に呼ぶことで、点群を空・グリッドの手前に
-    // 不透明合成する(discardしたピクセルは背景がそのまま残る)。
-    this.edl.draw(
-      device,
-      pass,
-      options.edlEnabled ? options.edlStrength : 0,
-      options.edlRadiusPx,
-      NEAR,
-      FAR,
-      width,
-      height,
-    );
-
-    pass.end();
-    device.queue.submit([encoder.finish()]);
   }
 
   dispose(): void {
