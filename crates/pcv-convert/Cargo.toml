@@ -1,0 +1,32 @@
+[package]
+name = "pcv-convert"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "M4-1: LAS/LAZ→COPC変換コストを測るためのスパイク実装。最適化はしていない(素朴さが目的)。pcv-coreには含めない(規約1。ARCHITECTURE.mdの守る規約1参照)"
+
+# 依存を追加するときの注意:
+# このクレートは規約1(pcv-coreがwasm32-unknown-unknownでビルドできること)の対象外。
+# `las`/`laz`はwasm互換性を確認していないネイティブ専用の依存として扱う。
+# pcv-coreはこのクレートに依存しない(逆方向の依存だけを許す)。
+[dependencies]
+# COPCのバイナリ構造(hierarchy entry・COPC info VLR)はpcv-coreの読み込み側(ADR-0003)と
+# 同じcopc-coreの型をそのまま流用する。書式の定義を2箇所で持たないため。
+copc-core = "0.9.0"
+# 入力LAS/LAZの読み込みと、出力点の生バイト列(raw::Point)へのシリアライズに使う。
+las = { version = "0.10", features = ["laz"] }
+# LAZチャンク圧縮そのもの(可変長チャンクモード)。COPCの1ノード=1チャンクに対応させる。
+laz = "0.12"
+byteorder = "1"
+thiserror = "2"
+
+[dev-dependencies]
+# 変換結果が実際にpcv-coreで開けるかの検証用(M4-1受け入れ条件)。
+pcv-core = { path = "../pcv-core" }
+tempfile = "3"
+
+[[bin]]
+name = "pcv-convert"
+path = "src/main.rs"

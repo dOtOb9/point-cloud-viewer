@@ -2627,6 +2627,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcv-convert"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "copc-core",
+ "las",
+ "laz",
+ "pcv-core",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "pcv-core"
 version = "0.1.0"
 dependencies = [

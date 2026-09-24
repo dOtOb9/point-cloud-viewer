@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/pcv-core", "src-tauri"]
+members = ["crates/pcv-core", "crates/pcv-convert", "src-tauri"]
+# crates/pcv-convert: M4-1(TaskSheets/M4-import-and-conversion.md)のスパイク。
+# 生LAS/LAZ→COPC変換の素朴実装で、コストを実測するためだけのもの。`las`/`laz`に
+# 依存しwasm対応は確認していないが、pcv-coreはこのクレートに依存しないため
+# `cargo build -p pcv-core --target wasm32-unknown-unknown`(規約1)には影響しない。
+#
 # crates/pcv-wasm はここには入れない。wasm-bindgen 系の依存はwasm32専用で、
 # ネイティブの `cargo test --workspace` / `cargo clippy --workspace` (CIの rust ジョブ、
 # windows-latest) に巻き込むと壊れる。vendor/ と同じ理由でワークスペース外に置く
