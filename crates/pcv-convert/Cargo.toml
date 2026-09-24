@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "M4-1: LAS/LAZ→COPC変換コストを測るためのスパイク実装。最適化はしていない(素朴さが目的)。pcv-coreには含めない(規約1。ARCHITECTURE.mdの守る規約1参照)"
+description = "M4-1のスパイク実装(素朴な全点メモリ実装)と、M4-3の本番変換経路(copc-writerを使ったout-of-core変換)。pcv-coreには含めない(規約1。ARCHITECTURE.mdの守る規約1参照)"
 
 # 依存を追加するときの注意:
 # このクレートは規約1(pcv-coreがwasm32-unknown-unknownでビルドできること)の対象外。
@@ -21,7 +21,7 @@ las = { version = "0.10", features = ["laz"] }
 laz = "0.12"
 byteorder = "1"
 thiserror = "2"
-# M4-1b: out-of-core(streaming)変換の計測用(examples/convert_streaming.rs)。
+# M4-1b/M4-3: out-of-core(streaming)変換。ADR-0006で本番の変換経路として採用した。
 # copc-core/copc-reader(ADR-0003)と同じroteiro-gis/copc-rustの姉妹クレートで、
 # 版が揃っているため依存解決の衝突は起きない(実測してビルドを確認済み)。
 # pcv-coreはこのクレートに依存しないので規約1には影響しない。
@@ -31,10 +31,22 @@ copc-writer = "0.9.0"
 e57 = "0.11.13"
 pcd-rs = "0.13.0"
 
-[dev-dependencies]
-# 変換結果が実際にpcv-coreで開けるかの検証用(M4-1受け入れ条件)。
+# M4-3: CRSの手当て(crs_override.rs)で、M4-5が検証済みの平面直角座標系/UTMの
+# ゾーンパラメータを再利用するために依存する(検証済みの数値・変換式を2箇所で
+# 持たないため)。変換結果が実際に`pcv-core`で開けるかのテスト(M4-1・M4-3の
+# 受け入れ条件)にも使う。pcv-core側はこのクレートに依存しない(逆方向のみ許可、規約1)。
 pcv-core = { path = "../pcv-core" }
+# M4-3: 出力先の書き込み可否プローブ(output_path.rs)。テスト(tempdir)でも使う。
 tempfile = "3"
+
+# M4-3: 空き容量の確認(disk_space.rs)。デスクトップ(Windows)は`GetDiskFreeSpaceExW`。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
+# M4-3: 空き容量の確認(disk_space.rs)。Android/Linux/macOSは`statvfs(2)`。
+# AndroidはLinuxカーネルの上で動くため、JNIを介さず素のRustから呼べる。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [[bin]]
 name = "pcv-convert"

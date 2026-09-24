@@ -2673,10 +2673,12 @@ dependencies = [
  "e57",
  "las",
  "laz",
+ "libc",
  "pcd-rs",
  "pcv-core",
  "tempfile",
  "thiserror 2.0.20",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
