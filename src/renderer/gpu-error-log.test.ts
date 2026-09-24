@@ -87,4 +87,39 @@ describe("GpuErrorLog", () => {
     expect(entry.firstAt).toBeGreaterThanOrEqual(before);
     expect(entry.firstAt).toBeLessThanOrEqual(after);
   });
+
+  // M3(ADR-0013): pcv://のノード読み出し失敗も同じログに乗せる。sourceを
+  // 指定しなければ既存の呼び出し元（GPUエラー）と同じ"gpu"になる。
+  it("sourceを省略すると既定で\"gpu\"になる", () => {
+    const log = new GpuErrorLog();
+    log.report("boom", 100);
+    expect(log.list()[0].source).toBe("gpu");
+  });
+
+  it("sourceに\"node-read\"を指定して報告できる", () => {
+    const log = new GpuErrorLog();
+    log.report("ノード読み出し失敗", undefined, "node-read");
+    const [entry] = log.list();
+    expect(entry.source).toBe("node-read");
+    expect(entry.message).toBe("ノード読み出し失敗");
+  });
+
+  it("メッセージが同じでもsourceが違えば別エントリになる（発生元が紛れ込まない）", () => {
+    const log = new GpuErrorLog();
+    log.report("same text", 100, "gpu");
+    log.report("same text", 200, "node-read");
+    const entries = log.list();
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ source: "gpu", count: 1 });
+    expect(entries[1]).toMatchObject({ source: "node-read", count: 1 });
+  });
+
+  it("メッセージとsourceが両方同じなら連投として1件にまとめる", () => {
+    const log = new GpuErrorLog();
+    log.report("same text", 100, "node-read");
+    log.report("same text", 200, "node-read");
+    const entries = log.list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ source: "node-read", count: 2 });
+  });
 });

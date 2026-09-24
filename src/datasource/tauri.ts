@@ -112,7 +112,14 @@ export class TauriSource implements DataSource {
     const url = convertFileSrc(key, "pcv");
     const res = await fetch(url);
     if (!res.ok) {
-      throw new Error(`pcv://${key} failed: ${res.status}`);
+      // M3(ADR-0013): 500の場合、本文にはRust側がcatch_unwindで捕まえた
+      // panicメッセージ・ノードキーが入っている
+      // （src-tauri/src/copc_state.rsのReadNodeError::Panicked、
+      // src-tauri/src/lib.rsのinternal_server_error_response参照）。
+      // ここで本文を読み捨てるとその情報が失われ、GpuErrorBannerに
+      // 「500」としか出せなくなるため、必ず読んでエラーメッセージに含める。
+      const body = await res.text().catch(() => "");
+      throw new Error(body || `pcv://${key} failed: ${res.status}`);
     }
     return await res.arrayBuffer();
   }

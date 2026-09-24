@@ -5,8 +5,20 @@ interface Props {
   onDismiss: (id: number) => void;
 }
 
+/** `error.source`ごとの見出し文言。バナーのコンポーネント名・クラス名は
+ *  `GpuErrorBanner`/`GpuErrorLog`のまま維持している（理由は
+ *  `src/renderer/gpu-error-log.ts`冒頭のコメント参照）が、所有者が画面を見て
+ *  「WebGPUの話なのかノード読み出しの話なのか」を区別できるよう、見出しだけは
+ *  発生元ごとに出し分ける。 */
+const SOURCE_LABEL: Record<GpuErrorEntry["source"], string> = {
+  gpu: "WebGPU エラー",
+  "node-read": "ノード読み出しエラー",
+};
+
 /**
- * WebGPUのエラーを画面に出すバナー（新設）。
+ * エラーを画面に出すバナー。当初はWebGPUのエラー専用だった（ADR-0011）が、
+ * M3(ADR-0013)から`pcv://`のノード読み出し失敗（Rust側のpanicから復旧した
+ * ものを含む）も同じバナーに表示するようになった。
  *
  * なぜ要るか: EDL(M2-1)の実装で、レンダーパイプラインにdepthStencilを宣言し
  * 忘れる不具合があった。WebGPUのバリデーションエラーはコマンドエンコーダ全体を
@@ -17,6 +29,14 @@ interface Props {
  * かかった。このバナーは、次に同種の不具合が起きたときに所有者がdevtoolsを
  * 開かなくてもエラーメッセージそのものを読めるようにするためのもの
  * （経緯の全文はTaskSheets/ADR-0011-gpu-error-visibility.md）。
+ *
+ * ノード読み出し失敗も同じ場所に出すことにしたのは、所有者の実機で
+ * 「複数ノードを扱うと落ちる」不具合があり、`panic = "abort"`だと原因が
+ * 一切残らなかったため（`TaskSheets/ADR-0013-crash-visibility.md`）。
+ * Rust側がpanicから復旧して返すメッセージ（panicの内容・ノードキー）も、
+ * WebGPUのバリデーションメッセージと同様「本文をそのまま出す」ことが重要
+ * という点で要件が同じであり、既存のバナー・連投抑制の仕組みをそのまま
+ * 再利用できると判断した。
  *
  * 表示の要件（本文をそのまま出す・複数出ても最初のエラーが隠れない・閉じられる）
  * はすべてこのコンポーネントで満たす。蓄積・重複抑制（同じメッセージの連投を
@@ -45,11 +65,12 @@ export function GpuErrorBanner({ errors, onDismiss }: Props) {
           >
             <div className="min-w-0 flex-1 text-xs">
               <p className="font-semibold">
-                WebGPU エラー
+                {SOURCE_LABEL[error.source]}
                 {error.count > 1 ? `（同じエラーが${error.count}回発生）` : ""}
               </p>
-              {/* 本文は要約せずそのまま表示する。WebGPUのバリデーションメッセージは
-                  具体的で、原因の特定に直接役立つため（タスクシートの必須要件）。 */}
+              {/* 本文は要約せずそのまま表示する。WebGPUのバリデーションメッセージ・
+                  Rust側のpanicメッセージはどちらも具体的で、原因の特定に直接
+                  役立つため（タスクシートの必須要件）。 */}
               <p className="mt-1 whitespace-pre-wrap break-words font-mono">{error.message}</p>
             </div>
             <button

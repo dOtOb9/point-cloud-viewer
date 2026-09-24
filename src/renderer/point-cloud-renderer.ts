@@ -27,6 +27,7 @@ import {
 import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
+import { formatNodeLoadErrorMessage } from "./node-load-error";
 import { selectNodesForFrame } from "./node-selection";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
@@ -35,10 +36,15 @@ import { FAR, FOV_Y_RADIANS, GpuResources, NEAR } from "./gpu-resources";
 import { DEFAULT_COLOR_MODE, extendRange, type ColorMode, type ValueRange } from "./colormap";
 import { computeSceneBounds, elevationRangeFromCloudBounds } from "./scene-bounds";
 
-// WebGPUのエラーを画面に出す仕組み(新設)。蓄積・重複抑制のロジック自体は
+// WebGPUのエラーを画面に出す仕組み(ADR-0011)。蓄積・重複抑制のロジック自体は
 // GPUに依存しないgpu-error-log.tsに切り出してあり、このファイルはWebGPUの
 // APIから文字列を取り出して渡すだけにする(詳しい経緯はTaskSheets/
 // ADR-0011-gpu-error-visibility.md参照)。
+//
+// M3(ADR-0013): pcv://のノード読み出し失敗も同じ仕組み(GpuErrorLog)に乗せる。
+// NodeLoaderのonFailedをreportNodeLoadError()で受け、reportGpuErrorと同じ形の
+// コールバック(onNodeLoadErrorReported)で外へ渡す。メッセージの組み立ては
+// node-load-error.tsの純粋関数に任せる(詳しくはTaskSheets/ADR-0013参照)。
 
 /** キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を防ぐ）。 */
 const CACHE_BUDGET_MULTIPLIER = 2;
@@ -196,11 +202,16 @@ export class PointCloudRenderer {
   private lastStatsEmitAt = 0;
   private frameTimestamps: number[] = [];
 
-  /** WebGPUのエラー（新設）が起きるたびに呼ばれる。実際の蓄積・重複抑制は
+  /** WebGPUのエラー（ADR-0011）が起きるたびに呼ばれる。実際の蓄積・重複抑制は
    *  呼び出し側（src/state/useCopcViewer.ts）の`GpuErrorLog`が行う。
    *  ここは伝える役目だけ（規約3: このファイルはReactを知らないので、
    *  コールバックで外へ渡す。`onStatsUpdate`と同じ形）。 */
   private onGpuError: ((message: string) => void) | null = null;
+
+  /** M3(ADR-0013): `pcv://`のノード読み出しが失敗するたびに呼ばれる
+   *  （`NodeLoader`の`onFailed`から。`setDataSource()`参照）。`onGpuError`と
+   *  同じ形で、呼び出し側が同じ`GpuErrorLog`にsource="node-read"で報告する。 */
+  private onNodeLoadError: ((message: string) => void) | null = null;
 
   /** 空の背景（M2-0c）。既定は単色(暗)のままで、"sky"を選んだときだけ描く。 */
   private backgroundMode: BackgroundMode = DEFAULT_BACKGROUND_MODE;
@@ -276,9 +287,7 @@ export class PointCloudRenderer {
     this.loader = new NodeLoader(
       dataSource,
       (key, node) => this.handleNodeLoaded(key, node),
-      (key, error) => {
-        console.error(`[renderer] failed to load node ${key}`, error);
-      },
+      (key, error) => this.reportNodeLoadError(key, error),
     );
   }
 
@@ -432,7 +441,7 @@ export class PointCloudRenderer {
     this.onStats = callback;
   }
 
-  /** WebGPUのエラー（新設）が起きるたびに呼ばれる。`onStatsUpdate`と同じ形。 */
+  /** WebGPUのエラー（ADR-0011）が起きるたびに呼ばれる。`onStatsUpdate`と同じ形。 */
   onGpuErrorReported(callback: (message: string) => void): void {
     this.onGpuError = callback;
   }
@@ -444,6 +453,23 @@ export class PointCloudRenderer {
   private reportGpuError(message: string): void {
     console.error(`[renderer] WebGPU error: ${message}`);
     this.onGpuError?.(message);
+  }
+
+  /** M3(ADR-0013): ノード読み出し失敗が起きるたびに呼ばれる。`onGpuErrorReported`と同じ形。 */
+  onNodeLoadErrorReported(callback: (message: string) => void): void {
+    this.onNodeLoadError = callback;
+  }
+
+  /**
+   * ノード読み出しの失敗を1件報告する。`reportGpuError`と対になる形にした
+   * （コンソールには常に出し、コールバックがあればバナー用にも渡す）。
+   * メッセージの組み立て（本文をそのまま含める）は`formatNodeLoadErrorMessage`
+   * （GPUにもReactにも依存しない純粋関数、node-load-error.ts）に任せる。
+   */
+  private reportNodeLoadError(key: string, error: unknown): void {
+    const message = formatNodeLoadErrorMessage(key, error);
+    console.error(`[renderer] ${message}`);
+    this.onNodeLoadError?.(message);
   }
 
   resize(width: number, height: number): void {

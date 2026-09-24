@@ -58,8 +58,10 @@ export interface CopcViewerState {
    *  gpu-resources.ts/point-cloud-renderer.tsへの3分割)が完了した後に行った
    *  （TaskSheets/M2-shading-and-ui.md M2-2「段階2」参照）。 */
   colorMode: ColorMode;
-  /** WebGPUのエラー（新設）。`device.onuncapturederror`・デバイス消失・初期化時の
-   *  バリデーションエラーがここに蓄積される。蓄積・重複抑制のロジック自体は
+  /** WebGPUのエラー（ADR-0011）。`device.onuncapturederror`・デバイス消失・初期化時の
+   *  バリデーションエラーがここに蓄積される。M3(ADR-0013)以降は`pcv://`の
+   *  ノード読み出し失敗（Rust側のpanicから復旧したものを含む）も同じ配列に
+   *  混ざる（`GpuErrorEntry.source`で区別する）。蓄積・重複抑制のロジック自体は
    *  `GpuErrorLog`（renderer/gpu-error-log.ts、GPUに依存しない純粋なクラス）に
    *  切り出してあり、ここではそのスナップショットを保持するだけ。表示は
    *  `src/ui/shell/GpuErrorBanner.tsx`が担当する（規約3）。 */
@@ -152,7 +154,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       reportToBackendConsole(summary).catch((e) => console.error("reportToBackendConsole failed", e));
     });
 
-    // WebGPUのエラーを画面に出す仕組み（新設）。EDL(M2-1)の事故で「テスト・CIは
+    // WebGPUのエラーを画面に出す仕組み（ADR-0011）。EDL(M2-1)の事故で「テスト・CIは
     // すべて緑なのに画面は真っ黒になった」という反省から、rendererが拾った
     // エラーを蓄積・重複抑制した上でUI(GpuErrorBanner)へ渡す。実際の蓄積ロジックは
     // GpuErrorLogに任せ、ここではlist()のスナップショットをstateにコピーするだけ。
@@ -162,6 +164,19 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // GUIを目視できない環境でも、devtoolsを開かなくてもRust側stdoutから
       // WebGPUのエラーを追えるようにする（onStatsUpdateのstdout連携と同じ狙い）。
       reportToBackendConsole(`[gpu-error] ${message}`).catch((e) =>
+        console.error("reportToBackendConsole failed", e),
+      );
+    });
+
+    // M3(ADR-0013): pcv://のノード読み出し失敗も同じGpuErrorLog/バナーに乗せる。
+    // 所有者の実機で「複数ノードを扱うと落ちる」報告があり、原因がRust側の
+    // panicだった場合はcatch_unwindで捕まえてHTTP 500+メッセージを返すように
+    // なった（src-tauri/src/copc_state.rs）。上のGPUエラーと同じ形でsourceだけ
+    // "node-read"にする（gpu-error-log.tsのreport()第3引数）。
+    renderer.onNodeLoadErrorReported((message) => {
+      gpuErrorLogRef.current.report(message, undefined, "node-read");
+      setGpuErrors(gpuErrorLogRef.current.list());
+      reportToBackendConsole(`[node-load-error] ${message}`).catch((e) =>
         console.error("reportToBackendConsole failed", e),
       );
     });
