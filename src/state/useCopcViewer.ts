@@ -1,8 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { TauriSource, reportToBackendConsole } from "../datasource/tauri";
+import {
+  TauriSource,
+  cancelLasConversion,
+  onConversionDone,
+  onConversionFailed,
+  onConversionProgress,
+  pickTempDirectory,
+  reportToBackendConsole,
+  startLasConversion,
+  supportsCustomTempDir as fetchSupportsCustomTempDir,
+} from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
+import { isCopcFile } from "../datasource/copc-header";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { CloudInfo, DataSource } from "../datasource/DataSource";
+import type { ConversionProgress } from "../datasource/conversion-dto";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
@@ -26,7 +38,25 @@ export type { BackgroundMode };
 // ColorModeもここから再エクスポートする（M2-2）。
 export type { ColorMode };
 
-export type ViewerStatus = "idle" | "opening" | "ready" | "error";
+// UI(src/ui)はdatasourceを直接触らずstate経由にする規約（規約2の裏返し。
+// tauri.tsをimportしてよいのはこのファイルだけ）のため、
+// ConversionProgressもここから再エクスポートする（M4-3）。
+export type { ConversionProgress };
+
+const TEMP_DIR_STORAGE_KEY = "pcv-conversion-temp-dir";
+
+function readStoredTempDir(): string | null {
+  try {
+    return localStorage.getItem(TEMP_DIR_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+// M4-3: "converting"は生LAS/LAZの変換中(進捗・キャンセルUIを出す状態)。
+// 変換を挟まない通常のCOPCを開く処理は従来どおり"opening"のまま
+// (一瞬で終わるため専用の状態を設けない)。
+export type ViewerStatus = "idle" | "opening" | "converting" | "ready" | "error";
 
 // canvasRefは意図的にCopcViewerStateに含めない。ref(canvasRef)とstate(下記)を
 // 同じオブジェクトに混ぜると、eslint-plugin-react-hooksの`react-hooks/refs`が
@@ -85,6 +115,27 @@ export interface CopcViewerState {
   openFile: (pathOrFile: string | File) => Promise<void>;
   /** LayerPanelがTauri用のパス入力とWeb用のファイル選択/URL入力を切り替えるための判定。 */
   isBrowser: boolean;
+  /**
+   * M4-3: 生LAS/LAZの変換中(`status === "converting"`)の進捗。読み込み段階は
+   * `{phase: "reading", pointsRead, totalPoints, elapsedSecs}`で正確な割合が
+   * 分かり、その後(octree構築・書き出し)は`{phase: "postProcessing",
+   * elapsedSecs}`に切り替わる(割合は出せない。理由は
+   * `src-tauri/src/conversion.rs`のドキュメント参照)。変換していないときは`null`。
+   */
+  conversionProgress: ConversionProgress | null;
+  /** 変換中にキャンセルボタンから呼ぶ。 */
+  cancelConversion: () => void;
+  /** 一時ファイルの置き場所の設定(未設定なら`null`=プラットフォームの既定)。
+   *  Tauriのみ意味を持つ(Web版は変換自体をしない)。 */
+  tempDir: string | null;
+  /** デスクトップだけ`true`(Androidはアプリのキャッシュへ自動で誘導されるため、
+   *  手動選択のUIを出さない。`src-tauri/src/conversion.rs`の
+   *  `supports_custom_temp_dir`参照)。Web版では常に`false`。 */
+  supportsCustomTempDir: boolean;
+  /** OSのフォルダ選択ダイアログを出し、選んだ場所を`tempDir`に設定する。 */
+  pickAndSetTempDir: () => Promise<void>;
+  /** `tempDir`を明示的にクリアする(既定値に戻す)。 */
+  clearTempDir: () => void;
   setPointBudget: (budget: number) => void;
   setAutoPointBudgetEnabled: (enabled: boolean) => void;
   setBackgroundMode: (mode: BackgroundMode) => void;
@@ -137,6 +188,19 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [pointShape, setPointShapeState] = useState<PointShape>(deviceProfileDefaults.pointShape);
   const [colorMode, setColorModeState] = useState<ColorMode>(DEFAULT_COLOR_MODE);
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
+  // M4-3: 変換中の進捗。変換していないときはnull。
+  const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
+  const [tempDir, setTempDirState] = useState<string | null>(() => readStoredTempDir());
+  // Androidかどうかはフロントから直接判定できないため、起動時に一度だけ
+  // Rust側へ問い合わせる(既定はtrue=デスクトップ相当。Web版はisBrowserが
+  // 別途trueになるので、この値がtrueのままでもUI側でisBrowserを優先して隠す)。
+  const [supportsCustomTempDirState, setSupportsCustomTempDirState] = useState(true);
+
+  // `openFile`は`colorMode`等に依存して再生成される(下のuseCallback参照)。
+  // マウント時に1度だけ張るイベント購読(下のuseEffect)から常に最新の
+  // `openFile`を呼べるよう、refに常に最新の関数を入れておく
+  // (「effectは一度だけ、でも中身は最新でありたい」という定番の対処)。
+  const openFileRef = useRef<(pathOrFile: string | File) => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -147,6 +211,52 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current = renderer;
     sourceRef.current = source;
     renderer.setDataSource(source);
+
+    // M4-3: 変換の進捗・完了・失敗イベントの購読。Web版では`onConversion*`が
+    // 何もしない購読を返すので、環境分岐をここに書く必要は無い
+    // (`src/datasource/tauri.ts`参照)。
+    let unlistenProgress = () => {};
+    let unlistenDone = () => {};
+    let unlistenFailed = () => {};
+    void onConversionProgress((progress) => setConversionProgress(progress)).then((fn) => {
+      unlistenProgress = fn;
+    });
+    void onConversionDone((outputPath) => {
+      // 変換が終わった出力(既にCOPC)をそのまま開き直す。もう一度
+      // start_las_conversionを経由するが、既にCOPCと判定されて即座に開く
+      // 経路に入るだけなので実害は無い(往復コストはヘッダー1回分)。
+      setConversionProgress(null);
+      void openFileRef.current(outputPath);
+    }).then((fn) => {
+      unlistenDone = fn;
+    });
+    void onConversionFailed((message, cancelled) => {
+      setConversionProgress(null);
+      setStatus(cancelled ? "idle" : "error");
+      if (cancelled) {
+        setError(null);
+      } else {
+        setError(message);
+      }
+      // 受け入れ条件: 変換の失敗・キャンセルは画面に出す(ADR-0011/ADR-0013の
+      // エラーバナー)。キャンセルも「何が起きたか」が分かるようにバナーへ出す
+      // (バナーが無いと、進捗が消えるだけで所有者には何も起きなかったように見える)。
+      gpuErrorLogRef.current.report(
+        cancelled ? "変換をキャンセルしました" : `変換に失敗しました: ${message}`,
+        undefined,
+        "conversion",
+      );
+      setGpuErrors(gpuErrorLogRef.current.list());
+    }).then((fn) => {
+      unlistenFailed = fn;
+    });
+
+    if (isTauriEnvironment()) {
+      fetchSupportsCustomTempDir()
+        .then(setSupportsCustomTempDirState)
+        .catch((e: unknown) => console.error("supportsCustomTempDir failed", e));
+    }
+
     renderer.onStatsUpdate((s) => {
       setStats(s);
       // タスクB(ADR-0009)の自動調整は`PointCloudRenderer`の内部でpointBudgetを
@@ -234,6 +344,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       cancelled = true;
       window.removeEventListener("resize", onResize);
       renderer.dispose();
+      unlistenProgress();
+      unlistenDone();
+      unlistenFailed();
     };
   }, []);
 
@@ -244,6 +357,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
 
     setStatus("opening");
     setError(null);
+    setConversionProgress(null);
     try {
       // Web版のローカルファイル選択は`File`を受け取る。`DataSource.open()`は
       // 文字列しか取らないので、先に`WebSource.registerFile()`でキーへ変換する
@@ -253,9 +367,55 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       if (typeof pathOrFile === "string") {
         path = pathOrFile;
       } else if (source instanceof WebSource) {
+        // M4-3: Web版は生LAS/LAZを変換できない(ADR-0006: 変換はデスクトップ/
+        // Androidのみ。Webは別段階M4-6)。拡張子ではなくヘッダーで判定し
+        // (`copc-header.ts`、Rust側の`copc_detect.rs`と同じ考え方)、COPCで
+        // なければデスクトップ版での変換を促す(受け入れ条件)。
+        if (!(await isCopcFile(pathOrFile))) {
+          setStatus("error");
+          setError(
+            "これは生のLAS/LAZです。Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
+          );
+          return;
+        }
         path = source.registerFile(pathOrFile);
       } else {
         throw new Error("ローカルファイルの選択はWeb版でのみサポートしています");
+      }
+
+      // M4-3: Tauri版(デスクトップ・Android)は、開く前に必ず
+      // start_las_conversionを経由する。既にCOPCならヘッダーを読むだけの
+      // 軽い処理で即座に`alreadyCopc`が返る(受け入れ条件「既にCOPCのファイルは
+      // 即座に開く」)。生LAS/LAZなら変換済みキャッシュがあるか確認し
+      // (`cached`)、無ければ空き容量を確かめてから変換を開始する
+      // (`converting`。この場合はここで一旦return し、実際に開く処理は
+      // マウント時に張った`onConversionDone`が`openFileRef`経由で続きを行う)。
+      if (source instanceof TauriSource) {
+        const outcome = await startLasConversion(path, tempDir);
+        switch (outcome.kind) {
+          case "alreadyCopc":
+            path = outcome.path;
+            break;
+          case "cached":
+            path = outcome.outputPath;
+            break;
+          case "insufficientSpace": {
+            const toGiB = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+            gpuErrorLogRef.current.report(
+              `空き容量が足りません(必要: 約${toGiB(outcome.requiredBytes)}GiB、空き: 約${toGiB(outcome.availableBytes)}GiB)。設定から一時ファイルの置き場所を変更できます。`,
+              undefined,
+              "conversion",
+            );
+            setGpuErrors(gpuErrorLogRef.current.list());
+            setStatus("error");
+            setError("空き容量が足りません");
+            return;
+          }
+          case "converting":
+            // 実際に開く処理はonConversionDoneのイベントハンドラが続きを行う。
+            setStatus("converting");
+            return;
+        }
       }
 
       const opened = await source.open(path);
@@ -288,7 +448,14 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, [colorMode]);
+  }, [colorMode, tempDir]);
+
+  // `openFileRef`を毎レンダー最新化する。マウント時に一度だけ張るイベント
+  // 購読(上のuseEffect、deps=[])から常に最新の`openFile`(最新のcolorMode/
+  // tempDirを閉じ込めたもの)を呼べるようにするための、定番の対処。
+  useEffect(() => {
+    openFileRef.current = openFile;
+  });
 
   const setPointBudget = useCallback((budget: number) => {
     setPointBudgetState(budget);
@@ -350,6 +517,34 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setGpuErrors(gpuErrorLogRef.current.list());
   }, []);
 
+  const cancelConversion = useCallback(() => {
+    cancelLasConversion().catch((e: unknown) => {
+      // 変換が既に終わっていた等、キャンセルが間に合わなかっただけなので
+      // ログに残す程度でよい(ユーザーに新たなエラーとして見せる必要は無い)。
+      console.error("cancelLasConversion failed", e);
+    });
+  }, []);
+
+  const setTempDir = useCallback((dir: string | null) => {
+    setTempDirState(dir);
+    try {
+      if (dir === null) {
+        localStorage.removeItem(TEMP_DIR_STORAGE_KEY);
+      } else {
+        localStorage.setItem(TEMP_DIR_STORAGE_KEY, dir);
+      }
+    } catch {
+      // 保存できなくても動作に支障はない(次回起動時に既定値へ戻るだけ)。
+    }
+  }, []);
+
+  const pickAndSetTempDir = useCallback(async () => {
+    const picked = await pickTempDirectory();
+    if (picked) setTempDir(picked);
+  }, [setTempDir]);
+
+  const clearTempDir = useCallback(() => setTempDir(null), [setTempDir]);
+
   const state: CopcViewerState = {
     status,
     error,
@@ -371,6 +566,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     gpuErrors,
     openFile,
     isBrowser: !isTauriEnvironment(),
+    conversionProgress,
+    cancelConversion,
+    tempDir,
+    supportsCustomTempDir: supportsCustomTempDirState,
+    pickAndSetTempDir,
+    clearTempDir,
     setPointBudget,
     setAutoPointBudgetEnabled,
     setBackgroundMode,

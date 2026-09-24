@@ -3,6 +3,7 @@
 
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { DataSource, OpenedCloud } from "./DataSource";
 import {
@@ -11,6 +12,14 @@ import {
   type CloudInfoDto,
   type HierarchyNodeDto,
 } from "./copc-dto";
+import {
+  toConversionOutcome,
+  toConversionProgress,
+  type ConversionOutcome,
+  type ConversionOutcomeDto,
+  type ConversionProgress,
+  type ConversionProgressDto,
+} from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
 
 // `open_copc` (src-tauri/src/copc_state.rs) がJSONで返す形。DTOの中身とcamelCaseへの
@@ -73,7 +82,89 @@ export async function pickLocalFile(): Promise<string | null> {
   return await openFileDialog({
     multiple: false,
     directory: false,
-    filters: [{ name: "COPC (.laz / .copc.laz)", extensions: ["laz"] }],
+    // M4-3: 生のLAS/LAZも選べるようにする(受け入れ条件)。COPCかどうかは
+    // 拡張子ではなくヘッダーで判定する(`start_las_conversion`側、
+    // `pcv_convert::copc_detect`)ため、ここでは.las/.lazをまとめて許可するだけでよい。
+    filters: [{ name: "LAS/LAZ (.las / .laz / .copc.laz)", extensions: ["las", "laz"] }],
+  });
+}
+
+/**
+ * M4-3: 一時ファイルの置き場所を所有者が設定で選ぶための、OSのフォルダ選択
+ * ダイアログ。Androidでは`supportsCustomTempDir()`が`false`を返すため、
+ * 呼び出し側(`SettingsModal.tsx`)はそもそもこの関数を使う設定行自体を出さない
+ * (Android版のSAFフォルダ選択は`content://`のツリーURIを返し、`tempfile`が
+ * 要求する実在のファイルシステムパスとしては使えないため。
+ * `src-tauri/src/conversion.rs`の`supports_custom_temp_dir`のコメント参照)。
+ */
+export async function pickTempDirectory(): Promise<string | null> {
+  return await openFileDialog({ multiple: false, directory: true });
+}
+
+/** デスクトップだけで一時ディレクトリを設定で選べるようにする
+ *  (`src-tauri/src/conversion.rs`の`supports_custom_temp_dir`)。 */
+export async function supportsCustomTempDir(): Promise<boolean> {
+  return await invoke<boolean>("supports_custom_temp_dir");
+}
+
+/**
+ * M4-3: 生のLAS/LAZを変換する。既にCOPCなら`{kind: "alreadyCopc"}`、
+ * 変換済みキャッシュがあれば`{kind: "cached"}`を即座に返す(変換を待たない)。
+ * 空き容量が足りなければ`{kind: "insufficientSpace"}`(変換は始まらない)。
+ * それ以外は変換を別スレッドで開始し`{kind: "converting"}`を返す。以後の
+ * 進捗・完了・失敗は`onConversionProgress`/`onConversionDone`/
+ * `onConversionFailed`のイベントで届く。
+ *
+ * `tempDir`は所有者が設定で選んだ一時ファイルの置き場所(未設定なら`null`)。
+ */
+export async function startLasConversion(
+  path: string,
+  tempDir: string | null,
+): Promise<ConversionOutcome> {
+  const dto = await invoke<ConversionOutcomeDto>("start_las_conversion", {
+    path,
+    tempDir,
+  });
+  return toConversionOutcome(dto);
+}
+
+/** 進行中の変換をキャンセルする。進行中の変換が無ければ失敗する。 */
+export async function cancelLasConversion(): Promise<void> {
+  await invoke("cancel_las_conversion");
+}
+
+// Web版には`@tauri-apps/api/event`のバックエンドが無いため、Tauri環境で
+// なければ何もしない購読関数を返す(`reportToBackendConsole`と同じ、
+// 呼び出し側に環境分岐を書かせないための早期リターンの方針)。
+const NOOP_UNLISTEN: UnlistenFn = () => {};
+
+/** 読み込み段階の進捗イベントを購読する。戻り値の関数を呼ぶと購読を解除する。 */
+export async function onConversionProgress(
+  callback: (progress: ConversionProgress) => void,
+): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return NOOP_UNLISTEN;
+  return await listen<ConversionProgressDto>("conversion-progress", (event) => {
+    callback(toConversionProgress(event.payload));
+  });
+}
+
+/** 変換完了イベントを購読する。ペイロードは出力(COPC)のパス。 */
+export async function onConversionDone(
+  callback: (outputPath: string) => void,
+): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return NOOP_UNLISTEN;
+  return await listen<{ output_path: string }>("conversion-done", (event) => {
+    callback(event.payload.output_path);
+  });
+}
+
+/** 変換の失敗・キャンセルイベントを購読する。 */
+export async function onConversionFailed(
+  callback: (message: string, cancelled: boolean) => void,
+): Promise<UnlistenFn> {
+  if (!isTauriEnvironment()) return NOOP_UNLISTEN;
+  return await listen<{ message: string; cancelled: boolean }>("conversion-failed", (event) => {
+    callback(event.payload.message, event.payload.cancelled);
   });
 }
 

@@ -110,6 +110,48 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
           )}
         </section>
 
+        {/* M4-3: 一時ファイルの置き場所。デスクトップだけ(Androidは起動時に
+            アプリのキャッシュディレクトリへ自動で誘導される。OSのフォルダ選択
+            (SAF)が返すcontent:// URIは`tempfile`が要求する実在のパスとして
+            使えないため、手動選択のUIはAndroidには出さない。
+            `viewer.supportsCustomTempDir`は`src-tauri/src/conversion.rs`の
+            `supports_custom_temp_dir`を反映している。Web版はそもそも変換
+            しないので`viewer.isBrowser`で先に弾く）。 */}
+        {!viewer.isBrowser && viewer.supportsCustomTempDir && (
+          <section className="flex flex-col gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
+            <h3 className="text-sm font-semibold opacity-70">変換の一時ファイル (M4-3)</h3>
+            <p className="text-xs opacity-60">
+              生のLAS/LAZをCOPCに変換する際、入力サイズの約11倍の一時ディスク容量を使う
+              （ADR-0006の実測）。既定はOSの一時ディレクトリ。空き容量が足りない場合は、
+              空きのあるドライブ・フォルダを指定する。
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={viewer.tempDir ?? "(既定のまま)"}
+                className="flex-1 rounded border border-slate-300 bg-slate-50 px-2 py-1 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
+              />
+              <button
+                type="button"
+                onClick={() => void viewer.pickAndSetTempDir()}
+                className="rounded bg-slate-900 px-2 py-1 text-xs text-white dark:bg-white dark:text-slate-900"
+              >
+                選ぶ…
+              </button>
+              {viewer.tempDir !== null && (
+                <button
+                  type="button"
+                  onClick={viewer.clearTempDir}
+                  className="rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
+                >
+                  既定に戻す
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
         <section className="flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
           <h3 className="text-sm font-semibold opacity-70">モバイル最適化 (M3-8)</h3>
           <p className="text-xs opacity-60">

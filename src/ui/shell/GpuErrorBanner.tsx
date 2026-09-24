@@ -13,6 +13,9 @@ interface Props {
 const SOURCE_LABEL: Record<GpuErrorEntry["source"], string> = {
   gpu: "WebGPU エラー",
   "node-read": "ノード読み出しエラー",
+  // M4-3: 変換の失敗・キャンセル・容量不足もこのバナーに出す
+  // (`src/state/useCopcViewer.ts`の`onConversionErrorReported`参照)。
+  conversion: "変換エラー",
 };
 
 /**

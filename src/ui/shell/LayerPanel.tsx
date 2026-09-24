@@ -52,8 +52,17 @@ interface Props {
  * 折りたたみ可能: `open=false`のときはパネル本体を消し、開閉ボタンだけを残す。
  * ボタンは常に画面内に残るので、畳んだ状態からでも必ず開き直せる。
  */
+/** 経過秒数を"1分23秒"のような読める形にする(小数は切り捨て)。 */
+function formatElapsed(seconds: number): string {
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+}
+
 export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) {
   const [urlInput, setUrlInput] = useState("");
+  const busy = viewer.status === "opening" || viewer.status === "converting";
 
   return (
     <div className="pointer-events-none absolute inset-y-3 left-3 z-10 flex items-start gap-2">
@@ -71,13 +80,17 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
               <>
                 <input
                   type="file"
-                  accept=".laz,.copc.laz"
+                  // M4-3: 生のLAS/LAZも選べるようにする。Web版はこれを開けない
+                  // (ヘッダーで判定し、COPCでなければ`openFile`がエラーメッセージを
+                  // 出す。`src/state/useCopcViewer.ts`参照)ため、選択自体は許すが
+                  // 実質COPCしか開けない、という形になる。
+                  accept=".las,.laz"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) void viewer.openFile(file);
                     e.target.value = "";
                   }}
-                  disabled={viewer.status === "opening"}
+                  disabled={busy}
                   className="rounded border border-black/10 bg-white/60 px-2 py-1 text-xs text-inherit file:mr-2 file:rounded file:border-0 file:bg-slate-900/90 file:px-2 file:py-1 file:text-white dark:border-white/10 dark:bg-black/30"
                 />
                 <input
@@ -90,7 +103,7 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                 <button
                   type="button"
                   onClick={() => void viewer.openFile(urlInput)}
-                  disabled={viewer.status === "opening" || urlInput.trim() === ""}
+                  disabled={busy || urlInput.trim() === ""}
                   className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 disabled:opacity-50 dark:bg-white/90 dark:text-slate-900"
                 >
                   {viewer.status === "opening" ? "開いています…" : "URLを開く"}
@@ -98,7 +111,7 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                 <button
                   type="button"
                   onClick={() => void viewer.openFile(SAMPLE_COPC_URL)}
-                  disabled={viewer.status === "opening"}
+                  disabled={busy}
                   className="rounded border border-black/10 px-2 py-1 text-xs hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/10"
                 >
                   サンプル(autzen)を開く
@@ -116,13 +129,58 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                     if (picked) void viewer.openFile(picked);
                   })();
                 }}
-                disabled={viewer.status === "opening"}
+                disabled={busy}
                 className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 disabled:opacity-50 dark:bg-white/90 dark:text-slate-900"
               >
-                {viewer.status === "opening" ? "開いています…" : "ファイルを選ぶ…"}
+                {viewer.status === "opening"
+                  ? "開いています…"
+                  : viewer.status === "converting"
+                    ? "変換しています…"
+                    : "ファイルを選ぶ…"}
               </button>
             )}
             {viewer.error && <p className="text-xs text-red-600 dark:text-red-400">{viewer.error}</p>}
+
+            {/* M4-3: 変換中の進捗とキャンセル。読み込み段階は割合が出るが、
+                その後(octree構築・書き出し)は段階名だけになる
+                (`src-tauri/src/conversion.rs`のドキュメント参照)。 */}
+            {viewer.status === "converting" && (
+              <div className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10">
+                {viewer.conversionProgress === null ? (
+                  <p className="opacity-70">変換を準備しています…</p>
+                ) : viewer.conversionProgress.phase === "reading" ? (
+                  <>
+                    <p className="opacity-70">
+                      読み込み中: {viewer.conversionProgress.pointsRead.toLocaleString()} /{" "}
+                      {viewer.conversionProgress.totalPoints.toLocaleString()} 点(
+                      {((viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100).toFixed(1)}
+                      %)
+                    </p>
+                    <div className="h-1.5 w-full overflow-hidden rounded bg-black/10 dark:bg-white/10">
+                      <div
+                        className="h-full bg-slate-900/80 dark:bg-white/80"
+                        style={{
+                          width: `${Math.min(100, (viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="opacity-60">経過: {formatElapsed(viewer.conversionProgress.elapsedSecs)}</p>
+                  </>
+                ) : (
+                  <p className="opacity-70">
+                    octreeを構築・書き出し中(割合は出せません)…
+                    経過: {formatElapsed(viewer.conversionProgress.elapsedSecs)}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={viewer.cancelConversion}
+                  className="mt-1 self-start rounded border border-red-700/50 px-2 py-1 text-xs text-red-700 hover:bg-red-700/10 dark:border-red-400/50 dark:text-red-400"
+                >
+                  キャンセル
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-1">
