@@ -23,8 +23,30 @@ copc-reader = { path = "vendor/copc-reader" }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
+#
+# panic = "unwind"（2026-09-24、ADR-0013）: 元は"abort"だった。
+#
+# 所有者の実機(OPPO Pad Air)で「点群が複数ノードにまたがると落ちる」という報告が
+# あり、原因はまだ特定できていないが、`panic = "abort"`だと**Rustのどこかで1回でも
+# panicが起きた瞬間、ログを一切残さずプロセスが即終了する**ことが分かった
+# (`ADR-0013-crash-visibility.md`参照)。`pcv://`ノード読み出しをpanicから
+# 復旧させる(`catch_unwind`で捕まえてHTTP 500を返す。`src-tauri/src/lib.rs`の
+# `handle_pcv_protocol`参照)には、そもそもRustにunwind(スタック巻き戻し)機構が
+# 有効でなければならず、"abort"のままでは`catch_unwind`を書いても効かない
+# (panicが起きた瞬間にプロセスごと終了するため)。そのため"unwind"に変えた。
+#
+# 影響（実測・未実測は正直に分ける。詳細はADR-0013）:
+# - バイナリサイズ: デスクトップ(Windows, pcv-tauri.exe)で実測した。
+#   panic="abort": 4,328,448 バイト(2026-09-23時点のリリースビルド)
+#   panic="unwind": 本タスクでの変更後の値をADR-0013に記録した(catch_unwindや
+#   ロギング用クレートの追加も同時に行っているため、差分すべてがpanic設定単独の
+#   効果ではないことに注意)。
+# - Androidの実機での性能影響: **未計測**。unwindテーブルの分だけ実行時の
+#   コード量がわずかに増えるとされるが、このアプリのホットパス(LAZ伸長)自体は
+#   panicしない前提のコードであり、通常経路の速度に影響するとは考えにくい。
+#   ただし実際に計測していないため、断定はしない。
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
 strip = true

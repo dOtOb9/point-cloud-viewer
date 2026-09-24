@@ -3,11 +3,78 @@
 //
 // M1-2以降: COPCノードの配信もここに置く（`copc_state`モジュール）。src-tauriは薄く保ち、
 // COPCのパースやノードのバイナリエンコードは全て `pcv-core` に任せる（ARCHITECTURE.md参照）。
+//
+// M3: panic・エラーログをAndroidのlogcatに出す（`TaskSheets/ADR-0013-crash-visibility.md`）。
+// Androidの標準出力・標準エラーは通常logcatに出ないため、`println!`/`eprintln!`だけでは
+// 所有者が実機で何が起きたか確認できない。`log`クレートを経由させ、Androidでは
+// `android_logger`（`__android_log_write`に橋渡しする）、デスクトップでは`env_logger`
+// （従来どおりstderrに出す）をバックエンドとして使う。`init_logging()`で
+// プラットフォームに応じたバックエンドを選び、`run()`の最初で1回だけ呼ぶ。
+// あわせて`std::panic::set_hook`でpanicメッセージ・発生位置を`log::error!`に流し、
+// `pcv://`ノード読み出し以外の場所で起きた（想定していない）panicも、
+// 「abortする直前に何が起きたか」だけは必ずlogcat/stderrに残るようにする
+// （`panic = "unwind"`にした今も、捕まえていないpanicはunwindがトップまで
+// 届いた時点でプロセスが終了する。ここでの目的は「落ちるのを防ぐ」ことではなく
+// 「落ちる前にメッセージを残す」こと）。
 
 mod copc_state;
 
 use copc_state::CopcState;
 use tauri::Manager;
+
+/// 所有者が`adb logcat`で絞り込むためのタグ。Androidでは
+/// `adb logcat -s pcv:*`のように指定する（`TaskSheets/ADR-0013-crash-visibility.md`
+/// 参照）。
+#[cfg(target_os = "android")]
+const ANDROID_LOG_TAG: &str = "pcv";
+
+/// `log`クレートの出力先を、プラットフォームに応じて1回だけ初期化する。
+///
+/// - Android: `android_logger`。`log::error!`等の呼び出しを
+///   `__android_log_write`経由でlogcatに書く。タグは`ANDROID_LOG_TAG`（"pcv"）。
+/// - それ以外（デスクトップ）: `env_logger`。既定の出力先はstderrで、
+///   これまでの`eprintln!`と同じ場所に出る（「デスクトップでは今までどおり
+///   stderrに出る」という要件を満たす）。`RUST_LOG`環境変数が無い場合は
+///   `info`以上を出す。
+///
+/// `tauri-plugin-log`ではなくこの組み合わせを選んだ理由: 今回必要なのは
+/// 「Rustのpanic・エラーメッセージをネイティブ側のログ経路（logcat/stderr）に
+/// 残す」ことだけで、フロントのJS側からログを出す・webviewのdevtoolsに出す・
+/// ログファイルをローテーションする、といった機能は要らない。
+/// `tauri-plugin-log`はそれら全部を持つ大きめのプラグインで、`invoke`ハンドラの
+/// 登録やJS側API（`@tauri-apps/plugin-log`）まで付いてくる。今回の要件に対して
+/// 依存が増えすぎると判断し、`log`ファサード＋プラットフォームごとの薄い
+/// バックエンド（`android_logger`/`env_logger`）という最小構成にした
+/// （所有者が実装を追えることを優先する方針、ARCHITECTURE.md）。
+fn init_logging() {
+    #[cfg(target_os = "android")]
+    {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Info)
+                .with_tag(ANDROID_LOG_TAG),
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // 環境変数`RUST_LOG`で上書き可能にしつつ、既定は"info"（今までの
+        // println!/eprintln!による診断メッセージと同程度の粒度）にする。
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    }
+}
+
+/// panicのメッセージと発生位置を`log::error!`に流す。`Cargo.toml`の
+/// `panic = "unwind"`（`TaskSheets/ADR-0013-crash-visibility.md`参照）と対になる
+/// 仕組みで、`pcv://`のノード読み出し（`copc_state::read_node_bytes`）のように
+/// 明示的に`catch_unwind`で囲んでいない場所でpanicが起きても、少なくとも
+/// 「何が・どこで」起きたかはlogcat/stderrに残す（unwindが最後まで届けば
+/// プロセスは終了するので、これは「落とさない」仕組みではなく「落ちる前に
+/// 記録を残す」仕組み）。
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        log::error!("[pcv] panic: {info}");
+    }));
+}
 
 /// フロントの診断メッセージ（WebGPU プローブ結果、IPCベンチ結果など）を標準出力に出す。
 /// ADR-0001 の規約通り、これは制御メッセージであり、大きいデータはここを通さない。
@@ -89,9 +156,20 @@ fn handle_pcv_protocol(
         let state = app_handle.state::<CopcState>();
         let response = match copc_state::read_node_bytes(&state, key) {
             Ok(bytes) => octet_stream_response(bytes),
-            Err(message) => {
-                eprintln!("[pcv] failed to serve node {key}: {message}");
+            // 通常のエラー（ファイル未オープン、キー不正など）。クライアント
+            // （フロント）の呼び方が悪いケースなので400。
+            Err(copc_state::ReadNodeError::Normal(message)) => {
+                log::warn!("[pcv] failed to serve node {key}: {message}");
                 bad_request_response(&message)
+            }
+            // M3: read_node内でpanicが起き、copc_state::read_node_bytesの
+            // catch_unwindで捕まえたもの。サーバ側（Rust側）の予期しない異常
+            // なので500。フロントはこれをGpuErrorBanner改めErrorBanner
+            // （src/ui/shell/ErrorBanner.tsx）に表示する
+            // （TaskSheets/ADR-0013-crash-visibility.md参照）。
+            Err(copc_state::ReadNodeError::Panicked(message)) => {
+                log::error!("[pcv] node {key} read panicked: {message}");
+                internal_server_error_response(&message)
             }
         };
         responder.respond(response);
@@ -122,8 +200,22 @@ fn bad_request_response(message: &str) -> tauri::http::Response<Vec<u8>> {
         .unwrap()
 }
 
+/// M3: `copc_state::ReadNodeError::Panicked`用（panicから回復した1リクエスト）。
+/// `bad_request_response`と同じ形だがステータスだけ500にする
+/// （`TaskSheets/ADR-0013-crash-visibility.md`参照）。
+fn internal_server_error_response(message: &str) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(tauri::http::StatusCode::INTERNAL_SERVER_ERROR)
+        .header(tauri::http::header::CONTENT_TYPE, "text/plain")
+        .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(message.as_bytes().to_vec())
+        .unwrap()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_logging();
+    install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         // OSのファイル選択ダイアログ(デスクトップ・Android共通)。UI側は
