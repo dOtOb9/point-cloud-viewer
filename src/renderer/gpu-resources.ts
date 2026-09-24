@@ -21,6 +21,12 @@ import { horizontalBasis, type Vec3 } from "./up-axis";
 import { EdlPass } from "./edl";
 import { ELEVATION_INTENSITY_RAMP, rampToWgslFunction, type ColorMode, type ValueRange } from "./colormap";
 import type { PointShape } from "./device-profile";
+import {
+  decideDeviceRecovery,
+  recordDeviceRecoveryAttempt,
+  DEFAULT_DEVICE_RECOVERY_LIMITS,
+  type DeviceRecoveryAttempt,
+} from "./device-recovery";
 
 const POINT_SIZE_PX = 4;
 /** WebGPUのFOV/near/far。orchestrator側（point-cloud-renderer.ts）が投影行列を
@@ -354,14 +360,55 @@ export class GpuResources {
   private offscreenDepthTexture: GPUTexture | null = null;
   private offscreenDepthView: GPUTextureView | null = null;
 
+  /** M3-8追加: デバイス消失(device.lost)からの復帰に使う、直近の描画バッファ
+   *  サイズ。`resize()`のたびに更新し、復帰後の`resize()`再呼び出しに使う
+   *  (呼び出し側(point-cloud-renderer.ts)が復帰を知って改めて呼び直す必要が
+   *  無いよう、ここで自己完結させる)。 */
+  private lastWidth = 1;
+  private lastHeight = 1;
+  /** M3-8追加: `init()`で受け取ったcanvas。デバイス消失からの復帰時に
+   *  同じcanvasへ対して`getContext("webgpu")`をやり直すために保持する。 */
+  private canvas: HTMLCanvasElement | null = null;
+  /** M3-8追加: 直近の復帰試行の履歴。`device-recovery.ts`の
+   *  `decideDeviceRecovery`/`recordDeviceRecoveryAttempt`（純粋関数）に渡す。 */
+  private recentRecoveryAttempts: DeviceRecoveryAttempt[] = [];
+  /** M3-8追加: `dispose()`後は復帰を試みない(コンポーネントが破棄された後に
+   *  非同期の復帰処理が動き続けるのを防ぐ)。 */
+  private disposed = false;
+
   /**
    * WebGPUのエラーを1件報告するための呼び出し先（呼び出し側=PointCloudRendererの
    * `reportGpuError`をそのまま渡してもらう）。console.errorへの出力やUIバナー用の
    * コールバック呼び出しは呼び出し側の責務なので、ここでは中身を知らずにただ渡す。
+   *
+   * `onDeviceRecovered`（M3-8追加）: デバイス消失から復帰し、リソースを
+   * 作り直し終えた直後に1回呼ばれる。呼び出し側(point-cloud-renderer.ts)は
+   * これを使って、古いデバイスのGPUバッファを参照しているノードキャッシュを
+   * 空にする（新しいデバイスでは古いバッファは使えないため。詳細は
+   * `handleDeviceLost()`のコメント参照）。
    */
-  constructor(private readonly reportError: (message: string) => void) {}
+  constructor(
+    private readonly reportError: (message: string) => void,
+    private readonly onDeviceRecovered: () => void,
+  ) {}
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
+    this.canvas = canvas;
+    await this.setupDevice();
+  }
+
+  /**
+   * アダプタ・デバイスの取得、コンテキストの設定、パイプライン・sky/grid/EDLの
+   * 初期化をまとめて行う。**`init()`（初回）と`handleDeviceLost()`（デバイス
+   * 消失からの復帰）の両方から呼ばれる。** 復帰時は`this.canvas`を再利用し、
+   * 全リソースをゼロから作り直す（MDNの"Handling device loss"の推奨どおり、
+   * 古いデバイスのリソースは新しいデバイスでは使えないため、使い回さない）。
+   */
+  private async setupDevice(): Promise<void> {
+    const canvas = this.canvas;
+    if (!canvas) {
+      throw new Error("setupDevice() called before init() (canvas is not set)");
+    }
     if (!("gpu" in navigator) || !navigator.gpu) {
       throw new Error("WebGPU is not supported (navigator.gpu is missing)");
     }
@@ -375,7 +422,7 @@ export class GpuResources {
       throw new Error("failed to get a webgpu canvas context");
     }
 
-    // WebGPUのエラーを画面に出す仕組み（新設）。
+    // WebGPUのエラーを画面に出す仕組み（ADR-0011）。
     //
     // `onuncapturederror`は、エラースコープ（下のinitWithErrorScope）で
     // 囲んでいない場所で起きたバリデーションエラー・型エラーを拾う。
@@ -390,10 +437,11 @@ export class GpuResources {
     // `device.lost`はGPUのリセットやドライバのクラッシュなどでデバイスその
     // ものが失われたときに解決するPromise。エラースコープ・onuncapturederrorの
     // どちらでも拾えない種類の異常なので、別途監視する。
+    // **M3-8追加**: 以前はエラーを報告するだけだったが、それだと一度失われると
+    // `isReady()`が恒久的にfalseのままになり、画面が固まったまま二度と復帰
+    // しなかった（所有者の実機報告）。`handleDeviceLost()`で復帰を試みる。
     device.lost
-      .then((info) => {
-        this.reportError(`WebGPUデバイスが失われました (reason=${info.reason}): ${info.message}`);
-      })
+      .then((info) => this.handleDeviceLost(info))
       .catch(() => {
         // device.lostはPromise<GPUDeviceLostInfo>で本来rejectしないが、
         // 念のため（未処理rejectionでコンソールを汚さないため）。
@@ -500,6 +548,73 @@ export class GpuResources {
   }
 
   /**
+   * M3-8追加: WebGPUデバイス消失(`device.lost`)を受けたときの処理。
+   * 所有者の実機報告（デバイス消失後、画面が固まったまま二度と復帰しない）
+   * を踏まえ、MDNの"Handling device loss"の推奨どおり復帰を試みる。
+   *
+   * 手順:
+   * 1. `reason`/`message`をそのままバナーに出す(所有者が原因を推測する
+   *    手がかりになる。以前からある挙動で、今回変えていない)
+   * 2. `reason === "destroyed"`（こちらが`GPUDevice.destroy()`を意図的に
+   *    呼んだ場合。現状このクラスは自分からdestroy()を呼ぶことは無いが、
+   *    将来呼ぶようになった場合や、呼び出し元が外部から破棄した場合に
+   *    備えて明示的に判定する）は復帰しない。意図的な破棄に対して復帰を
+   *    試みるのは筋が違う
+   * 3. `dispose()`済み（コンポーネントが破棄された後）なら何もしない
+   *    （もう誰も見ていないcanvasに対して非同期の復帰処理を続けない）
+   * 4. `device-recovery.ts`の`decideDeviceRecovery`（純粋関数）で、直近の
+   *    復帰試行の頻度から「試みてよいか」を判定する。**無限に繰り返さない**
+   *    ため。諦める場合はその理由もバナーに出す
+   * 5. 試みる場合、`isReady()`が復帰完了までfalseを返すよう`this.device`を
+   *    先にnullにしてから（renderOnce()側は`isReady()`をrenderOnce()の
+   *    入り口で見ているだけなので、これだけで安全にフレームがスキップされる）、
+   *    `setupDevice()`を呼び直してアダプタ・デバイス・パイプライン・
+   *    sky/grid/EDLをすべて作り直し、直近の描画サイズで`resize()`も
+   *    呼び直す（深度・オフスクリーンテクスチャも作り直す必要があるため）
+   * 6. 復帰に成功したら`onDeviceRecovered()`を呼ぶ。呼び出し側
+   *    (point-cloud-renderer.ts)はこれでノードキャッシュを空にする
+   *    （**古いデバイスのGPUバッファは新しいデバイスでは使えない**ため。
+   *    `NodeLoader`はDataSource越しの生バイト取得でデバイスに依存しない
+   *    ので、キャッシュさえ空にすれば次のフレームから自然に読み込み直る）
+   * 7. 復帰(`setupDevice()`)自体が失敗した場合（アダプタが取れない等、
+   *    ハードウェア側がより深刻な状態になっている場合）はバナーで報告して
+   *    諦める。この場合、次に自然発生する`device.lost`は無い（新しい
+   *    deviceを一度も得られていないため）ので、ここで再試行のループを
+   *    自分から作ることはしない
+   */
+  private async handleDeviceLost(info: GPUDeviceLostInfo): Promise<void> {
+    if (this.disposed) return;
+
+    this.reportError(`WebGPUデバイスが失われました (reason=${info.reason}): ${info.message}`);
+
+    if (info.reason === "destroyed") return;
+
+    const now = Date.now();
+    const decision = decideDeviceRecovery(this.recentRecoveryAttempts, now, DEFAULT_DEVICE_RECOVERY_LIMITS);
+    if (!decision.shouldRecover) {
+      this.reportError(`WebGPUデバイスへの復帰を諦めました: ${decision.reason}`);
+      return;
+    }
+    this.recentRecoveryAttempts = recordDeviceRecoveryAttempt(
+      this.recentRecoveryAttempts,
+      now,
+      DEFAULT_DEVICE_RECOVERY_LIMITS,
+    );
+
+    // isReady()をfalseにし、復帰完了までrenderOnce()側の描画をスキップさせる。
+    this.device = null;
+
+    try {
+      await this.setupDevice();
+      this.resize(this.lastWidth, this.lastHeight);
+      this.onDeviceRecovered();
+      this.reportError("WebGPUデバイスから復帰しました(読み込み済みのノードは破棄し、再読み込みします)");
+    } catch (e) {
+      this.reportError(`WebGPUデバイスへの復帰に失敗しました: ${String(e)}`);
+    }
+  }
+
+  /**
    * 初期化の1ステップ（パイプライン/バインドグループの生成）を
    * `pushErrorScope("validation")`/`popErrorScope()`で囲み、失敗した場合に
    * 「どの生成が失敗したか」が分かるメッセージで報告する。
@@ -537,6 +652,12 @@ export class GpuResources {
   }
 
   resize(width: number, height: number): void {
+    // M3-8追加: デバイス消失からの復帰(handleDeviceLost())が、直近のサイズで
+    // 深度・オフスクリーンテクスチャを作り直せるように覚えておく。`device`が
+    // 無い(復帰待ち)間に呼ばれた場合も、サイズだけは更新しておく(下のreturnより
+    // 前に置く理由)。
+    this.lastWidth = width;
+    this.lastHeight = height;
     if (!this.device) return;
     this.depthTexture?.destroy();
     this.depthTexture = this.device.createTexture({
@@ -896,6 +1017,9 @@ export class GpuResources {
   }
 
   dispose(): void {
+    // M3-8追加: 破棄後は`handleDeviceLost()`が復帰を試みない(もう誰も見ていない
+    // canvasに対して非同期の復帰処理を続けさせないため)。
+    this.disposed = true;
     this.depthTexture?.destroy();
     this.offscreenColorTexture?.destroy();
     this.offscreenDepthTexture?.destroy();

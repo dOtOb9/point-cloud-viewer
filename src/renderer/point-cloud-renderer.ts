@@ -254,7 +254,10 @@ export class PointCloudRenderer {
     this.pointBudget = deviceProfile.pointBudgetStart;
 
     this.cache = new NodeCache(this.pointBudget * CACHE_BUDGET_MULTIPLIER);
-    this.gpu = new GpuResources((message) => this.reportGpuError(message));
+    this.gpu = new GpuResources(
+      (message) => this.reportGpuError(message),
+      () => this.handleDeviceRecovered(),
+    );
   }
 
   async init(): Promise<void> {
@@ -489,6 +492,20 @@ export class PointCloudRenderer {
   private reportGpuError(message: string): void {
     console.error(`[renderer] WebGPU error: ${message}`);
     this.onGpuError?.(message);
+  }
+
+  /**
+   * M3-8追加: WebGPUデバイス消失(`device.lost`)から復帰し、`GpuResources`が
+   * リソースを作り直し終えた直後に呼ばれる（`gpu-resources.ts`の
+   * `handleDeviceLost()`参照）。**古いデバイスで作ったGPUバッファ
+   * (キャッシュ済みノードの`vertexBuffer`/`uniformBuffer`)は新しいデバイスでは
+   * 使えない**ため、キャッシュを空にする。`NodeLoader`はDataSource越しの
+   * 生バイト取得でデバイスに依存しないため影響を受けず、キャッシュが空になった
+   * ことで次のフレームから`selectNodesForFrame`が改めて必要なノードを
+   * `wanted`に含め、自然に読み込み直される。
+   */
+  private handleDeviceRecovered(): void {
+    this.cache.dispose();
   }
 
   /** M3(ADR-0013): ノード読み出し失敗が起きるたびに呼ばれる。`onGpuErrorReported`と同じ形。 */
