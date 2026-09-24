@@ -442,11 +442,94 @@ ADR-0001 と同じ書式（決定 / 背景 / 帰結 / 却下した案）で、**
 
 ### 受け入れ条件
 
-- [ ] E57 / PLY / PCD を開いて COPC に変換できる
-- [ ] 変換後の点数が元ファイルの申告と一致する
-- [ ] `cargo build -p pcv-core --target wasm32-unknown-unknown` が通る（規約1）
-- [ ] **PLY と PCD は CRS を持たないため、取り込み時に座標系を指定させるか
+- [x] E57 / PLY / PCD を開いて COPC に変換できる
+      （**ライブラリの経路として**。「E57/PLY/PCD → LAS」は本タスクで実装・テスト済み、
+      「LAS → COPC」は ADR-0006 で採用済みの `copc-writer` 経路をそのまま使う。
+      両者をつないで実際に COPC が開けることは E57 で統合テスト済み(下記「実施記録」参照)。
+      アプリ(Tauri)への配線・UI は並行して進んでいる M4-3 の担当であり、本タスクの範囲外）
+- [x] 変換後の点数が元ファイルの申告と一致する（下記「実施記録」参照。テストで確認）
+- [x] `cargo build -p pcv-core --target wasm32-unknown-unknown` が通る（規約1。
+      `pcv-core` には一切触れていない）
+- [x] **PLY と PCD は CRS を持たないため、取り込み時に座標系を指定させるか
       「不明」として扱う。** 不明のまま計測や重ね合わせをさせない
+      （`to_las`の引数`crs_wkt: Option<Vec<u8>>`で口を用意。詳細は下記「実施記録」参照）
+
+### 実施記録（2026-09-24〜25、Sonnet）
+
+**担当範囲**: コーディネーターの指示により、本タスクの担当は「E57/PLY/PCD → LAS」の
+変換のみ。`copc-writer`によるLAS/LAZ→COPC変換（ADR-0006、M4-1b）は入力にLAS/LAZしか
+取らないため、E57/PLY/PCDはいったんプレーンなLAS(`.las`、非圧縮)へ書き出し、あとは
+既存のLAS/LAZ→COPC経路にそのまま乗せる設計にした。アプリ(Tauri)への配線は並行して
+進むM4-3のエージェントの担当であり、`src-tauri/`・`src/`には一切触れていない。
+
+**実装した場所**: `crates/pcv-convert/src/import/`（新設）。
+
+- `mod.rs`: 公開API。`to_las(input, output, crs_wkt) -> Result<ImportSummary, ImportError>`、
+  `detect_format(path) -> Option<SourceFormat>`、`ImportSummary{point_count, crs_known}`
+- `point.rs`: 3形式が共通で使う中間表現`ImportedCloud`/`ImportedPoint`
+  (`crate::point::SourceCloud`/`RawPoint`、M4-1と同じ設計)
+- `scale.rs`: LASのscale/offsetの選び方(純粋関数)。M4-4の受け入れ条件どおり
+  mm以下の精度を保つ。7件のテストで境界値・往復・退化データ・軸ごとの独立性を確認
+- `las_out.rs`: `ImportedCloud`をプレーンなLASへ書き出す(`las::Writer`をそのまま使う。
+  COPCのバイナリ構造は組み立てない。それは`copc-writer`の担当)
+- `e57.rs`・`ply.rs`・`pcd.rs`: 各形式の読み込み
+
+**クレート選定・属性の対応・スケールの選び方・CRSの扱い・Androidへの下準備**の詳細は
+[ADR-0008](./ADR-0008-formats-and-crs.md)の2026-09-25追記を参照(要点だけここに記す):
+
+- E57は`e57` 0.11.13、PCDは`pcd-rs` 0.13.0を採用。PLYは候補の`ply-rs`が
+  ビルド時にdoctest実行用の重い推移的依存(`skeptic`経由の`cargo_metadata`・
+  `pulldown-cmark`等)を引き込み、かつ2020年から更新が無いことを実際にビルドして
+  確認したため、自前実装(ASCII/binary_little_endian/binary_big_endian)にした
+- CRSは`to_las`の引数`crs_wkt: Option<Vec<u8>>`(WKTバイト列)で受け取る口を用意。
+  `Some`なら`las::Header::set_wkt_crs`で書き込み、`None`なら「不明」のまま
+  (推測で補わない)。EPSGコードからWKT文字列を生成する処理自体は範囲外(ADR-0008参照)
+
+**受け入れ条件「点数が元ファイルの申告と一致する」の確認方法**: `ImportedCloud`は
+元ファイルの申告点数を保持しない設計にした(理由は`point.rs`のコメント参照)。
+代わりに、テスト(`tests/import_e57.rs`・`import_ply.rs`・`import_pcd.rs`)が
+既知の点数Nでフィクスチャを組み立て、`to_las`が返す`ImportSummary::point_count`が
+Nと一致することを確認する形にした。E57は姿勢適用後にCartesianが無効なままの点
+(構造化データの欠測スロット等)を書き出さないため、この場合は申告点数と一致しない
+ことがありうる、という制約を`e57.rs`のコメントに明記した(テストで使う合成データは
+全点validなので、この食い違いは発生しない)。
+
+**新規テスト**(`crates/pcv-convert/tests/`):
+
+- `import_e57.rs`: `e57::E57Writer`で2スキャン(直交座標+姿勢=並進のみ、
+  球面座標+姿勢=Z軸90度回転+並進)のE57を組み立て、姿勢適用後にまとめられること・
+  球面→直交変換・値域の異なる色(0-255)と強度(0-1000)の正規化を確認
+- `import_ply.rs`: ASCII/binary_little_endian/binary_big_endianをそれぞれ
+  手で組み立て、`face`要素(list型プロパティ)を挟んでもバイト位置がずれずに
+  読めることを確認
+- `import_pcd.rs`: ASCII(色なし)・binary・binary_compressed(`pcd-rs`自身の
+  `DynWriter`で作成)の3形式、およびCRS指定時/未指定時の挙動を確認
+- `import_to_copc.rs`: **M4-4受け入れ条件「少なくとも1形式で統合テストする」**。
+  E57(優先度最高)を`to_las`でLASへ、続けて`copc_writer::convert_las_to_copc_streaming`
+  (ADR-0006で採用済みの経路)でCOPCへ変換し、`pcv_core::CopcFile::open`で開け、
+  hierarchyの点数合計が申告点数と一致し、全ノードを`read_node`で読めることを確認
+
+**Androidへの下準備(範囲外だが実施)**: ADR-0006の追記(変換をAndroidでも行う)を受け、
+E57/PLY/PCDの読み込み内部実装を`read(path: &Path)`から`read_from<R: Read(+Seek)>`へ
+分離した(3クレートとも元々ジェネリックな読み込みAPIを持っていたため)。ただし
+`pub(crate)`のままで公開APIには出していない(理由はADR-0008参照)。
+
+**確認したコマンドと結果**(このworktreeで実行。CI自体はこのセッションでは実行していない):
+
+- `cargo build -p pcv-convert` → 成功(警告0件)
+- `cargo build -p pcv-core --target wasm32-unknown-unknown` → 成功
+- `cargo fmt --all -- --check` → 差分なし
+- `cargo clippy -p pcv-convert --all-targets -- -D warnings` → 警告0件
+- `cargo test -p pcv-convert` → 20件成功(0失敗)
+- `cargo clippy --workspace --all-targets -- -D warnings`(`src-tauri`を含む
+  ワークスペース全体) → 警告0件
+- `cargo test --workspace` → 全ジョブ成功(0失敗)。`pcv-convert`(unittests 9件・
+  `import_e57`1件・`import_pcd`4件・`import_ply`5件・`import_to_copc`1件・
+  `roundtrip`1件)、`pcv-core`(31件)、`pcv-tauri`(6件)、doc-testsすべて含む。
+  M4-3(並行作業のエージェント)が触れている`src-tauri`もこのセッションで一緒に
+  緑であることを確認した
+- CI(GitHub Actions)上の実行・run idはこのセッションでは確認していない。
+  コーディネーターがpush後に確認すること
 
 ---
 
