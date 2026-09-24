@@ -39,6 +39,17 @@
 //    - その中間は不感帯（増やしも減らしもしない）
 //    という判定をする。
 
+/**
+ * キャッシュは点予算より少し余裕を持たせる（視点を少し動かしただけの再取得を
+ * 防ぐ）。**M3-8でここへ移動した。** 元は`point-cloud-renderer.ts`だけが持つ
+ * private定数だったが、`device-profile.ts`が`pointBudgetMaxFromMemoryBudget`を
+ * 呼ぶ際にも同じ倍率が要る。`point-cloud-renderer.ts`が`device-profile.ts`を
+ * 呼ぶ側なので、循環import(`device-profile.ts`→`point-cloud-renderer.ts`)を
+ * 避けるため、両者が依存できるこのファイルに1箇所だけ置く。値そのもの(2)は
+ * 変えていない。
+ */
+export const CACHE_BUDGET_MULTIPLIER = 2;
+
 /** 点予算の直近の状態。呼び出し側はこれをフィールドとして持ち、
  *  `evaluatePointBudget`の戻り値でそのまま置き換える。 */
 export interface PointBudgetState {
