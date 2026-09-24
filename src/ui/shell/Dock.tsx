@@ -1,4 +1,4 @@
-import { GLASS_SURFACE } from "./glass";
+import { glassSurfaceClass } from "./glass";
 
 interface Props {
   layerOpen: boolean;
@@ -6,6 +6,8 @@ interface Props {
   onToggleLayer: () => void;
   onToggleInfo: () => void;
   onOpenSettings: () => void;
+  /** M3-8: ガラス表現(backdrop-blur)のオン/オフ。LayerPanelと同じ意味。 */
+  glassEnabled: boolean;
 }
 
 const ACTIVE_CLASS = "bg-slate-900 text-white dark:bg-white dark:text-slate-900";
@@ -22,10 +24,10 @@ const INACTIVE_CLASS = "hover:bg-black/5 dark:hover:bg-white/10";
  * 開いている側のパネルに対応するボタンを背景色反転で明確にハイライトする
  * (アイコンが並ぶだけの横一列ドックでも、今どちらが開いているか一目で分かる)。
  */
-export function Dock({ layerOpen, infoOpen, onToggleLayer, onToggleInfo, onOpenSettings }: Props) {
+export function Dock({ layerOpen, infoOpen, onToggleLayer, onToggleInfo, onOpenSettings, glassEnabled }: Props) {
   return (
     <div
-      className={`pointer-events-auto fixed bottom-4 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-full p-1.5 text-sm shadow-lg ${GLASS_SURFACE}`}
+      className={`pointer-events-auto fixed bottom-4 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-full p-1.5 text-sm shadow-lg ${glassSurfaceClass(glassEnabled)}`}
     >
       <button
         type="button"

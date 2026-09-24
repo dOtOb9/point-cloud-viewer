@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { CopcViewerState } from "../../state/useCopcViewer";
+import type { CopcViewerState, PointShape } from "../../state/useCopcViewer";
 import type { ThemePreference, ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { IpcBenchPanel } from "../IpcBenchPanel";
@@ -12,12 +12,28 @@ interface Props {
   theme: ThemeState;
   update: UpdateCheckState;
   viewer: CopcViewerState;
+  /** M3-8: ガラス表現(backdrop-blur)のオン/オフ。CopcViewerStateではなく
+   *  AppShellが直接持つ値なので、他のtheme/update/viewerと同じ形で
+   *  別途受け取る(AppShell.tsxのglassEnabled stateのコメント参照)。 */
+  glassEnabled: boolean;
+  onGlassEnabledChange: (enabled: boolean) => void;
 }
 
 const THEME_LABELS: Record<ThemePreference, string> = {
   system: "OSに合わせる",
   dark: "ダーク",
   light: "ライト",
+};
+
+/** M3-8: レンダースケールの選択肢。0.5(モバイル既定)〜1.0(デスクトップ既定)の
+ *  間で所有者が実機で試しやすいよう、いくつかの値をボタンで選べるようにする
+ *  (自由入力にしないのは、極端な値(0や負数)を誤って入れて画面が壊れる
+ *  ことを避けるため)。 */
+const RENDER_SCALE_OPTIONS = [0.25, 0.5, 0.75, 1.0] as const;
+
+const POINT_SHAPE_LABELS: Record<PointShape, string> = {
+  round: "丸",
+  square: "四角",
 };
 
 /**
@@ -29,7 +45,7 @@ const THEME_LABELS: Record<ThemePreference, string> = {
  * 以前App.tsx直下の<details>にあったが、UIシェル導入でここへ移した
  * (機能は削っていない。折りたたみ式(<details>)なのは変わらず)。
  */
-export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
+export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabled, onGlassEnabledChange }: Props) {
   const [devPathInput, setDevPathInput] = useState("");
 
   if (!open) return null;
@@ -92,6 +108,109 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
           {update.currentVersion && (
             <p className="text-xs opacity-60">現在のバージョン: {update.currentVersion}</p>
           )}
+        </section>
+
+        <section className="flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
+          <h3 className="text-sm font-semibold opacity-70">モバイル最適化 (M3-8)</h3>
+          <p className="text-xs opacity-60">
+            所有者の実機(OPPO Pad Air)で点予算を大きく下げないと落ちる問題を受け、GPU負荷を下げる手段を
+            個別に切り替えられるようにしたもの。実機で1つずつ切り替えて、落ちずに扱える点数が変わるかを
+            確かめる目的も兼ねる（詳細はTaskSheets/M3-release-and-update.md M3-8参照）。
+          </p>
+
+          <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
+            <p className="font-semibold opacity-70">端末プロファイル判定</p>
+            <p>
+              判定結果: <span className="font-mono">{viewer.isMobile ? "モバイル" : "デスクトップ"}</span>
+            </p>
+            <p>
+              deviceMemory:{" "}
+              <span className="font-mono">
+                {viewer.deviceMemoryGiB !== undefined ? `${viewer.deviceMemoryGiB} GiB` : "取得不可"}
+              </span>{" "}
+              / pointer:coarse: <span className="font-mono">{String(viewer.pointerCoarse)}</span>
+            </p>
+            <p className="mt-1 opacity-60">
+              以下5つの既定値は、この判定が「モバイル」なら軽い側、「デスクトップ」なら変更前と同じ値になる。
+              モバイル側の具体的な数値は未検証の初期値(TaskSheets/M3-release-and-update.md M3-8参照)。
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-xs opacity-70">
+              レンダースケール（内部解像度 = 表示サイズ×devicePixelRatio×この値。既定: モバイル0.5 / デスクトップ1.0）
+            </label>
+            <div className="flex gap-2">
+              {RENDER_SCALE_OPTIONS.map((scale) => (
+                <button
+                  key={scale}
+                  type="button"
+                  onClick={() => viewer.setRenderScale(scale)}
+                  className={`rounded px-3 py-1.5 text-sm ${
+                    viewer.renderScale === scale
+                      ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                      : "border border-slate-300 dark:border-slate-600"
+                  }`}
+                >
+                  {scale}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs opacity-60">現在値: {viewer.renderScale}（再起動なしで反映される）</p>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-xs opacity-70">点の形（既定: モバイル四角 / デスクトップ丸）</label>
+            <div className="flex gap-2">
+              {(Object.keys(POINT_SHAPE_LABELS) as PointShape[]).map((shape) => (
+                <button
+                  key={shape}
+                  type="button"
+                  onClick={() => viewer.setPointShape(shape)}
+                  className={`rounded px-3 py-1.5 text-sm ${
+                    viewer.pointShape === shape
+                      ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                      : "border border-slate-300 dark:border-slate-600"
+                  }`}
+                >
+                  {POINT_SHAPE_LABELS[shape]}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs opacity-60">
+              丸は円形マスクに`discard`を使う。四角は`discard`が無いパイプラインを使うため、
+              タイル方式のGPUで早期に打ち切りやすい（判断の理由はTaskSheets/M3-release-and-update.md M3-8参照）。
+            </p>
+          </div>
+
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={viewer.edlEnabled} onChange={(e) => viewer.setEdlEnabled(e.target.checked)} />
+            EDL（陰影で凹凸を強調。既定: モバイルオフ / デスクトップオン）
+          </label>
+          <p className="text-xs opacity-60">
+            オフのとき、点群をオフスクリーンを経由せずスワップチェーンへ直接描く1パス描画になる
+            （メモリ帯域の往復を1回減らす）。
+          </p>
+
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={glassEnabled} onChange={(e) => onGlassEnabledChange(e.target.checked)} />
+            UIのガラス表現（ぼかし。既定: モバイルオフ / デスクトップオン）
+          </label>
+          <p className="text-xs opacity-60">
+            オフにすると、パネルの背景が`backdrop-filter`によるぼかしではなく不透明な単色(tint)になる。
+          </p>
+
+          <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
+            <p className="font-semibold opacity-70">点予算の上限（端末のメモリから算出。既定: デスクトップ1GiB固定）</p>
+            <p>
+              現在の上限: <span className="font-mono">{viewer.pointBudgetMax.toLocaleString()}</span> 点
+            </p>
+            <p className="mt-1 opacity-60">
+              モバイルではnavigator.deviceMemoryから逆算する（未検証の初期値）。この上限自体を
+              手動で切り替える手段は設けていない。点予算そのものはレイヤーパネルから手動変更・自動調整の
+              on/offができる。
+            </p>
+          </div>
         </section>
 
         <details className="flex flex-col gap-3">

@@ -6,9 +6,13 @@ import type { CloudInfo, DataSource } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
-import { DEFAULT_EDL_ENABLED } from "../renderer/edl";
 import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
 import { DEFAULT_COLOR_MODE, resolveColorMode, type ColorMode } from "../renderer/colormap";
+import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "../renderer/device-profile";
+
+// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
+// PointShapeもここから再エクスポートする（M3-8）。
+export type { PointShape };
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // GpuErrorEntryもここから再エクスポートする。
@@ -21,8 +25,6 @@ export type { BackgroundMode };
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // ColorModeもここから再エクスポートする（M2-2）。
 export type { ColorMode };
-
-const DEFAULT_POINT_BUDGET = 3_000_000;
 
 export type ViewerStatus = "idle" | "opening" | "ready" | "error";
 
@@ -47,6 +49,19 @@ export interface CopcViewerState {
    *  M2-1参照）。強さは所有者が実機で確認して0.05に固定したため、UIから
    *  調整する手段は無い（`src/renderer/edl.ts`の`DEFAULT_EDL_STRENGTH`参照）。 */
   edlEnabled: boolean;
+  /**
+   * M3-8: モバイル最適化。`isMobile`/`deviceMemoryGiB`/`pointerCoarse`/
+   * `pointBudgetMax`は端末プロファイル(`device-profile.ts`)から一度だけ決まる、
+   * セッション中変わらない値（所有者が実機でどの既定値が選ばれたかを設定画面で
+   * 確かめられるようにするための表示用）。`renderScale`/`pointShape`は設定画面
+   * から切り替えられる値で、変更は再起動なしでrendererへ反映される。
+   */
+  isMobile: boolean;
+  deviceMemoryGiB: number | undefined;
+  pointerCoarse: boolean;
+  pointBudgetMax: number;
+  renderScale: number;
+  pointShape: PointShape;
   /** M2-2: 着色モード。既定は`DEFAULT_COLOR_MODE`("rgb")。ファイルを開いた結果
    *  RGBが無いと分かった場合は自動で`FALLBACK_COLOR_MODE_WITHOUT_RGB`("elevation")
    *  に落ちる（`openFile`参照）。手動で"rgb"を選んでも、開いているファイルが
@@ -75,6 +90,8 @@ export interface CopcViewerState {
   setBackgroundMode: (mode: BackgroundMode) => void;
   setGridEnabled: (enabled: boolean) => void;
   setEdlEnabled: (enabled: boolean) => void;
+  setRenderScale: (scale: number) => void;
+  setPointShape: (shape: PointShape) => void;
   setColorMode: (mode: ColorMode) => void;
   /** バナーの「閉じる」ボタンから呼ぶ。指定したエラーだけを消す。 */
   dismissGpuError: (id: number) => void;
@@ -96,17 +113,28 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // list()のスナップショットをgpuErrors stateへコピーしてReactに再描画させる。
   const gpuErrorLogRef = useRef(new GpuErrorLog());
 
+  // M3-8: モバイル判定と各手段の既定値を、`PointCloudRenderer`のコンストラクタが
+  // 呼ぶのと同じ`defaultRenderSettings(readDeviceProfileInput())`で決める。
+  // 同じ入力(実行中のブラウザの状態は変わらない)に対して同じ純粋関数を呼ぶだけ
+  // なので、rendererとこのフックの初期値はハンドシェイクなしで一致する
+  // （point-cloud-renderer.tsのコンストラクタのコメント参照）。`useState`の
+  // 初期化関数として渡し、レンダー毎に呼び直されないようにする。
+  const [deviceProfileInput] = useState(() => readDeviceProfileInput());
+  const [deviceProfileDefaults] = useState(() => defaultRenderSettings(deviceProfileInput));
+
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [cloudInfo, setCloudInfo] = useState<CloudInfo | null>(null);
   const [nodeCount, setNodeCount] = useState(0);
-  const [pointBudget, setPointBudgetState] = useState(DEFAULT_POINT_BUDGET);
+  const [pointBudget, setPointBudgetState] = useState(deviceProfileDefaults.pointBudgetStart);
   // rendererの既定(PointCloudRenderer内 private autoPointBudgetEnabled = true)と合わせる。
   const [autoPointBudgetEnabled, setAutoPointBudgetEnabledState] = useState(true);
   const [stats, setStats] = useState<RenderStats | null>(null);
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
-  const [edlEnabled, setEdlEnabledState] = useState(DEFAULT_EDL_ENABLED);
+  const [edlEnabled, setEdlEnabledState] = useState(deviceProfileDefaults.edlEnabled);
+  const [renderScale, setRenderScaleState] = useState(deviceProfileDefaults.renderScale);
+  const [pointShape, setPointShapeState] = useState<PointShape>(deviceProfileDefaults.pointShape);
   const [colorMode, setColorModeState] = useState<ColorMode>(DEFAULT_COLOR_MODE);
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
 
@@ -147,6 +175,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         // M2-2: 着色モードの切り替えがrendererまで届いているかを、色の見た目を
         // 目視する前にstdoutだけでも確認できるようにする。
         `colorMode=${s.colorMode} ` +
+        // M3-8: モバイル最適化の各手段の現在値。所有者が実機で1つずつ切り替えて
+        // 効果を確かめる際、GUIの設定画面と同じ値をstdout(logcat経由も含む)からも
+        // 確認できるようにする。
+        `renderScale=${s.renderScale} pointShape=${s.pointShape} isMobile=${s.isMobile} pointBudgetMax=${s.pointBudgetMax} ` +
         // M2-0b: GUIを目視できなくても、pitch=0が水平になっているか等をstdoutだけで
         // 機械的に確認できるようにカメラの向きも出す。
         `pitch=${s.cameraPitch.toFixed(3)} yaw=${s.cameraYaw.toFixed(3)} ` +
@@ -289,6 +321,16 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setEdlEnabled(enabled);
   }, []);
 
+  const setRenderScale = useCallback((scale: number) => {
+    setRenderScaleState(scale);
+    rendererRef.current?.setRenderScale(scale);
+  }, []);
+
+  const setPointShape = useCallback((shape: PointShape) => {
+    setPointShapeState(shape);
+    rendererRef.current?.setPointShape(shape);
+  }, []);
+
   const setColorMode = useCallback(
     (mode: ColorMode) => {
       // 現在開いているファイルがRGBを持たない場合は、"rgb"を選ぼうとしても
@@ -319,6 +361,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     backgroundMode,
     gridEnabled,
     edlEnabled,
+    isMobile: deviceProfileDefaults.isMobile,
+    deviceMemoryGiB: deviceProfileInput.deviceMemoryGiB,
+    pointerCoarse: deviceProfileInput.pointerCoarse,
+    pointBudgetMax: deviceProfileDefaults.pointBudgetMax,
+    renderScale,
+    pointShape,
     colorMode,
     gpuErrors,
     openFile,
@@ -328,6 +376,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setBackgroundMode,
     setGridEnabled,
     setEdlEnabled,
+    setRenderScale,
+    setPointShape,
     setColorMode,
     dismissGpuError,
   };

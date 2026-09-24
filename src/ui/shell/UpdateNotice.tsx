@@ -1,5 +1,5 @@
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
-import { GLASS_SURFACE } from "./glass";
+import { glassSurfaceClass } from "./glass";
 
 /**
  * M3-2 / M3-4: 新しいバージョンがあるときだけ出す通知。デスクトップ・Android共通
@@ -8,13 +8,13 @@ import { GLASS_SURFACE } from "./glass";
  *
  * インストールが利用者の手作業であることを明記する(ADR-0004: 自動では適用しない)。
  */
-export function UpdateNotice({ update }: { update: UpdateCheckState }) {
+export function UpdateNotice({ update, glassEnabled }: { update: UpdateCheckState; glassEnabled: boolean }) {
   if (update.status !== "available" || !update.latest) return null;
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
       <div
-        className={`pointer-events-auto flex w-full max-w-md flex-col gap-2 rounded-xl p-4 shadow-xl ${GLASS_SURFACE}`}
+        className={`pointer-events-auto flex w-full max-w-md flex-col gap-2 rounded-xl p-4 shadow-xl ${glassSurfaceClass(glassEnabled)}`}
       >
         <p className="text-sm font-semibold">新しいバージョンがあります: {update.latest.tagName}</p>
         {update.latest.body && (

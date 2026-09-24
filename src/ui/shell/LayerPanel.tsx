@@ -3,7 +3,7 @@ import type { BackgroundMode, ColorMode, CopcViewerState } from "../../state/use
 // 規約2: `@tauri-apps/plugin-dialog`を直接importしない。DataSource側の関数
 // (`pickLocalFile`)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
 import { pickLocalFile } from "../../datasource/tauri";
-import { GLASS_SURFACE } from "./glass";
+import { glassSurfaceClass } from "./glass";
 
 const BACKGROUND_MODE_LABELS: Record<BackgroundMode, string> = {
   "solid-dark": "単色(暗)",
@@ -30,6 +30,9 @@ interface Props {
   viewer: CopcViewerState;
   open: boolean;
   onToggleOpen: () => void;
+  /** M3-8: ガラス表現(backdrop-blur)のオン/オフ。既定はモバイル判定に従う
+   *  (`AppShell.tsx`参照)。切り替え自体は設定画面(SettingsModal)から行う。 */
+  glassEnabled: boolean;
 }
 
 /**
@@ -49,14 +52,14 @@ interface Props {
  * 折りたたみ可能: `open=false`のときはパネル本体を消し、開閉ボタンだけを残す。
  * ボタンは常に画面内に残るので、畳んだ状態からでも必ず開き直せる。
  */
-export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
+export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) {
   const [urlInput, setUrlInput] = useState("");
 
   return (
     <div className="pointer-events-none absolute inset-y-3 left-3 z-10 flex items-start gap-2">
       {open && (
         <section
-          className={`pointer-events-auto flex w-72 max-w-[38vw] flex-col gap-4 overflow-y-auto rounded-2xl p-4 text-sm shadow-lg ${GLASS_SURFACE}`}
+          className={`pointer-events-auto flex w-72 max-w-[38vw] flex-col gap-4 overflow-y-auto rounded-2xl p-4 text-sm shadow-lg ${glassSurfaceClass(glassEnabled)}`}
         >
           <h2 className="text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー</h2>
 
@@ -211,14 +214,10 @@ export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
             )}
           </div>
 
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={viewer.edlEnabled}
-              onChange={(e) => viewer.setEdlEnabled(e.target.checked)}
-            />
-            EDL（陰影で凹凸を強調）
-          </label>
+          {/* M3-8: EDLの切り替えは、レンダースケール・点の形・ガラス・点予算上限と
+              並べて設定画面(SettingsModal)の「モバイル最適化」節に移した。
+              5つの手段を1箇所にまとめ、モバイル判定の結果と一緒に表示するため
+              (タスクシートの要求)。 */}
         </section>
       )}
 
@@ -227,7 +226,7 @@ export function LayerPanel({ viewer, open, onToggleOpen }: Props) {
         onClick={onToggleOpen}
         aria-label={open ? "レイヤーパネルを畳む" : "レイヤーパネルを開く"}
         title={open ? "レイヤーパネルを畳む" : "レイヤーパネルを開く"}
-        className={`pointer-events-auto rounded-full px-2 py-2 text-xs shadow-lg ${GLASS_SURFACE}`}
+        className={`pointer-events-auto rounded-full px-2 py-2 text-xs shadow-lg ${glassSurfaceClass(glassEnabled)}`}
       >
         {open ? "◀" : "▶"}
       </button>

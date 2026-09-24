@@ -1,10 +1,12 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { GLASS_SURFACE } from "./glass";
+import { glassSurfaceClass } from "./glass";
 
 interface Props {
   viewer: CopcViewerState;
   open: boolean;
   onToggleOpen: () => void;
+  /** M3-8: ガラス表現(backdrop-blur)のオン/オフ。LayerPanelと同じ意味。 */
+  glassEnabled: boolean;
 }
 
 function fmt3(v: readonly [number, number, number]): string {
@@ -19,7 +21,7 @@ function fmt3(v: readonly [number, number, number]): string {
  *
  * 折りたたみ可能: LayerPanelと対称の構成(開閉ボタンは常に残す)。
  */
-export function InfoPanel({ viewer, open, onToggleOpen }: Props) {
+export function InfoPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) {
   return (
     <div className="pointer-events-none absolute inset-y-3 right-3 z-10 flex items-start gap-2">
       <button
@@ -27,14 +29,14 @@ export function InfoPanel({ viewer, open, onToggleOpen }: Props) {
         onClick={onToggleOpen}
         aria-label={open ? "情報パネルを畳む" : "情報パネルを開く"}
         title={open ? "情報パネルを畳む" : "情報パネルを開く"}
-        className={`pointer-events-auto rounded-full px-2 py-2 text-xs shadow-lg ${GLASS_SURFACE}`}
+        className={`pointer-events-auto rounded-full px-2 py-2 text-xs shadow-lg ${glassSurfaceClass(glassEnabled)}`}
       >
         {open ? "▶" : "◀"}
       </button>
 
       {open && (
         <section
-          className={`pointer-events-auto flex w-72 max-w-[38vw] flex-col gap-3 overflow-y-auto rounded-2xl p-4 font-mono text-xs shadow-lg ${GLASS_SURFACE}`}
+          className={`pointer-events-auto flex w-72 max-w-[38vw] flex-col gap-3 overflow-y-auto rounded-2xl p-4 font-mono text-xs shadow-lg ${glassSurfaceClass(glassEnabled)}`}
         >
           <h2 className="text-xs font-semibold uppercase tracking-wide opacity-70">情報</h2>
 
@@ -59,6 +61,16 @@ export function InfoPanel({ viewer, open, onToggleOpen }: Props) {
               </p>
               <p>fps: {viewer.stats.fps.toFixed(1)}</p>
               <p>pointBudget: {viewer.stats.pointBudget.toLocaleString()}</p>
+            </div>
+          )}
+
+          {viewer.stats && (
+            <div className="flex flex-col gap-0.5 border-t border-black/10 pt-2 dark:border-white/10">
+              <p className="opacity-70">モバイル最適化(M3-8)</p>
+              <p>isMobile: {String(viewer.stats.isMobile)}</p>
+              <p>renderScale: {viewer.stats.renderScale}</p>
+              <p>pointShape: {viewer.stats.pointShape}</p>
+              <p>pointBudgetMax: {viewer.stats.pointBudgetMax.toLocaleString()}</p>
             </div>
           )}
 
