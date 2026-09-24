@@ -138,7 +138,8 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
 
           <div className="flex flex-col gap-1">
             <label className="text-xs opacity-70">
-              レンダースケール（内部解像度 = 表示サイズ×devicePixelRatio×この値。既定: モバイル0.5 / デスクトップ1.0）
+              レンダースケール（内部解像度 = 表示サイズ(CSS px)×この値。devicePixelRatioは含まない。
+              既定: モバイル0.5 / デスクトップ1.0）
             </label>
             <div className="flex gap-2">
               {RENDER_SCALE_OPTIONS.map((scale) => (

@@ -198,9 +198,15 @@ export class PointCloudRenderer {
   private edlStrength = DEFAULT_EDL_STRENGTH;
   private edlRadiusPx = DEFAULT_EDL_RADIUS_PX;
 
-  /** M3-8: レンダースケール(内部解像度 = 表示サイズ×devicePixelRatio×この値)。
-   *  変更するとキャンバスの描画バッファを作り直す必要があるため、
-   *  `setRenderScale()`経由でのみ変更し、そのたびに`applyCanvasSize()`を呼ぶ。 */
+  /**
+   * M3-8: レンダースケール(内部解像度 = 表示サイズ(CSS px) × この値)。
+   * **devicePixelRatioはここに含めない**(2026-09-24追記の修正。理由は
+   * `render-scale.ts`冒頭のコメント参照。含めるとモバイルの既定値0.5が
+   * devicePixelRatio≈2の端末で実質1.0になり無効化される一方、
+   * devicePixelRatio>1のデスクトップでは以前より重くなってしまうため)。
+   * 変更するとキャンバスの描画バッファを作り直す必要があるため、
+   * `setRenderScale()`経由でのみ変更し、そのたびに`applyCanvasSize()`を呼ぶ。
+   */
   private renderScale: number;
   /** M3-8: 点の形（丸/四角）。gpu-resources.tsが起動時に両方のパイプラインを
    *  作成済みなので、切り替えにリソースの作り直しは要らない
@@ -425,9 +431,10 @@ export class PointCloudRenderer {
   }
 
   /**
-   * M3-8: レンダースケール(内部解像度 = 表示サイズ×devicePixelRatio×この値)を
-   * 変更する。キャンバスの描画バッファ(depth/オフスクリーンのテクスチャを含む)
-   * を作り直す必要があるため、`applyCanvasSize()`（`resize()`と共通）を呼ぶ。
+   * M3-8: レンダースケール(内部解像度 = 表示サイズ(CSS px) × この値。
+   * devicePixelRatioは含めない。理由は`renderScale`フィールドのコメント参照)
+   * を変更する。キャンバスの描画バッファ(depth/オフスクリーンのテクスチャを
+   * 含む)を作り直す必要があるため、`applyCanvasSize()`（`resize()`と共通）を呼ぶ。
    */
   setRenderScale(scale: number): void {
     this.renderScale = Math.max(0.05, scale);
@@ -528,11 +535,12 @@ export class PointCloudRenderer {
   /**
    * 表示サイズ(CSS px、通常は`canvas.clientWidth`/`clientHeight`)を渡す。
    * **M3-8**: 以前はこの値をそのまま`canvas.width`/`height`(描画バッファの
-   * サイズ)に使っていたが、レンダースケール導入により
-   * 「表示サイズ×devicePixelRatio×レンダースケール」を計算してから使うように
-   * 変えた(`applyCanvasSize()`参照)。表示サイズ自体は`lastDisplayWidthCss`/
-   * `lastDisplayHeightCss`に覚えておき、`setRenderScale()`で倍率だけが
-   * 変わったときも同じ計算を再利用する。
+   * サイズ)に使っていたが、レンダースケール導入により「表示サイズ×
+   * レンダースケール」を計算してから使うように変えた(`applyCanvasSize()`
+   * 参照。**devicePixelRatioは掛けない**。2026-09-24追記、理由は
+   * `render-scale.ts`冒頭のコメント参照)。表示サイズ自体は
+   * `lastDisplayWidthCss`/`lastDisplayHeightCss`に覚えておき、
+   * `setRenderScale()`で倍率だけが変わったときも同じ計算を再利用する。
    */
   resize(displayWidthCss: number, displayHeightCss: number): void {
     this.lastDisplayWidthCss = Math.max(1, displayWidthCss);
@@ -541,20 +549,31 @@ export class PointCloudRenderer {
   }
 
   /**
-   * 表示サイズ(CSS px)・devicePixelRatio・レンダースケールから、キャンバスの
-   * 描画バッファ(internal resolution)を計算し直す。計算そのものは
-   * `render-scale.ts`の`computeCanvasBackingSize`（純粋関数、単体テスト済み）に
-   * 任せ、ここでは結果を`canvas.width`/`height`と`gpu.resize()`へ反映するだけ
-   * にする。「表示サイズが変わったとき」(`resize()`)と「レンダースケールだけ
+   * 表示サイズ(CSS px)・レンダースケールから、キャンバスの描画バッファ
+   * (internal resolution)を計算し直す。計算そのものは`render-scale.ts`の
+   * `computeCanvasBackingSize`（純粋関数、単体テスト済み）に任せ、ここでは
+   * 結果を`canvas.width`/`height`と`gpu.resize()`へ反映するだけにする。
+   * 「表示サイズが変わったとき」(`resize()`)と「レンダースケールだけ
    * 変わったとき」(`setRenderScale()`)の両方がこのメソッドを通ることで、
    * 処理が分岐しないようにしてある。
+   *
+   * **devicePixelRatioを渡さない理由（2026-09-24追記）**: 当初は
+   * `window.devicePixelRatio`を渡していたが、これが2つの問題を生んでいた。
+   * (1) OPPO Pad Air(devicePixelRatio≈2の見込み)ではモバイルの既定
+   * `renderScale=0.5`が実質2×0.5=1.0倍になり、無効化されていた。所有者の
+   * 実機の症状は`VK_ERROR_DEVICE_LOST`(GPUのハング)で、1フレームのGPUの
+   * 仕事を減らすことが本命の対策なのに、その手段が効いていなかった。
+   * (2) デスクトップでも表示スケール125%/150%等(devicePixelRatio>1)の
+   * 環境では、renderScale=1.0(デスクトップの既定)でも以前(devicePixelRatio
+   * を一切考慮していなかったv0.1.0)より内部解像度が上がってしまい、
+   * 「デスクトップの見た目と挙動を変えない」というタスクシートの必須要件に
+   * 反していた。devicePixelRatioを外すことで、renderScale=1.0が
+   * `canvas.clientWidth`そのまま(変更前と完全一致)に戻る。
    */
   private applyCanvasSize(): void {
-    const devicePixelRatio = typeof window !== "undefined" && window.devicePixelRatio ? window.devicePixelRatio : 1;
     const { width, height } = computeCanvasBackingSize(
       this.lastDisplayWidthCss,
       this.lastDisplayHeightCss,
-      devicePixelRatio,
       this.renderScale,
     );
     this.canvas.width = width;
