@@ -633,13 +633,14 @@ CI（`ci.yml`）: 本タスクの一連のpushが緑であることを`gh run li
 `gh run list --branch main --limit 5`で確認できる）。
 
 `workflow_dispatch`でのAndroidビルド確認（タグ・Releaseは作らない経路）:
-`gh workflow run release.yml --ref main`を実行した。run idと結果は
-このタスクシートの後半（本文末尾に追記）を参照。**Androidのクロス
-コンパイル環境がこの開発機に無いため、Android向けのコードパス
-（`statvfs`によるdisk_space、`content://`経由の変換、`redirect_os_temp_dir`の
-Android分岐）はこのCIでのビルド成功だけが唯一の確認手段であり、実機での
-動作（実際に変換が完走するか、空き容量チェックが正しい値を返すか等）は
-確認できていない。**
+`gh workflow run release.yml --ref main`を実行した(**run 36031251726**)。
+結果はコーディネーターが`gh run view 36031251726`で確認すること
+（本セッション終了時点で完走を待てなかった場合は、実行中のままの可能性がある。
+「所有者への報告」に最新状況を記す）。**Androidのクロスコンパイル環境が
+この開発機に無いため、Android向けのコードパス（`statvfs`によるdisk_space、
+`content://`経由の変換、`redirect_os_temp_dir`のAndroid分岐）はこのCIでの
+ビルド成功だけが唯一の確認手段であり、実機での動作（実際に変換が完走するか、
+空き容量チェックが正しい値を返すか等）は確認できていない。**
 
 ### 所有者が確かめる手順
 

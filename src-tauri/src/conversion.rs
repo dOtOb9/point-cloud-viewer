@@ -299,9 +299,9 @@ fn decide_and_start(
 
 /// 一時ファイルの置き場所を決める。優先順:
 /// 1. 所有者が設定で明示した場所(`temp_dir_override`)
-/// 2. Android: アプリのキャッシュディレクトリ配下(`content://`から得た
-///    `content://`ルートの外にファイルを書けないため。`ContentResolver`は
-///    ファイルシステムの一般的な一時領域を持たない)
+/// 2. Android: アプリのキャッシュディレクトリ配下(`content://`が指す
+///    ツリーの外に一般的な一時領域が無いため。`ContentResolver`はファイル
+///    システムの一時ディレクトリという概念を持たない)
 /// 3. それ以外(デスクトップ、既定): `std::env::temp_dir()`
 ///    (`ADR-0006`のM4-1b実測がこの既定値で行われている)
 fn resolve_spill_dir(app: &AppHandle, temp_dir_override: Option<&str>) -> Result<PathBuf, String> {
