@@ -5,7 +5,9 @@
 //! - [`point`][]: 入力LAS/LAZの読み込みと、メモリ上で持つ点の表現
 //! - [`octree`][]: 素朴なoctree分割
 //! - [`writer`][]: COPCファイルの組み立て
+//! - [`import`][]: M4-4。E57/PLY/PCD → LAS のインポータ(上記3つとは独立した経路)
 
+pub mod import;
 pub mod octree;
 pub mod point;
 pub mod writer;

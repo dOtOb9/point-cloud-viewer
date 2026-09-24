@@ -27,6 +27,10 @@ thiserror = "2"
 # pcv-coreはこのクレートに依存しないので規約1には影響しない。
 copc-writer = "0.9.0"
 
+# M4-4: E57/PLY/PCD → LAS のインポータ(src/import/)。選定理由はADR-0008に追記。
+e57 = "0.11.13"
+pcd-rs = "0.13.0"
+
 [dev-dependencies]
 # 変換結果が実際にpcv-coreで開けるかの検証用(M4-1受け入れ条件)。
 pcv-core = { path = "../pcv-core" }
