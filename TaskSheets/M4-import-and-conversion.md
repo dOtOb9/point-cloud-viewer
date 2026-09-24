@@ -406,24 +406,283 @@ ADR-0001 と同じ書式（決定 / 背景 / 帰結 / 却下した案）で、**
 
 ### 受け入れ条件
 
-- [ ] 生の LAS/LAZ をドロップすると変換が始まり、進捗が出る
-- [ ] 変換中に UI が操作でき、キャンセルできる
-- [ ] 変換後、自動的にビューアで開く
-- [ ] 同じファイルを再度開くと変換が走らない（キャッシュが効いている）
-- [ ] 既に COPC のファイルは即座に開く
+- [x] 生の LAS/LAZ をドロップすると変換が始まり、進捗が出る
+      （「ドロップ」ではなく「ファイルを選ぶ…」ダイアログ経由。ドラッグ&ドロップ
+      自体は`HANDOFF.md`の「小さい残務」に記載のとおり本タスクの範囲外の
+      既存の未実装機能であり、今回は変えていない）
+- [x] 変換中に UI が操作でき、キャンセルできる（下記「実施記録」参照。GUIでの
+      目視確認は未実施、Rustの統合テストでキャンセル時の一時ファイル削除を確認済み）
+- [x] 変換後、自動的にビューアで開く（`onConversionDone`→`openFile`の再呼び出し）
+- [x] 同じファイルを再度開くと変換が走らない（キャッシュが効いている）
+- [x] 既に COPC のファイルは即座に開く
 
 ### コミット単位
 
 `feat: add las/laz import with progress and cancel`
 
+### 実施記録（2026-09-24〜2026-09-25、Sonnet）
+
+**方針転換（作業中に発生）**: 当初は「変換はデスクトップ（Windows）だけ」
+（ADR-0006の初版）という前提で作業を始めたが、途中で所有者の方針変更により
+**Androidでも変換する**ことになった（ADR-0006の追記「Android と Web でも
+変換する」参照。Webは別段階M4-6として範囲外のまま）。この節はAndroid対応後の
+最終形を記録する。
+
+#### `copc-writer` の対応状況を確認した結果（受け入れ条件どおり、ソースで確認）
+
+- **中断**: `copc_core::CancelCheck`トレイトと`*_with_cancel`系の関数で
+  最初から対応している。**そのため別プロセスは使わない。** 同じプロセス内の
+  別スレッドで変換し、`Arc<AtomicBool>`を共有する`AtomicCancel`
+  （`crates/pcv-convert/src/streaming.rs`）で止める。キャンセル時・失敗時の
+  一時ファイル・書きかけ出力の後始末も`copc-writer`自身がRAII
+  （`tempfile::NamedTempFile`。`.persist()`を呼ばない限りDrop時に自動削除）で
+  行うことをソースで確認済み。呼び出し側で追加の後始末コードは書いていない
+  （`crates/pcv-convert/tests/streaming_conversion.rs`の
+  `cancelling_mid_conversion_leaves_no_leftover_files`で実際に確認）
+- **進捗**: コールバックは無い。ただし低水準API`write_streaming_with_cancel`
+  (`path, layout, points: I, params, metadata, spill_dir, cancel`)は点の
+  `Iterator`を受け取るため、`las::Reader`のバッチ読み込み(`fill_points`)を
+  包むイテレータ(`streaming.rs`の`BatchedLasPoints`)で読んだ点数を数え、
+  正確な読み込み進捗(`ReadProgress`)を報告できる。読み込み後(octree構築・
+  チャンク圧縮・書き出し)は`write_streaming_with_cancel`の呼び出し内部で
+  一括して行われ外からフックできないため、段階名（「後処理中」）だけを示す
+- 一時ファイル: 点の一時ファイルは`spill_dir`に作られるが、**LODの索引の
+  一時ファイルは常にOS既定の一時ディレクトリ**(`tempfile::Builder::new()
+  .tempfile()`、`spill_dir`の指定は効かない)に作られる。Rust標準ライブラリの
+  ソース(`library/std/src/sys/paths/unix.rs`の`temp_dir()`)を確認すると、
+  `TMPDIR`環境変数が設定されていれば常にそれを優先し、Android向けの既定値
+  (`/data/local/tmp`。アプリから書き込めない)はTMPDIR未設定時のみ使われる。
+  そのため`redirect_os_temp_dir`(`src-tauri/src/conversion.rs`)で
+  `TMPDIR`(Unix系)/`TMP`・`TEMP`(Windows。`GetTempPath2W`が読む変数)を
+  書き換えることで、LOD一時ファイルもspill_dirと同じ場所へ誘導している
+
+#### 当初の設計からの変更点（`convert_las_to_copc_streaming_with_crs_wkt_override`→`write_streaming_with_cancel`）
+
+パスを渡すだけの一括関数は、Androidの`content://` URIから得られる
+`std::fs::File`（パス文字列を経由できない）を受け取れない。低水準API
+`write_streaming_with_cancel`は`R: Read + Seek`から作った点のイテレータを
+渡す形なので、デスクトップのパスもAndroidの`content://`も最終的に
+`std::fs::File`（`tauri-plugin-fs`が`ContentResolver`経由で開いたもの。
+`src-tauri/src/copc_state.rs`の`open_uri_reader`と同じ経路）になることを
+利用して、**1本の経路に統一した**（`crates/pcv-convert/src/streaming.rs`の
+`convert<R: Read + Seek + Send + Sync + 'static>`）。
+
+代償として、一括関数が内部で行っていた「元ファイルの任意のVLR/EVLRの
+パススルー」「synthetic return numbersのglobal encodingビット」は
+自分で組み立てる必要が生じた（`write_metadata.rs`）。**任意のVLR/EVLRの
+パススルーは行っていない**（本アプリが使う属性はxyz・強度・分類・RGBの4つ
+だけで、`crates/pcv-convert/src/point.rs`のM4-1時点の方針と同じ判断）。
+CRS(WKT)だけは個別に手当てする（下記）。
+
+#### CRS（座標参照系）を運ぶこと（受け入れ条件）
+
+`copc-writer`のソース(`validate.rs`)を読んで確認したところ、**元がGeoTIFF
+キーだけ(WKTのVLRが無い)の入力は、`crs_wkt_override`を渡さない限り変換
+そのものが`Error::Unsupported`で失敗する**ことが分かった。M4-1が記録した
+「CRSが失われる」だけでなく、**変換自体ができなくなる**という、より重大な
+問題だった。
+
+`crates/pcv-convert/src/crs_override.rs`の`resolved_wkt_crs_for_header`が
+解決する:
+
+1. 元にWKTのVLRがあればそのままそのWKT文字列を使う（従来どおり）
+2. GeoTIFFキーだけで、かつ`pcv_core::crs`（M4-5、平面直角座標系19系・
+   UTM 51N〜56N）が対応する系なら、検証済みのゾーンパラメータからWKTを
+   組み立てる（datum/楕円体/単位のEPSG権威コードは広く使われる既知の
+   固定値だが、本セッションでレジストリへ都度確認してはいない。正しさは
+   生成したWKTを`pcv_core::crs::detect_crs_from_las_header`に通し、
+   元と同じ系に戻ることをテストで確認した）
+3. それ以外はCRSが失われることを許容する（対応していない系の変換式を
+   持っていないため）
+
+**確認済み**: 合成LAS(GeoTIFFキーのみ、EPSG:6677=JGD2011 IX系)を実際に
+変換し、出力にWKTのCRSが書かれ`EPSG:6677`を含むことをテストで確認した
+(`crates/pcv-convert/tests/streaming_conversion.rs`の
+`geotiff_only_crs_is_carried_through_via_override`)。**実データ(sofi等)の
+CRSが元のGeoTIFF形式かWKT形式かは確認していない**（テストデータが
+手元に無いため。GUIでの最終確認は所有者に委ねる）。
+
+#### 進捗の出し方（読み込み段階のみ正確な割合）
+
+`ReadProgress{points_read, total_points}`をLASヘッダーの申告点数を分母に
+`src/ui/shell/LayerPanel.tsx`が%とプログレスバー・経過時間を表示する。
+読み込み完了後は「octreeを構築・書き出し中(割合は出せません)」という
+段階名表示に切り替わる。推定残り時間は出していない（読み込み段階の速度から
+外挿することもできるが、後半の段階（octree構築・書き出し）の所要時間比率が
+不明なため、誤った期待を持たせるより「出せない」と正直に示す方を選んだ）。
+
+#### キャッシュ（同じファイルを二度変換しない）
+
+`crates/pcv-convert/src/cache.rs`: 変換結果の隣（実際には出力の隣、
+`output_path.rs`参照）に`<出力>.meta`というサイドカーを置き、変換時点の
+元ファイルの指紋（サイズ・更新日時。テキスト形式、2行）を記録する。次に
+同じ元ファイルを開こうとしたとき、指紋が一致すれば変換をスキップして
+即座に開く。元ファイルが更新されていれば（サイズか更新日時が変わっていれば）
+作り直す。判定そのもの(`needs_reconversion`)はファイルI/Oをしない純粋関数で
+テストしてある。
+
+Androidの`content://`は`std::fs::metadata`（パス文字列前提）では読めないため、
+`tauri-plugin-fs`で開いた`File`から直接読む`fingerprint_of_file`を追加した。
+**Androidの`content://`は更新日時を正しく報告しない実装のコンテンツプロバイダ
+がありうる**（コーディネーター指示のとおり）。その場合は指紋が一致しにくくなり
+「余分に作り直す」方向にしか転ばない（安全側）。
+
+#### 出力の置き場所
+
+`crates/pcv-convert/src/output_path.rs`: `<元ファイル名>.copc.laz`をまず
+元ファイルの隣に書こうとし（実際に一時ファイルを作って消すことで書き込める
+か確かめる）、書けなければアプリのキャッシュディレクトリ配下
+(`<app_cache_dir>/converted/`)に、元パス全体のハッシュを前置いた名前で置く。
+Androidの`content://`は常に「隣に書けない」ため必ずフォールバックへ入る。
+`content://` URIを`Path`として扱う（実在するパスである必要は無い、文字列の
+最後の`/`区切りをファイル名の手がかりにするだけの割り切り）ため、SAFの
+content URIが返す末尾セグメント（URLエンコードされた元ファイル名を含むことが
+多い）がそのままキャッシュ内のファイル名に混じる。読みやすさより
+「実装の追いやすさ（単純さ）」を優先した割り切りで、動作に影響は無い。
+
+#### 空き容量の事前チェック
+
+`crates/pcv-convert/src/disk_space.rs`: ADR-0006の実測(sofi: 入力2.03GB→
+一時ファイルピーク21.864GB、比≈10.77倍)を根拠に**11倍**を必要容量の見積もり
+とする。取得方法はWindows(`GetDiskFreeSpaceExW`)とUnix系/Android
+(`statvfs(2)`。AndroidはLinuxカーネルの上で動くためJNI不要)の2つを実装した。
+**Android実機でのstatvfs呼び出しは未確認**（Androidのクロスコンパイル
+ターゲットがこの開発環境に無いため、ローカルではコンパイルすら確認できて
+いない。`gh workflow run release.yml`のAndroidジョブでのビルド成功が
+唯一の確認手段。下記「確認したコマンドと結果」参照）。
+
+#### Android: 一時ディレクトリの誘導
+
+`src-tauri/src/lib.rs`の`setup_android_temp_dir`（`.setup()`フックから
+呼ぶ）が、起動直後にアプリのキャッシュディレクトリへ`TMPDIR`を向ける
+（上記「`copc-writer`の対応状況」参照）。所有者が設定で一時ディレクトリを
+指定した場合は、変換開始時にそのディレクトリへさらに向け直す
+(`conversion.rs`の`decide_and_start`)。
+
+#### UI
+
+`src/ui/shell/LayerPanel.tsx`にインライン表示（半透明パネルの中。ADR-0005の
+「情報の多い設定画面以外は半透明」の方針に沿う）。ファイル選択ダイアログの
+フィルタを`.las`/`.laz`両方に広げた。`src/ui/shell/SettingsModal.tsx`に
+一時ディレクトリの設定を追加（デスクトップだけ。Androidは
+`supports_custom_temp_dir`コマンドが`false`を返すため出さない。理由:
+AndroidのOSフォルダ選択(SAF)が返す`content://`ツリーURIは、`tempfile`が
+要求する実在のファイルシステムパスとしては使えない）。
+
+エラー（変換の失敗・キャンセル・容量不足）は既存のエラーバナー
+(ADR-0011/ADR-0013、`GpuErrorLog`/`GpuErrorBanner`)に`source: "conversion"`
+として統合した。専用の仕組みを増やさない、という既存の方針を踏襲した。
+
+#### Web版
+
+`src/datasource/copc-header.ts`(`isCopcHeader`/`isCopcFile`)でヘッダーを
+読み、生LAS/LAZなら「デスクトップ版でCOPCに変換してから開いてください」と
+案内する（受け入れ条件。Web版は変換しない。ADR-0006で別段階M4-6として
+切り出し済み）。判定はRust側`copc_detect.rs`と独立に実装している(Web側に
+LASパーサライブラリが無いため、LASヘッダーのバイト配置を直接読む)。
+この判定はローカルファイル選択(`<input type="file">`)の経路だけに適用した
+(URL入力は既存のサンプル(autzen、既にCOPC)を開く用途がほとんどのため、
+範囲を広げていない)。
+
+#### 範囲外にしたこと（正直に）
+
+- **推定残り時間**: 出していない（上記「進捗の出し方」参照）
+- **Web版の変換**: ADR-0006で別段階(M4-6)として明確に切り出し済み
+- **元のVLR/EVLRの任意のパススルー**: `write_streaming_with_cancel`への
+  切り替えに伴い失われた。本アプリが使わない属性なので実害無しと判断した
+- **Android実機・GUIでの確認全般**: 確認手段が無いため、下記「所有者が
+  確かめる手順」に委ねる
+
+### 確認したコマンドと結果
+
+```
+$ cargo fmt --all -- --check
+（出力無し、終了コード0）
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+（警告・エラー無し）
+
+$ cargo test --workspace
+pcv-convert（ライブラリ）: 41 passed
+pcv-convert（統合テスト。import_e57/import_pcd/import_ply/import_to_copc/
+             roundtrip/streaming_conversion）: 1+4+5+1+1+5 = 17 passed
+pcv-core（ライブラリ）: 31 passed
+pcv-tauri（ライブラリ）: 6 passed
+合計95件、失敗0
+
+$ cargo build -p pcv-core --target wasm32-unknown-unknown
+Finished（成功。規約1を満たす）
+
+$ npx tsc --noEmit
+（出力無し、終了コード0）
+
+$ npx eslint .
+（出力無し、終了コード0）
+
+$ npx vitest run
+Test Files  26 passed (26)
+     Tests  212 passed (212)
+
+$ npm run build
+✓ 77 modules transformed.
+✓ built in 814ms
+```
+
+CI（`ci.yml`）: 本タスクの一連のpushが緑であることを`gh run list`で確認した
+（run 36028325879・36029833886・36031205830等。所有者が最新の状態を
+`gh run list --branch main --limit 5`で確認できる）。
+
+`workflow_dispatch`でのAndroidビルド確認（タグ・Releaseは作らない経路）:
+`gh workflow run release.yml --ref main`を実行した。run idと結果は
+このタスクシートの後半（本文末尾に追記）を参照。**Androidのクロス
+コンパイル環境がこの開発機に無いため、Android向けのコードパス
+（`statvfs`によるdisk_space、`content://`経由の変換、`redirect_os_temp_dir`の
+Android分岐）はこのCIでのビルド成功だけが唯一の確認手段であり、実機での
+動作（実際に変換が完走するか、空き容量チェックが正しい値を返すか等）は
+確認できていない。**
+
+### 所有者が確かめる手順
+
+1. **デスクトップ: 生のLAS/LAZを開く**
+   - 拡張子`.las`/`.laz`（COPCでない）のファイルを「ファイルを選ぶ…」で
+     選ぶ。進捗（%・プログレスバー・経過時間）が出て、変換完了後に自動的に
+     点群が表示されることを確認する
+   - 変換中に「キャンセル」を押し、UIが操作できたまま変換が止まり、
+     一時ファイル（既定はOSの一時ディレクトリ、または設定で選んだ場所）と
+     書きかけの出力が残っていないことを確認する（エクスプローラで
+     一時ディレクトリを見る）
+   - 同じファイルをもう一度開き、変換が走らず即座に開くことを確認する
+     （出力の隣に`<ファイル名>.copc.laz.meta`ができているはず）
+   - 既にCOPC(`.copc.laz`)のファイルを開き、変換を挟まず即座に開くことを
+     確認する
+2. **デスクトップ: 空き容量不足**
+   - 設定で一時ディレクトリを空き容量の少ないドライブ・フォルダに変更し、
+     大きめのLASファイルを開こうとして、変換が始まる前にエラーバナーで
+     知らされることを確認する
+3. **CRS**: GeoTIFF形式のCRSを持つ実データ（もしあれば）を変換し、出力を
+   QGIS等で開いて座標系が正しく認識されることを確認する（本セッションでは
+   合成データでしか確認していない）
+4. **Android実機**: `gh run download <run-id> -n android-apk`でAPKを取得し、
+   OPPO Pad Air等にインストールする。生のLAS/LAZファイルを選び、
+   - 変換が始まり進捗が出るか
+   - 完了後に自動的に開くか
+   - 空き容量チェックが機能するか（`statvfs`が正しい値を返すか）
+   - `adb logcat -s pcv:*`でエラーが出ていないか(ADR-0013)
+   を確認する。**これらはすべて未確認**（実機・Android向けビルド環境が
+   この開発環境に無いため）
+5. **Web版**: 生の`.laz`（COPCでない）ファイルを選び、「デスクトップ版で
+   変換してください」という趣旨のメッセージが出て、開こうとしないことを
+   確認する
+
 ---
 
 ## M4 完了の定義
 
-- [ ] 変換方式が実測値に基づいて決まり、ADR-0006 に記録されている
-- [ ] 生の LAS/LAZ を開けるようになっている
-- [ ] 同じファイルを二度変換しない
-- [ ] `ARCHITECTURE.md` の「現在の状態」表が更新されている
+- [x] 変換方式が実測値に基づいて決まり、ADR-0006 に記録されている
+- [x] 生の LAS/LAZ を開けるようになっている（デスクトップ・Android。Webは
+      変換を挟まず案内を出すのみ、ADR-0006の方針どおり）
+- [x] 同じファイルを二度変換しない
+- [x] `ARCHITECTURE.md` の「現在の状態」表が更新されている
 
 ---
 
