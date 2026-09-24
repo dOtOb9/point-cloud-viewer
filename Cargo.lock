@@ -2632,6 +2632,7 @@ version = "0.1.0"
 dependencies = [
  "byteorder",
  "copc-core",
+ "copc-writer",
  "las",
  "laz",
  "pcv-core",

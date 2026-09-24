@@ -21,6 +21,11 @@ las = { version = "0.10", features = ["laz"] }
 laz = "0.12"
 byteorder = "1"
 thiserror = "2"
+# M4-1b: out-of-core(streaming)変換の計測用(examples/convert_streaming.rs)。
+# copc-core/copc-reader(ADR-0003)と同じroteiro-gis/copc-rustの姉妹クレートで、
+# 版が揃っているため依存解決の衝突は起きない(実測してビルドを確認済み)。
+# pcv-coreはこのクレートに依存しないので規約1には影響しない。
+copc-writer = "0.9.0"
 
 [dev-dependencies]
 # 変換結果が実際にpcv-coreで開けるかの検証用(M4-1受け入れ条件)。
