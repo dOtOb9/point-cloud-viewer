@@ -44,6 +44,13 @@ pub fn fingerprint_of(path: &Path) -> io::Result<SourceFingerprint> {
     SourceFingerprint::from_metadata(&std::fs::metadata(path)?)
 }
 
+/// 開いた`File`から指紋を読む。Androidの`content://` URIは`std::fs::metadata`
+/// (パス文字列前提)では読めないため、`tauri-plugin-fs`で既に開いた`File`
+/// (`src-tauri/src/copc_state.rs`の`open_uri_reader`と同じ経路)から直接読む。
+pub fn fingerprint_of_file(file: &std::fs::File) -> io::Result<SourceFingerprint> {
+    SourceFingerprint::from_metadata(&file.metadata()?)
+}
+
 /// 変換をやり直す必要があるかどうか。ファイルI/Oをしない純粋関数。
 ///
 /// `cached`が`None`(変換結果がまだ無い、またはサイドカーが読めなかった)なら
@@ -147,5 +154,19 @@ mod tests {
         let fingerprint = fingerprint_of(&path).unwrap();
 
         assert_eq!(fingerprint.len, 10);
+    }
+
+    #[test]
+    fn fingerprint_of_file_matches_fingerprint_of_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.las");
+        std::fs::write(&path, b"0123456789").unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+
+        assert_eq!(
+            fingerprint_of_file(&file).unwrap(),
+            fingerprint_of(&path).unwrap()
+        );
     }
 }

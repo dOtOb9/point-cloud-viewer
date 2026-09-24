@@ -25,14 +25,17 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pcv-core = { path = "../crates/pcv-core" }
+# M4-3: LAS/LAZ→COPCの変換(conversion.rs)。実際の変換ロジックはpcv-convertに
+# 任せ、ここはTauriコマンド・イベントの薄い配線だけを持つ(ARCHITECTURE.md)。
+pcv-convert = { path = "../crates/pcv-convert" }
+copc-writer = "0.9.0"
+copc-core = "0.9.0"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 log = "0.4.34"
 
 [dev-dependencies]
 # open_copc/read_node_bytes をテストするために、その場で極小のCOPCを生成する。
-copc-writer = "0.9.0"
-copc-core = "0.9.0"
 tempfile = "3"
 
 [target.'cfg(target_os = "android")'.dependencies]

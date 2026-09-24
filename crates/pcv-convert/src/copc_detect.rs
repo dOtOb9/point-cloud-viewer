@@ -11,7 +11,7 @@
 //! 判定にした。仕様違反の並びを弾けない代わりに、実装を単純に保てる
 //! (拡張子だけの判定よりは確実に改善している)。
 
-use std::io;
+use std::io::{self, Read, Seek};
 use std::path::Path;
 
 const COPC_INFO_USER_ID: &str = "copc";
@@ -23,11 +23,25 @@ const COPC_INFO_RECORD_ID: u16 = 1;
 pub fn is_copc_file(path: &Path) -> io::Result<bool> {
     let reader = las::Reader::from_path(path)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    Ok(reader
-        .header()
+    Ok(is_copc_header(reader.header()))
+}
+
+/// `is_copc_file`のAndroid版。`content://` URIは`las::Reader::from_path`
+/// (パス文字列前提)では開けないため、`tauri-plugin-fs`で既に開いた`R: Read + Seek`
+/// (`src-tauri/src/copc_state.rs`の`open_uri_reader`と同じ経路)から判定する。
+/// `las::Reader::new`が`Send + Sync + 'static`を要求するため、この関数も
+/// 同じ境界を引き継ぐ(`streaming::convert`と同じ理由)。
+pub fn is_copc_reader<R: Read + Seek + Send + Sync + 'static>(reader: R) -> io::Result<bool> {
+    let reader = las::Reader::new(reader)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    Ok(is_copc_header(reader.header()))
+}
+
+fn is_copc_header(header: &las::Header) -> bool {
+    header
         .vlrs()
         .iter()
-        .any(|vlr| vlr.user_id == COPC_INFO_USER_ID && vlr.record_id == COPC_INFO_RECORD_ID))
+        .any(|vlr| vlr.user_id == COPC_INFO_USER_ID && vlr.record_id == COPC_INFO_RECORD_ID)
 }
 
 #[cfg(test)]
@@ -140,5 +154,22 @@ mod tests {
         write_plain_las(&misnamed);
 
         assert!(!is_copc_file(&misnamed).unwrap());
+    }
+
+    #[test]
+    fn is_copc_reader_matches_is_copc_file() {
+        // Androidの`content://`経路(`is_copc_reader`)が、パスから開く経路
+        // (`is_copc_file`)と同じ判定になることを確認する。
+        let dir = tempfile::tempdir().unwrap();
+        let copc_path = dir.path().join("synthetic.copc.laz");
+        write_synthetic_copc(&copc_path);
+        let las_path = dir.path().join("plain.las");
+        write_plain_las(&las_path);
+
+        let copc_file = std::fs::File::open(&copc_path).unwrap();
+        assert!(is_copc_reader(copc_file).unwrap());
+
+        let las_file = std::fs::File::open(&las_path).unwrap();
+        assert!(!is_copc_reader(las_file).unwrap());
     }
 }

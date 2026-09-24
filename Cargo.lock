@@ -2702,6 +2702,7 @@ dependencies = [
  "copc-writer",
  "env_logger",
  "log",
+ "pcv-convert",
  "pcv-core",
  "serde",
  "serde_json",

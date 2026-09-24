@@ -17,8 +17,10 @@
 // 届いた時点でプロセスが終了する。ここでの目的は「落ちるのを防ぐ」ことではなく
 // 「落ちる前にメッセージを残す」こと）。
 
+mod conversion;
 mod copc_state;
 
+use conversion::ConversionState;
 use copc_state::CopcState;
 use tauri::Manager;
 
@@ -75,6 +77,35 @@ fn install_panic_hook() {
         log::error!("[pcv] panic: {info}");
     }));
 }
+
+/// M4-3(`TaskSheets/ADR-0006-conversion-strategy.md`追記): Androidの
+/// `std::env::temp_dir()`は既定で`/data/local/tmp`(アプリから書き込めない)を
+/// 返す。`copc-writer`のLOD構築が使う一時ファイルは常にこの既定値を経由する
+/// (`src-tauri/src/conversion.rs`のドキュメント参照)ため、起動直後にアプリの
+/// キャッシュディレクトリへ向け直す。`setup`フックは他のスレッドがまだ
+/// 環境変数を読んでいないタイミングで呼ばれるので、ここで書き換える。
+/// デスクトップでは何もしない(`std::env::temp_dir()`の既定値のままでよい。
+/// `ADR-0006`のM4-1b実測もこの既定値で行われている)。
+#[cfg(target_os = "android")]
+fn setup_android_temp_dir(app: &tauri::App) {
+    match app.path().app_cache_dir() {
+        Ok(cache_dir) => {
+            conversion::redirect_os_temp_dir(&cache_dir);
+            log::info!(
+                "[pcv] Android: TMPDIRをアプリのキャッシュディレクトリへ向けた: {}",
+                cache_dir.display()
+            );
+        }
+        Err(e) => {
+            log::error!(
+                "[pcv] アプリのキャッシュディレクトリを取得できなかった。変換時の一時ファイルが書き込めない可能性がある: {e}"
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn setup_android_temp_dir(_app: &tauri::App) {}
 
 /// フロントの診断メッセージ（WebGPU プローブ結果、IPCベンチ結果など）を標準出力に出す。
 /// ADR-0001 の規約通り、これは制御メッセージであり、大きいデータはここを通さない。
@@ -225,12 +256,20 @@ pub fn run() {
         // 挙動は変わらない(CopcPool::open_pathはこのプラグインを経由しない)。
         .plugin(tauri_plugin_fs::init())
         .manage(CopcState::default())
+        .manage(ConversionState::default())
+        .setup(|app| {
+            setup_android_temp_dir(app);
+            Ok(())
+        })
         .register_asynchronous_uri_scheme_protocol("pcv", handle_pcv_protocol)
         .invoke_handler(tauri::generate_handler![
             report_diagnostic,
             bench_invoke,
             default_bench_data_path,
-            copc_state::open_copc
+            copc_state::open_copc,
+            conversion::start_las_conversion,
+            conversion::cancel_las_conversion,
+            conversion::supports_custom_temp_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
