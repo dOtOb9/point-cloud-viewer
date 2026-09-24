@@ -17,6 +17,14 @@ description = "COPC読込・octree走査・解析アルゴリズム。tauri に�
 copc-core = "0.9.0"
 copc-reader = "0.9.0"
 thiserror = "2"
+# M4-5 (座標参照系): LAS/LAZのCRS(GeoTIFFキー/WKTのVLR)を読むために使う。
+# copc-reader はCOPC/LASzip関連のVLR以外を読み捨てる(vendor/copc-reader/src/lib.rs の
+# should_store_vlr参照)ため、CRSを読むにはこのクレートでヘッダーを開き直す必要がある
+# (crates/pcv-core/src/crs/mod.rs のコメント参照)。バージョンは copc-reader が要求する
+# ものと同じ0.10系に揃え、依存グラフ上で1つのlasクレートに解決されるようにする。
+# lasクレート自体は純Rustでwasm32-unknown-unknownでビルドできる(copc-reader経由で
+# 既に実証済み、TaskSheets/ADR-0003-copc-crate.md参照)。
+las = "0.10"
 
 [dev-dependencies]
 # テスト用に極小のCOPCファイルをその場で生成するためだけに使う（M1-point-rendering.md の

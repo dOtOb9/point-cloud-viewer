@@ -8,6 +8,7 @@
 //! `TaskSheets/ADR-0003-copc-crate.md` を参照。
 
 mod copc;
+pub mod crs;
 mod node_format;
 
 pub use copc::{CloudInfo, CopcError, CopcFile, Hierarchy, HierarchyNode, NodeKey, Result};
