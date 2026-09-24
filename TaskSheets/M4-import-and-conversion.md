@@ -273,11 +273,104 @@ ADR-0001 と同じ書式（決定 / 背景 / 帰結 / 却下した案）で、**
 
 ### 受け入れ条件
 
-- [ ] 平面直角座標系19系と UTM の相互変換ができる
-- [ ] **国土地理院の計算例と mm オーダーで一致することをテストで確認した**
-- [ ] `pcv-core` が wasm32 でビルドできる（規約1 が守られている＝PROJ を入れていない）
+- [x] 平面直角座標系19系と UTM の相互変換ができる
+- [x] **国土地理院の計算例と mm オーダーで一致することをテストで確認した**
+- [x] `pcv-core` が wasm32 でビルドできる（規約1 が守られている＝PROJ を入れていない）
 - [ ] 系の異なる2つのデータを重ねると、正しい位置関係で表示される
-- [ ] JGD2000 と JGD2011 を取り違えない（取り込み時に明示させる）
+      （**今回のコーディネーター指示で範囲外**。ビューアが1ファイルしか開けないため、
+      重ね合わせ表示自体は実装していない。緯度経度を経由してある系から別の系へ
+      変換する計算そのものは実装・テスト済み＝下記「実施記録」の
+      `cross_zone_conversion_via_lat_lon`テスト参照）
+- [x] JGD2000 と JGD2011 を取り違えない（取り込み時に明示させる）
+      （型で区別。下記「実施記録」参照。「取り込み時に明示させる」UIの入力ダイアログ
+      自体は今回の範囲外＝下記参照）
+
+### 実施記録（2026-09-24、Sonnet）
+
+**実装した場所**: `crates/pcv-core/src/crs/`（新設）。`pcv-core`直下に置き、
+`crates/pcv-core/src/lib.rs`から`pub mod crs;`で公開した。
+
+- `ellipsoid.rs`: GRS80（平面直角座標系用）とWGS84（UTM用）の楕円体定数
+- `transverse_mercator.rs`: 横メルカトルの順変換・逆変換のエンジン本体（数式は
+  1組だけ。原点・縮尺係数・false easting/northingをパラメータとして渡す）
+- `plane_rectangular.rs`: 平面直角座標系19系の原点表、`JgdEpoch`(JGD2000/JGD2011)
+- `utm.rs`: UTM 51N〜56N（日本に関係する帯）の中央子午線表
+- `mod.rs`: 上記をまとめる`Crs`列挙型、EPSGコード判定、LASヘッダーからのCRS判定
+  (`detect_crs_from_las_header`)、精度検証テスト一式
+
+**計算式の出典**: 河瀬和重(2011)「Gauss-Krüger投影における経緯度座標及び
+平面直角座標相互間の座標換算についてのより簡明な計算方法」国土地理院時報,
+121, 109-124. <https://www.gsi.go.jp/common/000061216.pdf>
+（式(5)〜(12)が順変換、式(13)〜(22)が逆変換）。国土地理院の測量計算サイトの
+解説ページ(<https://vldb.gsi.go.jp/sokuchi/surveycalc/surveycalc/algorithm/bl2xy/bl2xy.htm>、
+同`xy2bl`版)も同じ式を掲載しており、突き合わせて確認した。
+平面直角座標系19系の原点一覧は<https://www.gsi.go.jp/LAW/heimencho.html>。
+
+**子午線収差角の符号について(実装中に見つけた点)**: 河瀬(2011)の式(7)(15)を
+そのまま実装すると、国土地理院APIの`gridConv`と符号が逆になった
+(X, Y, 縮尺係数mは0.1mm/1e-7の精度で完全一致するため、これは実装の
+バグではなく「収差角をどちら向きに正とするか」という定義上の符号の違いだと
+判断した)。UIで表示する値がGSIの公開値と一致するよう、実装ではAPIの符号に
+合わせて反転させている(`transverse_mercator.rs`のコメント参照)。
+
+**テストの期待値の出典(すべてコード内のコメントに出典・再現手順を明記済み)**:
+
+1. 国土地理院 測量計算サイトAPI(`bl2xy.pl`/`xy2bl.pl`、
+   <https://vldb.gsi.go.jp/sokuchi/surveycalc/api_help.html>で仕様を確認)を
+   2026-09-24に実際に呼び出して得た値。平面直角座標系 I系・VII系(逆変換)・
+   IX系(東京駅付近、および原点から東へ約130km=系の端)・XIX系(南鳥島周辺)の
+   5パターン。`curl -sL "<URL>?outputType=json&refFrame=2&zone=<系番号>&..."`
+   で誰でも再現できる(URLと入出力値をテストのコメントに残した)。
+2. Karney, C.F.F. (2011), "Transverse Mercator with an accuracy of a few
+   nanometers", Journal of Geodesy 85:475-485の検証用データセット
+   `TMcoords.dat`(配布元:
+   <https://sourceforge.net/projects/geographiclib/files/testdata/TMcoords.dat.gz>)。
+   WGS84楕円体・UTMの縮尺係数(0.9996)で、中央子午線からの経度差が0.58度・2.52度の
+   2点を使い、GRS80/平面直角座標系に限らない横メルカトルの一般式そのものを検証した
+   (GSI APIの実測(1)は平面直角座標系の範囲=中央子午線から高々130km程度しか
+   カバーしないため、UTMの帯幅(片側約3度=300km超)に近い距離での精度は
+   このデータセットで別途確認する必要があった)。ファイルが2.4GB超のため
+   先頭2MBだけを部分取得し、取得手順をテストのコメントに記録した。
+
+**往復テスト・系の端のテスト**: `round_trip_multiple_zones_and_positions`
+(5系×5地点)、`gsi_api_ix_system_far_from_origin_edge_of_zone`
+(IX系原点から東へ約130km)。ただしタスクシートの注記どおり、往復テストは
+出典付きテストの代わりにはならないため、別のテスト関数として分離している。
+
+**LASのCRS判定**: `las::Header::get_geotiff_crs()` /
+`get_wkt_crs_bytes()`を使う。**`copc-reader`はCOPC info VLRとLASzip VLR以外を
+読み捨てる**(`vendor/copc-reader/src/lib.rs`の`should_store_vlr`、
+`user_id=="copc"&&record_id==1`または`user_id=="laszip encoded"&&record_id==22204`
+以外は保持しない)ため、CRSを読むには`copc-reader`のAPIではなく`las`クレートで
+ヘッダーを開き直す必要がある、と判断した。`las`0.10はGeoTIFFキー・WKTの解析を
+標準機能として持っており(`las::Header::get_geotiff_crs`/`get_wkt_crs_bytes`)、
+自前でVLRパーサを書く必要はなかった。`las-crs`という専用クレートも見つけたが、
+`las`0.9系に依存しており`copc-reader`が使う`las`0.10系と衝突するため採用しなかった
+(WKTからEPSGコードを取り出す十数行だけを自前で書いた)。
+
+**JGD2000/JGD2011の区別**: `JgdEpoch`列挙型(`Jgd2000`/`Jgd2011`)で型として
+区別し、`PlaneRectangularCrs`が両方を保持する。EPSGコード判定でもJGD2000
+(2443〜2461)とJGD2011(6669〜6687)を別のコード範囲として扱う
+(`Crs::from_epsg`のテスト`epsg_maps_to_expected_crs`で6677→Jgd2011、
+2451→Jgd2000となることを確認)。**座標補正(パラメータファイルが要る)は
+ADR-0008どおり実装していない。**
+
+**範囲外にしたもの(コーディネーター指示どおり)**:
+- 系の異なる複数データの重ね合わせ**表示**(ビューアが1ファイルしか開けない)。
+  「系の間の変換」自体(緯度経度を経由)は`cross_zone_conversion_via_lat_lon`
+  テストで実装・確認済み
+- 画面上の座標表示(情報パネルへの1行表示)。`pcv-wasm`へのバインディングや
+  Tauriコマンド、React側の配線が別途必要になり、「変換計算の実装」という
+  今回の依頼の範囲を超えると判断し、Rust側(`pcv-core`)の計算とテストに絞った
+- 旧日本測地系(Tokyo Datum)からの変換、鉛直座標系(ジオイド)
+
+**確認したコマンドと結果**(このworktreeで実行。CIでの実行=GitHub Actions上の
+run idは、コーディネーターがpush後に確認すること。**このセッションではCI自体は
+実行していない**):
+- `cargo build -p pcv-core --target wasm32-unknown-unknown` → 成功
+- `cargo fmt --all -- --check` → 差分なし
+- `cargo clippy --workspace --all-targets -- -D warnings` → 警告0件
+- `cargo test --workspace` → 37件成功(0失敗)。うち`crs`モジュール21件
 
 ### この段階でやらないこと（ADR-0008 参照）
 
