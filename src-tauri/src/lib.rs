@@ -164,9 +164,8 @@ fn handle_pcv_protocol(
             }
             // M3: read_node内でpanicが起き、copc_state::read_node_bytesの
             // catch_unwindで捕まえたもの。サーバ側（Rust側）の予期しない異常
-            // なので500。フロントはこれをGpuErrorBanner改めErrorBanner
-            // （src/ui/shell/ErrorBanner.tsx）に表示する
-            // （TaskSheets/ADR-0013-crash-visibility.md参照）。
+            // なので500。フロントはこれをGpuErrorBanner（src/ui/shell/GpuErrorBanner.tsx、
+            // source="node-read"）に表示する（TaskSheets/ADR-0013-crash-visibility.md参照）。
             Err(copc_state::ReadNodeError::Panicked(message)) => {
                 log::error!("[pcv] node {key} read panicked: {message}");
                 internal_server_error_response(&message)
