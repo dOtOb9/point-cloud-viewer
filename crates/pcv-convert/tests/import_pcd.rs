@@ -176,3 +176,26 @@ fn binary_compressed_pcd_round_trips_xyz_color_and_intensity() {
     assert_eq!(summary.point_count, sample_points().len() as u64);
     assert_las_matches_sample(&output_path);
 }
+
+/// CRSを指定した場合は「分かっている」扱いになり、LASヘッダーにWKTとして
+/// 書き込まれる(呼び出し側が引数で渡す口の確認。PCD自体はCRSを持たない)。
+#[test]
+fn crs_wkt_is_written_when_provided_and_unknown_when_not() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input_path = dir.path().join("in.pcd");
+
+    write_binary_pcd(&input_path, false);
+
+    let output_with_crs = dir.path().join("with_crs.las");
+    let wkt = b"PROJCS[\"JGD2011 / Japan Plane Rectangular CS IX\"]".to_vec();
+    let summary = to_las(&input_path, &output_with_crs, Some(wkt.clone())).expect("to_las");
+    assert!(summary.crs_known);
+    let reader = las::Reader::from_path(&output_with_crs).expect("open las");
+    assert_eq!(reader.header().get_wkt_crs_bytes(), Some(wkt.as_slice()));
+
+    let output_without_crs = dir.path().join("without_crs.las");
+    let summary = to_las(&input_path, &output_without_crs, None).expect("to_las");
+    assert!(!summary.crs_known);
+    let reader = las::Reader::from_path(&output_without_crs).expect("open las");
+    assert_eq!(reader.header().get_wkt_crs_bytes(), None);
+}
