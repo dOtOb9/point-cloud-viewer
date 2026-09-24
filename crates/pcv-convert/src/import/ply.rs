@@ -304,7 +304,15 @@ fn scale_intensity_to_u16(value: f64, ty: ScalarType) -> u16 {
 }
 
 pub(crate) fn read(path: &Path) -> Result<ImportedCloud, PlyError> {
-    let bytes = std::fs::read(path)?;
+    read_from(std::fs::File::open(path)?)
+}
+
+/// パスだけでなく`Read`から読めるコア実装(理由は`e57.rs`の`read_from`の
+/// コメントと同じ。PLYは全体をメモリに読んでからバイト列として解析するため、
+/// `Seek`は要らない)。
+pub(crate) fn read_from<R: std::io::Read>(mut reader: R) -> Result<ImportedCloud, PlyError> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
     let (header_text, data) = split_header_and_data(&bytes)?;
     let header = parse_header(&header_text)?;
 

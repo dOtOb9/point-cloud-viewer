@@ -34,6 +34,7 @@
 //! (`RecordDataType`のmin/max)にフォールバックする(`e57`クレート
 //! `pc_reader_simple.rs`の`Range::intensity_from_pointcloud`参照)。
 
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use e57::{CartesianCoordinate, E57Reader};
@@ -41,7 +42,18 @@ use e57::{CartesianCoordinate, E57Reader};
 use super::point::{ImportedCloud, ImportedPoint};
 
 pub(crate) fn read(path: &Path) -> e57::Result<ImportedCloud> {
-    let mut reader = E57Reader::from_file(path)?;
+    let file = std::fs::File::open(path)
+        .or_else(|e| e57::Error::invalid(format!("E57ファイルを開けなかった: {e}")))?;
+    read_from(BufReader::new(file))
+}
+
+/// パスだけでなく`Read + Seek`から読めるコア実装。将来Androidで
+/// `content://`のURIから得たファイル記述子(`std::fs::File`、Read+Seekを実装)を
+/// 直接渡せるようにするための分離(ADR-0006「Android」追記参照。
+/// 現時点ではこのモジュールの外には公開していない。理由は
+/// `TaskSheets/ADR-0008-formats-and-crs.md`のM4-4追記を参照)。
+pub(crate) fn read_from<R: Read + Seek>(reader: R) -> e57::Result<ImportedCloud> {
+    let mut reader = E57Reader::new(reader)?;
     let pointclouds = reader.pointclouds();
 
     let mut points = Vec::new();

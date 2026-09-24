@@ -39,6 +39,8 @@ use super::point::{ImportedCloud, ImportedPoint};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PcdError {
+    #[error("入出力エラー: {0}")]
+    Io(#[from] std::io::Error),
     #[error("PCDの読み込みに失敗した: {0}")]
     PcdRs(#[from] pcd_rs::Error),
     #[error("PCDに x/y/z フィールドが無い")]
@@ -46,7 +48,14 @@ pub enum PcdError {
 }
 
 pub(crate) fn read(path: &Path) -> Result<ImportedCloud, PcdError> {
-    let reader = DynReader::open(path)?;
+    read_from(std::fs::File::open(path)?)
+}
+
+/// パスだけでなく`Read`から読めるコア実装(理由は`e57.rs`の`read_from`の
+/// コメントと同じ)。`pcd-rs`の`DynReader::from_reader`が`BufRead`を要求する
+/// ため、ここで`BufReader`に包む。
+pub(crate) fn read_from<R: std::io::Read>(reader: R) -> Result<ImportedCloud, PcdError> {
+    let reader = DynReader::from_reader(std::io::BufReader::new(reader))?;
     let meta = reader.meta().clone();
 
     let field_index = |name: &str| meta.field_defs.iter().position(|f| f.name == name);
