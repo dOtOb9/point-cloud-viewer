@@ -9,6 +9,12 @@ name: Release
 # GitHub Releaseへのアップロードを行わない（下記の各アップロードstepを
 # `startsWith(github.ref, 'refs/tags/')`で止めている）。ビルドの成否だけを
 # 確認する経路であり、Releaseを作る経路ではない。
+#
+# 2026-09-24追加: androidジョブに`actions/upload-artifact`のstepを足し、
+# 手動実行でもAPKをワークフロー実行の成果物として残すようにした
+# （`TaskSheets/ADR-0013-crash-visibility.md`）。タグを打たずに
+# `gh workflow run release.yml --ref main`→`gh run download`で試験用APKを
+# 取れる。こちらもタグ・Releaseは一切作らない。
 on:
   push:
     tags: ["v*"]
@@ -238,3 +244,19 @@ jobs:
           # windowsジョブと同じ理由。ファイルが1つも見つからない場合に黙って
           # 「成功」させない。
           fail_on_unmatched_files: true
+      # M3(ADR-0013): workflow_dispatchでの手動実行ではReleaseを作らないため、
+      # 上のstepは動かず、それまでは所有者がAPKを手に入れる手段が無かった
+      # （タグを打つ＝Releaseを公開する、を待たないと試験用APKを配れなかった）。
+      # actions/upload-artifactでワークフロー実行の成果物としてAPKを残せば、
+      # タグを打たずに`gh workflow run release.yml`→`gh run download`で
+      # 試験用のAPKを取れるようになる。タグ・Release作成の経路には一切影響しない
+      # （if無しで常に実行するが、Release用のアップロードとは別物）。
+      - name: APKをワークフロー成果物として保存する
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          # 保持期間はデフォルト(90日)より短くする。試験用の一時的な成果物であり、
+          # Releaseのように長期保管する対象ではないため。
+          retention-days: 14
+          if-no-files-found: error
