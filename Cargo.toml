@@ -23,8 +23,14 @@ repository = "https://github.com/dOtOb9/point-cloud-viewer"
 # copc-reader 0.9.0 は root hierarchy ページが hierarchy EVLR の先頭にあると誤って仮定しており、
 # hierarchy が複数ページに分かれる大規模 COPC を開けない。vendor/ に取り込んで修正している。
 # 経緯と再現手順は TaskSheets/ADR-0003-copc-crate.md の追記を参照。
+#
+# copc-writer 0.9.0 は M4-6a(TaskSheets/M4-import-and-conversion.md、
+# vendor/copc-writer/PATCH.md 参照)の調査用。ファイルシステムに触れる操作を
+# ScratchFsトレイトへ差し替える改修を試している。spike/m4-6 ブランチだけの
+# 変更で、main には入れない。
 [patch.crates-io]
 copc-reader = { path = "vendor/copc-reader" }
+copc-writer = { path = "vendor/copc-writer" }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

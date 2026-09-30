@@ -598,8 +598,6 @@ dependencies = [
 [[package]]
 name = "copc-writer"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0d7154f635d2512e173c3718d2d253cce07d8461f386e51fc688d5cfc7407f5"
 dependencies = [
  "byteorder",
  "copc-core",
