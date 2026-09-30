@@ -242,7 +242,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     // `src/datasource/tauri.ts`のイベント(Rustのbackendから`listen`)、Web版は
     // `WebSource`自身のリスナー登録(WorkerからのpostMessageを内部で仲介する。
     // `src/datasource/web.ts`参照)と、経路が全く違うためここで分岐する
-    // (Web版はそもそも`@tauri-apps/api`のイベントバックエンドが無い)。
+    // (Web版はそもそもTauriのイベント配信の裏付けが無い)。
     let unlistenProgress = () => {};
     let unlistenDone = () => {};
     let unlistenFailed = () => {};
