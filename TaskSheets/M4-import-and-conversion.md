@@ -945,3 +945,379 @@ Web では OPFS（Worker 内の `FileSystemSyncAccessHandle`）を使うこと�
 | wasm32 でビルドできない依存がある（スレッド・OS 固有の機能など）、または OPFS で要件を満たせない | **Web での変換は見送る。** ADR-0006 に理由を書き、Web ではデスクトップでの変換を案内する今の形を続ける |
 
 調査のコードは `main` に入れない。結果（改修量、ビルドの可否、分かったこと）だけをこのタスクシートに記録する。
+
+### 結果（2026-09-30、Sonnet）
+
+**作業ブランチ**: `spike/m4-6`（`main` から分岐、`main` へは一切 push していない）。
+調査コード（`vendor/copc-writer/`、`crates/pcv-convert/examples/spike_*.rs`、
+ルート`Cargo.toml`の`[patch.crates-io]`追記）はこのブランチにだけ存在する。
+
+#### 1. ファイルシステムに触る箇所の洗い出し
+
+`copc-writer` 0.9.0（crates.io から取得した無改造の版）を読み、3箇所を確認した。
+
+| 箇所 | 何をしていたか |
+|---|---|
+| `spill.rs`（`SpillWriter::create`） | `tempfile::Builder::new().prefix(...).tempfile_in(spill_dir)` で点レコードの一時ファイルを作る |
+| `spill.rs`（`SpillReader::open`） | `unsafe { Mmap::map(&file) }` でファイル全体をメモリマップし、ランダムアクセス読み出しする |
+| `lod.rs`（`new_index_tempfile`、`write_root_index_run`・`partition_index_run`が呼ぶ） | `tempfile::Builder::new().tempfile()`（ディレクトリ指定なし=常にOS既定の一時ディレクトリ。`spill_dir`は効かない。M4-1bで確認済みの既知の挙動）でroot/partition/order索引の一時ファイルを作る。読み出しは`File::open`で開き直し`seek` |
+| `writer.rs`（`PendingOutput`） | 出力先と同じディレクトリに一時名(`tempfile::Builder::tempfile_in(parent)`)で書き、成功時だけ`persist()`でアトミックにrenameする |
+
+#### 2. 1つのトレイトへまとめる改修
+
+`vendor/copc-writer/src/scratch.rs`（新設）に3トレイトを定義した。
+
+```rust
+pub trait ScratchFs: Send + Sync {
+    fn create_temp(&self, label: &str) -> Result<Box<dyn ScratchWriter>>;
+    fn create_output(&self, final_path: &Path) -> Result<Box<dyn ScratchWriter>>;
+}
+pub trait ScratchWriter: Write + Seek + Send + Sync {
+    fn finish_temp(self: Box<Self>) -> Result<Box<dyn ScratchReader>>;
+    fn finish_output(self: Box<Self>) -> Result<()>;
+}
+pub trait ScratchReader: Send + Sync {
+    fn open_at(&self, offset: u64) -> Result<Box<dyn Read + Send>>;
+    fn as_bytes(&self) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>>;
+}
+```
+
+`spill.rs`・`lod.rs`・`writer.rs`は`tempfile`/`memmap2`/`std::fs`を直接呼ばず、
+`&dyn ScratchFs`を経由するように書き換えた。2つの実装を用意した。
+
+- **`NativeScratchFs`**（`native-fs`フィーチャ、既定オン）: 今までどおり
+  `tempfile::NamedTempFile`+`memmap2::Mmap`。**振る舞いは変えていない**
+  （4節「改修前後で変換結果が同じであることの確認」参照）
+- **`MemoryScratchFs`**: `Vec<u8>`だけで完結する実装。OS一時ファイルもmmapも使わない
+
+`native-fs`を切ると`tempfile`/`memmap2`への依存自体が`Cargo.toml`から外れる
+（`optional = true`）。`NativeScratchFs`本体と、それを内部で使う公開関数
+（`write_source`・`write_source_with_cancel`・`write_streaming_with_cancel`・
+`convert_las_to_copc_streaming*`）も`#[cfg(feature = "native-fs")]`で外れる。
+**`write_copc_inner`・`write_copc_from_spill`・`build_lod_index`・
+`SpillWriter`/`SpillReader`自体は`&dyn ScratchFs`を受け取るだけで、
+どちらのフィーチャでも常にコンパイルされる。** 公開APIの引数は変えていない
+ので`pcv-convert`側は無変更で動く（3節で確認済み）。
+
+改修中に1点だけ、あえて単純化した箇所がある。出力ファイルの書き込みは、
+元は`PendingOutput`が`NamedTempFile`を保持しつつ書き込みには`.reopen()`で
+別のファイルハンドルを使っていた（元コードに理由の記載なし）。この改修では
+`ScratchWriter`が書き込みと確定（`finish_output`でのrename）を1つの
+オブジェクトで担う形にし、この`reopen`を無くした。最終的に生成される
+バイト列が同じであることは4節で確認済み。詳細は`vendor/copc-writer/PATCH.md`
+参照。
+
+#### 3. ネイティブのテスト（振る舞いが変わっていないこと）
+
+`cargo test --workspace`（`main`と同じ全ジョブ）はすべて緑だった。
+
+```
+$ cargo test --workspace
+pcv-convert（ユニットテスト）: 41 passed
+pcv-convert（統合テスト: import_e57/import_pcd/import_ply/import_to_copc/roundtrip/streaming_conversion）
+  : 1+4+5+1+1+5 = 17 passed
+pcv-core: 31 passed
+pcv-tauri: 6 passed
+合計 95 件、失敗 0（M4-4節が記録した本数と一致）
+```
+
+`vendor/`はルートの`Cargo.toml`が`exclude`しているため、`copc-writer`自身の
+`#[cfg(test)]`（`spill.rs`・`lod.rs`・`writer.rs`・`scratch.rs`）は
+`cargo test --workspace`には含まれない（この制約は`vendor/copc-reader`も
+同じで、今回新たに生じたものではない）。**単体で実行するため、
+`vendor/copc-writer/Cargo.toml`に空の`[workspace]`テーブルを足した**
+（ルートのワークスペースの一部だと誤認識されてエラーになるため。
+`cargo test --manifest-path vendor/copc-writer/Cargo.toml`用の変更で、
+`native-fs`フィーチャの追加とは別件）。
+
+```
+$ cargo test --manifest-path vendor/copc-writer/Cargo.toml
+running 19 tests
+test scratch::tests::memory_temp_round_trips_bytes ... ok
+test scratch::tests::memory_output_is_stored_under_final_path_only_after_finish ... ok
+test scratch::tests::memory_writer_supports_seek_like_the_output_header_patch ... ok
+test scratch::native::tests::temp_file_is_removed_from_disk_after_reader_is_dropped ... ok
+test scratch::native::tests::unfinalized_temp_writer_is_removed_from_disk_on_drop ... ok
+test scratch::native::tests::output_file_is_renamed_into_place_only_on_finish_output ... ok
+test spill::tests::spill_round_trips_records_and_bounds_native ... ok
+test spill::tests::spill_round_trips_records_and_bounds_memory ... ok
+test spill::tests::empty_spill_finalizes_without_mapping_an_empty_file ... ok
+test spill::tests::empty_spill_finalizes_without_reading_out_of_range_memory ... ok
+test lod::tests::spooled_lod_index_covers_each_point_once_native ... ok
+test lod::tests::spooled_lod_index_covers_each_point_once_memory ... ok
+test lod::tests::dense_cluster_stays_bounded_below_giant_chunks ... ok
+test lod::tests::identical_points_fail_instead_of_creating_an_unbounded_leaf ... ok
+test hierarchy_pages::tests::hierarchy_plan_splits_large_root_page ... ok
+test metadata::tests::（3件） ... ok
+test writer::tests::direct_point_encoding_matches_las_raw_point ... ok
+test result: ok. 19 passed; 0 failed
+```
+
+**受け入れ条件「そのトレイトのメモリ上の実装でネイティブのテストが通ること」**
+はこれで満たしている。`spill.rs`・`lod.rs`の主要テスト（点の往復・bounds・
+octree分割・深さ上限）は同じ検証関数を`NativeScratchFs`/`MemoryScratchFs`
+両方に対して実行する形にした（`_native`/`_memory`サフィックスの関数対）。
+
+`cargo fmt --all -- --check`（差分なし）・
+`cargo clippy --workspace --all-targets -- -D warnings`（警告0件）・
+`cargo clippy --manifest-path vendor/copc-writer/Cargo.toml --all-targets`
+（警告0件）・`cargo build -p pcv-core --target wasm32-unknown-unknown`
+（成功。規約1に影響なし。`pcv-core`は無変更）も確認した。
+
+#### 4. 改修前後で変換結果が同じであることの確認
+
+`crates/pcv-convert/examples/spike_make_las.rs`（このスパイクだけの
+使い捨てヘルパー、`main`には入れない）で、xyz全軸に散らした200,000点の
+合成LASを作った（1ノードしかできないと改修の検証にならないため、
+octreeが複数レベル・複数ノードに分かれるようにした）。
+
+`crates/pcv-convert/examples/convert_streaming.rs`
+（`copc_writer::convert_las_to_copc_streaming`をそのまま呼ぶ既存のexample）で、
+ノードあたり最大点数5000として変換した。
+
+| | 使った`copc-writer` | 出力ファイルのSHA-256 |
+|---|---|---|
+| 改修前 | crates.io 0.9.0（無改造、`[patch.crates-io]`を足す前の状態で変換） | `e1944a83e792cf2a25174199eefc7f6c384b7896f44840b894b13b4af2f747e1` |
+| 改修後 | `vendor/copc-writer`（`NativeScratchFs`使用、`[patch.crates-io]`適用後） | `e1944a83e792cf2a25174199eefc7f6c384b7896f44840b894b13b4af2f747e1` |
+
+**バイト同一。** `cargo fmt`でフォーマットを直した後にもう一度変換し直し、
+ハッシュが変わらないことも再確認した。あわせて
+`crates/pcv-convert/examples/spike_dump_hierarchy.rs`（同じく使い捨て
+ヘルパー）でhierarchyの全ノード（レベル・キー・点数）をソート済みテキストに
+ダンプし、改修前後で`diff`が空であることを確認した
+（42ノード、`pcv_core::CopcFile::read_node`で全ノードの実点数が
+hierarchyの申告と一致することも確認済み）。**アルゴリズム本体
+（octree分割・LAZ圧縮・ヘッダー/VLR配置）には一切手を入れていないことが、
+出力のバイト同一性という最も強い形で裏付けられた。**
+
+#### 5. `wasm32-unknown-unknown` でのビルド確認
+
+**分かったこと（想定外だった）**: タスクシート冒頭・ADR-0006の記述
+「`tempfile`・`memmap2`には(wasm32-unknown-unknownが)どちらも無い」は、
+**「ビルドできない」という意味では誤りだった。** 実際に確かめると:
+
+```
+$ cd <crates.io から取得した無改造のcopc-writer 0.9.0のコピー>
+$ cargo build --target wasm32-unknown-unknown
+   ...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.16s
+```
+
+**無改造のcopc-writer 0.9.0がそのままwasm32-unknown-unknown向けにビルドできた。**
+原因をソースで確認した。
+
+- `tempfile` 3.27.0: ソース中に`wasm32`という文字列が一切無い。`std::fs`・
+  `std::env::temp_dir()`をそのまま呼んでいるだけで、これらは
+  wasm32-unknown-unknownのlibstdにも型として存在する（ADR-0003が
+  M1時点で確認済みの事実と同じ）ため、コンパイルは通る
+- `memmap2` 0.9.11: `src/lib.rs`に
+  `#[cfg_attr(not(any(unix, windows)), path = "stub.rs")]`があり、
+  unix・windows以外(wasm32-unknown-unknownを含む)では`src/stub.rs`を使う。
+  中身を読むと、`MmapInner::map`等の**全メソッドが無条件に
+  `Err(io::ErrorKind::Unsupported.into())`を返すダミー実装**だった
+  （`enum Never {}`という決して構築されない型を使い、到達し得ない
+  メソッドは`match self.never {}`で型だけ合わせている）
+
+つまり**「ビルドできるか」はこの2クレートに関しては判定基準にならない
+（どちらも常にビルドできる）。実際に問題になるのは実行時**で、
+`memmap2`はwasm32-unknown-unknown上で`Mmap::map`を呼んだ瞬間に必ず
+`Unsupported`エラーになる。`tempfile`もwasm32-unknown-unknownには
+実ファイルシステムが無いため、`std::fs`呼び出しは（型は存在しても）
+実行時にエラーになるはずである（ここは無改造版を実際にwasm32上で
+実行して確かめてはいない。ソースを読んで導いた推論であり、コンパイルが
+通ることは実測済みだが、実行時エラーの発生そのものは未確認)。
+
+この事実を踏まえて3通り試した。
+
+```
+# (a) 無改造のcopc-writer 0.9.0(比較用、上記)
+$ cargo build --target wasm32-unknown-unknown          → 成功
+
+# (b) 改修版、native-fsフィーチャ込み(既定)
+$ cargo build --manifest-path vendor/copc-writer/Cargo.toml \
+    --target wasm32-unknown-unknown                     → 成功
+    (tempfile/memmap2ともコンパイルされる。(a)と同じ理由で成功するだけで、
+     NativeScratchFsを実際にwasm32上で呼べば同じ理由で失敗するはず)
+
+# (c) 改修版、native-fsフィーチャを切った状態(メモリ実装のみ)
+$ cargo build --manifest-path vendor/copc-writer/Cargo.toml \
+    --no-default-features --target wasm32-unknown-unknown → 成功
+    (警告100件、すべて「未使用」。native-fs限定の公開関数を外したことで
+     write_copc_inner/build_lod_index等がこの設定では呼ばれなくなるため。
+     エラーは0件)
+```
+
+(c)で依存グラフを確認すると、`tempfile`・`memmap2`のどちらも現れない。
+
+```
+$ cargo tree --manifest-path vendor/copc-writer/Cargo.toml \
+    --no-default-features --target wasm32-unknown-unknown | grep -i "tempfile\|memmap2"
+（出力なし）
+```
+
+**結論**: 「wasm32-unknown-unknownでビルドできるか」という問いは、
+(a)(b)(c)いずれも「できる」という答えになり、**このクレートに関しては
+判断基準として機能しなかった。** 改修の実質的な価値は、ビルドの可否ではなく、
+**`MemoryScratchFs`がOS依存のAPIを一切使わない（`Vec<u8>`・`HashMap`・
+`Mutex`のみ）ため、実行時にも動く見込みがあるパスを`native-fs`頼みのパスから
+切り離せたこと**にある。この判断基準の空振りは、コーディネーターが
+判断表を作った時点でのADR-0006の記述（未検証の推測）が誤っていたために
+起きたもので、今回のスパイクで初めて実際にビルドして確かめたことで判明した。
+
+#### 6. 改修の規模（`git diff --stat`）
+
+crates.ioから取得した無改造のcopc-writer 0.9.0を基準に、
+`vendor/copc-writer/src`とのdiffを取った。
+
+```
+$ git diff --no-index --stat <無改造版>/src vendor/copc-writer/src
+ lib.rs        |  15 +-
+ lod.rs        | 122 +++--
+ scratch.rs (新規) | 599 +++++++++++++++++++++
+ spill.rs      | 197 +++----
+ writer.rs     | 174 +++---
+ 5 files changed, 821 insertions(+), 286 deletions(-)
+```
+
+`hierarchy_pages.rs`・`las_out.rs`・`metadata.rs`・`source.rs`・`validate.rs`
+の5ファイルは無変更。`Cargo.toml`は`native-fs`フィーチャの追加で+21行。
+
+**合計: 842 insertions(+), 286 deletions(-)**（`git diff --stat`がそのまま
+表示する値）。読み方によって2通りの数字になる。
+
+- **純増分**(insertions−deletions): 842−286 = **556行**。500行の約1.11倍
+- **変更行数の合計**(insertions+deletions、新規ファイルの599行を含む):
+  842+286 = **1,128行**。500行の約2.26倍
+
+判断表の「約500行以内」がどちらの数え方を意図しているかはタスクシートに
+明記が無い。純増分(556)なら「わずかに超過」、合計(1,128)なら「大きく超過」
+という、解釈によって判断表の1行目と2行目のどちらに転ぶかが変わる差になる。
+**この数え方の選択はコーディネーターが行うこと。**
+
+#### 7. OPFS についての公式資料での確認
+
+**(1) `FileSystemSyncAccessHandle`がWorker内で同期の読み書き・シーク相当・
+truncate・flushを提供すること**
+
+- [MDN: FileSystemSyncAccessHandle](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemSyncAccessHandle):
+  `read(buffer, { at })`・`write(buffer, { at })`・`truncate(newSize)`・
+  `flush()`・`getSize()`・`close()`を持ち、すべて**同期**
+  （MDN注記: 仕様の初期版では`close`/`flush`/`getSize`/`truncate`が
+  誤って非同期と規定されていたが、これらをサポートする現行の全ブラウザは
+  同期として実装している）。**Dedicated Worker内でしか使えない**
+  （メインスレッドをブロックしないため、という理由もMDNに明記）
+- [WHATWG File System Standard](https://fs.spec.whatwg.org/):
+  IDLで`[Exposed=DedicatedWorker, SecureContext]`と明記。`read`/`write`は
+  `FileSystemReadWriteOptions`（`unsigned long long at`）を引数に取り、
+  オフセット指定の読み書き（`seek`相当）ができる
+- [web.dev: The origin private file system](https://web.dev/articles/origin-private-file-system):
+  同じ6メソッドを実務的に解説。「Web Workerはメインスレッドをブロックしない
+  ため、この文脈でだけ同期メソッドが許される」
+
+**(2) 対応ブラウザ**
+
+[MDN browser-compat-data(`api/FileSystemSyncAccessHandle.json`、
+2026-09-30時点のmainブランチ)](https://github.com/mdn/browser-compat-data/blob/main/api/FileSystemSyncAccessHandle.json)
+によると、インターフェース本体(`createSyncAccessHandle`が返す型自体)の
+`version_added`は:
+
+| ブラウザ | 対応バージョン |
+|---|---|
+| Chrome | 102 |
+| Edge | Chromiumをミラー(実質102相当) |
+| Firefox | 111 |
+| Safari | 15.2 |
+| Chrome Android | 109 |
+| Firefox Android / Safari iOS | それぞれデスクトップ版をミラー |
+
+参考: OPFS自体(`getDirectory()`等、同期アクセスハンドルを使わない基本機能)
+はより早く、[web.dev](https://web.dev/articles/origin-private-file-system)
+によればChrome 86から対応している。`FileSystemSyncAccessHandle`
+(`createSyncAccessHandle`)はそれより後に追加された機能。
+
+**(3) 保存容量の上限の決まり方**
+
+[MDN: Storage quotas and eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria)
+によると、OPFSを含むorigin単位のストレージ(IndexedDB・Cache Storage・OPFS)
+の上限は、**空き容量ではなくディスクの総容量**を基準に決まる(空き容量を
+基準にするとフィンガープリンティングに使われうるため)。
+
+| ブラウザ | best-effort(既定) | persistent(`navigator.storage.persist()`後) |
+|---|---|---|
+| Chrome/Chromium系 | 総容量の**60%**(originごと) | 同じく60% |
+| Firefox | 総容量の**10%**とグループ(同一サイト)上限**10GiB**の小さい方 | 総容量の**50%**、上限**8TiB**。グループ上限の対象外 |
+| Safari(ブラウザアプリ、macOS14+/iOS17+) | 総容量の約**60%** | 同上。全origin合計は総容量の80%まで |
+| Safari(組み込み/非ブラウザアプリ) | 総容量の約**15%** | 全origin合計は総容量の20%まで |
+
+例: 1TiBのディスクなら、Chromeは1origin最大600GiB、Firefoxは
+best-effortで最大10GiB(グループ上限が先に効く)。
+
+#### 8. 判断表への当てはめ（数値のみで機械的に。最終判断はコーディネーターが行う）
+
+| 調査結果の項目 | 実測・確認内容 | 判定 |
+|---|---|---|
+| ネイティブのテストが通るか | `cargo test --workspace`(95件)・`cargo test --manifest-path vendor/copc-writer/Cargo.toml`(19件、Native/Memory両方)がすべて成功 | ○ |
+| wasm32-unknown-unknownでビルドできるか | 改修版・メモリ実装のみ(`--no-default-features`)で成功(依存に`tempfile`/`memmap2`が0個であることも確認済み) | ○ |
+| 改修が約500行以内に収まるか | `git diff --stat`: 842 insertions(+), 286 deletions(-)。純増分556行(500の1.11倍)・合計1,128行(500の2.26倍)。**数え方によって「わずかに超過」「大きく超過」のどちらにもなる** | △(数え方に依存。上記6節参照) |
+| アルゴリズム本体に手を入れる必要があったか | 改修前後で出力COPCファイルがSHA-256で完全一致(バイト同一)。octree分割・LAZ圧縮・ヘッダー配置は無変更 | いいえ(手を入れていない) |
+| OPFSで要件を満たせるか | 同期read/write(at)/truncate/flush、Dedicated Worker限定という要件をWHATWG仕様・MDNで確認。Chrome/Edge/Firefox/Safariとも対応済み。容量上限は総容量の10〜60%(ブラウザ依存)で、sofi級(数GB)のファイルは一般的な環境で収まる見込み | ○ |
+
+**判断表の3行のうち、3行目(wasm32でビルドできない・OPFSで要件を満たせない)
+には該当しない**(wasm32ビルドは成功、OPFS要件も満たす)。1行目と2行目の
+どちらに該当するかは、線数の数え方(純増分556 vs 合計1,128)と、
+「大きく超える」の閾値の取り方に依存するため、**このスパイク単独では
+機械的に一意に決まらない**。純増分(556、500の1.11倍)を採用するなら1行目に
+近く、合計(1,128、500の2.26倍)を採用するなら2行目に該当する。
+**最終判断はコーディネーターが行う。**
+
+#### 9. 確認したコマンドと結果（まとめ）
+
+```
+$ cargo test --workspace
+95 passed; 0 failed（M4-4節の記録と同数）
+
+$ cargo test --manifest-path vendor/copc-writer/Cargo.toml
+19 passed; 0 failed（Native/Memory両バックエンドのテストを含む）
+
+$ cargo fmt --all -- --check
+（差分なし）
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+（警告0件）
+
+$ cargo clippy --manifest-path vendor/copc-writer/Cargo.toml --all-targets
+（警告0件）
+
+$ cargo build -p pcv-core --target wasm32-unknown-unknown
+Finished（成功。規約1に影響なし）
+
+$ cargo build --manifest-path vendor/copc-writer/Cargo.toml --target wasm32-unknown-unknown
+Finished（成功。native-fs込み）
+
+$ cargo build --manifest-path vendor/copc-writer/Cargo.toml --no-default-features --target wasm32-unknown-unknown
+Finished（成功。警告100件はすべて未使用警告、エラー0件）
+
+$ cargo tree --manifest-path vendor/copc-writer/Cargo.toml --no-default-features --target wasm32-unknown-unknown | grep -i "tempfile\|memmap2"
+（出力なし。依存グラフから両クレートが消えていることを確認）
+
+# 改修前後の変換結果の比較(spike_make_las.rsで生成した200,000点の合成LAS)
+改修前 SHA-256: e1944a83e792cf2a25174199eefc7f6c384b7896f44840b894b13b4af2f747e1
+改修後 SHA-256: e1944a83e792cf2a25174199eefc7f6c384b7896f44840b894b13b4af2f747e1（一致）
+
+$ git diff --no-index --stat <crates.io版copc-writer-0.9.0>/src vendor/copc-writer/src
+5 files changed, 821 insertions(+), 286 deletions(-)
+```
+
+### 範囲外にしたこと（正直に）
+
+- **OPFSの実装そのもの**（`FileSystemSyncAccessHandle`を実際に叩く
+  `ScratchFs`実装）は作っていない。M4-6bの範囲
+- **`pcv-wasm`への組み込み・UI**は作っていない
+- **メモリ実装をwasm32上で実際に実行する確認**はしていない
+  （ビルドが通ることまでの確認。`wasm-bindgen-test`等でブラウザ/Node上で
+  実行して`write_copc_inner`が最後まで動くかは未確認）
+- **無改造のcopc-writer 0.9.0をwasm32上で実行し、`tempfile`/`memmap2`が
+  実際に`Unsupported`エラーを返すことの実機確認**はしていない
+  （ソースコードを読んで導いた推論。コンパイルが通ることだけは実測済み）
+- **`copc-writer`のライセンス・依存の再確認**はしていない（ADR-0006の
+  M4-1bで既に確認済みで、今回変更していない）
