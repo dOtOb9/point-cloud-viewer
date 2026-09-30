@@ -16,7 +16,11 @@
 
 import type { DataSource, OpenedCloud } from "./DataSource";
 import { toCloudInfo, toHierarchyNodeInfo } from "./copc-dto";
+import { toConversionProgress, type ConversionOutcome, type ConversionProgress } from "./conversion-dto";
+import * as opfs from "./opfs";
 import {
+  buildConvertCancelRequest,
+  buildConvertStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
   buildReadNodeRequest,
@@ -56,6 +60,20 @@ export class WebSource implements DataSource {
   private nextRequestId = 1;
   private nextFileSequence = 0;
   private lastBytesRead = 0;
+
+  // M4-6b: 変換(生LAS/LAZ→COPC)の進捗・完了・失敗を購読するリスナー。
+  // open/readNodeの「1リクエスト1応答」(`pending`マップ)とは違い、1回の
+  // 変換に対して複数の応答(進捗が何度も、最後に完了かfailedが1回)が来るため、
+  // 別の仕組みにしてある(`handleResponse`参照)。
+  private readonly convertProgressListeners = new Set<(progress: ConversionProgress) => void>();
+  private readonly convertDoneListeners = new Set<
+    (outputName: string, suggestedFileName: string, pointCount: number) => void
+  >();
+  private readonly convertFailedListeners = new Set<(message: string, cancelled: boolean) => void>();
+  /** 進行中の変換のリクエストid(無ければnull)。`cancelConversion`が
+   *  どのidへキャンセルを送るかに使う。1本のWorkerでは同時に1件しか
+   *  変換しない前提(ADR-0012「Web版はまずWorker1本」)。 */
+  private activeConvertId: number | null = null;
 
   /**
    * `createWorker`はテストのために差し替えられるようにしてある
@@ -133,6 +151,75 @@ export class WebSource implements DataSource {
     return this.lastBytesRead;
   }
 
+  /**
+   * M4-6b: 生LAS/LAZ→COPCの変換を始める。呼び出し側
+   * (`src/state/useCopcViewer.ts`)は、先に`copc-header.ts`の`isCopcFile`で
+   * 「既にCOPCではない」ことを確かめてからこれを呼ぶ想定(デスクトップ版の
+   * `startLasConversion`と同じ役割分担: 既にCOPCの場合はこの関数を経由しない)。
+   *
+   * デスクトップ版(`src-tauri/src/conversion.rs`)と同じ4分岐
+   * (`alreadyCopc`はWeb側では呼び出し前に済んでいるため出さない)に加え、
+   * Web版だけの`opfsUnavailable`(OPFSが使えないブラウザ)を返しうる。
+   */
+  async startConversion(file: File): Promise<ConversionOutcome> {
+    const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
+
+    const cached = await opfs.findCachedOutput(fingerprint);
+    if (cached) {
+      const key = this.registerFile(cached);
+      return { kind: "cached", outputPath: key };
+    }
+
+    if (!(await opfs.isOpfsAvailable())) {
+      return { kind: "opfsUnavailable" };
+    }
+
+    const estimate = await opfs.estimateQuota();
+    if (!opfs.hasEnoughQuota(estimate, file.size)) {
+      return {
+        kind: "insufficientSpace",
+        requiredBytes: opfs.requiredScratchBytes(file.size),
+        availableBytes: estimate.quota - estimate.usage,
+      };
+    }
+
+    const id = this.nextRequestId++;
+    this.activeConvertId = id;
+    this.worker.postMessage(buildConvertStartRequest(id, file));
+    return { kind: "converting" };
+  }
+
+  /** 進行中の変換をキャンセルする。進行中の変換が無ければ何もしない
+   *  (デスクトップ版`cancelLasConversion`は失敗するが、Web版はfire-and-forgetの
+   *  メッセージなので「送る意味が無い」だけで区別する理由が無い)。 */
+  cancelConversion(): void {
+    if (this.activeConvertId === null) return;
+    this.worker.postMessage(buildConvertCancelRequest(this.activeConvertId));
+  }
+
+  /** 読み込み段階の進捗を購読する。戻り値の関数を呼ぶと購読を解除する
+   *  (`src/datasource/tauri.ts`の`onConversionProgress`と同じ形にしてある)。 */
+  onConvertProgress(callback: (progress: ConversionProgress) => void): () => void {
+    this.convertProgressListeners.add(callback);
+    return () => this.convertProgressListeners.delete(callback);
+  }
+
+  /** 変換完了を購読する。`outputName`はOPFS内部の名前(`registerFile`済みの
+   *  Fileを取得するのに使う場合は呼び出し側が`opfs.getConvertedFile`で
+   *  取得すること)、`suggestedFileName`はダウンロード用の分かりやすい名前。 */
+  onConvertDone(
+    callback: (outputName: string, suggestedFileName: string, pointCount: number) => void,
+  ): () => void {
+    this.convertDoneListeners.add(callback);
+    return () => this.convertDoneListeners.delete(callback);
+  }
+
+  /** 変換の失敗・キャンセルを購読する。 */
+  onConvertFailed(callback: (message: string, cancelled: boolean) => void): () => void {
+    this.convertFailedListeners.add(callback);
+    return () => this.convertFailedListeners.delete(callback);
+  }
+
   private send(request: WorkerRequest): Promise<WorkerResponse> {
     return new Promise((resolve, reject) => {
       this.pending.set(request.id, { resolve, reject });
@@ -141,6 +228,24 @@ export class WebSource implements DataSource {
   }
 
   private handleResponse(response: WorkerResponse): void {
+    if (response.type === "convert-progress") {
+      const progress = toConversionProgress(response.progress);
+      this.convertProgressListeners.forEach((listener) => listener(progress));
+      return;
+    }
+    if (response.type === "convert-done") {
+      this.activeConvertId = null;
+      this.convertDoneListeners.forEach((listener) =>
+        listener(response.outputName, response.suggestedFileName, response.pointCount),
+      );
+      return;
+    }
+    if (response.type === "convert-failed") {
+      this.activeConvertId = null;
+      this.convertFailedListeners.forEach((listener) => listener(response.message, response.cancelled));
+      return;
+    }
+
     const pending = this.pending.get(response.id);
     if (!pending) {
       // 対応するリクエストが無い応答は無視する(万一の重複配送等への保険)。

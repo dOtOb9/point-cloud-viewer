@@ -4,10 +4,13 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  buildConvertCancelRequest,
+  buildConvertStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
   buildReadNodeRequest,
   classifyOpenPath,
+  DEFAULT_MAX_POINTS_PER_NODE,
   makeFileKey,
 } from "./web-protocol";
 
@@ -57,5 +60,29 @@ describe("buildOpenFileRequest / buildOpenUrlRequest / buildReadNodeRequest", ()
   it("readNodeリクエストを組み立てる", () => {
     const req = buildReadNodeRequest(9, "2-1-0-1");
     expect(req).toEqual({ type: "readNode", id: 9, key: "2-1-0-1" });
+  });
+});
+
+describe("buildConvertStartRequest / buildConvertCancelRequest", () => {
+  it("既定のmaxPointsPerNodeでconvertStartリクエストを組み立てる", () => {
+    const file = new File([new Uint8Array([1, 2, 3])], "raw.laz");
+    const req = buildConvertStartRequest(10, file);
+    expect(req).toEqual({
+      type: "convertStart",
+      id: 10,
+      file,
+      maxPointsPerNode: DEFAULT_MAX_POINTS_PER_NODE,
+    });
+  });
+
+  it("maxPointsPerNodeを明示的に指定できる", () => {
+    const file = new File([new Uint8Array([1])], "raw.las");
+    const req = buildConvertStartRequest(11, file, 5_000);
+    expect(req.maxPointsPerNode).toBe(5_000);
+  });
+
+  it("convertCancelリクエストを組み立てる", () => {
+    const req = buildConvertCancelRequest(12);
+    expect(req).toEqual({ type: "convertCancel", id: 12 });
   });
 });

@@ -12,6 +12,7 @@ import {
 } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
 import { isCopcFile } from "../datasource/copc-header";
+import { getConvertedFile } from "../datasource/opfs";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { CloudInfo, DataSource } from "../datasource/DataSource";
 import type { ConversionProgress } from "../datasource/conversion-dto";
@@ -125,6 +126,16 @@ export interface CopcViewerState {
   conversionProgress: ConversionProgress | null;
   /** 変換中にキャンセルボタンから呼ぶ。 */
   cancelConversion: () => void;
+  /**
+   * M4-6b: Web版で変換が完了したときだけ入る、ダウンロード用のURL
+   * (`URL.createObjectURL`)とファイル名。OPFSの中身はアプリの外から
+   * 取り出す手段が無いため、変換結果を保存したい所有者向けにこれを出す
+   * (受け入れ条件「変換したCOPCをダウンロードできるようにする」)。
+   * Tauri版・変換していないときは`null`。
+   */
+  downloadReady: { url: string; fileName: string } | null;
+  /** ダウンロードのURLを明示的に破棄する(`URL.revokeObjectURL`込み)。 */
+  clearDownload: () => void;
   /** 一時ファイルの置き場所の設定(未設定なら`null`=プラットフォームの既定)。
    *  Tauriのみ意味を持つ(Web版は変換自体をしない)。 */
   tempDir: string | null;
@@ -190,6 +201,21 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
   // M4-3: 変換中の進捗。変換していないときはnull。
   const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
+  // M4-6b: Web版の変換完了後だけ入るダウンロード用URL。
+  const [downloadReady, setDownloadReadyState] = useState<{ url: string; fileName: string } | null>(null);
+  const downloadReadyRef = useRef<{ url: string; fileName: string } | null>(null);
+
+  // 直前のダウンロードURLを(あれば)revokeしてから、新しい状態を設定する。
+  // `null`を渡すと「ダウンロードを破棄するだけ」になる。
+  const setDownloadReady = useCallback((next: { url: string; fileName: string } | null) => {
+    if (downloadReadyRef.current) {
+      URL.revokeObjectURL(downloadReadyRef.current.url);
+    }
+    downloadReadyRef.current = next;
+    setDownloadReadyState(next);
+  }, []);
+
+  const clearDownload = useCallback(() => setDownloadReady(null), [setDownloadReady]);
   const [tempDir, setTempDirState] = useState<string | null>(() => readStoredTempDir());
   // Androidかどうかはフロントから直接判定できないため、起動時に一度だけ
   // Rust側へ問い合わせる(既定はtrue=デスクトップ相当。Web版はisBrowserが
@@ -212,32 +238,19 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     sourceRef.current = source;
     renderer.setDataSource(source);
 
-    // M4-3: 変換の進捗・完了・失敗イベントの購読。Web版では`onConversion*`が
-    // 何もしない購読を返すので、環境分岐をここに書く必要は無い
-    // (`src/datasource/tauri.ts`参照)。
+    // M4-3/M4-6b: 変換の進捗・完了・失敗イベントの購読。Tauri版は
+    // `src/datasource/tauri.ts`のイベント(Rustのbackendから`listen`)、Web版は
+    // `WebSource`自身のリスナー登録(WorkerからのpostMessageを内部で仲介する。
+    // `src/datasource/web.ts`参照)と、経路が全く違うためここで分岐する
+    // (Web版はそもそも`@tauri-apps/api`のイベントバックエンドが無い)。
     let unlistenProgress = () => {};
     let unlistenDone = () => {};
     let unlistenFailed = () => {};
-    void onConversionProgress((progress) => setConversionProgress(progress)).then((fn) => {
-      unlistenProgress = fn;
-    });
-    void onConversionDone((outputPath) => {
-      // 変換が終わった出力(既にCOPC)をそのまま開き直す。もう一度
-      // start_las_conversionを経由するが、既にCOPCと判定されて即座に開く
-      // 経路に入るだけなので実害は無い(往復コストはヘッダー1回分)。
-      setConversionProgress(null);
-      void openFileRef.current(outputPath);
-    }).then((fn) => {
-      unlistenDone = fn;
-    });
-    void onConversionFailed((message, cancelled) => {
+
+    const reportConversionFailure = (message: string, cancelled: boolean) => {
       setConversionProgress(null);
       setStatus(cancelled ? "idle" : "error");
-      if (cancelled) {
-        setError(null);
-      } else {
-        setError(message);
-      }
+      setError(cancelled ? null : message);
       // 受け入れ条件: 変換の失敗・キャンセルは画面に出す(ADR-0011/ADR-0013の
       // エラーバナー)。キャンセルも「何が起きたか」が分かるようにバナーへ出す
       // (バナーが無いと、進捗が消えるだけで所有者には何も起きなかったように見える)。
@@ -247,9 +260,46 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         "conversion",
       );
       setGpuErrors(gpuErrorLogRef.current.list());
-    }).then((fn) => {
-      unlistenFailed = fn;
-    });
+    };
+
+    if (source instanceof WebSource) {
+      unlistenProgress = source.onConvertProgress((progress) => setConversionProgress(progress));
+      unlistenDone = source.onConvertDone((outputName, suggestedFileName) => {
+        setConversionProgress(null);
+        void (async () => {
+          // OPFSに書いた出力を`File`として取り出し、通常のローカルファイル選択と
+          // 同じ経路(`registerFile`→`open`)で開く。ダウンロード用のURLも
+          // ここで作る(OPFSの中身はアプリの外から直接取り出せないため。
+          // 受け入れ条件「変換したCOPCをダウンロードできるようにする」)。
+          const file = await getConvertedFile(outputName);
+          if (!file) {
+            setStatus("error");
+            setError("変換結果をOPFSから読み出せませんでした");
+            return;
+          }
+          setDownloadReady({ url: URL.createObjectURL(file), fileName: suggestedFileName });
+          const key = source.registerFile(file);
+          void openFileRef.current(key);
+        })();
+      });
+      unlistenFailed = source.onConvertFailed(reportConversionFailure);
+    } else {
+      void onConversionProgress((progress) => setConversionProgress(progress)).then((fn) => {
+        unlistenProgress = fn;
+      });
+      void onConversionDone((outputPath) => {
+        // 変換が終わった出力(既にCOPC)をそのまま開き直す。もう一度
+        // start_las_conversionを経由するが、既にCOPCと判定されて即座に開く
+        // 経路に入るだけなので実害は無い(往復コストはヘッダー1回分)。
+        setConversionProgress(null);
+        void openFileRef.current(outputPath);
+      }).then((fn) => {
+        unlistenDone = fn;
+      });
+      void onConversionFailed(reportConversionFailure).then((fn) => {
+        unlistenFailed = fn;
+      });
+    }
 
     if (isTauriEnvironment()) {
       fetchSupportsCustomTempDir()
@@ -348,7 +398,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       unlistenDone();
       unlistenFailed();
     };
-  }, []);
+    // setDownloadReadyは依存配列を空にしたuseCallbackで作った安定参照
+    // (revoke込みのsetter)なので、ここに加えてもこのeffectの「マウント時に
+    // 1度だけ」という性質は変わらない(react-hooks/exhaustive-deps対応)。
+  }, [setDownloadReady]);
 
   const openFile = useCallback(async (pathOrFile: string | File) => {
     const renderer = rendererRef.current;
@@ -358,6 +411,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setStatus("opening");
     setError(null);
     setConversionProgress(null);
+    setDownloadReady(null);
     try {
       // Web版のローカルファイル選択は`File`を受け取る。`DataSource.open()`は
       // 文字列しか取らないので、先に`WebSource.registerFile()`でキーへ変換する
@@ -367,18 +421,47 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       if (typeof pathOrFile === "string") {
         path = pathOrFile;
       } else if (source instanceof WebSource) {
-        // M4-3: Web版は生LAS/LAZを変換できない(ADR-0006: 変換はデスクトップ/
-        // Androidのみ。Webは別段階M4-6)。拡張子ではなくヘッダーで判定し
-        // (`copc-header.ts`、Rust側の`copc_detect.rs`と同じ考え方)、COPCで
-        // なければデスクトップ版での変換を促す(受け入れ条件)。
-        if (!(await isCopcFile(pathOrFile))) {
-          setStatus("error");
-          setError(
-            "これは生のLAS/LAZです。Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
-          );
-          return;
+        // M4-6b: 拡張子ではなくヘッダーで判定し(`copc-header.ts`、Rust側の
+        // `copc_detect.rs`と同じ考え方)、既にCOPCならそのまま開く。生の
+        // LAS/LAZならWeb版でも変換する(OPFS上、`WebSource.startConversion`)。
+        if (await isCopcFile(pathOrFile)) {
+          path = source.registerFile(pathOrFile);
+        } else {
+          const outcome = await source.startConversion(pathOrFile);
+          switch (outcome.kind) {
+            case "alreadyCopc":
+              // startConversion自身はこの値を返さない設計(呼び出し前に
+              // isCopcFileで判定済みのため)だが、型の網羅性のために残す。
+              path = outcome.path;
+              break;
+            case "cached":
+              path = outcome.outputPath;
+              break;
+            case "opfsUnavailable":
+              setStatus("error");
+              setError(
+                "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
+              );
+              return;
+            case "insufficientSpace": {
+              const toGiB = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+              gpuErrorLogRef.current.report(
+                `空き容量が足りません(必要: 約${toGiB(outcome.requiredBytes)}GiB、空き: 約${toGiB(outcome.availableBytes)}GiB)。`,
+                undefined,
+                "conversion",
+              );
+              setGpuErrors(gpuErrorLogRef.current.list());
+              setStatus("error");
+              setError("空き容量が足りません");
+              return;
+            }
+            case "converting":
+              // 実際に開く処理はonConvertDoneのイベントハンドラが続きを行う
+              // (マウント時のuseEffect参照)。
+              setStatus("converting");
+              return;
+          }
         }
-        path = source.registerFile(pathOrFile);
       } else {
         throw new Error("ローカルファイルの選択はWeb版でのみサポートしています");
       }
@@ -448,7 +531,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, [colorMode, tempDir]);
+  }, [colorMode, tempDir, setDownloadReady]);
 
   // `openFileRef`を毎レンダー最新化する。マウント時に一度だけ張るイベント
   // 購読(上のuseEffect、deps=[])から常に最新の`openFile`(最新のcolorMode/
@@ -518,6 +601,14 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   }, []);
 
   const cancelConversion = useCallback(() => {
+    const source = sourceRef.current;
+    if (source instanceof WebSource) {
+      // M4-6b: fire-and-forgetのメッセージ(`web-protocol.ts`のConvertCancelRequest)。
+      // 読み込みバッチの合間で反映される(`crates/pcv-wasm/src/convert.rs`の
+      // ドキュメント参照。後処理段階には割り込めない)。
+      source.cancelConversion();
+      return;
+    }
     cancelLasConversion().catch((e: unknown) => {
       // 変換が既に終わっていた等、キャンセルが間に合わなかっただけなので
       // ログに残す程度でよい(ユーザーに新たなエラーとして見せる必要は無い)。
@@ -568,6 +659,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     isBrowser: !isTauriEnvironment(),
     conversionProgress,
     cancelConversion,
+    downloadReady,
+    clearDownload,
     tempDir,
     supportsCustomTempDir: supportsCustomTempDirState,
     pickAndSetTempDir,

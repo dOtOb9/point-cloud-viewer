@@ -9,6 +9,7 @@
 // 送受信は`web.ts`が行う。
 
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
+import type { ConversionProgressDto } from "./conversion-dto";
 
 /** ローカルファイルかURLか。`WebSource.open(path)`の`path`から組み立てる。 */
 export type OpenSource = { kind: "file"; file: File } | { kind: "url"; url: string };
@@ -25,7 +26,32 @@ export interface ReadNodeRequest {
   key: string;
 }
 
-export type WorkerRequest = OpenRequest | ReadNodeRequest;
+/**
+ * M4-6b: 生LAS/LAZ→COPC変換の開始。`open`/`readNode`と違い、この1つの
+ * リクエストに対して複数の応答が返る(`convert-progress`が何度も、最後に
+ * `convert-done`か`convert-failed`のどちらか1回)。`WebSource`側は
+ * `pending`マップ(1リクエスト1応答)とは別の経路でこれを扱う
+ * (`web.ts`参照)。
+ */
+export interface ConvertStartRequest {
+  type: "convertStart";
+  id: number;
+  file: File;
+  maxPointsPerNode: number;
+}
+
+/**
+ * 進行中の変換のキャンセルを要求する。応答は無い(fire-and-forget)。
+ * Workerが読み込みバッチの合間にこのメッセージを処理できたときだけ
+ * 効く(`crates/pcv-wasm/src/convert.rs`のドキュメント参照。後処理段階
+ * (finish)の間はこのメッセージ自体は届くが、反映は後処理が終わった後になる)。
+ */
+export interface ConvertCancelRequest {
+  type: "convertCancel";
+  id: number;
+}
+
+export type WorkerRequest = OpenRequest | ReadNodeRequest | ConvertStartRequest | ConvertCancelRequest;
 
 export interface OpenResponse {
   type: "open-result";
@@ -53,7 +79,42 @@ export interface ErrorResponse {
   message: string;
 }
 
-export type WorkerResponse = OpenResponse | ReadNodeResponse | ErrorResponse;
+/** M4-6b: 読み込み段階の進捗。デスクトップ版(M4-3)と同じ`ConversionProgressDto`
+ *  の形をそのまま使い、見せ方を揃える(`src/state/useCopcViewer.ts`参照)。 */
+export interface ConvertProgressResponse {
+  type: "convert-progress";
+  id: number;
+  progress: ConversionProgressDto;
+}
+
+/** M4-6b: 変換完了。`outputName`はOPFS上の出力ファイル名
+ *  (`opfs.ts`の`outputFileNameFor`が決めたもの)、`suggestedFileName`は
+ *  ダウンロード時に提案するファイル名(元のファイル名から組み立てる。
+ *  `outputName`はハッシュ由来で人が読める名前ではないため)。 */
+export interface ConvertDoneResponse {
+  type: "convert-done";
+  id: number;
+  outputName: string;
+  suggestedFileName: string;
+  pointCount: number;
+}
+
+/** M4-6b: 変換の失敗・キャンセル。デスクトップ版のonConversionFailedと
+ *  同じ形(message, cancelled)。 */
+export interface ConvertFailedResponse {
+  type: "convert-failed";
+  id: number;
+  message: string;
+  cancelled: boolean;
+}
+
+export type WorkerResponse =
+  | OpenResponse
+  | ReadNodeResponse
+  | ErrorResponse
+  | ConvertProgressResponse
+  | ConvertDoneResponse
+  | ConvertFailedResponse;
 
 export function buildOpenFileRequest(id: number, file: File): OpenRequest {
   return { type: "open", id, source: { kind: "file", file } };
@@ -82,4 +143,20 @@ export function classifyOpenPath(path: string): { kind: "file"; fileKey: string 
 
 export function makeFileKey(sequence: number): string {
   return `file:${sequence}`;
+}
+
+/** `copc-writer`の既定(`CopcWriterParams::default`)と揃える。デスクトップ版
+ *  (`src-tauri/src/conversion.rs`)も同じ値を使っている。 */
+export const DEFAULT_MAX_POINTS_PER_NODE = 100_000;
+
+export function buildConvertStartRequest(
+  id: number,
+  file: File,
+  maxPointsPerNode: number = DEFAULT_MAX_POINTS_PER_NODE,
+): ConvertStartRequest {
+  return { type: "convertStart", id, file, maxPointsPerNode };
+}
+
+export function buildConvertCancelRequest(id: number): ConvertCancelRequest {
+  return { type: "convertCancel", id };
 }

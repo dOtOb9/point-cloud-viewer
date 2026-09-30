@@ -1,5 +1,77 @@
 /* @ts-self-types="./pcv_wasm.d.ts" */
 
+export class WasmConverter {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmConverterFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmconverter_free(ptr, 0);
+    }
+    /**
+     * 最大`batch_size`点を読み、spillへ書く。呼び出し側
+     * (`src/datasource/copc.worker.ts`)はこれを繰り返し呼び、呼び出しの
+     * 合間に`await`でWorkerのイベントループへ制御を返す
+     * (キャンセル要求を受け取れるようにするため。モジュールドキュメント参照)。
+     *
+     * 戻り値(`dto::FeedResultDto`)の`done`が`true`になったら、これ以上
+     * `feed`を呼ばず`finish`へ進む。
+     * @param {number} batch_size
+     * @returns {any}
+     */
+    feed(batch_size) {
+        const ret = wasm.wasmconverter_feed(this.__wbg_ptr, batch_size);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * 読み込みを終え、octreeを構築してOPFSの出力ハンドルへ書き出す。
+     * この呼び出しの間はキャンセルできない(モジュールドキュメント参照)。
+     * 呼び出し元はこれを呼ぶ前に、直近の`feed`で`done: true`が返っている
+     * ことを確認すること(このメソッド自身は`feed`が尽きたかを検証しない。
+     * spillに一部の点しか無い状態でも変換自体は成立してしまうため、
+     * 呼び出し順の誤りは検出しない設計にしてある。単純さを優先した)。
+     * @returns {any}
+     */
+    finish() {
+        const ptr = this.__destroy_into_raw();
+        const ret = wasm.wasmconverter_finish(ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * `file`は変換元のLAS/LAZ。`scratch_handles`は事前に開いた一時ファイルの
+     * プール(`opfs.rs`のドキュメント参照)、`output_handle`は出力先として
+     * 事前に開いたハンドル、`output_name`は`ScratchFs::create_output`へ渡す
+     * 識別名(OPFS向け実装は内容の確定にファイル名を使わないため、
+     * ログ・デバッグ用途以上の意味は持たない)。
+     * @param {File} file
+     * @param {Array<any>} scratch_handles
+     * @param {FileSystemSyncAccessHandle} output_handle
+     * @param {string} output_name
+     * @param {number} max_points_per_node
+     */
+    constructor(file, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmconverter_new(file, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmConverterFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) WasmConverter.prototype[Symbol.dispose] = WasmConverter.prototype.free;
+
 /**
  * 開いたCOPCファイル。ローカルファイル(`openFile`)かURL(`openUrl`)かは
  * 内部の`Box<dyn ReadSeek>`にしまってあるので、以降のメソッドは区別しない。
@@ -97,6 +169,15 @@ export class WasmCopcFile {
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v2;
     }
+    /**
+     * 元のファイル/URL全体のバイト数。`bytesRead()`と比べることで
+     * 「ファイル全体を読んでいないこと」を確認できる(受け入れ条件)。
+     * @returns {number}
+     */
+    totalSize() {
+        const ret = wasm.wasmcopcfile_totalSize(this.__wbg_ptr);
+        return ret;
+    }
 }
 if (Symbol.dispose) WasmCopcFile.prototype[Symbol.dispose] = WasmCopcFile.prototype.free;
 
@@ -108,6 +189,18 @@ if (Symbol.dispose) WasmCopcFile.prototype[Symbol.dispose] = WasmCopcFile.protot
  */
 export function init_panic_hook() {
     wasm.init_panic_hook();
+}
+
+/**
+ * `opfs.rs`の`OPFS_SCRATCH_POOL_SIZE`をJS側にも公開する。TypeScript側
+ * (`src/datasource/opfs.ts`)が事前に開くOPFS一時ファイルの個数を、この値と
+ * 二重管理せずに揃えるため(値がずれると「Rustは600個用意されている前提で
+ * 動くのにTS側は別の数しか開いていない」という食い違いが起きる)。
+ * @returns {number}
+ */
+export function opfsScratchPoolSize() {
+    const ret = wasm.opfsScratchPoolSize();
+    return ret >>> 0;
 }
 function __wbg_get_imports() {
     const import0 = {
@@ -137,6 +230,9 @@ function __wbg_get_imports() {
         __wbg_error_756c5934221e6fee: function(arg0) {
             console.error(arg0);
         },
+        __wbg_flush_91458c8278aae724: function() { return handleError(function (arg0) {
+            arg0.flush();
+        }, arguments); },
         __wbg_getResponseHeader_5a541924b53981da: function() { return handleError(function (arg0, arg1, arg2, arg3) {
             const ret = arg1.getResponseHeader(getStringFromWasm0(arg2, arg3));
             var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -144,6 +240,14 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         }, arguments); },
+        __wbg_getSize_479486b8ac438f8e: function() { return handleError(function (arg0) {
+            const ret = arg0.getSize();
+            return ret;
+        }, arguments); },
+        __wbg_get_unchecked_363572bdd397d473: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
+        },
         __wbg_instanceof_ArrayBuffer_d4ff01f8247925ae: function(arg0) {
             let result;
             try {
@@ -154,7 +258,21 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
+        __wbg_instanceof_FileSystemSyncAccessHandle_bdd2286185c22623: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof FileSystemSyncAccessHandle;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
         __wbg_length_31bdaf014f5fbde2: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
+        __wbg_length_4e1adc0d42e23620: function(arg0) {
             const ret = arg0.length;
             return ret;
         },
@@ -192,6 +310,10 @@ function __wbg_get_imports() {
             const ret = arg0.readAsArrayBuffer(arg1);
             return ret;
         }, arguments); },
+        __wbg_read_259baab664b5f318: function() { return handleError(function (arg0, arg1, arg2, arg3) {
+            const ret = arg0.read(getArrayU8FromWasm0(arg1, arg2), arg3);
+            return ret;
+        }, arguments); },
         __wbg_response_4f02562be5de11ab: function() { return handleError(function (arg0) {
             const ret = arg0.response;
             return ret;
@@ -208,6 +330,9 @@ function __wbg_get_imports() {
         __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
             arg0[arg1] = arg2;
         },
+        __wbg_set_at_f64_3c6b553861b50f18: function(arg0, arg1) {
+            arg0.at = arg1;
+        },
         __wbg_set_responseType_5340c8e9ffe32197: function(arg0, arg1) {
             arg0.responseType = __wbindgen_enum_XmlHttpRequestResponseType[arg1];
         },
@@ -221,6 +346,13 @@ function __wbg_get_imports() {
         }, arguments); },
         __wbg_status_08d7fb024687db2b: function() { return handleError(function (arg0) {
             const ret = arg0.status;
+            return ret;
+        }, arguments); },
+        __wbg_truncate_596e341e494285d5: function() { return handleError(function (arg0, arg1) {
+            arg0.truncate(arg1 >>> 0);
+        }, arguments); },
+        __wbg_write_3e78f5b3224d701e: function() { return handleError(function (arg0, arg1, arg2, arg3) {
+            const ret = arg0.write(getArrayU8FromWasm0(arg1, arg2), arg3);
             return ret;
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0) {
@@ -255,6 +387,9 @@ function __wbg_get_imports() {
 }
 
 const __wbindgen_enum_XmlHttpRequestResponseType = ["", "arraybuffer", "blob", "document", "json", "text"];
+const WasmConverterFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmconverter_free(ptr, 1));
 const WasmCopcFileFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcopcfile_free(ptr, 1));

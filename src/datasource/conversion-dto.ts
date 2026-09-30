@@ -10,11 +10,16 @@ export type ConversionOutcomeDto =
   | { kind: "insufficient_space"; required_bytes: number; available_bytes: number }
   | { kind: "converting" };
 
+// M4-6b: "opfsUnavailable"はWeb版だけの追加(Rust側のConversionOutcomeには無い)。
+// OPFSが使えないブラウザ(FileSystemSyncAccessHandle未対応の旧Safari等)で
+// 生LAS/LAZを開こうとしたときに返す。`WebSource.startConversion`だけが
+// この値を作る(`toConversionOutcome`のDTO変換は通らない、Web側で直接組み立てる値)。
 export type ConversionOutcome =
   | { kind: "alreadyCopc"; path: string }
   | { kind: "cached"; outputPath: string }
   | { kind: "insufficientSpace"; requiredBytes: number; availableBytes: number }
-  | { kind: "converting" };
+  | { kind: "converting" }
+  | { kind: "opfsUnavailable" };
 
 export function toConversionOutcome(dto: ConversionOutcomeDto): ConversionOutcome {
   switch (dto.kind) {

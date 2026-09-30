@@ -181,6 +181,24 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                 </button>
               </div>
             )}
+
+            {/* M4-6b: Web版で変換したCOPCはOPFSの中にあり、アプリの外から
+                直接は取り出せない。所有者が保存したい場合のダウンロード導線。
+                変換が終わった直後(または変換済みキャッシュを開いた直後)に
+                出て、次にファイルを開くと消える(`openFile`が変換のたびに
+                clearDownloadする)。 */}
+            {viewer.isBrowser && viewer.downloadReady && (
+              <div className="flex items-center justify-between gap-2 rounded border border-black/10 p-2 text-xs dark:border-white/10">
+                <span className="opacity-70">変換したCOPCを保存できます</span>
+                <a
+                  href={viewer.downloadReady.url}
+                  download={viewer.downloadReady.fileName}
+                  className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900"
+                >
+                  ダウンロード
+                </a>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-1">

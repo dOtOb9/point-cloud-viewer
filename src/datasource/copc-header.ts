@@ -1,10 +1,15 @@
 // M4-3: Web版で「選んだファイルがCOPCかどうか」を、拡張子ではなくヘッダーで
 // 判定する。Rust側の`crates/pcv-convert/src/copc_detect.rs`(`is_copc_file`)と
 // 同じ考え方(受け入れ条件「拡張子だけでなく、ヘッダーで判定するのが確実」)を
-// Web版でも一貫させる。Web版はLAS/LAZの変換ができない(ADR-0006: 変換は
-// デスクトップとAndroidのみ、Webは別段階M4-6)ため、選んだファイルが生LAZ/LASだと
-// 分かった時点で「デスクトップ版で変換してください」と知らせるために使う
-// (`LayerPanel.tsx`参照)。
+// Web版でも一貫させる。
+//
+// M4-6b: Web版もOPFS上でLAS/LAZ→COPC変換ができるようになった
+// (`crates/pcv-wasm/src/convert.rs`)。この判定は「既にCOPCなら変換を挟まず
+// 即座に開く」「そうでなければ変換を始める」の分岐に使う
+// (`src/state/useCopcViewer.ts`の`openFile`参照)。OPFS自体が使えない環境
+// (旧Safari等)では、変換を試みた結果`WebSource.startConversion`が
+// `{kind: "opfsUnavailable"}`を返し、そこでデスクトップ版での変換を
+// 案内する（詳細は`useCopcViewer.ts`参照）。
 //
 // LASヘッダーのバイナリレイアウトを自前で最小限だけ読む(Rustと違い`las`相当の
 // パーサライブラリはWeb側に無いため)。COPCの仕様は「COPC info VLRは

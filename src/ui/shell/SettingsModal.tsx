@@ -115,8 +115,10 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
             (SAF)が返すcontent:// URIは`tempfile`が要求する実在のパスとして
             使えないため、手動選択のUIはAndroidには出さない。
             `viewer.supportsCustomTempDir`は`src-tauri/src/conversion.rs`の
-            `supports_custom_temp_dir`を反映している。Web版はそもそも変換
-            しないので`viewer.isBrowser`で先に弾く）。 */}
+            `supports_custom_temp_dir`を反映している。Web版はM4-6bでOPFS上の
+            変換に対応したが、一時ファイルの置き場所はOPFS固定で選べない
+            （ブラウザがユーザーに見せる実ファイルシステムパスではないため、
+            この設定行自体が意味を持たない）。`viewer.isBrowser`で先に弾く）。 */}
         {!viewer.isBrowser && viewer.supportsCustomTempDir && (
           <section className="flex flex-col gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
             <h3 className="text-sm font-semibold opacity-70">変換の一時ファイル (M4-3)</h3>
