@@ -249,3 +249,103 @@ fn cancelling_mid_conversion_leaves_no_leftover_files() {
         "spill_dirに一時ファイルが残っている: {leftovers:?}"
     );
 }
+
+/// M4-6b: `vendor/copc-writer`をScratchFsトレイト越しに改修したことで
+/// (`vendor/copc-writer/PATCH.md`参照)、ネイティブ(`NativeScratchFs`)の
+/// 出力バイト列が改修前と変わっていないことを、自動テストとして固定する。
+///
+/// M4-6aのスパイクでは200,000点の合成LASで改修前後のSHA-256ハッシュが
+/// 一致することを手動で確認した(タスクシートM4-6a「4. 改修前後で変換結果が
+/// 同じであることの確認」)。この関数はその確認を自動テスト化したもので、
+/// CIで毎回実行できるようにするため、点数を減らし(1,000点)、`sha2`等の
+/// 追加クレートに依存しない自前のFNV-1a(64bit)でハッシュを取る
+/// (バイト完全一致さえ検出できればよく、暗号学的な強度は不要なため)。
+///
+/// x/y/z全軸に散らし、`max_points_per_node`を小さくして複数ノード・複数階層に
+/// 分割させている(1ノードしかできないと、ノード分割ロジック
+/// (`lod.rs`のpartition_index_run。`create_temp("partition")`を再帰的に
+/// 呼ぶ経路)を通らず、改修の主眼であるScratchFs経由の一時ファイル生成が
+/// ほとんど検証できないため)。
+///
+/// **ハッシュ値が変わったら**: `NativeScratchFs`か、それが使う
+/// `copc-writer`本体のアルゴリズムの出力が変わったことを意味する。意図した
+/// 変更(例えば`copc-writer`のバージョンを上げた)であれば、このテストを
+/// 実際に実行して新しいハッシュ値に更新すればよい。意図していなければ退行。
+fn write_synthetic_las_scattered_in_3d(path: &std::path::Path, point_count: u32) {
+    let mut builder = las::Builder::from((1, 2));
+    builder.point_format = las::point::Format::new(2).expect("format 2(RGBあり)");
+
+    let header = builder.into_header().expect("valid header");
+    let mut writer = las::Writer::from_path(path, header).expect("LAS writerの作成に失敗");
+    for i in 0..point_count {
+        // 整数演算だけで決定的にx/y/z全軸へ散らす(浮動小数点の丸め差が
+        // プラットフォーム間で出ないよう、小さい整数のf64への変換のみを使う。
+        // これはIEEE754で常に厳密変換なので、どの環境で実行しても同じ入力になる)。
+        let x = f64::from((i * 37) % 500) * 0.1;
+        let y = f64::from((i * 53) % 500) * 0.1;
+        let z = f64::from((i * 13) % 200) * 0.1;
+        let point = las::Point {
+            x,
+            y,
+            z,
+            intensity: (i % 1000) as u16,
+            color: Some(las::Color {
+                red: (i % 256) as u16,
+                green: ((i * 3) % 256) as u16,
+                blue: ((i * 7) % 256) as u16,
+            }),
+            ..Default::default()
+        };
+        writer.write_point(point).expect("点の書き込みに失敗");
+    }
+    writer.close().expect("LAS writerのクローズに失敗");
+}
+
+/// FNV-1a(64bit)。暗号学的な強度は要らない(バイト列が完全一致するかどうかを
+/// 検出できれば十分な回帰テスト用途)ので、新しい依存クレートを増やさずに
+/// 自前で書いた(出典: FNV-1aの定数はIANAが公開する既知の値)。
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+    let mut hash = OFFSET_BASIS;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+#[test]
+fn native_output_hash_matches_recorded_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("synthetic_3d.las");
+    write_synthetic_las_scattered_in_3d(&source, 1_000);
+
+    let output = dir.path().join("synthetic_3d.copc.laz");
+    let spill_dir = dir.path().join("spill");
+    std::fs::create_dir_all(&spill_dir).unwrap();
+
+    convert_path(
+        &source,
+        &output,
+        &spill_dir,
+        &CopcWriterParams::new(50),
+        &not_cancelled(),
+        no_progress_reporting,
+    )
+    .expect("変換に失敗した");
+
+    let bytes = std::fs::read(&output).expect("出力を読めなかった");
+    let hash = fnv1a_64(&bytes);
+
+    // 2026-09-30、このworktreeで`cargo test -p pcv-convert --test streaming_conversion
+    // native_output_hash_matches_recorded_value`を実行して得た値。
+    const EXPECTED_HASH: u64 = 0xE17F_4891_ACC2_2B10;
+    assert_eq!(
+        hash,
+        EXPECTED_HASH,
+        "出力のFNV-1aハッシュが記録値と食い違う(バイト長={}) \
+         (NativeScratchFsかcopc-writer本体の出力が変わった可能性がある)",
+        bytes.len()
+    );
+}
