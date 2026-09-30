@@ -29,6 +29,10 @@ pub struct FileRangeReader {
 // 要求している。ネイティブ版でスレッドプールに`CopcFile`を渡す設計と型を
 // 揃えるため)を満たすためのものであり、実際にスレッド間で共有されることはない。
 unsafe impl Send for FileRangeReader {}
+// M4-6b: `las::Reader::new`は`R: Read + Seek + Send + Sync + 'static`を要求する
+// (Web版の変換、`crates/pcv-wasm/src/convert.rs`が使う)。上と同じ理由で
+// 実際にスレッド間で共有されることは無いので、形式要件として`Sync`も満たす。
+unsafe impl Sync for FileRangeReader {}
 
 impl FileRangeReader {
     pub fn new(file: File, stats: Stats) -> Self {

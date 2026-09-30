@@ -34,6 +34,15 @@ wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
+# M4-6b: Web版の変換(convert.rs)が、読み込んだLAS/LAZの点をCOPCへ書き出すのに使う。
+# copc-core/las はpcv-coreの読み込み側・pcv-convertのネイティブ変換経路と同じ版
+# (ADR-0003/ADR-0006)なので、依存解決が衝突しない。
+copc-core = "0.9.0"
+las = { version = "0.10", features = ["laz"] }
+# native-fsフィーチャ(既定)を切り、tempfile/memmap2への依存自体を外す
+# (wasm32-unknown-unknownには実行時に使えないため。vendor/copc-writer/PATCH.md参照)。
+# OpfsScratchFs(opfs.rs)が&dyn ScratchFsとしてcopc-writer本体に渡る。
+copc-writer = { version = "0.9.0", default-features = false }
 
 [dependencies.web-sys]
 version = "0.3"
@@ -44,6 +53,13 @@ features = [
   "XmlHttpRequest",
   "XmlHttpRequestResponseType",
   "console",
+  # M4-6b: OPFS(Origin Private File System)。opfs.rsがcreateSyncAccessHandle()で
+  # 得たハンドルの読み書きに使う。ハンドル自体の取得(FileSystemDirectoryHandle/
+  # FileSystemFileHandle越しの非同期呼び出し)はTypeScript側(src/datasource/opfs.ts)が
+  # 行い、Rust側は渡されたFileSystemSyncAccessHandleの同期メソッドだけを呼ぶ
+  # (TaskSheets/M4-import-and-conversion.mdのM4-6a 7節、MDN/WHATWG仕様参照)。
+  "FileSystemSyncAccessHandle",
+  "FileSystemReadWriteOptions",
 ]
 
 # pcv-core と同じ理由(vendor/copc-reader/PATCH.md参照): 上流の copc-reader 0.9.0 は
@@ -51,8 +67,18 @@ features = [
 # pcv-wasmはルートワークスペースの外にあるため、この[patch]もルートとは別に必要。
 # 忘れるとWeb版は「小さいファイルは開けるが大きいファイルだけ壊れる」という、
 # ADR-0003が既に踏んだのと同じ罠にはまる。
+#
+# copc-writerも同じ理由(vendor/copc-writer/PATCH.md参照): OPFS向けのScratchFs
+# 実装(&dyn ScratchFs)を渡せる入口(write_copc_from_spill_with_fs)は
+# vendor/copc-writerにしか無い。
 [patch.crates-io]
 copc-reader = { path = "../../vendor/copc-reader" }
+copc-writer = { path = "../../vendor/copc-writer" }
+
+# M4-6b: `tests/memory_scratch_conversion.rs`(ネイティブで走る統合テスト)が
+# 合成LASを書き出すのに使う。wasm32ビルドには一切含まれない(dev-dependency)。
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 opt-level = "s"

@@ -48,3 +48,21 @@ impl From<&pcv_core::HierarchyNode> for HierarchyNodeDto {
         }
     }
 }
+
+/// M4-6b: `WasmConverter::feed`が返す、読み込み段階の進捗。
+/// `src/datasource/conversion-dto.ts`の`ConversionProgressDto`(`phase:
+/// "reading"`)と対応させる(デスクトップ版・M4-3と同じ見せ方にそろえる)。
+#[derive(Serialize)]
+pub struct FeedResultDto {
+    pub points_read: u64,
+    pub total_points: u64,
+    /// 読み込みが尽きた(このファイルの点をすべて読み終えた)かどうか。
+    /// `true`になったら、呼び出し側は`feed`を呼ぶのをやめ`finish`へ進む。
+    pub done: bool,
+}
+
+/// M4-6b: `WasmConverter::finish`が返す、変換完了の要約。
+#[derive(Serialize)]
+pub struct FinishResultDto {
+    pub point_count: u64,
+}

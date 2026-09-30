@@ -14,12 +14,15 @@
 //! `Box<dyn ReadSeek>`に型消去することで、`WasmCopcFile`という1つの型で
 //! 両方を扱えるようにしている。
 
+mod convert;
 mod dto;
 mod file_reader;
 mod http_reader;
+mod opfs;
 mod range_math;
 mod stats;
 mod util;
+mod write_metadata;
 
 use std::io::{Read, Seek};
 
@@ -28,6 +31,18 @@ use http_reader::HttpRangeReader;
 use stats::Stats;
 use wasm_bindgen::prelude::*;
 use web_sys::File;
+
+// M4-6b: Web版の変換(WasmConverter)。`src/datasource/copc.worker.ts`が使う。
+pub use convert::WasmConverter;
+
+/// `opfs.rs`の`OPFS_SCRATCH_POOL_SIZE`をJS側にも公開する。TypeScript側
+/// (`src/datasource/opfs.ts`)が事前に開くOPFS一時ファイルの個数を、この値と
+/// 二重管理せずに揃えるため(値がずれると「Rustは600個用意されている前提で
+/// 動くのにTS側は別の数しか開いていない」という食い違いが起きる)。
+#[wasm_bindgen(js_name = opfsScratchPoolSize)]
+pub fn opfs_scratch_pool_size() -> u32 {
+    opfs::OPFS_SCRATCH_POOL_SIZE as u32
+}
 
 /// `pcv_core::CopcFile<R>`の`R: Read + Seek + Send`を満たす、型消去した入力源。
 /// `ReadSeek: Read + Seek + Send`と宣言してあるので、`dyn ReadSeek`自体が
