@@ -1,6 +1,8 @@
 # M4: 各種形式の取り込みと COPC への変換、および CRS
 
-- 状態: 進行中（M4-1・M4-1b・M4-2完了。M4-2 の決定は ADR-0006。M4-3以降は未着手）
+- 状態: 進行中（M4-1〜M4-6b完了。M4-2 の決定は ADR-0006。M4-4は「E57/PLY/PCD→LAS」
+  部分のみ完了、アプリへの配線は範囲外のまま。実機・実際のブラウザでの目視確認は
+  各節の「所有者が確かめる手順」参照）
 - 前提: [ADR-0001](./ADR-0001-architecture.md)（COPC の採用）、[ADR-0008](./ADR-0008-formats-and-crs.md)（対応形式と CRS）
 
 ## このマイルストーンの目的
@@ -1321,3 +1323,240 @@ $ git diff --no-index --stat <crates.io版copc-writer-0.9.0>/src vendor/copc-wri
   （ソースコードを読んで導いた推論。コンパイルが通ることだけは実測済み）
 - **`copc-writer`のライセンス・依存の再確認**はしていない（ADR-0006の
   M4-1bで既に確認済みで、今回変更していない）
+
+---
+
+## M4-6b: 実装する（2026-09-30、Sonnet）
+
+### 所有者の決定
+
+M4-6aの調査結果（改修約500行、ネイティブのテスト緑、wasm32ビルド可、OPFS要件を
+満たす）を受け、**所有者が2026-09-30に「実装する」と決定した。**
+
+### やったこと
+
+1. **`vendor/copc-writer`を`main`に取り込んだ。** `spike/m4-6`ブランチの改修
+   （`ScratchFs`/`ScratchWriter`/`ScratchReader`トレイト、`NativeScratchFs`/
+   `MemoryScratchFs`）をそのまま持ち込み、ルート`Cargo.toml`に
+   `[patch.crates-io] copc-writer = { path = "vendor/copc-writer" }`を追加した。
+   調査用の使い捨てヘルパー（`crates/pcv-convert/examples/spike_*.rs`）は
+   持ってこなかった。`vendor/copc-writer/PATCH.md`をスパイク限定の書き方から
+   本採用の書き方に書き直した
+2. **`write_copc_from_spill_with_fs`を新規公開した**（`vendor/copc-writer/
+   src/writer.rs`）。`&dyn ScratchFs`を直接渡せる入口で、`native-fs`
+   フィーチャの有無に関わらず常にビルドされる。Web版がこれを使う理由は
+   下記「Web版の変換の流れ」参照
+3. **ネイティブの回帰テスト**を`crates/pcv-convert/tests/streaming_conversion.rs`
+   に追加した（`native_output_hash_matches_recorded_value`）。x/y/z全軸に
+   散らした1,000点の合成LASを`max_points_per_node=50`で変換し、出力バイト列の
+   FNV-1a(64bit)ハッシュを固定値と比較する（M4-6aが手動で確認した
+   「改修前後でSHA-256が一致」を自動テスト化したもの。`sha2`等の新規クレートを
+   増やさないよう自前のFNV-1aにした）
+4. **OPFSの`ScratchFs`実装**（`crates/pcv-wasm/src/opfs.rs`の`OpfsScratchFs`）
+   を追加した。設計の要点は下記「OPFSの一時ファイルプールについて」参照
+5. **Web版の変換の流れ**を実装した（`crates/pcv-wasm/src/convert.rs`の
+   `WasmConverter`、`src/datasource/copc.worker.ts`・`opfs.ts`・`web.ts`・
+   `web-protocol.ts`・`src/state/useCopcViewer.ts`）。詳細は下記
+6. `pcv-core`には一切触れていない（規約1）。`@tauri-apps/api`のimportは
+   `src/datasource/tauri.ts`のみのまま（規約2、変更なし）。`src/renderer/`は
+   触れていない（規約3）
+
+### OPFSの一時ファイルプールについて（設計判断の理由）
+
+`copc-writer`のLOD構築（`lod.rs`の`partition_index_run`、`assign`の再帰）は、
+同期呼び出しの中で`ScratchFs::create_temp`を繰り返し（データ依存で数千〜
+数万回）呼ぶ。一方、OPFSで新しいファイルを開く操作
+（`FileSystemDirectoryHandle.getFileHandle`・
+`FileSystemFileHandle.createSyncAccessHandle`）はどちらも**非同期**
+（MDN/WHATWG仕様、M4-6a 7節参照）。`create_temp`が呼ばれるたびに非同期で
+新しいOPFSファイルを開くことはできない。
+
+そこで、変換を始める前に（`src/datasource/opfs.ts`の`createScratchPool`が）
+固定個数（既定`OPFS_SCRATCH_POOL_SIZE`=600、`crates/pcv-wasm/src/opfs.rs`）の
+OPFSファイルを`createSyncAccessHandle()`で開いておき（非同期、1回だけ）、
+`OpfsScratchFs::create_temp`はこの配列から「空いているハンドルを借りる
+（truncateして0バイトに戻す）」「使い終わった（`ScratchReader`がdropされた）
+ら返す」という同期操作だけで実装した。個数の見積もりは、`lod.rs`の`assign`が
+兄弟ノードを深さ優先で1つずつ処理する構造（同時に「使用中」のハンドル数は
+再帰の深さ×8程度に収まる。深さ上限は30だが、そこまで深くなるのは病的な
+データだけ）から、安全側に倍程度の余裕を見て決めた（詳細は`opfs.rs`の
+ドキュメントコメント参照）。同種の制約（OPFSの非同期ハンドル取得と、
+同期I/Oを前提にしたアルゴリズムの食い違い）に対する固定プール方式は、
+他のOPFS利用ライブラリ（SQLite系のOPFS VFS実装など）でも使われる一般的な
+対処だが、**本セッションで外部実装のソースを確認して裏付けたわけではない**
+（設計上の妥当性は上記の再帰構造の分析から独立に導いた）。
+
+### Web版の変換の流れ
+
+- 入力はユーザーが選んだ`File`。Worker内で既存の`FileRangeReader`
+  （`FileReaderSync`+`File.slice`、ADR-0012と同じ経路）で範囲読みし、
+  `las::Reader`で点を読む。ファイル全体はメモリに読まない
+- **読み込みはTypeScript側からバッチ単位（64Ki点）で駆動する。**
+  `WasmConverter::feed(batch_size)`を繰り返し呼び、呼び出しの合間に
+  `setTimeout(resolve, 0)`でWorkerのイベントループへ制御を返す。理由は
+  「キャンセルの制約」参照。読んだ点は`SpillWriter`へ直接pushする
+  （`copc_writer::SpillWriter::create`/`push`/`finalize`はすべて元から
+  公開済みで、M4-6a時点で改修済みの`&dyn ScratchFs`を受け取る）
+- 読み込み完了後、`WasmConverter::finish()`が`write_copc_from_spill_with_fs`
+  を呼び、octree構築・チャンク圧縮・出力の書き出しを1回の同期呼び出しで行う
+- 出力はOPFS上の`pcv-converted/<指紋ハッシュ>.copc.laz`に直接書く
+  （native版のような「一時名で書いて成功時だけrename」は行わない。
+  OPFSはオリジンの非公開ストレージで、書き込み中の内容が他から見える
+  心配が無いため。`opfs.rs`のドキュメント参照）。変換後、そのまま
+  `WebSource`に`registerFile`して`open()`する（通常のローカルファイル
+  選択と同じ経路）
+- **キャンセル**: 上記「読み込みのバッチ駆動」の合間にだけ即座に効く。
+  後処理段階（`finish()`の中）でのキャンセル要求は、処理が終わってから
+  出力を破棄して「キャンセルされた」扱いにする（即座には止められない。
+  ADR-0006の追記に理由を記録した: GitHub PagesはCOOP/COEPヘッダーを
+  設定できずSharedArrayBufferが使えない）
+- **進捗**: デスクトップ版（M4-3）と同じ`ConversionProgress`の形
+  （`phase: "reading"`で正確な割合、`phase: "postProcessing"`で段階名だけ）
+  を使い、`LayerPanel`の既存UIがそのまま流用できる（変更不要だった）
+- **容量の事前確認**: `navigator.storage.estimate()`の`quota - usage`が、
+  入力サイズ×11（デスクトップ版`disk_space.rs`と同じ係数、ADR-0006の実測
+  sofi: 入力2.03GB→一時ファイルピーク21.864GB、比≈10.77倍を根拠にする）
+  未満なら、変換を始めずに`insufficientSpace`を返す（`src/datasource/
+  opfs.ts`の`requiredScratchBytes`/`hasEnoughQuota`。純粋関数でテスト済み）
+- **同じファイルを二度変換しない**: ファイル名・サイズ・`lastModified`から
+  作ったキー（`src/datasource/opfs.ts`の`cacheKeyFor`、FNV-1a(32bit)。
+  デスクトップ版の指紋サイドカーと同じ考え方）でOPFS上のメタデータJSON
+  （`pcv-converted/<キー>.meta.json`）を探し、一致すれば変換をスキップして
+  そのファイルを開く
+- **ダウンロード**: OPFSの中身はブラウザの外から直接取り出せないため、
+  変換完了時に`URL.createObjectURL(file)`でBlob URLを作り、`LayerPanel`に
+  ダウンロードボタンを出す（`src/state/useCopcViewer.ts`の`downloadReady`）
+- **一時ファイルの後始末**: 成功・失敗・キャンセルのいずれでも、
+  `copc.worker.ts`の`finally`ブロックで全ハンドルを閉じ、一時ファイルの
+  ディレクトリ（`pcv-scratch/`）を丸ごと削除する。失敗・キャンセル時は
+  出力ファイルも削除する（成功時だけ残す）
+- **OPFSが使えない環境**: `WebSource.startConversion`が`isOpfsAvailable()`
+  で確認し、使えなければ`{kind: "opfsUnavailable"}`を返す。`useCopcViewer.ts`
+  がデスクトップ版での変換を促すメッセージを出す（`copc-header.ts`付近の
+  従来の「デスクトップ版で変換してください」という案内を、この場合だけ残した）
+
+### 実施しなかったこと（正直に）
+
+- **GeoTIFFのみのCRS**: WKTのVLRがあればそのまま引き継ぐが、GeoTIFFキーのみの
+  入力はCRSが失われる（デスクトップ版のゾーン表からのWKT合成は持ち込んでいない。
+  `crates/pcv-wasm/src/write_metadata.rs`参照）
+- **任意のVLR/EVLRのパススルー**: デスクトップ版（M4-3）と同じ制約
+  （`write_streaming_with_cancel`系のAPIを使う設計そのものの制約）
+- **実際のブラウザでの動作確認**: GUIを目視できない環境で作業したため、
+  OPFSでの変換の成功・容量不足時の実際の挙動・キャンセルの反応速度は
+  未確認。下記「所有者が確かめる手順」に委ねる
+- **Firefoxのbest-effort容量上限（10GiB）での実際の失敗確認**:
+  ADR-0006の追記に計算上の見積り（入力約900MB超で足りなくなる見込み）を
+  記録したが、実機では確認していない
+
+### 新規テスト
+
+- `crates/pcv-convert/tests/streaming_conversion.rs`の
+  `native_output_hash_matches_recorded_value`（ネイティブ、`NativeScratchFs`
+  の出力ハッシュ回帰）
+- `crates/pcv-wasm/tests/memory_scratch_conversion.rs`（ネイティブ、
+  `MemoryScratchFs`を使い`WasmConverter`と同じ手順
+  ―`SpillWriter::create`/バッチpush/`finalize`→`write_copc_from_spill_with_fs`
+  ―を再現し、`pcv-core`で開けることまで確認する統合テスト）
+- `src/datasource/opfs.test.ts`（純粋関数: キャッシュのキー`cacheKeyFor`・
+  容量判定`hasEnoughQuota`/`requiredScratchBytes`）
+- `src/datasource/web-protocol.test.ts`に追加した
+  `buildConvertStartRequest`/`buildConvertCancelRequest`のテスト
+  （メッセージの組み立て）
+
+OPFSそのもの（`FileSystemSyncAccessHandle`の実際の動作）はブラウザでしか
+試せないため、自動テストの対象にしていない。下記「所有者が確かめる手順」参照。
+
+### 確認したコマンドと結果（このworktreeで実行）
+
+```
+$ cargo fmt --all -- --check
+（差分なし）
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+（警告・エラー無し）
+
+$ cargo test --workspace
+pcv-convert（ライブラリ）: 41 passed
+pcv-convert（統合テスト）: import_e57(1) + import_pcd(4) + import_ply(5) +
+  import_to_copc(1) + roundtrip(1) + streaming_conversion(6、新規1件含む) = 18 passed
+pcv-core: 31 passed
+pcv-tauri: 6 passed
+合計 96件、失敗 0（M4-6a節が記録した95件+回帰テスト1件）
+
+$ cargo build -p pcv-core --target wasm32-unknown-unknown
+Finished（成功。規約1に影響なし、pcv-coreは無変更）
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+Finished（成功）
+
+$ cargo test --manifest-path crates/pcv-wasm/Cargo.toml
+pcv-wasm（ユニットテスト、Worker非依存部分）: 12 passed
+memory_scratch_conversion: 1 passed
+
+$ cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check
+（差分なし）
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --all-targets -p pcv-wasm -- -D warnings
+（pcv-wasm自身は警告0件。vendor/copc-writerの「native-fs無効時の未使用」警告は
+別クレートの既知の状態で、-D warningsの対象はpcv-wasm自身のみ）
+
+$ npm run typecheck
+（出力無し、終了コード0）
+
+$ npm run lint
+（出力無し、終了コード0）
+
+$ npm run test
+Test Files  27 passed (27)
+     Tests  222 passed (222)
+
+$ npm run build
+✓ 78 modules transformed.
+✓ built in 445ms
+
+$ npm run build:wasm
+（成功。src/wasm/pcv-wasm/を再生成し、コミット済み生成物を更新した）
+```
+
+CI（`ci.yml`）・Pages（`pages.yml`）: 本タスクの一連のpushで
+`gh run list --branch main`を確認した。run 36721674097（CI）・36721674064
+（Pages）・36723051482（CI）・36723051433（Pages）はすべて成功。最新コミット
+（Web変換の配線）のPages run 36727381459は成功、CI run 36727381701は
+本セッション終了時点で実行中だった可能性がある。所有者は
+`gh run list --branch main --limit 5`で最新状況を確認できる。
+
+### 所有者が確かめる手順
+
+1. **デスクトップ・Android（M4-3の回帰確認）**: 変わっていないはずだが、
+   念のため生のLAS/LAZを開いて変換が今までどおり動くことを確認する
+   （手順はM4-3節の「所有者が確かめる手順」と同じ）
+2. **Web版: 生のLAS/LAZを開く**（WebGPU対応ブラウザ、Chrome推奨。
+   `FileSystemSyncAccessHandle`はChrome 102/Firefox 111/Safari 15.2以降）
+   - GitHub Pagesのサイトを開き、`<input type="file">`で拡張子`.las`/`.laz`
+     （COPCでない）のファイルを選ぶ
+   - 進捗（%・プログレスバー・経過時間、読み込み段階）が出て、後処理段階では
+     「octreeを構築・書き出し中(割合は出せません)」に切り替わり、完了後に
+     自動的に点群が表示されることを確認する
+   - devtoolsのApplication→Storageタブ（Chrome）でOPFS
+     （`pcv-converted/`・変換直後は一時的に`pcv-scratch/`）の中身を確認する
+   - 変換完了後、「ダウンロード」ボタンで`.copc.laz`が保存できることを確認する
+3. **Web版: キャンセル**
+   - 生のLAS/LAZを選び、読み込み段階（進捗バーが動いている間）に
+     「キャンセル」を押す。すぐに止まり、devtoolsのOPFSビューで
+     `pcv-scratch/`が消えている（一時ファイルが残っていない）ことを確認する
+   - 後処理段階（「octreeを構築・書き出し中」表示の間）にキャンセルを押した
+     場合、処理が終わるまで待たされてから「キャンセルされました」と表示される
+     ことを確認する（この段階は即座には止まらない、ADR-0006参照）
+4. **Web版: 同じファイルの再変換防止**
+   - 同じファイルをもう一度選び、変換が走らず（進捗表示が出ず）即座に
+     開くことを確認する
+5. **Web版: 容量不足**
+   - devtoolsで`navigator.storage.estimate()`を実行して現在の空き容量を
+     確認し、それを超えるような大きい（または`navigator.storage.estimate`
+     をdevtoolsのStorage Managerで制限した状態で小さい）ファイルを選び、
+     変換が始まる前にエラーバナーで知らされることを確認する
+6. **Web版: OPFS非対応ブラウザでの案内**（もし手元にあれば。旧Safari等）
+   - 生のLAS/LAZを選び、「デスクトップ版でCOPCに変換してください」という
+     趣旨のメッセージが出ることを確認する
+7. **既にCOPCのファイルは即座に開く**（Web版、従来どおり変わっていないはず）

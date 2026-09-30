@@ -133,3 +133,88 @@ M4-3 で `copc-writer` を使った経路を作るとき、不要になった部
 Web では OPFS を使う。**外部クレートに相応の改修が入る**うえ、ブラウザの保存容量の上限で大きなファイルは
 変換できない場合がある。M4-3 が終わってから、まず実現できるかを確かめるスパイクから始める
 （M4-3 の途中で `copc-writer` を差し替えると衝突するため）。
+
+## 追記: Web 版でも変換を実装した（2026-09-30、M4-6b）
+
+M4-6a のスパイク（`TaskSheets/M4-import-and-conversion.md` 参照）で、改修が実用範囲に収まり
+（純増分556行）・ネイティブの振る舞いが変わらず（バイト単位で改修前後の出力が一致）・
+`wasm32-unknown-unknown` でビルドできることを確かめた。**所有者が2026-09-30に実装すると決定した。**
+
+### 実装したこと
+
+- `vendor/copc-writer` に `ScratchFs` トレイトを持ち込み（`vendor/copc-writer/PATCH.md`）、
+  Web 向けの `OpfsScratchFs`（`crates/pcv-wasm/src/opfs.rs`）を追加した
+- OPFS でファイルを新しく開く操作（`getFileHandle`・`createSyncAccessHandle`）は非同期だが、
+  `copc-writer` の octree 構築（`lod.rs`）は同期呼び出しの中で `ScratchFs::create_temp` を
+  データ依存で数千〜数万回呼ぶ。事前に固定個数（既定600、深さ上限30×8の見積もりに安全率を
+  掛けた値）の OPFS 一時ファイルを開いておき、使い終わったら使い回すプール方式で解決した
+- 読み込み（LASの点を読んでspillへ書く段階）は TypeScript 側からバッチ単位（64Ki点、
+  デスクトップ版`READ_BATCH_SIZE`と同じ桁）で駆動する。理由は次の「キャンセルの制約」参照
+- 空き容量の事前確認（`navigator.storage.estimate()`、入力の11倍が必要という同じ係数を使う）、
+  同じファイルの再変換防止（指紋サイドカーをOPFSに保存。デスクトップ版`cache.rs`と同じ考え方）、
+  変換結果のダウンロード（`URL.createObjectURL`。OPFSの中身はブラウザの外から直接取り出せないため）
+  を実装した
+
+### キャンセルの制約（デスクトップ・Androidとの違い）
+
+デスクトップ・Android（M4-3）は変換を別スレッドで走らせ、UIスレッドが`Arc<AtomicBool>`を
+立てるだけでいつでもキャンセルできる。Web版にはこの手段が無い。
+
+- Web Workerは1本しかない（Web版はまずWorker1本、本ADRの本文および
+  [ADR-0012](./ADR-0012-web-worker-sync-io.md)参照）ため、変換もこのWorkerの中で動かす
+- `postMessage`で届く「キャンセルして」というメッセージは、Workerのイベントループが
+  空いている時にしか処理されない。Rustの1回の長い同期呼び出しの途中では処理されない
+- `SharedArrayBuffer`+`Atomics.wait`を使えば、メインスレッドが共有メモリへ直接書き込むことで
+  Workerを本当の意味で「今すぐ」止められるが、これには`crossOriginIsolated`（COOP/COEP
+  レスポンスヘッダー）が要る。**GitHub Pages は静的ホスティングでレスポンスヘッダーを
+  カスタマイズできない**ため、このプロジェクトのデプロイ先では使えない
+
+そのため、読み込み段階をTypeScript側から小さなバッチ単位で駆動し、バッチの合間に
+Workerのイベントループへ制御を返すことで、その隙間でキャンセル要求を反映できるようにした
+（**読み込み段階のキャンセルは実質的に即座に効く**）。一方、後処理段階（octree構築・
+チャンク圧縮・書き出し。`copc-writer`本体の1回の同期呼び出し）の間はキャンセルを割り込ませ
+られない。この段階でキャンセルを要求すると、処理が終わるのを待ってから出力を破棄して
+「キャンセルされた」扱いにする（即座には止まらない）。デスクトップ版の実測（beer.laz:
+読み込み30秒/後処理16秒程度、`crates/pcv-wasm`は未計測）から見て、後処理段階はおおむね
+読み込み段階と同程度かそれ以下の長さになる見込みだが、**Webでの実測はしていない。**
+
+### メモリの制約（正直に）
+
+`ScratchReader::as_bytes`（spillのランダムアクセス読み出し）は、ネイティブでは`mmap`で
+OSにページ管理を任せる（本ADRが述べたとおり、ファイルに裏付けられたメモリはプライベート
+メモリを増やさない）。**OPFSにはmmap相当のAPIが無い**ため、Web版はこの部分を`Vec<u8>`へ
+丸ごと読み込む実装にした（`crates/pcv-wasm/src/opfs.rs`のドキュメント参照）。つまり
+**スピル（入力の点データ）のサイズがそのままwasm32のメモリ使用量になる。**
+wasm32-unknown-unknownは32bitアドレス空間（実務上4GiB未満）であり、ブラウザのタブ自体にも
+メモリ上限があるため、**sofi級（数億点、スピル数十GB）のファイルはWeb版では変換できない。**
+Web版が現実的に変換できるのは、スピルがブラウザの実効メモリに収まる規模
+（数百MB〜低GB程度、環境・端末依存）までである。
+
+### ブラウザの保存容量の上限（M4-6aで確認済み）
+
+[MDN: Storage quotas and eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria)
+によると、OPFSを含むオリジン単位のストレージの上限は総容量（空き容量ではない）を基準に
+決まる。
+
+| ブラウザ | best-effort（既定） | persistent |
+|---|---|---|
+| Chrome/Chromium系 | 総容量の60% | 同じく60% |
+| Firefox | 総容量の10%とグループ上限10GiBの小さい方 | 総容量の50%、上限8TiB |
+| Safari（ブラウザアプリ） | 総容量の約60% | 全origin合計は総容量の80%まで |
+
+**Firefoxはbest-effort（`navigator.storage.persist()`を呼ばない既定の状態）では
+グループ上限10GiBが先に効く。** 変換の一時ファイルは入力の約11倍必要（本ADR実測）なので、
+Firefoxの既定では**入力サイズが約900MB程度を超えるファイルは一時領域が足りず変換できない**
+見込みになる（`navigator.storage.persist()`を呼んで永続化を許可すれば緩和されるが、
+このアプリはそれを自動では要求しない。ユーザーへの許可プロンプトが要るため、
+範囲外にした）。sofi（2.03GB、364,384,576点）規模のファイルは、Firefoxのbest-effortは
+もちろん、上記「メモリの制約」により多くの環境で変換できない。
+
+### 実装しなかったこと（正直に）
+
+- Web版のGeoTIFFのみのCRS: WKTのVLRがあればそのまま引き継ぐが、GeoTIFFキーのみの入力は
+  CRSが失われる（デスクトップ版`crs_override.rs`のゾーン表からのWKT合成は持ち込んでいない。
+  `crates/pcv-wasm/src/write_metadata.rs`のドキュメント参照）
+- 実際のブラウザでの動作確認（Chrome/Firefox/Safariでの変換の成功、容量不足時の挙動、
+  キャンセルの実際の反応速度）はGUIを目視できない環境で作業したため未確認。
+  `TaskSheets/M4-import-and-conversion.md`のM4-6bに所有者の確認手順を記す
