@@ -155,7 +155,28 @@ function suggestedFileNameFor(sourceFileName: string): string {
   return `${withoutExtension}.copc.laz`;
 }
 
+/**
+ * 変換を1つに限る。Web Locks(`opfs.withConversionLock`)が取れなければ、
+ * 実際の変換(`runConversion`)は一切始めず「別のタブで変換中です」と知らせる
+ * (実機不具合の修正: 複数タブが同時にOPFSの一時ファイルを掴み合うと
+ * `createSyncAccessHandle`が「Access Handles cannot be created if there is
+ * another open Access Handle...」で失敗していた)。
+ */
 async function handleConvertStart(id: number, file: File, maxPointsPerNode: number): Promise<void> {
+  const outcome = await opfs.withConversionLock(navigator.locks, () =>
+    runConversion(id, file, maxPointsPerNode),
+  );
+  if (outcome.kind === "busy") {
+    scope.postMessage({
+      type: "convert-failed",
+      id,
+      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
+      cancelled: false,
+    });
+  }
+}
+
+async function runConversion(id: number, file: File, maxPointsPerNode: number): Promise<void> {
   activeConvertId = id;
   convertCancelRequested = false;
 
@@ -164,14 +185,28 @@ async function handleConvertStart(id: number, file: File, maxPointsPerNode: numb
   const startedAt = performance.now();
   const elapsedSecs = () => (performance.now() - startedAt) / 1000;
 
+  let scratchDirName: string | null = null;
   let scratchHandles: FileSystemSyncAccessHandle[] = [];
   let outputHandle: FileSystemSyncAccessHandle | null = null;
   let converter: WasmConverter | null = null;
   let succeeded = false;
 
   try {
+    // 前回までの後始末が走らなかった残骸(タブを閉じた・クラッシュした等)を
+    // 掃除してから始める。ロックの中で呼ぶため、他のタブが同時に新しい
+    // ディレクトリを作り始めている途中を誤って消す心配がない
+    // (`opfs.cleanupStaleScratchDirs`のドキュメント参照)。掃除自体が
+    // 失敗しても変換は試みる。
+    try {
+      await opfs.cleanupStaleScratchDirs();
+    } catch {
+      // 失敗しても変換自体は試みる。
+    }
+
     const poolSize = opfsScratchPoolSize();
-    scratchHandles = await opfs.createScratchPool(poolSize);
+    const pool = await opfs.createScratchPool(poolSize);
+    scratchDirName = pool.dirName;
+    scratchHandles = pool.handles;
     outputHandle = await opfs.createOutputHandle(outputName);
 
     converter = new WasmConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
@@ -251,7 +286,7 @@ async function handleConvertStart(id: number, file: File, maxPointsPerNode: numb
     converter?.free();
     opfs.closeHandles(scratchHandles);
     if (outputHandle) opfs.closeHandles([outputHandle]);
-    await opfs.removeScratchDir();
+    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
     if (!succeeded) {
       await opfs.removeOutputFile(outputName);
     }
