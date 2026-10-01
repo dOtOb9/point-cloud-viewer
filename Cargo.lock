@@ -2666,6 +2666,7 @@ name = "pcv-convert"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "chrono",
  "copc-core",
  "copc-writer",
  "e57",

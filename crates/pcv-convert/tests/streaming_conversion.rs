@@ -274,6 +274,12 @@ fn cancelling_mid_conversion_leaves_no_leftover_files() {
 fn write_synthetic_las_scattered_in_3d(path: &std::path::Path, point_count: u32) {
     let mut builder = las::Builder::from((1, 2));
     builder.point_format = las::point::Format::new(2).expect("format 2(RGBあり)");
+    // 作成日時を固定する: 未設定(None)のままだと、`copc-writer`の
+    // `CopcWriteMetadata::to_output()`が実行時の今日の日付で埋める
+    // (`vendor/copc-writer/src/metadata.rs`の`current_utc_date()`)ため、
+    // このテストの期待ハッシュが実行する日によって変わってしまう
+    // (実際に2026-09-30に記録した値が2026-10-01の実行で食い違った)。
+    builder.date = chrono::NaiveDate::from_ymd_opt(2026, 1, 1);
 
     let header = builder.into_header().expect("valid header");
     let mut writer = las::Writer::from_path(path, header).expect("LAS writerの作成に失敗");
@@ -338,9 +344,13 @@ fn native_output_hash_matches_recorded_value() {
     let bytes = std::fs::read(&output).expect("出力を読めなかった");
     let hash = fnv1a_64(&bytes);
 
-    // 2026-09-30、このworktreeで`cargo test -p pcv-convert --test streaming_conversion
+    // 2026-10-01、合成LASの作成日時を固定した後にこのworktreeで
+    // `cargo test -p pcv-convert --test streaming_conversion
     // native_output_hash_matches_recorded_value`を実行して得た値。
-    const EXPECTED_HASH: u64 = 0xE17F_4891_ACC2_2B10;
+    // (2026-09-30に記録した前の値0xE17F_4891_ACC2_2B10は、合成LASの作成日時を
+    // 固定していなかったために翌日の実行で食い違った。`chrono::NaiveDate`で
+    // 固定した今は、実行する日に関わらずこの値になるはず)。
+    const EXPECTED_HASH: u64 = 0x1835_0A7E_294F_68C3;
     assert_eq!(
         hash,
         EXPECTED_HASH,

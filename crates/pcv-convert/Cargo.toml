@@ -51,3 +51,12 @@ libc = "0.2"
 [[bin]]
 name = "pcv-convert"
 path = "src/main.rs"
+
+# M4-6b: 回帰テスト(streaming_conversion.rsの
+# native_output_hash_matches_recorded_value)が、合成LASの作成日時を固定する
+# ために使う(日付を固定しないと、copc-writerの`to_output()`が未設定の
+# creation_dateを実行時の今日の日付で埋めるため、出力ハッシュが実行日ごとに
+# 変わってしまう不具合が実際に起きた)。`chrono`はlas/copc-writer経由で既に
+# 依存グラフに入っているため、ワークスペース全体では新規クレートは増えない。
+[dev-dependencies]
+chrono = "0.4"
