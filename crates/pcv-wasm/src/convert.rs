@@ -39,7 +39,43 @@
 //! (`src/datasource/opfs.ts`)が開いたものをそのまま借りているだけで、
 //! 閉じる・OPFSから消す責務は呼び出し元(Worker、成功・失敗・キャンセルの
 //! いずれでも同じ後始末を通す)にある。理由は`opfs.rs`のドキュメント参照。
+//!
+//! # 読み込みのバッファリング(2026-10-01、実機不具合の修正)
+//!
+//! `FileRangeReader`(`file_reader.rs`)の`Read::read`は、呼ばれるたびに
+//! `File.slice`→`FileReaderSync::new()`→`read_as_array_buffer`→JSから
+//! wasmへのコピー、という重い処理を行う(バッファを持たない)。`las::Reader`
+//! は(LAZ非圧縮の生のLASでは)点を1件ずつ、点ごとの生レコード長(フォーマットに
+//! よるが20〜38バイト程度)だけ読むため、**`FileRangeReader`を直接渡すと
+//! 1点ごとにこの重い処理が1回走る。** 所有者の実機(Chrome)で、数万点を読む
+//! 前に進捗が一度も出ないまま止まって見えるという不具合として実際に踏んだ
+//! (`TaskSheets/M4-import-and-conversion.md`のM4-6b追記参照)。
+//!
+//! COPCを開く経路(`WasmCopcFile`、ADR-0012)は1ノード分のLAZチャンクを
+//! まとめて読むため、この問題が表に出なかった(1回の`read`呼び出しが
+//! 数万〜数十万バイト単位になる)。変換の経路だけがこの問題を持っていた。
+//!
+//! **対処**: `FileRangeReader`を`std::io::BufReader`(`READ_BUFFER_BYTES`、
+//! 4MiB)で包んでから`las::Reader::new`に渡す。変換は入力の先頭から順に
+//! (シークせず)読むだけなので、先読みがそのまま効く。`BufReader<R>`は
+//! `R: Seek`なら`Seek`も実装する(`std::io::BufReader`の標準実装)ため、
+//! `las::Reader::new`が要求する`Read + Seek + Send + Sync + 'static`を
+//! 満たす(`FileRangeReader`は既に`unsafe impl Send`/`Sync`済み。
+//! `file_reader.rs`参照)。
+//!
+//! **4MiBという値の根拠**: 読み込みは`feed(batch_size)`単位
+//! (既定64Ki点、`src/datasource/copc.worker.ts`の`CONVERT_BATCH_SIZE`)で
+//! 駆動する(モジュール冒頭「なぜ「バッチを1つずつ呼ぶ」設計にしたか」参照)。
+//! LASの点フォーマットのうち本アプリが対象とする範囲で最大のものは
+//! point format 7(RGB+GPS時刻、36バイト)相当で、64Ki点だと
+//! 65,536 × 36 ≈ 2.36MiB。4MiBはこれに余裕を持たせた値で、
+//! **1回の`feed`呼び出しがほぼ1回のバッファ補充(=1回の重い`FileRangeReader::read`
+//! 呼び出し)で収まる**ように選んだ。回帰テストは
+//! `crates/pcv-wasm/tests/buffered_file_reader_reduces_read_calls.rs`参照
+//! (`FileRangeReader`と同じ「呼ばれるたびに重い」形の疑似リーダーで、
+//! バッファの有無による下位`read`呼び出し回数の差を確認する)。
 
+use std::io::BufReader;
 use std::path::Path;
 
 use copc_core::{LasPointRecord, NeverCancel, StreamingLayout};
@@ -56,6 +92,10 @@ use crate::write_metadata::copc_write_metadata_from_source_header;
 fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
+
+/// `FileRangeReader`を包む先読みバッファのサイズ。根拠はモジュール冒頭の
+/// 「読み込みのバッファリング」参照。
+const READ_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 /// `js_sys::Array`(`FileSystemSyncAccessHandle`の配列)を`Vec`へ変換する。
 fn handles_from_js_array(array: &Array) -> Result<Vec<FileSystemSyncAccessHandle>, JsValue> {
@@ -101,7 +141,12 @@ impl WasmConverter {
     ) -> Result<WasmConverter, JsValue> {
         let stats = Stats::new();
         let source = FileRangeReader::new(file, stats);
-        let reader = las::Reader::new(source).map_err(to_js_error)?;
+        // 読み込みのバッファリング(モジュール冒頭のドキュメント参照):
+        // FileRangeReaderを直接渡すと、lasクレートが点ごとに行う小さい
+        // read呼び出し1回ごとに重いJS往復が発生し、実機で進捗が出る前に
+        // 止まって見えるほど遅くなる不具合があった。
+        let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
+        let reader = las::Reader::new(buffered).map_err(to_js_error)?;
 
         let layout = StreamingLayout::from_las_header(reader.header());
         let metadata = copc_write_metadata_from_source_header(reader.header());
