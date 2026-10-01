@@ -1698,3 +1698,144 @@ CIとPagesのrun idは、所有者への報告（本タスクの最終報告）�
 動き出すことを確かめてほしい。** 動き出すまでの時間が依然として長い場合は、
 `READ_BUFFER_BYTES`(4MiB)をさらに増やす、または`feed`の呼び出し単位
 (`CONVERT_BATCH_SIZE`、`src/datasource/copc.worker.ts`)を調整する余地がある。
+
+---
+
+## M4-6b 追記2: 実機不具合「変換に失敗しました: createSyncAccessHandle」（2026-10-01、Sonnet）
+
+### 症状（所有者の実機、Chrome）
+
+上記の読み込みバッファの修正は効いたが、今度は変換が失敗として画面に出た。
+
+```
+変換に失敗しました: Failed to execute 'createSyncAccessHandle' on
+'FileSystemFileHandle': Access Handles cannot be created if there is
+another open Access Handle or Writable stream associated with the same file.
+```
+
+### 原因（コーディネーターがコードで特定）
+
+`src/datasource/opfs.ts`の`createScratchPool`に2つの不具合があった。
+
+1. **一時ファイルの名前が毎回同じ**（固定ディレクトリ`"pcv-scratch"`に
+   `scratch-0`〜`scratch-{poolSize-1}`）。別のタブのWorkerや、前の版で
+   「準備中」のまま止まった変換がハンドルを握っていると、新しい変換が
+   同じ名前のファイルを開こうとして衝突する
+2. **途中で失敗すると、開いたハンドルが漏れる**。`for`ループの途中で
+   `createSyncAccessHandle`が投げると、それまでに開いたハンドルが
+   `handles`配列ごと呼び出し元へ返らず、`copc.worker.ts`の
+   `scratchHandles`は空のままになる。`finally`の`closeHandles(scratchHandles)`
+   に渡らないので**閉じられない**。そのページを開き直すまで、以後の変換が
+   同じエラーで失敗し続ける
+
+### 直したこと
+
+1. **変換ごとに一意な一時ディレクトリ**を使う
+   (`${SCRATCH_DIR_PREFIX}<crypto.randomUUID()>`、`src/datasource/opfs.ts`)。
+   後始末はそのディレクトリ名(`createScratchPool`の戻り値)だけを消す
+   (`copc.worker.ts`の`scratchDirName`)
+2. **ハンドルを開くループを`openHandlePool`という汎用関数に切り出し、
+   途中で失敗したらそれまでに開いたハンドルを閉じてから投げ直す**ように
+   した。OPFSへの依存をこの関数自体から切り離してある(`createOne`/
+   `closeOne`を引数で受け取るだけ)ので、ブラウザ無しでテストできる。
+   `createScratchPool`自身も、`openHandlePool`が失敗したら自分が作った
+   一時ディレクトリを自分で消すようにした(次回の掃除任せにしない)
+3. **複数タブでの同時変換をWeb Locks API(`navigator.locks`)で防ぐ**
+   (`opfs.withConversionLock`、`copc.worker.ts`の`handleConvertStart`)。
+   `{ifAvailable: true}`でロックを試み、取れなければ`callback`
+   (実際の変換、`runConversion`)を一切呼ばずに「別のタブで変換中です」と
+   知らせる。取れればロックは`callback`が返すPromiseが解決・拒否される
+   まで持つ(`navigator.locks.request`の仕様どおりで、成功・失敗・
+   キャンセルのいずれでもロックは変換の終了まで持たれる)
+4. **古い一時ディレクトリの掃除**(`opfs.cleanupStaleScratchDirs`)を、
+   ロックを取った直後・実際の変換を始める前に試みる。新しい命名規則の
+   ディレクトリ(`isScratchDirName`で判定)に加え、前の版が使っていた
+   固定名`"pcv-scratch"`も掃除の対象に含めた。**使用中(他のタブが変換中)の
+   ものは`removeEntry`が失敗するので、その失敗は無視する**(そのタブの
+   変換を妨げない)。ロックの中で呼ぶことで、「掃除の最中に別のタブが
+   ちょうど新しいディレクトリを作り始めた直後(まだハンドルを開く前)」
+   というすり抜けの窓を無くしている(ロックを取っている間は他のタブが
+   `createScratchPool`を同時に始められないため)
+
+出力ファイル(`createOutputHandle`)は1個しか開かないため、途中で失敗しても
+「それまでに開いたハンドル」は無い(`getFileHandle`自体はファイルの参照を
+得るだけで、実際のハンドルは`createSyncAccessHandle`が返すため、それが
+失敗すれば何も残らない)。漏れの心配は無いことをコードを読んで確認した。
+
+### 新規テスト
+
+`src/datasource/opfs.test.ts`に追加(9件、ブラウザ無しで実行可能)。
+
+- `openHandlePool`: 全部成功する場合・**N個目で失敗する偽物を注入し、
+  それまでに作ったハンドルがすべて閉じられ、エラーがそのまま再送出される
+  こと**を確認(受け入れ条件どおり)。後始末(`closeOne`)自体が失敗しても
+  残りを閉じ続けることも確認
+- `withConversionLock`: 偽の`LockManagerLike`(`navigator.locks`と同じ形の
+  インターフェース、`request`をテスト側で注入する)を使い、ロックが
+  取れれば`callback`を実行しその結果を返すこと、**取れなければ`callback`を
+  一切呼ばずbusyを返すこと**、`callback`が失敗したらそのまま再送出される
+  ことを確認
+- `isScratchDirName`: 新しい命名・旧固定名の両方を掃除対象と認識し、
+  無関係な名前(`pcv-converted`等)は対象にしないことを確認
+
+### 確認したコマンドと結果
+
+```
+$ npx tsc --noEmit
+（出力無し、終了コード0）
+
+$ npx eslint .
+（出力無し、終了コード0）
+
+$ npx vitest run
+Test Files  27 passed (27)
+     Tests  231 passed (231)（M4-6b追記1時点の222件+今回の9件）
+
+$ npm run build
+✓ 78 modules transformed.
+✓ built in 505ms
+
+$ cargo fmt --all -- --check / cargo clippy --workspace --all-targets -- -D warnings / cargo test --workspace
+（Rust側は今回のコミットで変更していないが、回帰確認のため再実行した。
+差分なし・警告0件・96件成功、いずれも変更無し）
+
+$ cargo build -p pcv-core --target wasm32-unknown-unknown
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+どちらも成功（Rust側は無変更なのでwasm-bindgen生成物の再生成は不要と判断した）
+```
+
+CIとPagesのrun idは、所有者への報告（本タスクの最終報告）に記載する。
+
+### 正直に: 確認できていないこと
+
+**ブラウザでの実際の動作確認はできない環境のため、「直った」とは断言しない。**
+特に以下は理屈のうえでの裏付けはあるが、実機では確かめていない。
+
+- 複数タブで実際に同時にLAS/LAZを選んだとき、2つ目のタブが本当に
+  「別のタブで変換中です」と出て、1つ目が正常に完了すること
+- 掃除(`cleanupStaleScratchDirs`)が、実際にタブを強制終了した後の残骸
+  (閉じ忘れたハンドルを伴わない、純粋にディレクトリだけが残るケース)を
+  正しく消せること
+- `navigator.locks`がWorker内から実際に呼べること(仕様上はDedicated
+  Workerでも`WorkerNavigator.locks`として使えるはずだが、実際にこの
+  アプリのWorker内で呼び出して確認してはいない)
+
+### 所有者が確かめる手順（追加分）
+
+1. **基本の変換**: 生のLAS/LAZを1つ選び、以前のエラー
+   （`createSyncAccessHandle`...）が出ずに変換が完了することを確認する
+2. **複数タブでの同時変換**: 同じサイトを2つのタブで開き、ほぼ同時に
+   それぞれで別の生LAS/LAZを選ぶ。片方が変換を始め、もう片方には
+   「別のタブ(またはウィンドウ)で変換が進行中です」という趣旨の
+   エラーバナーが出て、変換が始まらないことを確認する。1つ目のタブの
+   変換が終わった後、2つ目のタブで改めて変換すると今度は成功することを
+   確認する
+3. **タブを閉じた後の掃除**: 変換の途中（読み込み中）でタブを閉じ、
+   新しいタブで同じサイトを開いて別のファイルを変換する。
+   devtoolsのApplication→Storageタブで、閉じる前のタブが使っていた
+   一時ディレクトリ（`pcv-scratch-...`）が残っていないこと
+   （新しい変換の開始時に掃除されるはず）を確認する
+4. **以前の固定名ディレクトリの掃除**: もし以前のバージョンで変換を試して
+   `pcv-scratch`という固定名のディレクトリがOPFSに残っている場合、
+   新しいバージョンで何か1つ変換すると、そのディレクトリも消えている
+   ことを確認する
