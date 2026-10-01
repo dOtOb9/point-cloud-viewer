@@ -1561,3 +1561,140 @@ CI（`ci.yml`）・Pages（`pages.yml`）: 本タスクの一連のpushで
    - 生のLAS/LAZを選び、「デスクトップ版でCOPCに変換してください」という
      趣旨のメッセージが出ることを確認する
 7. **既にCOPCのファイルは即座に開く**（Web版、従来どおり変わっていないはず）
+
+---
+
+## M4-6b 追記: 実機不具合「読み込み中」に進まない（2026-10-01、Sonnet）
+
+### 症状（所有者の実機、Chrome）
+
+Web版でLAS/LAZを選ぶと「変換を準備しています…」のまま、**「読み込み中」に
+一度も進まない**。devtoolsのconsoleにアプリ由来のエラーは出ない。
+
+### 原因（コーディネーターが特定）
+
+`crates/pcv-wasm/src/file_reader.rs`の`FileRangeReader::read`は、呼ばれる
+たびに`File.slice`→`FileReaderSync::new()`→`read_as_array_buffer`→JSから
+wasmへのコピー、という重い処理を行い、**自分ではバッファを持たない**。
+
+`las::Reader`は、LAZ圧縮された入力では`laz`クレートのエントロピー復号器
+(`LasZipDecompressor`)が下位の`Read`を細かい単位で何度も呼ぶ(本セッションで
+`las`クレートのソースを読んで確認: 非圧縮の生LASは`fill_into_bytes`が
+バッチ全体を1回の`read_exact`で読むため影響が小さいが、**LAZ圧縮では
+実測で点数の9割程度の回数`read`が呼ばれる**。下記「確認したこと」参照)。
+`FileRangeReader`を直接渡すと、1回ごとに重いJS往復が走り、最初の進捗
+メッセージが出る前に実質止まって見えるほど遅くなる。
+
+COPCを開く経路(`WasmCopcFile`、ADR-0012)は1ノード分のLAZチャンクを
+まとめて読むため、この問題が表に出なかった。変換の経路だけがこの問題を
+持っていた(`crates/pcv-wasm/src/convert.rs`のドキュメント参照)。
+
+### 直したこと
+
+`crates/pcv-wasm/src/convert.rs`の`WasmConverter::new`で、`FileRangeReader`
+を`std::io::BufReader`(4MiB、`READ_BUFFER_BYTES`)で包んでから
+`las::Reader::new`に渡すようにした。4MiBの根拠: 読み込みは`feed(64Ki点)`
+単位で駆動するため(モジュールドキュメント参照)、本アプリが対象とする
+LASの点フォーマットのうち最大のもの(36バイト程度)で64Ki点 ≈ 2.36MiB。
+4MiBはこれに余裕を持たせ、**1回の`feed`呼び出しがほぼ1回のバッファ補充
+(=1回の重いJS往復)で収まる**ように選んだ。
+
+`BufReader<FileRangeReader>`は`FileRangeReader`が`Seek`を実装していれば
+`Seek`も自動で実装される(`std::io::BufReader`の標準実装)ため、
+`las::Reader::new`が要求する`Read + Seek + Send + Sync + 'static`を
+そのまま満たす。`FileRangeReader`自体・COPCを開く経路(`WasmCopcFile`)は
+変更していない(コーディネーターの指示どおり、恩恵が小さいと判断し、
+チャンク単位で読む経路は変えなかった)。
+
+### 新規テスト
+
+`crates/pcv-wasm/tests/buffered_file_reader_reduces_read_calls.rs`
+(ネイティブで実行可能)。`FileRangeReader`と同じ「呼ばれるたびに重い」
+性質だけを再現した疑似リーダー(`CountingReader`、メモリ上のバイト列を
+ラップし下位の`read`呼び出し回数を数える)を使い、**LAZ圧縮の**合成LASを
+`las::Reader`で読み切るまでの下位`read`呼び出し回数を、バッファ無し/
+`BufReader`で包んだ場合の両方で測って比較する。
+
+- バッファ無し: 20,000点に対し**18,279回**(点数の9割以上。不具合の再現)
+- バッファ有り(4MiB): **5回以下**(ファイルサイズ÷バッファサイズ程度)
+
+バッファを外す(テスト内の`wrap_in_buf_reader`を`false`に固定する)と、
+このテストが実際に落ちることを手元で確認した
+(`buffered_calls=18279, expected_upper_bound=5`で失敗)。
+
+**このテストを書く過程で、最初は非圧縮の生LASで試して不具合を再現できな
+かった。** `las`クレートのソース(`src/reader/las.rs`)を読むと、非圧縮の
+生LASは`fill_into_bytes`がバッチ全体を1回の`read_exact`で読む実装になって
+おり、バッファの有無で呼び出し回数がほとんど変わらなかった(34回程度)。
+LAZ圧縮の入力(`src/reader/laz.rs`の`decompress_many`経由)に切り替えて
+初めて不具合を再現できた。実際の所有者のデータがLAZ圧縮かどうかまでは
+確認していないが、拡張子`.laz`は慣習的に圧縮を意味し、素朴な生LASより
+LAZ圧縮の方が実務では主流なため、これが実機で踏んだ経路だと考えられる。
+
+### 副次的に見つけて直したこと: 回帰テストの非決定性
+
+上記の修正を確認する過程で、`crates/pcv-convert/tests/streaming_conversion.rs`
+の`native_output_hash_matches_recorded_value`(M4-6bの最初の実施記録で追加した
+回帰テスト)が、**実行する日によって失敗する**不具合を見つけた。
+
+原因: テストが使う合成LAS(`write_synthetic_las_scattered_in_3d`)が作成日時
+(`las::Builder.date`)を設定しておらず、`copc-writer`の
+`CopcWriteMetadata::to_output()`が未設定のcreation_dateを**実行時の今日の
+日付**で埋める(`vendor/copc-writer/src/metadata.rs`の`current_utc_date()`)
+ため、出力バイト列(ひいてはハッシュ)が実行する日によって変わっていた。
+2026-09-30に記録した期待値が、本セッション中に日付が2026-10-01へ変わった
+ことで実際に食い違い、`cargo test --workspace`が失敗した。
+
+直し方: `write_synthetic_las_scattered_in_3d`で`builder.date`を固定の日付
+(2026-01-01)に設定し、期待ハッシュを新しい値(`0x1835_0A7E_294F_68C3`)に
+更新した。`chrono`を`pcv-convert`の`[dev-dependencies]`に追加したが、
+`las`/`copc-writer`経由で既に依存グラフに入っているため、ワークスペース
+全体では新規クレートは増えない。
+
+### 確認したコマンドと結果
+
+```
+$ cargo test --manifest-path crates/pcv-wasm/Cargo.toml --test buffered_file_reader_reduces_read_calls
+test buffering_drastically_reduces_underlying_read_calls ... ok
+
+$ cargo test --workspace
+合計96件、失敗0
+
+$ cargo test -p pcv-convert --test streaming_conversion native_output_hash_matches_recorded_value
+（日付を固定した後、同じ日に2回連続実行していずれもokを確認した。
+翌日以降も安定するかは理屈のうえでは保証されるが、実際に日をまたいで
+再実行して確認したわけではない）
+
+$ cargo fmt --all -- --check
+（差分なし）
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+（警告・エラー無し）
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+Finished（成功）
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+（pcv-wasm自身は警告0件。vendor/copc-writerの既知の警告のみ）
+
+$ npm run build:wasm
+（成功。src/wasm/pcv-wasm/pcv_wasm_bg.wasmを再生成しコミットした。
+.js/.d.tsは内容に変化無し=新しいexportは増えていない）
+
+$ npm run typecheck / npm run lint / npm run test / npm run build
+すべて成功（出力無しまたは期待どおりの成功メッセージ）
+```
+
+CIとPagesのrun idは、所有者への報告（本タスクの最終報告）に記載する。
+
+### 正直に: 確認できていないこと
+
+**ブラウザでの実際の動作確認はできない環境のため、「直った」とは断言しない。**
+テスト(`buffered_file_reader_reduces_read_calls`)は「下位の`read`呼び出し
+回数が劇的に減る」ことまでしか確認しておらず、実際のブラウザでの
+`File.slice`+`FileReaderSync`往復1回あたりの実時間(所有者が報告した
+「止まって見える」体感)がどれだけ改善するかは測っていない。
+**所有者が実機(Chrome)で、実際にLAS/LAZを選んで読み込み中の進捗バーが
+動き出すことを確かめてほしい。** 動き出すまでの時間が依然として長い場合は、
+`READ_BUFFER_BYTES`(4MiB)をさらに増やす、または`feed`の呼び出し単位
+(`CONVERT_BATCH_SIZE`、`src/datasource/copc.worker.ts`)を調整する余地がある。
