@@ -2206,11 +2206,208 @@ sofi相当、あるいはより大きい入力)ほど、この改修の効果は
 - 並列設定のまま`convert_path`(本番の変換経路)を通した出力が
   `pcv-core`で開け、hierarchyの点数の合計が入力点数と一致する
 
-### 確認したコマンドと結果
+### 確認したコマンドと結果(デスクトップ・Android分)
 
-(次のコミットで追記)
+```
+$ cargo fmt --all -- --check
+(出力無し、終了コード0)
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+(警告・エラー無し)
+
+$ cargo test --workspace
+pcv-convert(ライブラリ): 既存のテストすべて成功
+pcv-convert(統合テスト、parallel_laz_decompression.rs新設):
+  parallel_and_serial_laz_decompression_yield_the_same_point_set ... ok
+  production_conversion_path_with_parallel_decompression_opens_in_pcv_core ... ok
+pcv-core・pcv-tauri: 既存のテストすべて成功
+合計(ワークスペース全体、doc-test含む): 失敗0
+```
+
+コミット: `perf(M4-7): デスクトップ・AndroidのLAZ展開を並列化する`
+(`origin/main`へpush済み)。
 
 ### 4. Web版の並列化
 
+#### 背景: ネイティブと同じ手段が使えない
+
+デスクトップ・Android(上記2.)は`las`クレートの`laz-parallel`フィーチャ
+(`rayon`、OSスレッド)で解決したが、**Web版では`rayon`が使えない。**
+`rayon`はOSスレッドか`wasm32`の`atomics`(`SharedArrayBuffer`)のどちらかを
+要求するが、GitHub Pagesは静的ホスティングでCOOP/COEPヘッダーを設定できず
+`crossOriginIsolated`にならないため、`SharedArrayBuffer`は使えない
+(`TaskSheets/ADR-0012-web-worker-sync-io.md`・`TaskSheets/ADR-0006-conversion-strategy.md`
+のWeb版の節が既に確認済みの制約)。
+
+課題にある通り、**独立したWeb Workerを複数立ててチャンク範囲(点インデックスの
+範囲)を分担させる**方式にした。Workerはメモリを共有しないJSのグローバルなので、
+`SharedArrayBuffer`無しで真の並列実行になる。
+
+#### 実装したもの
+
+- `crates/pcv-wasm/src/convert.rs`(新規関数`decompress_laz_range`、
+  `WasmConverter`に`totalPoints()`・`recordWidth()`・`pushSerializedRecords()`
+  を追加。モジュールドキュメント「M4-7」参照):
+  - `decompress_laz_range(file, start_index, count)`: 展開専用Workerから呼ぶ。
+    `WasmConverter`とは完全に独立した`las::Reader`を自分の`File`に対して開き、
+    `las::Reader::seek`で担当範囲の先頭近くまで直接ジャンプしてから展開する
+    (全点を先頭から読み直さない)。読んだ点は`copc_core::serialize_le`
+    (`vendor/copc-writer`とは別の、両エージェントが自由に使える公開クレート
+    `copc-core`の関数)でspillと同じ固定長バイト列にシリアライズして返す
+  - `WasmConverter::pushSerializedRecords(bytes)`: 変換用Worker側で、展開
+    Workerから届いたバイト列を`deserialize_le`で`LasPointRecord`に戻し、
+    今までどおり1本の`SpillWriter`へ`push`する(`SpillWriter`はWorkerを
+    またいで共有できないため、spillへの書き込みは引き続き1本のWorkerだけが行う)
+  - ロジック本体(`decompress_point_range`)は`web_sys::File`に依存しない形に
+    切り出し、ネイティブの`cargo test`から`Cursor<Vec<u8>>`で検証できるようにした
+    (後述のテスト参照)
+- `src/datasource/laz-decompress.worker.ts`(新設): 展開専用Worker本体。
+  `{file, startIndex, count}`を受け取り`decompressLazRange`を1回呼んで
+  バイト列を返すだけの単純な作り(範囲の途中で進捗を細かく報告する仕組みは
+  持たない。後述「進捗の粒度」参照)
+- `src/datasource/decompress-partition.ts`(新設): 範囲分割
+  (`pointRangesFor`)とWorker数の決定(`decompressWorkerCountFor`)を、
+  Worker固有のAPIに依存しない純粋関数として切り出した(`copc.worker.ts`から
+  使うが、普通のvitestで直接テストできる)
+- `src/datasource/copc.worker.ts`: 読み込み段階を`runParallelReadPhase`に
+  分岐させた。`decompressWorkerCountFor`が1を返す(入力が小さい、または
+  `hardwareConcurrency`が不明・1)場合は、今までどおり`WasmConverter.feed`の
+  逐次バッチループにフォールバックする
+
+#### Worker数・しきい値の決め方(実測の裏付けが無いので保守的に)
+
+- **`PARALLEL_MIN_POINTS`(50万点)未満では並列化しない。** ネイティブの実測
+  (上記2.の表)で、分担の単位が小さすぎるとスレッド起動のオーバーヘッドが
+  展開本体の時間を上回り、**直列より遅くなる逆転が実際に観測された**
+  (バッチサイズ64Ki点、20コアで直列18.1秒・並列30.2秒)。Web Workerの起動・
+  `File`の構造化クローンのコストはネイティブのスレッド起動よりさらに重いと
+  見て、ネイティブの観測よりさらに余裕を持った値にした
+- **`MAX_DECOMPRESS_WORKERS`(8)を上限にする。** `TaskSheets/ADR-0007-pcv-protocol-concurrency.md`
+  の`POOL_SIZE`と同じ考え方の決め打ち。各Workerは独立したwasmヒープを持つため、
+  `navigator.hardwareConcurrency`をそのまま無制限に使わない
+- どちらも実機で測り直せていない値であることを明記する(次節「正直に:
+  Web版は推定」参照)。`src/datasource/decompress-partition.ts`に根拠ごと
+  コメントを残したので、将来実測して変えられる
+
+#### 点の順序・キャンセル・進捗
+
+- **点の順序**: `runParallelReadPhase`は担当範囲の順(点インデックスの昇順)で
+  結果を取り出して`pushSerializedRecords`に渡す(到着順ではない)。全Workerは
+  `postMessage`直後に並行して動き始めるため、取り出す順序を決め打ちにしても
+  並列度は落ちない。もっとも、順序の保存自体は本質的な要件ではない
+  (`convert.rs`のモジュールドキュメント参照。`SpillWriter`の検証・統計は
+  1点ごとに閉じた計算で順序に依存しないことをソースで確認済み)
+- **キャンセル**: `convertCancel`メッセージのハンドラが、進行中の展開Worker
+  全員に`Worker.terminate()`を呼ぶ。`terminate()`は実行位置に関わらず即座に
+  止まるため、デスクトップ版の「バッチの合間に制御を返す」方式より反応は
+  悪くならない。ただし`terminate()`されたWorkerは応答を返さないため、
+  `Promise`が永遠に解決しない問題が起きる。これを避けるため、進行中の
+  Workerの`reject`を`activeDecompressWorkers`に保持しておき、キャンセル時に
+  `terminate()`と同時に`reject(new ParallelReadCancelledError(...))`を呼んで
+  待ちを即座に解消する実装にした(`copc.worker.ts`参照)
+- **進捗**: 各展開Workerは担当範囲を1回の`decompressLazRange`呼び出しで
+  丸ごと展開するため、**進捗はWorker単位の粗い粒度になる**(1つのWorkerが
+  完了するたびに更新。デスクトップ版の4096点ごとより粗い)。範囲の途中で
+  細かく刻んで進捗を出す設計も検討したが、実装の複雑さ(Worker内での
+  バッチループ・yield・キャンセル確認を展開Worker側にも持ち込む必要がある)
+  に見合わないと判断し、単純さを優先した。**この粗さは正直に書く
+  (「測っていないことを実測したと書かない」と同じ精神で、実装の制約を
+  誇張も矮小化もしない)。**
+
+#### 新規テスト
+
+- `crates/pcv-wasm/src/convert.rs`の`#[cfg(test)]`(ネイティブ、`cargo test`):
+  - `concatenated_ranges_match_a_single_full_range_read`: 複数チャンクに
+    またがる合成LAZ(30万点)を、1回で全体を読んだ結果と、3つの範囲
+    (チャンク境界と揃っていない、わざと不均等な区切り)に分けて連結した
+    結果とで、**バイト単位で一致する**ことを確認する。M4-7の受け入れ条件
+    (点数・点の集合の一致)より強い確認(連結順が決まっているため)
+  - `range_starting_past_total_points_returns_empty`: 範囲外の開始でも
+    エラーにならず空を返すこと(端数の扱い)を確認する
+- `src/datasource/decompress-partition.test.ts`(vitest): `pointRangesFor`
+  (均等分割・余りの寄せ方・範囲が重ならないこと)と`decompressWorkerCountFor`
+  (しきい値・上限・`hardwareConcurrency`不明時のフォールバック)を確認する
+
+#### 正直に: Web版は推定(実測していない)
+
+**Web版の並列化の効果は実機で測っていない。** GUIを目視できない環境のため、
+実際のブラウザでWorkerを複数立てて計測することができない。以下は
+**ネイティブの実測から推定した見込みであり、実測ではない**:
+
+- ネイティブで観測したLAZ展開の並列化効果(5.25〜6.30倍、20論理コア)が
+  Web版でもある程度は再現すると見込む。ただしWeb Workerの起動コスト
+  (wasmモジュールの初期化を複数回行う)・`File`の構造化クローンのコスト
+  (ネイティブのスレッド起動より重い)・ブラウザ・端末のコア数のばらつき
+  (ネイティブの開発機の20論理コアより少ない環境が多いと見込まれる)により、
+  **実際の倍率はネイティブより低くなる可能性が高い**
+- ネイティブと同じく、読み込み段階「全体」では、spillへの書き込み
+  (`pushSerializedRecords`が内部で呼ぶ`SpillWriter::push`、並列化していない)
+  が相対的に支配的になるため、展開単体の倍率より低い倍率にとどまる見込み
+  (アムダールの法則。ネイティブでは1.67倍だった)
+- `PARALLEL_MIN_POINTS`・`MAX_DECOMPRESS_WORKERS`の値は、ネイティブの実測から
+  類推した保守的な決め打ちであり、Web版自体での計測に基づく値ではない
+
+**実機での確認が必須。** 下記「所有者が確かめる手順」に委ねる。
+
+### 確認したコマンドと結果(Web版)
+
+```
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+Finished(成功)
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+(警告・エラー無し)
+
+$ cd crates/pcv-wasm && cargo test
+17 passed(concatenated_ranges_match_a_single_full_range_read・
+           range_starting_past_total_points_returns_emptyを含む)
+buffered_file_reader_reduces_read_calls: 1 passed
+memory_scratch_conversion: 1 passed
+
+$ cd crates/pcv-wasm && cargo fmt --all -- --check
+(出力無し、終了コード0)
+
+$ npm run build:wasm
+(成功。生成物をコミット)
+
+$ npx tsc --noEmit
+(出力無し、終了コード0)
+
+$ npx eslint .
+(出力無し、終了コード0)
+
+$ npx vitest run
+Test Files  28 passed (28)
+     Tests  240 passed (240)
+
+$ npm run build
+dist/assets/laz-decompress.worker-*.js    9.38 kB (新しいWorkerチャンクが
+  独立して生成されていることを確認。Viteが`new URL(...)`パターンを認識し、
+  正しく別チャンクとして扱えている証拠)
+dist/assets/copc.worker-*.js             15.08 kB
+✓ built in 709ms
+```
+
+### 所有者が確かめる手順(Web版、実機必須)
+
+1. **大きめの生LAS/LAZ(50万点以上)をWeb版で変換する。** devtoolsの
+   Networkタブ・Performanceタブ、またはOSのタスクマネージャで、複数の
+   Workerスレッドが同時にCPUを使っていることを確認する(`laz-decompress.worker`
+   という名前のWorkerが`navigator.hardwareConcurrency`に応じた数だけ
+   立っているはず、上限8)
+2. 変換が今までどおり完了し、結果が正しく表示されることを確認する
+   (点数・見た目がデスクトップ版と変わらないこと)
+3. **キャンセル**: 変換中(特に読み込み段階、展開Workerが動いている間)に
+   キャンセルを押し、即座に止まる(体感で遅延を感じない)ことを確認する。
+   devtoolsのconsoleにエラーが残っていないか、OPFSの一時ファイルが
+   残っていないかも確認する(今までどおりの受け入れ条件)
+4. **小さいLAS/LAZ(50万点未満)**: 並列化されず、今までどおり`feed`の
+   逐次ループで変換されることを確認する(進捗の出方が今までと変わらない
+   はず。`PARALLEL_MIN_POINTS`未満なので`decompressWorkerCountFor`が1を返す)
+5. 可能であれば、同じファイルで並列化の前(このコミットの前のバージョン)と
+   後で変換にかかる時間を比べ、実際の倍率を記録して本節に追記してほしい
+   (上記「正直に: Web版は推定」のとおり、実測はまだ無い)
+6. コア数の少ない端末(スマートフォン等)でも、変換が壊れずに完了する
+   ことを確認する(並列化されないだけで、動作自体は保証されるはず)
 (以下に追記)
 
