@@ -286,7 +286,10 @@ impl ReadCache {
 
     /// キャッシュ済みなら、そのブロックを最近使った扱いにして中身を返す。
     fn get(&mut self, block_index: u64) -> Option<&[u8]> {
-        let position = self.blocks.iter().position(|b| b.block_index == block_index)?;
+        let position = self
+            .blocks
+            .iter()
+            .position(|b| b.block_index == block_index)?;
         let block = self.blocks.remove(position);
         self.blocks.push(block);
         Some(&self.blocks.last().expect("just pushed").data)
@@ -330,7 +333,10 @@ impl OpfsTempReader {
         let mut read_total = 0usize;
         while read_total < buf.len() {
             let n = handle
-                .read_with_u8_array_and_options(&mut buf[read_total..], &at(start + read_total as u64))
+                .read_with_u8_array_and_options(
+                    &mut buf[read_total..],
+                    &at(start + read_total as u64),
+                )
                 .map_err(|e| js_copc_err("OPFS scratch read", e))?;
             if n <= 0.0 {
                 return Err(Error::InvalidData(
@@ -570,8 +576,15 @@ mod tests {
         // 触ったので残る)。
         cache.insert(READ_CACHE_MAX_BLOCKS as u64, vec![0xff]);
         assert!(cache.get(0).is_some(), "直前に使ったブロックは残るはず");
-        assert!(cache.get(1).is_none(), "最も使われていなかったブロックは追い出されるはず");
-        assert_eq!(cache.blocks.len(), READ_CACHE_MAX_BLOCKS, "上限を超えないはず");
+        assert!(
+            cache.get(1).is_none(),
+            "最も使われていなかったブロックは追い出されるはず"
+        );
+        assert_eq!(
+            cache.blocks.len(),
+            READ_CACHE_MAX_BLOCKS,
+            "上限を超えないはず"
+        );
     }
 
     #[test]

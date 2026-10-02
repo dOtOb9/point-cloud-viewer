@@ -14,6 +14,7 @@
 //! `Box<dyn ReadSeek>`に型消去することで、`WasmCopcFile`という1つの型で
 //! 両方を扱えるようにしている。
 
+mod alloc_guard;
 mod convert;
 mod dto;
 mod file_reader;
@@ -149,6 +150,15 @@ impl WasmCopcFile {
 /// (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
 /// 追えるようにするため。標準の`std::panic`フックをそのまま`console.error`に
 /// 繋ぐだけで、専用クレート(`console_error_panic_hook`)は増やしていない)。
+///
+/// `#[wasm_bindgen(start)]`により、`init()`が解決した時点でwasm-bindgenの
+/// 生成コードが自動的に1回呼ぶ(`src/datasource/copc.worker.ts`の
+/// `ensureWasmReady`も、実装を追いやすくするため明示的にもう一度呼んでいる。
+/// 副作用はない)。
+///
+/// **メモリ確保の失敗はこのpanicフックを経由しない**(`std::alloc`は
+/// 確保失敗時にpanicせず`handle_alloc_error`→`unreachable`で即座にトラップ
+/// するため)。そちらは`alloc_guard.rs`の`#[global_allocator]`が別途検知する。
 #[wasm_bindgen(start)]
 pub fn init_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
