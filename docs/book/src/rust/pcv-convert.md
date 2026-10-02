@@ -50,6 +50,15 @@ LAS 経由で取り込む処理を持ちます。`pcv-core` とは別クレー�
 作った点のイテレータを受け取るため、デスクトップのパスも Android の
 `content://` も最終的に同じ `std::fs::File` として扱い、**1本の経路に統一**しています。
 
+**変換の並列化は本書の執筆時点で作業中です。** デスクトップ・Android 側では、
+読み込み段階の内訳を実測した結果 LAZ の展開がボトルネックだと分かり、`las`
+クレートの `laz-parallel` フィーチャ（`laz` クレートの `rayon` ベースの並列展開
+への入口）を有効にする形で対応されています（コード自体の変更は最小限で、
+1回のバッチが複数の LAZ チャンクをまたぐよう `READ_BATCH_SIZE` を調整した
+のが主な変更です）。Web 版（[pcv-wasm の章](./pcv-wasm.md)）側の並列化は
+本書の執筆時点ではまだ行われていません。最新の状況は
+[`TaskSheets/M4-import-and-conversion.md`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/M4-import-and-conversion.md) の M4-7 節を確認してください。
+
 副産物として、点のイテレータを自前で回すため、読み込んだ点数を数えて
 **進捗として報告できる**ようになりました（`copc-writer` 自身は進捗コールバックを
 持っていません）。読み込み完了後（octree 構築・チャンク圧縮・書き出し）は
