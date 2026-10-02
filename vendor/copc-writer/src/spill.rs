@@ -7,8 +7,8 @@
 //! +mmapで、振る舞いは変わっていない(改修前後で出力がバイト同一であることを
 //! 確認済み。`PATCH.md`参照)。
 
+use std::cell::RefCell;
 use std::io::{BufWriter, Write};
-use std::sync::Arc;
 
 use copc_core::{
     deserialize_le_into, serialize_le, Bounds, Error, LasPointRecord, Result, StreamingLayout,
@@ -96,13 +96,12 @@ impl SpillWriter {
         let count = usize::try_from(self.count)
             .map_err(|_| Error::InvalidInput("spill record count exceeds usize range".into()))?;
         let reader = boxed_writer.finish_temp()?;
-        let bytes = reader.as_bytes()?;
         let expected = self
             .record_width
             .checked_mul(count)
             .ok_or_else(|| Error::InvalidInput("spill size overflow".into()))?;
-        let actual = bytes.as_ref().as_ref().len();
-        if actual != expected {
+        let actual = reader.len()?;
+        if actual != expected as u64 {
             return Err(Error::InvalidInput(format!(
                 "spill file is {} bytes, expected {}",
                 actual, expected
@@ -110,30 +109,36 @@ impl SpillWriter {
         }
         let bounds = self.bounds.unwrap_or_else(|| Bounds::point(0.0, 0.0, 0.0));
         Ok(SpillReader {
-            _reader: reader,
-            bytes,
+            reader,
             layout: self.layout,
             record_width: self.record_width,
             count,
             bounds,
             stats: self.stats,
+            record_scratch: RefCell::new(Vec::new()),
         })
     }
 }
 
-/// Random-access view over a finalized spill file. Backed by
-/// `crate::scratch::ScratchReader::as_bytes` (native: an `mmap`'d region,
-/// not a copy; see the module docs).
+/// Random-access view over a finalized spill file.
+///
+/// M4-6のOPFS不具合(`TaskSheets/M4-import-and-conversion.md`のM4-6b追記、
+/// `crate::scratch::ScratchReader`のドキュメント参照)を受け、ファイル全体を
+/// `Arc<dyn AsRef<[u8]>>`として保持する形(`as_bytes`)をやめ、1レコード分
+/// (数十バイト)だけを都度`ScratchReader::read_at`で読む形に変えた。
+/// ネイティブ実装は今までどおりmmap上の小さな`memcpy`になるだけなので、
+/// 性能特性は変わらない(`PATCH.md`参照)。
 pub struct SpillReader {
-    /// RAII: 一時ファイル(ネイティブ実装)を、このリーダーが生きている間
-    /// 保持する(dropで削除される)。フィールド自体は読み出さない。
-    _reader: Box<dyn ScratchReader>,
-    bytes: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    /// 範囲読み(`read_at`)の読み出し元。RAII(一時ファイルの削除。ネイティブ
+    /// 実装)も兼ねる。
+    reader: Box<dyn ScratchReader>,
     layout: StreamingLayout,
     record_width: usize,
     count: usize,
     bounds: Bounds,
     stats: PointStats,
+    /// `record_into`が読み込みに使い回すバッファ(毎回アロケートしないため)。
+    record_scratch: RefCell<Vec<u8>>,
 }
 
 impl SpillReader {
@@ -157,17 +162,13 @@ impl SpillReader {
         self.bounds
     }
 
+    /// インデックス`index`のレコードがファイル中で始まるバイト位置。
     #[inline]
-    fn record_bytes(&self, index: usize) -> Result<&[u8]> {
+    fn record_offset(&self, index: usize) -> Result<u64> {
         let start = index
             .checked_mul(self.record_width)
             .ok_or_else(|| Error::InvalidData("spill record offset overflow".into()))?;
-        let end = start
-            .checked_add(self.record_width)
-            .ok_or_else(|| Error::InvalidData("spill record end overflow".into()))?;
-        let data: &[u8] = self.bytes.as_ref().as_ref();
-        data.get(start..end)
-            .ok_or_else(|| Error::InvalidData("spill record range exceeds memory map".into()))
+        Ok(start as u64)
     }
 
     #[inline]
@@ -178,10 +179,16 @@ impl SpillReader {
                 self.count
             )));
         }
-        let bytes = self.record_bytes(index)?;
-        let x = f64::from_le_bytes(bytes[0..8].try_into().expect("spill x width"));
-        let y = f64::from_le_bytes(bytes[8..16].try_into().expect("spill y width"));
-        let z = f64::from_le_bytes(bytes[16..24].try_into().expect("spill z width"));
+        // x/y/zは常にレコード先頭24バイト(copc_core::streaming::serialize_le
+        // 参照)なので、レコード全体ではなくこの24バイトだけを範囲読みする。
+        let start = self.record_offset(index)?;
+        let mut buf = [0u8; 24];
+        self.reader
+            .read_at(start, &mut buf)
+            .map_err(|e| Error::InvalidData(format!("read spill record {index}: {e}")))?;
+        let x = f64::from_le_bytes(buf[0..8].try_into().expect("spill x width"));
+        let y = f64::from_le_bytes(buf[8..16].try_into().expect("spill y width"));
+        let z = f64::from_le_bytes(buf[16..24].try_into().expect("spill z width"));
         Ok((x, y, z))
     }
 
@@ -199,7 +206,15 @@ impl SpillReader {
                 self.count
             )));
         }
-        deserialize_le_into(self.record_bytes(index)?, &self.layout, out)
+        let start = self.record_offset(index)?;
+        let mut scratch = self.record_scratch.borrow_mut();
+        if scratch.len() != self.record_width {
+            scratch.resize(self.record_width, 0);
+        }
+        self.reader
+            .read_at(start, &mut scratch)
+            .map_err(|e| Error::InvalidData(format!("read spill record {index}: {e}")))?;
+        deserialize_le_into(&scratch, &self.layout, out)
             .map_err(|e| Error::InvalidData(format!("decode spill record {index}: {e}")))
     }
 }

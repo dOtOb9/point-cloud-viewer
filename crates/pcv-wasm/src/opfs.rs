@@ -36,27 +36,44 @@
 //! 安全側に倒し、`OPFS_SCRATCH_POOL_SIZE`は深さ上限30×8+予備を見込んだ値にする。
 //! 使い切った場合は(黙って壊れたファイルを作るのではなく)エラーを返す。
 //!
-//! ## `as_bytes`について(正直な制約)
+//! ## 範囲読み(`read_at`)について
 //!
-//! `ScratchReader::as_bytes`は`spill.rs`だけが呼ぶ(点の座標をランダムアクセスで
-//! 読むため)。ネイティブ実装は`mmap`でOSにページ管理を任せる
-//! (`TaskSheets/ADR-0006-conversion-strategy.md`参照。ファイルに裏付けられた
-//! メモリはプライベートメモリを増やさない)。**OPFSにはmmap相当のAPIが無い**
-//! ため、この実装は該当ファイルの内容を`Vec<u8>`へ丸ごと読み込む。
-//! つまり**spill(入力の点データ)のサイズがそのままwasm32のメモリ使用量になる**
-//! (LOD索引ファイル自体は`open_at`(逐次読み出し)しか使われないため、
-//! こちらは丸ごと読み込まない)。wasm32-unknown-unknownは32bitアドレス空間
-//! (実務上4GiB未満)であり、ブラウザ自体もタブあたりのメモリに上限がある。
-//! **したがって、sofi級(数億点、スピル数十GB)のファイルはWeb版では
-//! 変換できない。** Web版が現実的に変換できるのは、スピルがブラウザの
-//! 実効メモリに収まる規模(数百MB〜低GB程度、環境依存)までである
-//! (`TaskSheets/ADR-0006-conversion-strategy.md`の追記に記録する)。
+//! M4-6bの実機不具合(`TaskSheets/M4-import-and-conversion.md`のM4-6b追記、
+//! `vendor/copc-writer/PATCH.md`参照): かつてこの実装は`ScratchReader::as_bytes`
+//! (ファイル全体をランダムアクセス領域として返す。`spill.rs`のレコード読み出しが
+//! 使っていた)を、該当ファイルの内容を`vec![0u8; len]`へ丸ごと読み込む形で
+//! 実装していた。ネイティブ実装は`mmap`でOSにページ管理を任せられる
+//! (`TaskSheets/ADR-0006-conversion-strategy.md`参照)が、**OPFSにはmmap相当の
+//! APIが無い**ため、この丸ごと読み込みは文字どおりspill(入力の点データ。
+//! 1点あたり50〜60バイト程度)のサイズをそのままwasm32のメモリ使用量にした。
+//! 数千万点の入力ではこれが数GBになり、wasm32のアドレス空間(32bit、実務上
+//! 4GiB未満)を超えて確保が失敗し、**`unreachable`でwasmごと停止する**
+//! 不具合になった(M4-6aの調査は出力の一致だけを確認し、こうしたメモリの
+//! 使い方までは検証していなかった)。
+//!
+//! **この不具合を受け、`as_bytes`を廃止し、`ScratchReader::read_at`
+//! (範囲読み)に置き換えた。** `spill.rs`は1レコード分(数十バイト)だけを
+//! 都度要求するようになったため、この実装は`FileSystemSyncAccessHandle::read`
+//! に`at`オプションを渡して必要な範囲だけを読む。ファイル全体を一度も
+//! メモリに載せない。
+//!
+//! ### 小さな読みの集積を抑えるブロックキャッシュ
+//!
+//! LOD構築中の読み出しパターンにはある程度の局所性があるとはいえ、
+//! 1レコード(数十バイト)ごとに`FileSystemSyncAccessHandle::read`を直接
+//! 呼ぶと、JSとの往復コストが点数に比例して積み重なる。これを抑えるため、
+//! [`READ_CACHE_BLOCK_BYTES`]単位のブロックで先読みし、直近
+//! [`READ_CACHE_MAX_BLOCKS`]個までを保持する小さなキャッシュを
+//! [`OpfsTempReader`]に持たせた(合計の上限は
+//! `READ_CACHE_BLOCK_BYTES * READ_CACHE_MAX_BLOCKS` = 4MiBで固定。
+//! 点数が増えてもこの上限は変わらない)。LRU(最近使ったブロックほど
+//! 後ろに置き、あふれたら先頭=最も使われていないものから捨てる)の
+//! ごく単純な実装。
 
 use std::cell::RefCell;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use copc_core::{Error, Result};
 use copc_writer::{ScratchFs, ScratchReader, ScratchWriter};
@@ -66,6 +83,15 @@ use web_sys::{FileSystemReadWriteOptions, FileSystemSyncAccessHandle};
 /// プールの既定サイズ。モジュールのドキュメント参照
 /// (再帰の深さ上限30×8+予備、安全側に倒した値)。
 pub const OPFS_SCRATCH_POOL_SIZE: usize = 600;
+
+/// 範囲読みキャッシュの1ブロックのサイズ。モジュールドキュメント
+/// 「小さな読みの集積を抑えるブロックキャッシュ」参照。
+const READ_CACHE_BLOCK_BYTES: u64 = 64 * 1024;
+
+/// 範囲読みキャッシュが同時に保持するブロック数の上限。
+/// `READ_CACHE_BLOCK_BYTES * READ_CACHE_MAX_BLOCKS` = 4MiBが、この
+/// キャッシュが使うメモリの固定上限(点数・ファイルサイズによらず一定)。
+const READ_CACHE_MAX_BLOCKS: usize = 64;
 
 fn at(offset: u64) -> FileSystemReadWriteOptions {
     let options = FileSystemReadWriteOptions::new();
@@ -226,7 +252,7 @@ impl ScratchWriter for OpfsTempWriter {
             pool: self.pool,
             index: self.index,
             len: len as u64,
-            cached_bytes: RefCell::new(None),
+            cache: RefCell::new(ReadCache::new()),
         }))
     }
 
@@ -239,6 +265,43 @@ impl ScratchWriter for OpfsTempWriter {
     }
 }
 
+/// 範囲読みキャッシュの1ブロック。
+struct CacheBlock {
+    /// ブロック番号(`READ_CACHE_BLOCK_BYTES`単位)。
+    block_index: u64,
+    data: Vec<u8>,
+}
+
+/// 固定個数・固定ブロックサイズの小さいLRUキャッシュ。モジュールドキュメント
+/// 「小さな読みの集積を抑えるブロックキャッシュ」参照。`blocks`の末尾ほど
+/// 最近使ったブロック、先頭が最も使われていない(あふれたらそこを捨てる)。
+struct ReadCache {
+    blocks: Vec<CacheBlock>,
+}
+
+impl ReadCache {
+    fn new() -> Self {
+        Self { blocks: Vec::new() }
+    }
+
+    /// キャッシュ済みなら、そのブロックを最近使った扱いにして中身を返す。
+    fn get(&mut self, block_index: u64) -> Option<&[u8]> {
+        let position = self.blocks.iter().position(|b| b.block_index == block_index)?;
+        let block = self.blocks.remove(position);
+        self.blocks.push(block);
+        Some(&self.blocks.last().expect("just pushed").data)
+    }
+
+    /// 新しいブロックを登録する。上限を超えたら最も使われていないもの
+    /// (先頭)を1つ捨てる。
+    fn insert(&mut self, block_index: u64, data: Vec<u8>) {
+        if self.blocks.len() >= READ_CACHE_MAX_BLOCKS {
+            self.blocks.remove(0);
+        }
+        self.blocks.push(CacheBlock { block_index, data });
+    }
+}
+
 /// 確定した一時ファイルへの読み出し専用アクセス。ドロップ時にプールへ
 /// 添字を返す(このプロセス内で、次の`create_temp`が再利用できるようにする。
 /// モジュールドキュメントの「なぜプールが要るか」参照)。
@@ -246,14 +309,37 @@ struct OpfsTempReader {
     pool: Rc<RefCell<Pool>>,
     index: usize,
     len: u64,
-    /// `as_bytes()`は一度読んだら使い回す(呼ばれるのは`spill.rs`が最初に
-    /// 1回だけの想定だが、念のためキャッシュしておく)。
-    cached_bytes: RefCell<Option<Arc<Vec<u8>>>>,
+    /// 範囲読み(`read_at`)の小さいブロックキャッシュ。モジュールドキュメント
+    /// 「小さな読みの集積を抑えるブロックキャッシュ」参照。
+    cache: RefCell<ReadCache>,
 }
 
 impl Drop for OpfsTempReader {
     fn drop(&mut self) {
         self.pool.borrow_mut().free.push(self.index);
+    }
+}
+
+impl OpfsTempReader {
+    /// OPFSから`[start, start + buf.len())`をちょうど読み切る
+    /// (1回の`read()`で全バイトを読み切れる保証は仕様上無いため、
+    /// 読み切るまで繰り返す)。
+    fn read_opfs_exact(&self, start: u64, buf: &mut [u8]) -> Result<()> {
+        let pool = self.pool.borrow();
+        let handle = &pool.handles[self.index];
+        let mut read_total = 0usize;
+        while read_total < buf.len() {
+            let n = handle
+                .read_with_u8_array_and_options(&mut buf[read_total..], &at(start + read_total as u64))
+                .map_err(|e| js_copc_err("OPFS scratch read", e))?;
+            if n <= 0.0 {
+                return Err(Error::InvalidData(
+                    "OPFS scratchファイルの読み出しが途中で0バイトを返した".into(),
+                ));
+            }
+            read_total += n as usize;
+        }
+        Ok(())
     }
 }
 
@@ -266,35 +352,55 @@ impl ScratchReader for OpfsTempReader {
         }))
     }
 
-    fn as_bytes(&self) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>> {
-        if let Some(cached) = self.cached_bytes.borrow().as_ref() {
-            return Ok(cached.clone());
+    /// `offset`から`buf.len()`バイトを範囲読みする。ファイル全体を一度も
+    /// メモリに載せない(モジュールドキュメント「範囲読みについて」参照)。
+    /// `READ_CACHE_BLOCK_BYTES`単位のブロックキャッシュを介するため、
+    /// 実際にOPFSへ`read`を発行する回数はキャッシュのヒット率に応じて
+    /// 減る。キャッシュ自体のメモリ使用量は
+    /// `READ_CACHE_BLOCK_BYTES * READ_CACHE_MAX_BLOCKS`(4MiB)で固定。
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| Error::InvalidData("OPFS scratch read offset overflow".into()))?;
+        if end > self.len {
+            return Err(Error::InvalidData(format!(
+                "OPFS scratch read range [{offset}, {end}) exceeds file length {}",
+                self.len
+            )));
         }
-        let mut buf = vec![0u8; self.len as usize];
-        {
-            let pool = self.pool.borrow();
-            let handle = &pool.handles[self.index];
-            let mut read_total = 0usize;
-            // 1回のread()呼び出しで全バイトを読み切れる保証は仕様上無いため
-            // (実装によっては1回のバッファ長に上限がありうる)、読み切るまで
-            // 繰り返す。既存の`FileRangeReader`(file_reader.rs)と違い、ここは
-            // 「範囲だけ読む」のではなく意図的に全体を読む
-            // (モジュールドキュメントの「as_bytesについて」参照)。
-            while read_total < buf.len() {
-                let n = handle
-                    .read_with_u8_array_and_options(&mut buf[read_total..], &at(read_total as u64))
-                    .map_err(|e| js_copc_err("OPFS scratch read (as_bytes)", e))?;
-                if n <= 0.0 {
-                    return Err(Error::InvalidData(
-                        "OPFS scratchファイルの読み出しが途中で0バイトを返した".into(),
-                    ));
-                }
-                read_total += n as usize;
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            let pos = offset + filled as u64;
+            let block_index = pos / READ_CACHE_BLOCK_BYTES;
+            let block_start = block_index * READ_CACHE_BLOCK_BYTES;
+            let block_end = (block_start + READ_CACHE_BLOCK_BYTES).min(self.len);
+            let block_len = (block_end - block_start) as usize;
+            let in_block_offset = (pos - block_start) as usize;
+            let want = (buf.len() - filled).min(block_len - in_block_offset);
+
+            let mut cache = self.cache.borrow_mut();
+            if let Some(cached) = cache.get(block_index) {
+                buf[filled..filled + want]
+                    .copy_from_slice(&cached[in_block_offset..in_block_offset + want]);
+                filled += want;
+                continue;
             }
+            drop(cache);
+
+            // キャッシュミス: ブロック全体をOPFSから読み、必要な部分を
+            // コピーしてからキャッシュへ登録する。
+            let mut block_buf = vec![0u8; block_len];
+            self.read_opfs_exact(block_start, &mut block_buf)?;
+            buf[filled..filled + want]
+                .copy_from_slice(&block_buf[in_block_offset..in_block_offset + want]);
+            filled += want;
+            self.cache.borrow_mut().insert(block_index, block_buf);
         }
-        let arc: Arc<Vec<u8>> = Arc::new(buf);
-        *self.cached_bytes.borrow_mut() = Some(arc.clone());
-        Ok(arc)
+        Ok(())
+    }
+
+    fn len(&self) -> Result<u64> {
+        Ok(self.len)
     }
 }
 
@@ -426,7 +532,58 @@ fn resolve_seek(
 // 埋め込まれた`Vec<usize>`の`push`/`pop`だけで完結する自明な操作であり、
 // 独立してテストするほどの複雑さは無いと判断した。
 //
+// `ReadCache`(範囲読みのブロックキャッシュ)はOPFS自体に触れない純粋な
+// Rustのロジック(LRUの追い出し)なので、ネイティブで単体テストできる
+// (下記`#[cfg(test)] mod tests`)。
+//
 // 「メモリ上のScratchFsを使った変換の統合テスト」は
 // `crates/pcv-wasm/tests/memory_scratch_conversion.rs`にある(ネイティブで
 // 実行できる。`copc_writer::MemoryScratchFs`を使い、このモジュールが
 // 使うのと同じ`SpillWriter`→`write_copc_from_spill_with_fs`の経路を検証する)。
+// 「一度にメモリに持つ一時ファイルの量が点数に比例しないこと」自体の回帰
+// テストは`vendor/copc-writer/tests/scratch_read_is_bounded.rs`にある
+// (`ScratchReader::read_at`の呼び出し単位を直接計測するため、OPFSより
+// 汎用的な`MemoryScratchFs`越しに検証する)。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_cache_returns_cached_block_on_hit() {
+        let mut cache = ReadCache::new();
+        cache.insert(3, vec![1, 2, 3]);
+        assert_eq!(cache.get(3), Some(&[1, 2, 3][..]));
+        assert_eq!(cache.get(5), None, "未登録のブロックはNone");
+    }
+
+    #[test]
+    fn read_cache_evicts_least_recently_used_block_when_full() {
+        let mut cache = ReadCache::new();
+        for i in 0..READ_CACHE_MAX_BLOCKS as u64 {
+            cache.insert(i, vec![i as u8]);
+        }
+        // ブロック0を触って「最近使った」扱いにする。
+        assert!(cache.get(0).is_some());
+        // 新しいブロックを1つ足すと、上限を超えるので最も使われていない
+        // (直前に触っていない)ブロック1が追い出されるはず(0は直前に
+        // 触ったので残る)。
+        cache.insert(READ_CACHE_MAX_BLOCKS as u64, vec![0xff]);
+        assert!(cache.get(0).is_some(), "直前に使ったブロックは残るはず");
+        assert!(cache.get(1).is_none(), "最も使われていなかったブロックは追い出されるはず");
+        assert_eq!(cache.blocks.len(), READ_CACHE_MAX_BLOCKS, "上限を超えないはず");
+    }
+
+    #[test]
+    fn read_cache_never_exceeds_max_blocks_regardless_of_insert_count() {
+        let mut cache = ReadCache::new();
+        // 上限の100倍挿入しても、保持するブロック数は上限のまま
+        // (点数・ファイルサイズが増えてもキャッシュのメモリ使用量が
+        // 増え続けないことの確認)。
+        for i in 0..(READ_CACHE_MAX_BLOCKS as u64 * 100) {
+            cache.insert(i, vec![0u8; READ_CACHE_BLOCK_BYTES as usize]);
+            assert!(cache.blocks.len() <= READ_CACHE_MAX_BLOCKS);
+        }
+        assert_eq!(cache.blocks.len(), READ_CACHE_MAX_BLOCKS);
+    }
+}

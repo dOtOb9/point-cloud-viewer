@@ -68,18 +68,37 @@ pub trait ScratchWriter: Write + Seek + Send + Sync {
 }
 
 /// 書き終えた一時ファイルへの読み出し専用アクセス。
+///
+/// M4-6bの実機不具合(`TaskSheets/M4-import-and-conversion.md`のM4-6b追記、
+/// `crates/pcv-wasm/src/opfs.rs`のモジュールドキュメント参照)で、かつて
+/// ここには`as_bytes() -> Result<Arc<dyn AsRef<[u8]>>>`
+/// (ファイル全体をランダムアクセス領域として返す)というメソッドがあった。
+/// ネイティブ実装はmmapを返すだけなので問題なかったが、OPFSには
+/// mmap相当のAPIが無いため、OPFS実装は`vec![0u8; len]`でファイル全体を
+/// 一括確保していた。一時ファイル(spill)のサイズは点数にほぼ比例する
+/// ため、数千万点の入力で確保が失敗し(wasm32は4GiB未満)、
+/// wasm全体が`unreachable`で停止する不具合になった。
+///
+/// **この不具合を受け、`as_bytes`を廃止し、代わりに範囲読み(`read_at`)を
+/// 足した。** 呼び出し側(`spill.rs`)は、必要な範囲(1レコード分、
+/// 数十バイト)だけを都度`read_at`で読む形に変えた。ネイティブ実装は
+/// 今までどおりmmap上のスライスをコピーするだけ(性能劣化なし)。OPFS実装は
+/// `FileSystemSyncAccessHandle::read`に`at`オプションを指定して呼ぶだけで、
+/// ファイル全体を一度もメモリに載せない。
 pub trait ScratchReader: Send + Sync {
     /// 指定バイト位置から読める新しい順次読み出しストリームを開く
     /// (同じ内容を複数回・複数オフセットから読む用途。LOD索引の構築が
     /// これを多用する)。
     fn open_at(&self, offset: u64) -> Result<Box<dyn Read + Send>>;
 
-    /// 内容全体を、ランダムアクセスできる連続領域として取得する
-    /// (spillのmmapランダムアクセス相当)。**ネイティブ実装はmmapした
-    /// ページをそのまま返す(コピーしない)。** ADR-0006が指摘した
-    /// 「ファイルに裏付けられたメモリは足りなくなればOSが捨てて読み直せる」
-    /// という性質(プライベートメモリを増やさない)を保つため。
-    fn as_bytes(&self) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>>;
+    /// `offset`から`buf.len()`バイトちょうどを読み込む(範囲読み。spillの
+    /// ランダムアクセス読み出しに使う)。ファイルの末尾を超える範囲を
+    /// 要求した場合はエラーを返す(`buf`の一部だけ埋める「短い読み」は
+    /// しない)。
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
+
+    /// 一時ファイルの総バイト数。
+    fn len(&self) -> Result<u64>;
 }
 
 // ===========================================================================
@@ -225,13 +244,41 @@ impl SharedBytesReader {
     }
 }
 
+impl SharedBytesReader {
+    /// `offset`から`buf.len()`バイトをコピーする。ネイティブ実装では
+    /// `self.bytes`がmmapしたページなので、このコピーはOSが既にページイン
+    /// 済みの(または必要時に初めてページインする)メモリからの小さな
+    /// `memcpy`に過ぎず、mmap全体を能動的に読み込むことにはならない。
+    fn read_at_impl(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        let data: &[u8] = self.bytes.as_ref().as_ref();
+        let start = usize::try_from(offset)
+            .map_err(|_| Error::InvalidInput("read offset exceeds usize range".into()))?;
+        let end = start
+            .checked_add(buf.len())
+            .ok_or_else(|| Error::InvalidData("read range overflow".into()))?;
+        let slice = data
+            .get(start..end)
+            .ok_or_else(|| Error::InvalidData("read range exceeds scratch file".into()))?;
+        buf.copy_from_slice(slice);
+        Ok(())
+    }
+
+    fn len_impl(&self) -> u64 {
+        self.bytes.as_ref().as_ref().len() as u64
+    }
+}
+
 impl ScratchReader for SharedBytesReader {
     fn open_at(&self, offset: u64) -> Result<Box<dyn Read + Send>> {
         self.open_at_impl(offset)
     }
 
-    fn as_bytes(&self) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>> {
-        Ok(Arc::clone(&self.bytes))
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        self.read_at_impl(offset, buf)
+    }
+
+    fn len(&self) -> Result<u64> {
+        Ok(self.len_impl())
     }
 }
 
@@ -429,8 +476,12 @@ mod native {
             self.shared.open_at(offset)
         }
 
-        fn as_bytes(&self) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>> {
-            self.shared.as_bytes()
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+            self.shared.read_at(offset, buf)
+        }
+
+        fn len(&self) -> Result<u64> {
+            self.shared.len()
         }
     }
 
@@ -553,8 +604,10 @@ mod tests {
         reader.open_at(6).unwrap().read_to_end(&mut tail).unwrap();
         assert_eq!(tail, b"world");
 
-        let bytes = reader.as_bytes().unwrap();
-        assert_eq!(bytes.as_ref().as_ref(), b"hello world");
+        assert_eq!(reader.len().unwrap(), 11);
+        let mut buf = [0u8; 5];
+        reader.read_at(6, &mut buf).unwrap();
+        assert_eq!(&buf, b"world");
     }
 
     #[test]
@@ -590,10 +643,12 @@ mod tests {
         writer.write_all(b"!").unwrap();
 
         let reader = writer.finish_temp().unwrap();
-        let bytes = reader.as_bytes().unwrap();
-        let data: &[u8] = bytes.as_ref().as_ref();
-        assert_eq!(&data[4..9], b"PATCH");
-        assert_eq!(data.len(), 17);
-        assert_eq!(data[16], b'!');
+        assert_eq!(reader.len().unwrap(), 17);
+        let mut patch = [0u8; 5];
+        reader.read_at(4, &mut patch).unwrap();
+        assert_eq!(&patch, b"PATCH");
+        let mut tail = [0u8; 1];
+        reader.read_at(16, &mut tail).unwrap();
+        assert_eq!(tail[0], b'!');
     }
 }
