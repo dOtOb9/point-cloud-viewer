@@ -52,7 +52,8 @@ pub trait ScratchWriter: Write + Seek + Send + Sync {
 
 pub trait ScratchReader: Send + Sync {
     fn open_at(&self, offset: u64) -> Result<Box<dyn Read + Send>>;
-    fn as_bytes(&self) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>>;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
+    fn len(&self) -> Result<u64>;
 }
 ```
 
@@ -61,10 +62,13 @@ pub trait ScratchReader: Send + Sync {
 - `ScratchWriter`(`Write + Seek`)が、今までの`NamedTempFile`/`BufWriter<File>`
   を置き換える。書き終えたら`finish_temp`(一時ファイル→読み出し用ハンドルへ)
   か`finish_output`(出力ファイル→最終確定)のどちらかを呼ぶ
-- `ScratchReader::as_bytes`が、今までの`unsafe { Mmap::map(&file) }`を
+- `ScratchReader::read_at`(範囲読み)が、今までの`unsafe { Mmap::map(&file) }`を
   置き換える(spillのランダムアクセス読み出し)。`open_at`が、今までの
   「同じ一時ファイルを`File::open`で開き直して`seek`する」を置き換える
-  (LOD索引の読み出し)
+  (LOD索引の読み出し)。**この`read_at`は当初`as_bytes`
+  (`Result<Arc<dyn AsRef<[u8]>>>`、ファイル全体をランダムアクセス領域として
+  返す)という形だったが、M4-6の実機不具合を受けて範囲読みに変えた
+  (下記「M4-6 追記」参照)
 
 ### 3つの実装
 
@@ -147,6 +151,143 @@ Web版(`crates/pcv-wasm`)は、点の読み込みをTypeScript側からバッチ
 OS依存のAPIを一切使わない(`Vec<u8>`・`HashMap`・`Mutex`のみ)ため、
 実行時にも動く見込みがあるパスを`native-fs`頼みのパスから切り離せたこと
 にある。詳細はタスクシートのM4-6a節5節を参照。
+
+## M4-6 追記: 実機不具合「数千万点でunreachable」とas_bytesの廃止(2026-10-01〜02、Sonnet)
+
+### 症状(所有者の実機、Chrome、数千万点の入力)
+
+```
+変換に失敗しました: unreachable
+```
+
+### 原因
+
+`crates/pcv-wasm/src/opfs.rs`の`OpfsTempReader::as_bytes`(当時)は、
+一時ファイル(spill。1点あたり50〜60バイト)の中身を`vec![0u8; len]`へ
+**丸ごと**読み込んでいた。`ScratchReader::as_bytes`はM4-6aの時点で
+「`copc-writer`本体が元々mmapでファイル全体を1つのスライスとして扱う
+作りだったので、その形を引き継いだ」API(上記「3つのトレイト」節の
+コメント参照)で、ネイティブ実装(`NativeScratchFs`、mmap)はOSがページ
+単位で必要な部分だけを載せるため問題にならなかったが、**OPFSには
+mmap相当のAPIが無い**ため、OPFS実装はこの「ファイル全体を1つのスライス
+として扱う」契約を、丸ごとメモリへ読み込むことでしか満たせなかった。
+
+数千万点の入力ではspillが数GBになり、wasm32-unknown-unknownのアドレス
+空間(実務上4GiB未満)を超えて`vec![0u8; len]`の確保が失敗し、
+`std::alloc::handle_alloc_error`→`unreachable`でwasmごと即座に停止した
+(メモリ確保の失敗はRustのpanic機構を通らないため、`init_panic_hook`が
+あってもメッセージが出なかった)。
+
+これはM4-1で退けた「メモリが点数に比例する」問題が、Web版で形を変えて
+戻ってきたものである。
+
+### M4-6aの調査が見落としていたこと
+
+M4-6aは「改修前後で出力ファイルがバイト同一である」ことを検証基準にし、
+これは満たされていた(アルゴリズム本体は変えていないため)。**しかし
+出力の一致は、読み込み中にどれだけのメモリを同時に保持するかについては
+何も保証しない。** `as_bytes`というAPI自体が「ファイル全体をメモリ上の
+1つのスライスとして返す」契約である以上、ネイティブ(mmap)なら無害でも、
+mmap相当の手段を持たない実装(OPFS)に対しては原理的に「全体を読み込む」
+以外の実装のしようがなかった。M4-6aのスパイクは`MemoryScratchFs`
+(`Vec<u8>`だけの実装。これも全体保持が前提)でしか動作確認しておらず、
+OPFS実装はM4-6bで初めて書かれたため、この構造的な問題はM4-6bの時点でも
+見過ごされた。**「出力が一致する」ことと「メモリの使い方が妥当である」
+ことは別の軸であり、前者だけを確認基準にしたことが、この不具合を
+最後まで見つけられなかった理由である。**
+
+### 直したこと
+
+1. **`ScratchReader`から`as_bytes`を廃止し、`read_at(offset, buf)`
+   (範囲読み)と`len()`を追加した。** `spill.rs`(`as_bytes`の唯一の
+   呼び出し元だった)は、`xyz_at`が24バイト(x/y/z)、`record_into`が
+   レコード幅ぶんだけを、その都度`read_at`で読む形に変えた。
+   `record_into`用に小さな再利用バッファ(`RefCell<Vec<u8>>`)を1つ
+   `SpillReader`に持たせ、呼び出しのたびにアロケートしないようにした。
+   `lod.rs`は元々`open_at`(逐次読み出し)しか使っておらず、無変更
+2. **ネイティブ実装(`SharedBytesReader`、`NativeScratchFs`/
+   `MemoryScratchFs`が共有)は、`read_at`をmmap(またはVec)上の
+   スライスを範囲ぶんだけコピーするだけで実装した。** mmapは今までどおり
+   OSがページ管理するので、性能特性は変えていない。ネイティブの出力が
+   バイト単位で変わらないことは、既存の回帰テスト
+   (`crates/pcv-convert/tests/streaming_conversion.rs`の
+   `native_output_hash_matches_recorded_value`)で確認した(引き続き成功)
+3. **OPFS実装(`crates/pcv-wasm/src/opfs.rs`)は、`read_at`を
+   `FileSystemSyncAccessHandle::read`に`at`オプションを渡して必要な範囲
+   だけ読む形にした。ファイル全体を一度もメモリに載せない。**
+   頻繁な小さい読み(1レコード=数十バイトごとのJS往復)を抑えるため、
+   64KiBブロック×最大64個(合計4MiB固定。点数・ファイルサイズによらず
+   一定)のLRUブロックキャッシュ(`ReadCache`)を追加した
+4. **`init_panic_hook`が変換用のWorkerで呼ばれているかを確認した。**
+   `#[wasm_bindgen(start)]`により、`init()`解決時にwasm-bindgenの生成
+   コードが既に自動で1回呼んでいた(`src/datasource/copc.worker.ts`の
+   `ensureWasmReady`は変換・COPC読込どちらの前にも`init()`を待つため)。
+   この自動呼び出しは実装を追う上で見えにくいため、`ensureWasmReady`で
+   明示的にもう一度呼ぶようにした(副作用なし)
+5. **メモリ確保の失敗を検知する`#[global_allocator]`を追加した**
+   (`crates/pcv-wasm/src/alloc_guard.rs`)。`std::alloc::System`を薄く
+   ラップし、確保失敗(null)を検知した瞬間に`web_sys::console::error_1`で
+   メッセージを出す。メモリ確保の失敗はRustのpanic機構を通らないため、
+   `init_panic_hook`だけでは捕まえられない(`#[alloc_error_handler]`は
+   nightly限定の不安定機能で使えない)。これにより、同種の不具合が
+   将来再発しても「メモリ不足を疑う」ための手がかりがconsoleに残る
+
+### 新規テスト
+
+`vendor/copc-writer/tests/scratch_read_is_bounded.rs`(ネイティブで実行)。
+`MemoryScratchFs`/`ScratchReader`を薄くラップし、`read_at`・`open_at`
+(`Read::read`)に渡された1回あたりの読み取りバッファの最大サイズを記録する
+トラッキング層を用意した。200万点の合成入力を
+`write_copc_from_spill_with_fs`で最後まで変換し、記録された最大値が
+固定の上限(2MiB)に収まる(= 点数に比例しない)ことを確認する。
+`as_bytes`相当の全体読み込みが復活すれば、200万点では数千万バイト規模に
+なり、このテストが落ちる。
+
+### 確認したコマンドと結果
+
+```
+$ cargo test --manifest-path vendor/copc-writer/Cargo.toml
+20 passed; 0 failed(既存19件+新規の scratch_read_is_bounded 1件)
+
+$ cargo test --workspace
+native_output_hash_matches_recorded_valueを含め、全テスト成功
+(本文書の「改修前後で出力が変わっていないことの確認」節の回帰テスト)
+
+$ cargo test --manifest-path crates/pcv-wasm/Cargo.toml
+ユニット15件(新規のReadCache単体テスト3件含む)+統合2件、すべて成功
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+警告・エラー無し
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --all-targets -p pcv-wasm -- -D warnings
+pcv-wasm自身は警告0件(wasm32ターゲットでも確認)
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+成功
+
+$ cargo fmt --all -- --check / cargo fmt --manifest-path vendor/copc-writer/Cargo.toml -- --check /
+  cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check
+いずれも差分無し
+
+$ npm run build:wasm / typecheck / lint / test / build
+いずれも成功(testは27ファイル231件)
+```
+
+### 所有者が確かめる手順
+
+**ブラウザでの確認はできない環境で直したため、以下は所有者に確認して
+もらう必要がある。**
+
+1. **数千万点のLAS/LAZをWeb版で変換する**(今回の不具合の再現条件)。
+   「変換に失敗しました: unreachable」が出ずに変換が完了することを確認する
+2. もし依然として`unreachable`が出る場合は、devtoolsのconsoleに
+   「pcv-wasm: メモリの確保に失敗しました。入力が大きすぎて、ブラウザの
+   メモリ上限(wasm32は最大4GiB)を超えた可能性があります。」という
+   メッセージが出ているか確認する(出ていれば、別の箇所でまだ点数に
+   比例する確保が残っている可能性がある。出ていなければ、
+   メモリ以外の原因を疑う)
+3. 変換が完了したCOPCファイルが、今までどおり正しく表示されることを確認する
+   (M4-6b節の「所有者が確かめる手順」と同じ)
 
 ## いつ削除するか
 
