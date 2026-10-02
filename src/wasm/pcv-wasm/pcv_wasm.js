@@ -186,6 +186,15 @@ if (Symbol.dispose) WasmCopcFile.prototype[Symbol.dispose] = WasmCopcFile.protot
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
  * 追えるようにするため。標準の`std::panic`フックをそのまま`console.error`に
  * 繋ぐだけで、専用クレート(`console_error_panic_hook`)は増やしていない)。
+ *
+ * `#[wasm_bindgen(start)]`により、`init()`が解決した時点でwasm-bindgenの
+ * 生成コードが自動的に1回呼ぶ(`src/datasource/copc.worker.ts`の
+ * `ensureWasmReady`も、実装を追いやすくするため明示的にもう一度呼んでいる。
+ * 副作用はない)。
+ *
+ * **メモリ確保の失敗はこのpanicフックを経由しない**(`std::alloc`は
+ * 確保失敗時にpanicせず`handle_alloc_error`→`unreachable`で即座にトラップ
+ * するため)。そちらは`alloc_guard.rs`の`#[global_allocator]`が別途検知する。
  */
 export function init_panic_hook() {
     wasm.init_panic_hook();
