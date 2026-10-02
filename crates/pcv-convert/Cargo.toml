@@ -16,7 +16,14 @@ description = "M4-1のスパイク実装(素朴な全点メモリ実装)と、M4
 # 同じcopc-coreの型をそのまま流用する。書式の定義を2箇所で持たないため。
 copc-core = "0.9.0"
 # 入力LAS/LAZの読み込みと、出力点の生バイト列(raw::Point)へのシリアライズに使う。
-las = { version = "0.10", features = ["laz"] }
+# M4-7(TaskSheets/M4-import-and-conversion.md): `laz-parallel`フィーチャは`las`クレートが
+# 既に持っている並列LAZ展開(`laz`クレートの`parallel`フィーチャ、rayon使用)への入口で、
+# 自前でチャンク分担のコードを書く前に「あれば使う」の判断で採用した。有効にするだけで
+# `las::Reader::new`が内部で`laz::ParLasZipDecompressor`(チャンクテーブル1本をrayonの
+# スレッドプールで分担して展開する。チャンク間に依存が無いことはLAZの仕様上保証されている)
+# に切り替わる。詳細な実測はADR-0007の追記に倣って`examples/read_stage_bench.rs`、
+# 判断の根拠はTaskSheets/M4-import-and-conversion.mdのM4-7参照。
+las = { version = "0.10", features = ["laz", "laz-parallel"] }
 # LAZチャンク圧縮そのもの(可変長チャンクモード)。COPCの1ノード=1チャンクに対応させる。
 laz = "0.12"
 byteorder = "1"
