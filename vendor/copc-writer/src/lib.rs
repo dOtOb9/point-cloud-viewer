@@ -31,9 +31,9 @@ pub use source::{ColumnBatchSource, CopcPointFields, CopcPointSource};
 pub use spill::{SpillReader, SpillWriter};
 // M4-6b: `write_copc_from_spill_with_fs`は`&dyn ScratchFs`を直接渡す入口。
 // `native-fs`フィーチャの有無に関わらず常にビルドされる(`writer.rs`のドキュメント参照)。
-pub use writer::{write_copc_from_spill_with_fs, CopcWriterParams};
 #[cfg(feature = "native-fs")]
 pub use writer::{
     convert_las_to_copc_streaming, convert_las_to_copc_streaming_with_crs_wkt_override,
     write_source, write_source_with_cancel, write_streaming_with_cancel,
 };
+pub use writer::{write_copc_from_spill_with_fs, CopcWriterParams};
