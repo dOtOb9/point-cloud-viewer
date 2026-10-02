@@ -96,3 +96,12 @@ optional = true
 
 [dev-dependencies.criterion]
 version = "0.8"
+
+# M4-6: `autotests = false`(上記、crates.io公開時の自動生成設定)のため、
+# `tests/`配下のファイルは明示的に[[test]]で宣言しないと`cargo test`が
+# 見つけてくれない。M4-6のOPFS不具合(一時ファイルを丸ごとメモリへ読み込む
+# バグ)の回帰テスト。`vendor/copc-writer/tests/scratch_read_is_bounded.rs`
+# 参照。
+[[test]]
+name = "scratch_read_is_bounded"
+path = "tests/scratch_read_is_bounded.rs"
