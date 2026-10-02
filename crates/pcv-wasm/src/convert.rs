@@ -74,11 +74,68 @@
 //! `crates/pcv-wasm/tests/buffered_file_reader_reduces_read_calls.rs`参照
 //! (`FileRangeReader`と同じ「呼ばれるたびに重い」形の疑似リーダーで、
 //! バッファの有無による下位`read`呼び出し回数の差を確認する)。
+//!
+//! # M4-7: LAZ展開の並列化(複数Worker)
+//!
+//! デスクトップ・Android(`crates/pcv-convert/src/streaming.rs`)は`las`クレートの
+//! `laz-parallel`フィーチャ(`rayon`使用)でLAZ展開をスレッドプールに分担させた。
+//! **Web版では`rayon`(スレッド)が使えない。** `rayon`はOSスレッドか
+//! `wasm32`の`atomics`(`SharedArrayBuffer`)のどちらかを要求するが、GitHub Pages
+//! は静的ホスティングでCOOP/COEPヘッダーを設定できないため`crossOriginIsolated`に
+//! ならず、`SharedArrayBuffer`は使えない(`TaskSheets/ADR-0012-web-worker-sync-io.md`・
+//! `TaskSheets/ADR-0006-conversion-strategy.md`のWeb版の節が既に確認済みの制約)。
+//!
+//! 代わりに、**独立したWeb Workerを複数立ててチャンク範囲を分担する**
+//! (`src/datasource/laz-decompress.worker.ts`、新設)。Workerはメモリを共有しない
+//! JSのグローバルなので、`SharedArrayBuffer`なしで真の並列実行になる。
+//!
+//! - 各展開Workerは、変換対象の`File`(構造化クローンで複製。`File`は不変な
+//!   スナップショットなので複数Workerで同時に読んでも競合しない)と、
+//!   自分が担当する点インデックスの範囲`[start_index, start_index+count)`を
+//!   受け取る
+//! - 展開Workerは**この変換専用の`WasmConverter`とは別の、独立した
+//!   `las::Reader`**を自分の`File`に対して開く(`decompress_laz_range`)。
+//!   `las::Reader::seek`でチャンクテーブルを辿って`start_index`近くまで
+//!   直接ジャンプしてから(全点を先頭から読み直さない)、`count`点を
+//!   読み進める
+//! - 読んだ点は`copc_core::serialize_le`で、spillと同じ固定長バイト列に
+//!   シリアライズしてから返す。**`copc_core`は`vendor/copc-writer`とは別の
+//!   公開クレートで、どちらの担当エージェントも自由に使ってよい共通の
+//!   シリアライズ形式を持っている**ため、新しい通信フォーマットを
+//!   発明する必要が無かった
+//! - 変換用Worker(メインの`WasmConverter`を持つ側)は、展開Workerから届いた
+//!   バイト列を受け取るたびに`push_serialized_records`で`deserialize_le`→
+//!   `SpillWriter::push`する。**spillへの書き込みは今までどおり1本の
+//!   `WasmConverter`だけが行う**(`SpillWriter`はWorkerをまたいで共有できない
+//!   ため、これ以外の設計は無い)
+//!
+//! ## 点の順序について
+//!
+//! `src/datasource/copc.worker.ts`の`runParallelReadPhase`は、担当範囲
+//! (点インデックスの昇順)の順で結果を取り出して`pushSerializedRecords`に
+//! 渡す(到着順ではない。全Workerは`postMessage`直後に並行して動き始める
+//! ため、取り出す順序を決め打ちにしても並列度は落ちない)。そのため
+//! 実際にはWeb版でも点の順序は保たれるが、**順序の保存は本質的な要件では
+//! ない**: `SpillWriter::push`に渡す順序が変わっても、`copc-writer`の検証
+//! (`validate_spill_record`)・統計(`PointStats`)はどちらも1点ごとに閉じた
+//! 計算(範囲チェック・min/max・ヒストグラム)で、順序に依存しないことを
+//! ソースで確認済み(vendor/copc-writerは読むだけで変更していない)。
+//! そのためoctree構築の結果(最終的な点の集合・空間分割)にも影響しない。
+//!
+//! ## キャンセルと進捗
+//!
+//! キャンセルは、変換用Workerが展開Worker全員に対して`Worker.terminate()`を
+//! 呼ぶ(TypeScript側、`src/datasource/copc.worker.ts`参照)。`terminate()`は
+//! Workerの実行位置に関わらず即座に止まるため、従来の「バッチの合間に
+//! `postMessage`を処理させる」方式より反応は悪くならない。進捗は、各展開
+//! Workerが一定点数ごとに進捗を`postMessage`し、変換用Workerが全Worker分を
+//! 合算してからUIへ転送する(`src/datasource/copc.worker.ts`の
+//! `handleConvertStartParallel`参照)。
 
 use std::io::BufReader;
 use std::path::Path;
 
-use copc_core::{LasPointRecord, NeverCancel, StreamingLayout};
+use copc_core::{deserialize_le, serialize_le, LasPointRecord, NeverCancel, StreamingLayout};
 use copc_writer::{write_copc_from_spill_with_fs, CopcWriterParams, SpillWriter};
 use js_sys::Array;
 use wasm_bindgen::prelude::*;
@@ -122,6 +179,11 @@ pub struct WasmConverter {
     output_name: String,
     metadata: copc_writer::CopcWriteMetadata,
     params: CopcWriterParams,
+    /// M4-7: 並列展開Workerが`copc_core::serialize_le`で作ったバイト列を
+    /// `push_serialized_records`で読み戻すのに使う。`feed`が内部で使う
+    /// レイアウトと同一であること(=同じファイルの同じヘッダーから導いた
+    /// 値であること)が前提(モジュールドキュメント「M4-7」参照)。
+    layout: StreamingLayout,
 }
 
 #[wasm_bindgen]
@@ -157,7 +219,7 @@ impl WasmConverter {
 
         let handles = handles_from_js_array(&scratch_handles)?;
         let fs = OpfsScratchFs::new(handles, output_handle);
-        let spill = SpillWriter::create(&fs, layout).map_err(to_js_error)?;
+        let spill = SpillWriter::create(&fs, layout.clone()).map_err(to_js_error)?;
 
         Ok(Self {
             reader,
@@ -169,7 +231,57 @@ impl WasmConverter {
             output_name,
             metadata,
             params: CopcWriterParams::new(max_points_per_node),
+            layout,
         })
+    }
+
+    /// 入力の総点数(ヘッダーの申告値)。TypeScript側
+    /// (`src/datasource/copc.worker.ts`)が、並列展開Workerへ割り振る
+    /// 点インデックスの範囲を決めるために使う(M4-7)。
+    #[wasm_bindgen(js_name = totalPoints)]
+    pub fn total_points(&self) -> f64 {
+        // JSのNumberはf64。2^53未満なら誤差無く表現できる(`bytesRead`等と同じ変換)。
+        self.total_points as f64
+    }
+
+    /// spillの1レコードあたりのバイト数。並列展開Workerが返すバイト列は
+    /// この幅ちょうどの倍数になるため、TypeScript側は
+    /// `buffer.byteLength / recordWidth()`で点数を逆算できる(M4-7、
+    /// 戻り値を別途やり取りする手間を省くため)。
+    #[wasm_bindgen(js_name = recordWidth)]
+    pub fn record_width(&self) -> u32 {
+        self.layout.record_width() as u32
+    }
+
+    /// M4-7: 並列展開Worker(`decompress_laz_range`)が返したバイト列を
+    /// spillへ書く。バイト列は`recordWidth()`ちょうどの倍数の長さを持つ、
+    /// `copc_core::serialize_le`形式のレコードが連続したものであること。
+    ///
+    /// 展開Worker側で独立に`StreamingLayout::from_las_header`を計算して
+    /// いるため(同じファイルの同じヘッダーから導くので値は一致するはずだが、
+    /// 保険として)、渡されたバイト列の長さが`recordWidth()`の倍数で
+    /// ないときはエラーにする(値が合わなければ即座に気づけるようにする。
+    /// 黙って余りを捨てない)。
+    #[wasm_bindgen(js_name = pushSerializedRecords)]
+    pub fn push_serialized_records(&mut self, bytes: Vec<u8>) -> Result<(), JsValue> {
+        let spill = self
+            .spill
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("pushSerializedRecordsはfinishの後には呼べない"))?;
+
+        let width = self.layout.record_width();
+        if !bytes.len().is_multiple_of(width) {
+            return Err(JsValue::from_str(&format!(
+                "展開Workerから受け取ったバイト列({} バイト)がrecordWidth({width})の倍数ではない",
+                bytes.len()
+            )));
+        }
+        for chunk in bytes.chunks_exact(width) {
+            let record = deserialize_le(chunk, &self.layout).map_err(to_js_error)?;
+            spill.push(&record).map_err(to_js_error)?;
+            self.points_fed += 1;
+        }
+        Ok(())
     }
 
     /// 最大`batch_size`点を読み、spillへ書く。呼び出し側
@@ -235,5 +347,176 @@ impl WasmConverter {
             point_count: self.points_fed,
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
+    }
+}
+
+/// M4-7: 展開専用Worker(`src/datasource/laz-decompress.worker.ts`)から呼ぶ。
+/// `file`の点インデックス`[start_index, start_index + count)`の範囲を展開し、
+/// `copc_core::serialize_le`形式(`WasmConverter::recordWidth()`ちょうどの
+/// 幅)の固定長レコードを連結したバイト列を返す。
+///
+/// `WasmConverter`とは完全に独立したインスタンス(自分専用の`las::Reader`)を
+/// 開く。Web Workerはメモリを共有しないグローバルなので、これは「1つの
+/// `File`を複数のWorkerがそれぞれ自分のReaderで読む」ことになるが、
+/// `File`は不変なスナップショットであり、読み出しは`FileRangeReader`経由の
+/// 範囲読み(`File.slice`)なので競合しない。
+///
+/// `start_index`が`total_points`以上、または末尾付近で`count`点に
+/// 満たない場合は、実際に読めた点数ぶんだけの(`recordWidth()`の倍数の)
+/// バイト列を返す(エラーにしない。呼び出し側がファイル全体を
+/// `hardwareConcurrency`等分するときに、割り切れない端数が出ても
+/// そのまま渡せるようにするため)。
+#[wasm_bindgen(js_name = decompressLazRange)]
+pub fn decompress_laz_range(file: File, start_index: f64, count: f64) -> Result<Vec<u8>, JsValue> {
+    let stats = Stats::new();
+    let source = FileRangeReader::new(file, stats);
+    let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
+    decompress_point_range(buffered, start_index as u64, count as u64).map_err(to_js_error)
+}
+
+/// `decompress_laz_range`の中身(wasm-bindgen/`web_sys::File`に依存しない
+/// 部分)。`R`を一般化してあるのは、ネイティブの`cargo test`から
+/// `Cursor<Vec<u8>>`や`std::fs::File`を渡してロジックを検証できるように
+/// するため(`web_sys::File`はネイティブのテストでは作れない。
+/// `range_math.rs`と同じ考え方)。
+fn decompress_point_range<R>(source: R, start_index: u64, count: u64) -> Result<Vec<u8>, String>
+where
+    R: std::io::Read + std::io::Seek + Send + Sync + 'static,
+{
+    let mut reader = las::Reader::new(source).map_err(|e| e.to_string())?;
+
+    // `StreamingLayout`はヘッダーだけから決まる値なので、`WasmConverter::new`が
+    // 同じファイルに対して計算するものと一致する(モジュールドキュメント
+    // 「M4-7」参照)。
+    let layout = StreamingLayout::from_las_header(reader.header());
+    let total_points = reader.header().number_of_points();
+    let mut point_data = las::PointDataBuilder::new()
+        .for_header(reader.header())
+        .build();
+
+    if start_index >= total_points {
+        return Ok(Vec::new());
+    }
+    reader.seek(start_index).map_err(|e| e.to_string())?;
+
+    let remaining = total_points - start_index;
+    let to_read = remaining.min(count);
+    let record_width = layout.record_width();
+    let mut out = Vec::with_capacity(
+        usize::try_from(to_read)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(record_width),
+    );
+    let mut scratch = vec![0u8; record_width];
+
+    let mut remaining_to_read = to_read;
+    while remaining_to_read > 0 {
+        let batch = remaining_to_read.min(READ_BATCH_SIZE);
+        let n = reader
+            .fill_points(batch, &mut point_data)
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            break; // ヘッダーの申告点数より実データが少なかった(壊れたファイル)。
+        }
+        for result in point_data.points() {
+            let point = result.map_err(|e| e.to_string())?;
+            let record = LasPointRecord::from_las_point(&point);
+            serialize_le(&record, &layout, &mut scratch).map_err(|e| e.to_string())?;
+            out.extend_from_slice(&scratch);
+        }
+        remaining_to_read -= n;
+    }
+
+    Ok(out)
+}
+
+/// `decompress_laz_range`が1回の`fill_points`で読むバッチサイズ。
+/// `WasmConverter::feed`とは別の経路(展開Worker)なので独自に持つが、
+/// 値自体はデスクトップ版(`crates/pcv-convert/src/streaming.rs`の
+/// `READ_BATCH_SIZE`)と揃えてある(進捗確認の頻度を同程度にするため)。
+/// Web版はこのバッチをまたいだ並列展開はしない(1つの展開Worker=1スレッド
+/// なので`rayon`のような1呼び出し内の並列化は無く、並列化は複数Worker
+/// そのものが担う。モジュールドキュメント「M4-7」参照)ため、デスクトップ版の
+/// ようにバッチサイズを大きくしてチャンクをまたがせる必要が無い。
+const READ_BATCH_SIZE: u64 = 64 * 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// 複数チャンク(LAZの既定チャンクサイズはおよそ5万点)にまたがる
+    /// 合成LAZを、メモリ上の`Vec<u8>`として作る。`las::Writer`はパス越しの
+    /// 拡張子で圧縮するかを決める(`Writer::from_path`)ため、ここでは
+    /// 一時ファイルを経由する(`tempfile`はdev-dependencyとして既にある)。
+    fn synthetic_multi_chunk_laz_bytes(point_count: u32) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.laz");
+
+        let mut builder = las::Builder::from((1, 4));
+        builder.point_format = las::point::Format::new(6).expect("format 6");
+        let header = builder.into_header().expect("valid header");
+        let mut writer = las::Writer::from_path(&path, header).expect("LAS writerの作成に失敗");
+        for i in 0..point_count {
+            let point = las::Point {
+                x: f64::from(i),
+                y: f64::from(i) * 2.0,
+                z: f64::from(i) * 3.0,
+                gps_time: Some(0.0), // point format 6はGPS時刻が必須
+                ..Default::default()
+            };
+            writer.write_point(point).expect("点の書き込みに失敗");
+        }
+        writer.close().expect("LAS writerのクローズに失敗");
+
+        std::fs::read(&path).expect("書いたLAZを読み戻せなかった")
+    }
+
+    /// `decompress_point_range`を複数の範囲に分けて呼び、結果を連結したものが、
+    /// 1回で全点を読んだ結果と**バイト単位で一致する**ことを確認する
+    /// (M4-7の受け入れ条件: 並列展開Workerが担当範囲を分担しても、
+    /// 各範囲を順番どおりに連結すれば逐次読みと同じ結果になること)。
+    /// `crates/pcv-convert/tests/parallel_laz_decompression.rs`(ネイティブの
+    /// `laz-parallel`、点の集合が一致することを確認)とは別の並列化経路
+    /// (Web、複数Worker)に対する、こちらは「連結結果がバイト単位で一致する」
+    /// というより強い確認になっている(範囲が重ならず連結順も決まっているため)。
+    #[test]
+    fn concatenated_ranges_match_a_single_full_range_read() {
+        const POINT_COUNT: u32 = 300_000; // 約6チャンク分
+        let bytes = synthetic_multi_chunk_laz_bytes(POINT_COUNT);
+
+        let full = decompress_point_range(Cursor::new(bytes.clone()), 0, u64::from(POINT_COUNT))
+            .expect("全体の展開に失敗した");
+
+        // 3つの範囲に分ける(チャンク境界と揃っていなくてよいことを確かめるため、
+        // わざと均等でない区切りにする)。
+        let boundaries = [0u64, 70_000, 180_000, u64::from(POINT_COUNT)];
+        let mut concatenated = Vec::new();
+        for window in boundaries.windows(2) {
+            let (start, end) = (window[0], window[1]);
+            let part = decompress_point_range(Cursor::new(bytes.clone()), start, end - start)
+                .unwrap_or_else(|e| panic!("範囲[{start}, {end})の展開に失敗した: {e}"));
+            concatenated.extend_from_slice(&part);
+        }
+
+        assert_eq!(
+            full.len(),
+            concatenated.len(),
+            "全体読みと分割読みの合計バイト数が一致しない"
+        );
+        assert_eq!(
+            full, concatenated,
+            "全体読みと、範囲に分けて連結した結果がバイト単位で一致しない"
+        );
+    }
+
+    #[test]
+    fn range_starting_past_total_points_returns_empty() {
+        const POINT_COUNT: u32 = 1_000;
+        let bytes = synthetic_multi_chunk_laz_bytes(POINT_COUNT);
+
+        let out = decompress_point_range(Cursor::new(bytes), 10_000, 100)
+            .expect("範囲外の開始でもエラーにしない設計のはず");
+        assert!(out.is_empty());
     }
 }
