@@ -47,3 +47,6 @@ Thumbs.db
 
 # vendor/ はビルド時に Cargo.lock を再生成する。patch 先の lock は使われないので追跡しない。
 vendor/*/Cargo.lock
+
+# mdBook のビルド出力。.github/workflows/pages.yml が毎回ビルドし直して配信する。
+docs/book/book/

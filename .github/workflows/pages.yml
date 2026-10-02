@@ -1,11 +1,20 @@
 name: Pages
 
-# Web版(pcv-core を wasm でビルドし、Worker内で動かす版)をGitHub Pagesへ公開する。
-# 既存の`ci.yml`とはあえて別ファイルにしてある。デスクトップ/Android向けの
-# `rust`/`build`ジョブ(windows-latest、Rustのwasm32ターゲットやwasm-bindgen-cliを
-# 前提にしていない)に、このワークフローの前提を混ぜて壊したくないため。
+# Web版(pcv-core を wasm でビルドし、Worker内で動かす版)と、設計読解用のmdBook
+# (docs/book/)をGitHub Pagesへ公開する。既存の`ci.yml`とはあえて別ファイルに
+# してある。デスクトップ/Android向けの`rust`/`build`ジョブ(windows-latest、
+# Rustのwasm32ターゲットやwasm-bindgen-cliを前提にしていない)に、このワーク
+# フローの前提を混ぜて壊したくないため。
 #
 # 設計の経緯・検討して採らなかった案は TaskSheets/ADR-0012-web-worker-sync-io.md を参照。
+#
+# mdBookはPagesビルド用ランナー(ubuntu-latest)に標準で入っていないため、
+# `peaceiris/actions-mdbook`で導入する(バイナリを自前で取得・展開するより、
+# バージョン指定とキャッシュをAction側に任せられるため)。アプリ(dist/、
+# `/point-cloud-viewer/`)と本(docs/book/book/、`/point-cloud-viewer/book/`)は
+# 同じPagesの成果物にまとめて公開する。本をdist/book/へコピーしてから
+# upload-pages-artifactする(アプリのビルドを壊さない。本の追加に失敗しても
+# このジョブ自体が落ちるため、本だけが欠けたまま公開されることはない)。
 #
 # 所有者がやること(1回だけ): GitHubのリポジトリ設定 → Pages → "Build and deployment"の
 # Sourceを"GitHub Actions"にする。これをしないと、このワークフローが成功しても
@@ -87,6 +96,20 @@ jobs:
         run: npm run build
         env:
           GITHUB_PAGES_BUILD: "true"
+
+      # 設計読解用のmdBook(docs/book/)。標準のmdBookだけでビルドできる
+      # (拡張は使っていない)。`mdbook build`の既定出力先は本のルート直下の
+      # `book/`(= docs/book/book/)。
+      - name: mdBookの導入
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "latest"
+      - name: 本をビルドする
+        run: mdbook build docs/book
+      - name: 本をアプリの成果物の book/ 以下に配置する
+        run: |
+          mkdir -p dist/book
+          cp -r docs/book/book/. dist/book/
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

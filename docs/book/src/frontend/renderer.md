@@ -92,7 +92,7 @@ NaN が出て画面が真っ黒・地面しか見えない、という不具合�
 
 ### EDL: `edl.ts`
 
-[EDL（Eye-Dome Lighting）](../glossary.md#edl)は、隣接ピクセルとの深度差から陰影を作り、
+[EDL（Eye-Dome Lighting）](../glossary.md#edleye-dome-lighting)は、隣接ピクセルとの深度差から陰影を作り、
 色を持たない点群でも凹凸構造を読めるようにする手法（Potree が採用）です。
 `sofi.copc.laz` のような RGB 無しデータを判読可能にする中心的な機能です。
 強さは `0.05` に固定されており、これは所有者が実機で確認して決めた値です
