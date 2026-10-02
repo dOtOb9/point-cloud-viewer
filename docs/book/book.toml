@@ -1,0 +1,11 @@
+[book]
+title = "点群ビューア 設計読解ガイド"
+authors = ["dOtOb9"]
+description = "point-cloud-viewer のシステム設計をまとめた、コードを読むための地図。"
+language = "ja"
+src = "src"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/dOtOb9/point-cloud-viewer"
