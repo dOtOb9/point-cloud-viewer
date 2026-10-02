@@ -9,11 +9,22 @@
 // 同期の`Read + Seek`の上で動く設計なので、この同期I/Oが使えるWorkerの中で
 // 動かす必要がある(`TaskSheets/ADR-0012-web-worker-sync-io.md`参照)。
 //
-// ## 並列化について
+// ## 並列化について(COPCの読込)
 //
 // このWorkerは1本だけ生成される(`web.ts`の`createRealWorker`)。Tauri版は
 // リーダーをプールして並列読み出ししている(ADR-0007)が、Web版はまず1本で
 // 動かす方針(ADR-0012)。複数Workerでの並列化は必要になってから検討する。
+// ※これはCOPCを**開く**(ノード読出し)側の話。**変換**(LAS/LAZ→COPC)の
+// LAZ展開は下記M4-7で複数Workerに分担させるようにした(開く側とは別の経路)。
+//
+// ## M4-7: 変換のLAZ展開を複数Workerへ分担させる
+//
+// `crates/pcv-wasm/src/convert.rs`のモジュールドキュメント参照。この
+// Worker(変換用)は、自分の`WasmConverter`(spillへの書き込みを1本で担う)は
+// そのまま持ちつつ、読み込み段階だけを`laz-decompress.worker.ts`の
+// インスタンス複数個に分担させる(`decompressWorkerCountFor`が1を返す
+// 小さい入力・低コア環境では、今までどおり`WasmConverter.feed`の
+// 逐次バッチループにフォールバックする)。
 
 import init, {
   init_panic_hook as initPanicHook,
@@ -22,6 +33,8 @@ import init, {
   WasmCopcFile,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
+import { decompressWorkerCountFor, pointRangesFor } from "./decompress-partition";
+import type { DecompressRequest, DecompressResponse } from "./laz-decompress.worker";
 import * as opfs from "./opfs";
 import type { OpenSource, WorkerRequest, WorkerResponse } from "./web-protocol";
 
@@ -46,6 +59,15 @@ let openFile: WasmCopcFile | null = null;
 // 「自分宛てのキャンセルか」を判定できる。
 let activeConvertId: number | null = null;
 let convertCancelRequested = false;
+
+// M4-7: 進行中の展開Workerとその`reject`(キャンセルされたときに、
+// 待っているPromiseをすぐ解決させるために呼ぶ)。`convertCancel`の
+// ハンドラから直接参照して即座に`terminate()`するため、
+// `runParallelReadPhase`の外(モジュールスコープ)に置く。
+let activeDecompressWorkers: Array<{ worker: Worker; reject: (err: Error) => void }> = [];
+
+/** キャンセルされたことを表す、`runParallelReadPhase`専用のエラー。 */
+class ParallelReadCancelledError extends Error {}
 
 function ensureWasmReady(): Promise<void> {
   // M4-6: `init_panic_hook`は`crates/pcv-wasm/src/lib.rs`で`#[wasm_bindgen(start)]`
@@ -72,7 +94,19 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
   // (`convertCancelRequested`をここで即座に立てる。ensureWasmReady()の
   // awaitやtryの外で処理することで、他の処理を待たされずに反映される)。
   if (request.type === "convertCancel") {
-    if (request.id === activeConvertId) convertCancelRequested = true;
+    if (request.id === activeConvertId) {
+      convertCancelRequested = true;
+      // M4-7: 並列読み込み中なら、展開Workerを今すぐ止める。`terminate()`は
+      // 実行位置に関わらず即座に止まるが、`Promise.all`で待っている側は
+      // `terminate()`されたWorkerからの応答を永遠に受け取れないため、
+      // 対応する`reject`も合わせて呼び、待ちを即座に解消する
+      // (`runParallelReadPhase`参照)。
+      for (const { worker, reject } of activeDecompressWorkers) {
+        worker.terminate();
+        reject(new ParallelReadCancelledError("キャンセルされました"));
+      }
+      activeDecompressWorkers = [];
+    }
     return;
   }
   try {
@@ -164,6 +198,90 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/** `laz-decompress.worker.ts`のインスタンスを1つ立てる。 */
+function spawnDecompressWorker(): Worker {
+  return new Worker(new URL("./laz-decompress.worker.ts", import.meta.url), { type: "module" });
+}
+
+/**
+ * M4-7: 読み込み段階を`workerCount`個の展開Workerに分担させる。
+ * `pointRangesFor`で点インデックスを均等に分け、各Workerへ`File`
+ * (構造化クローン。`File`は不変なスナップショットなので複数Workerで
+ * 同時に読んでも競合しない)と担当範囲を渡す。
+ *
+ * 進捗はWorker単位の粗い粒度になる(1つのWorkerが担当範囲を丸ごと展開
+ * し終えるたびに更新)。デスクトップ版(`feed`を4096点ごとに刻む)より
+ * 粒度は粗いが、キャンセルの即時性は`Worker.terminate()`により損なわれ
+ * ない(`handleRequest`の`convertCancel`ハンドラ参照)。
+ *
+ * 展開し終えたバイト列は、担当範囲の順(`entries`の並び、=点インデックスの
+ * 昇順)に`converter`へpushする(到着順ではない)。全Workerは`postMessage`
+ * 直後に並行して動き始めるため、これは並列度を落とさない
+ * (後続の範囲が先に終わっていても、そのWorker自身は待たされず計算を
+ * 続けられる。単に「結果を取り出す順序」を決めているだけ)。順序を
+ * 決め打ちにしたのは、spillへ書く点の並びを実行のたびに変えないため
+ * (`crates/pcv-wasm/src/convert.rs`のモジュールドキュメント「M4-7」の
+ * とおり、そもそも順序が変わってもoctree構築の結果には影響しないので
+ * 必須ではないが、デバッグ時の再現性のために揃えた)。
+ */
+async function runParallelReadPhase(
+  converter: WasmConverter,
+  file: File,
+  totalPoints: number,
+  workerCount: number,
+  onProgress: (pointsRead: number) => void,
+): Promise<"done" | "cancelled"> {
+  const ranges = pointRangesFor(totalPoints, workerCount);
+  const entries = ranges.map((range, index) => {
+    const worker = spawnDecompressWorker();
+    const promise = new Promise<ArrayBuffer>((resolve, reject) => {
+      activeDecompressWorkers.push({ worker, reject });
+      worker.onmessage = (event: MessageEvent<DecompressResponse>) => {
+        const response = event.data;
+        if (response.type === "decompress-done") {
+          resolve(response.bytes);
+        } else {
+          reject(new Error(response.message));
+        }
+      };
+      worker.onerror = (event) => {
+        reject(new Error(event.message || "展開Workerでエラーが発生しました"));
+      };
+      const request: DecompressRequest = {
+        id: index,
+        file,
+        startIndex: range.startIndex,
+        count: range.count,
+      };
+      worker.postMessage(request);
+    });
+    return { worker, range, promise };
+  });
+
+  let pointsCompleted = 0;
+  try {
+    for (const entry of entries) {
+      const bytes = await entry.promise;
+      pointsCompleted += entry.range.count;
+      onProgress(pointsCompleted);
+      if (bytes.byteLength > 0) {
+        converter.pushSerializedRecords(new Uint8Array(bytes));
+      }
+      // 大きいバイト列をpushし終えるたびに、キャンセル要求を反映できる
+      // 機会を与える(読み込み段階のキャンセルという既存の性質を保つ)。
+      await yieldToEventLoop();
+      if (convertCancelRequested) return "cancelled";
+    }
+    return "done";
+  } catch (err) {
+    if (err instanceof ParallelReadCancelledError) return "cancelled";
+    throw err;
+  } finally {
+    for (const entry of entries) entry.worker.terminate();
+    activeDecompressWorkers = [];
+  }
+}
+
 /** 元のファイル名から、ダウンロード時に提案する分かりやすい名前を作る。 */
 function suggestedFileNameFor(sourceFileName: string): string {
   const withoutExtension = sourceFileName.replace(/\.(laz|las)$/i, "");
@@ -226,26 +344,42 @@ async function runConversion(id: number, file: File, maxPointsPerNode: number): 
 
     converter = new WasmConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
 
-    // 読み込み段階: バッチごとにWorkerのイベントループへ制御を返し、その隙間で
-    // convertCancelを受け取れるようにする(モジュール冒頭のコメント参照)。
-    for (;;) {
-      if (convertCancelRequested) {
-        scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
-        return;
-      }
-      const result = converter.feed(CONVERT_BATCH_SIZE) as FeedResultDto;
+    // 読み込み段階: 入力が大きく、コアが複数あれば展開Workerに分担させる
+    // (M4-7)。それ以外は今までどおり`feed`の逐次バッチループ
+    // (小さい入力・単一コア環境ではWorker起動のオーバーヘッドの方が
+    // 大きいため。`decompressWorkerCountFor`のドキュメント参照)。
+    const totalPoints = converter.totalPoints();
+    const workerCount = decompressWorkerCountFor(totalPoints, {
+      hardwareConcurrency:
+        typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined,
+    });
+    const reportReadingProgress = (pointsRead: number) => {
       scope.postMessage({
         type: "convert-progress",
         id,
-        progress: {
-          phase: "reading",
-          points_read: result.points_read,
-          total_points: result.total_points,
-          elapsed_secs: elapsedSecs(),
-        },
+        progress: { phase: "reading", points_read: pointsRead, total_points: totalPoints, elapsed_secs: elapsedSecs() },
       });
-      if (result.done) break;
-      await yieldToEventLoop();
+    };
+
+    if (workerCount > 1) {
+      const outcome = await runParallelReadPhase(converter, file, totalPoints, workerCount, reportReadingProgress);
+      if (outcome === "cancelled") {
+        scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+        return;
+      }
+    } else {
+      // バッチごとにWorkerのイベントループへ制御を返し、その隙間で
+      // convertCancelを受け取れるようにする(モジュール冒頭のコメント参照)。
+      for (;;) {
+        if (convertCancelRequested) {
+          scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+          return;
+        }
+        const result = converter.feed(CONVERT_BATCH_SIZE) as FeedResultDto;
+        reportReadingProgress(result.points_read);
+        if (result.done) break;
+        await yieldToEventLoop();
+      }
     }
 
     if (convertCancelRequested) {
