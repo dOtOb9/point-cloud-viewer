@@ -15,7 +15,12 @@
 // リーダーをプールして並列読み出ししている(ADR-0007)が、Web版はまず1本で
 // 動かす方針(ADR-0012)。複数Workerでの並列化は必要になってから検討する。
 
-import init, { opfsScratchPoolSize, WasmConverter, WasmCopcFile } from "../wasm/pcv-wasm/pcv_wasm.js";
+import init, {
+  init_panic_hook as initPanicHook,
+  opfsScratchPoolSize,
+  WasmConverter,
+  WasmCopcFile,
+} from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import * as opfs from "./opfs";
 import type { OpenSource, WorkerRequest, WorkerResponse } from "./web-protocol";
@@ -43,7 +48,17 @@ let activeConvertId: number | null = null;
 let convertCancelRequested = false;
 
 function ensureWasmReady(): Promise<void> {
-  wasmReady ??= init().then(() => undefined);
+  // M4-6: `init_panic_hook`は`crates/pcv-wasm/src/lib.rs`で`#[wasm_bindgen(start)]`
+  // 付きで定義されているため、`init()`が解決した時点でwasm-bindgenの生成コード
+  // (`__wbindgen_start`)が自動的に1回呼んでいる(`src/wasm/pcv-wasm/pcv_wasm.js`の
+  // `__wbg_finalize_init`参照)。ここで明示的にもう一度呼ぶのは、「変換用の
+  // Workerでpanicフックが有効になっている」ことをこのファイルを読むだけで
+  // 確認できるようにするため(`#[wasm_bindgen(start)]`の自動呼び出しは、
+  // この.tsファイルを読んだだけでは分からない)。`set_hook`を複数回呼んでも
+  // 副作用はない(最後に設定したものに置き換わるだけ)ので安全。
+  wasmReady ??= init().then(() => {
+    initPanicHook();
+  });
   return wasmReady;
 }
 
