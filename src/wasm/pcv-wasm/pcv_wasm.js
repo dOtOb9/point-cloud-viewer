@@ -69,6 +69,47 @@ export class WasmConverter {
         WasmConverterFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
+    /**
+     * M4-7: 並列展開Worker(`decompress_laz_range`)が返したバイト列を
+     * spillへ書く。バイト列は`recordWidth()`ちょうどの倍数の長さを持つ、
+     * `copc_core::serialize_le`形式のレコードが連続したものであること。
+     *
+     * 展開Worker側で独立に`StreamingLayout::from_las_header`を計算して
+     * いるため(同じファイルの同じヘッダーから導くので値は一致するはずだが、
+     * 保険として)、渡されたバイト列の長さが`recordWidth()`の倍数で
+     * ないときはエラーにする(値が合わなければ即座に気づけるようにする。
+     * 黙って余りを捨てない)。
+     * @param {Uint8Array} bytes
+     */
+    pushSerializedRecords(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmconverter_pushSerializedRecords(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * spillの1レコードあたりのバイト数。並列展開Workerが返すバイト列は
+     * この幅ちょうどの倍数になるため、TypeScript側は
+     * `buffer.byteLength / recordWidth()`で点数を逆算できる(M4-7、
+     * 戻り値を別途やり取りする手間を省くため)。
+     * @returns {number}
+     */
+    recordWidth() {
+        const ret = wasm.wasmconverter_recordWidth(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * 入力の総点数(ヘッダーの申告値)。TypeScript側
+     * (`src/datasource/copc.worker.ts`)が、並列展開Workerへ割り振る
+     * 点インデックスの範囲を決めるために使う(M4-7)。
+     * @returns {number}
+     */
+    totalPoints() {
+        const ret = wasm.wasmconverter_totalPoints(this.__wbg_ptr);
+        return ret;
+    }
 }
 if (Symbol.dispose) WasmConverter.prototype[Symbol.dispose] = WasmConverter.prototype.free;
 
@@ -180,6 +221,38 @@ export class WasmCopcFile {
     }
 }
 if (Symbol.dispose) WasmCopcFile.prototype[Symbol.dispose] = WasmCopcFile.prototype.free;
+
+/**
+ * M4-7: 展開専用Worker(`src/datasource/laz-decompress.worker.ts`)から呼ぶ。
+ * `file`の点インデックス`[start_index, start_index + count)`の範囲を展開し、
+ * `copc_core::serialize_le`形式(`WasmConverter::recordWidth()`ちょうどの
+ * 幅)の固定長レコードを連結したバイト列を返す。
+ *
+ * `WasmConverter`とは完全に独立したインスタンス(自分専用の`las::Reader`)を
+ * 開く。Web Workerはメモリを共有しないグローバルなので、これは「1つの
+ * `File`を複数のWorkerがそれぞれ自分のReaderで読む」ことになるが、
+ * `File`は不変なスナップショットであり、読み出しは`FileRangeReader`経由の
+ * 範囲読み(`File.slice`)なので競合しない。
+ *
+ * `start_index`が`total_points`以上、または末尾付近で`count`点に
+ * 満たない場合は、実際に読めた点数ぶんだけの(`recordWidth()`の倍数の)
+ * バイト列を返す(エラーにしない。呼び出し側がファイル全体を
+ * `hardwareConcurrency`等分するときに、割り切れない端数が出ても
+ * そのまま渡せるようにするため)。
+ * @param {File} file
+ * @param {number} start_index
+ * @param {number} count
+ * @returns {Uint8Array}
+ */
+export function decompressLazRange(file, start_index, count) {
+    const ret = wasm.decompressLazRange(file, start_index, count);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
 
 /**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
@@ -445,6 +518,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {

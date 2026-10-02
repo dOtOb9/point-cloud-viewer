@@ -3,11 +3,15 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_wasmconverter_free: (a: number, b: number) => void;
 export const __wbg_wasmcopcfile_free: (a: number, b: number) => void;
+export const decompressLazRange: (a: any, b: number, c: number) => [number, number, number, number];
 export const init_panic_hook: () => void;
 export const opfsScratchPoolSize: () => number;
 export const wasmconverter_feed: (a: number, b: number) => [number, number, number];
 export const wasmconverter_finish: (a: number) => [number, number, number];
 export const wasmconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];
+export const wasmconverter_pushSerializedRecords: (a: number, b: number, c: number) => [number, number];
+export const wasmconverter_recordWidth: (a: number) => number;
+export const wasmconverter_totalPoints: (a: number) => number;
 export const wasmcopcfile_bytesRead: (a: number) => number;
 export const wasmcopcfile_hierarchy: (a: number) => [number, number, number];
 export const wasmcopcfile_info: (a: number) => [number, number, number];

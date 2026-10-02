@@ -31,6 +31,31 @@ export class WasmConverter {
      * ログ・デバッグ用途以上の意味は持たない)。
      */
     constructor(file: File, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+    /**
+     * M4-7: 並列展開Worker(`decompress_laz_range`)が返したバイト列を
+     * spillへ書く。バイト列は`recordWidth()`ちょうどの倍数の長さを持つ、
+     * `copc_core::serialize_le`形式のレコードが連続したものであること。
+     *
+     * 展開Worker側で独立に`StreamingLayout::from_las_header`を計算して
+     * いるため(同じファイルの同じヘッダーから導くので値は一致するはずだが、
+     * 保険として)、渡されたバイト列の長さが`recordWidth()`の倍数で
+     * ないときはエラーにする(値が合わなければ即座に気づけるようにする。
+     * 黙って余りを捨てない)。
+     */
+    pushSerializedRecords(bytes: Uint8Array): void;
+    /**
+     * spillの1レコードあたりのバイト数。並列展開Workerが返すバイト列は
+     * この幅ちょうどの倍数になるため、TypeScript側は
+     * `buffer.byteLength / recordWidth()`で点数を逆算できる(M4-7、
+     * 戻り値を別途やり取りする手間を省くため)。
+     */
+    recordWidth(): number;
+    /**
+     * 入力の総点数(ヘッダーの申告値)。TypeScript側
+     * (`src/datasource/copc.worker.ts`)が、並列展開Workerへ割り振る
+     * 点インデックスの範囲を決めるために使う(M4-7)。
+     */
+    totalPoints(): number;
 }
 
 /**
@@ -77,6 +102,26 @@ export class WasmCopcFile {
 }
 
 /**
+ * M4-7: 展開専用Worker(`src/datasource/laz-decompress.worker.ts`)から呼ぶ。
+ * `file`の点インデックス`[start_index, start_index + count)`の範囲を展開し、
+ * `copc_core::serialize_le`形式(`WasmConverter::recordWidth()`ちょうどの
+ * 幅)の固定長レコードを連結したバイト列を返す。
+ *
+ * `WasmConverter`とは完全に独立したインスタンス(自分専用の`las::Reader`)を
+ * 開く。Web Workerはメモリを共有しないグローバルなので、これは「1つの
+ * `File`を複数のWorkerがそれぞれ自分のReaderで読む」ことになるが、
+ * `File`は不変なスナップショットであり、読み出しは`FileRangeReader`経由の
+ * 範囲読み(`File.slice`)なので競合しない。
+ *
+ * `start_index`が`total_points`以上、または末尾付近で`count`点に
+ * 満たない場合は、実際に読めた点数ぶんだけの(`recordWidth()`の倍数の)
+ * バイト列を返す(エラーにしない。呼び出し側がファイル全体を
+ * `hardwareConcurrency`等分するときに、割り切れない端数が出ても
+ * そのまま渡せるようにするため)。
+ */
+export function decompressLazRange(file: File, start_index: number, count: number): Uint8Array;
+
+/**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
  * 追えるようにするため。標準の`std::panic`フックをそのまま`console.error`に
@@ -107,11 +152,15 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
+    readonly decompressLazRange: (a: any, b: number, c: number) => [number, number, number, number];
     readonly init_panic_hook: () => void;
     readonly opfsScratchPoolSize: () => number;
     readonly wasmconverter_feed: (a: number, b: number) => [number, number, number];
     readonly wasmconverter_finish: (a: number) => [number, number, number];
     readonly wasmconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];
+    readonly wasmconverter_pushSerializedRecords: (a: number, b: number, c: number) => [number, number];
+    readonly wasmconverter_recordWidth: (a: number) => number;
+    readonly wasmconverter_totalPoints: (a: number) => number;
     readonly wasmcopcfile_bytesRead: (a: number) => number;
     readonly wasmcopcfile_hierarchy: (a: number) => [number, number, number];
     readonly wasmcopcfile_info: (a: number) => [number, number, number];
