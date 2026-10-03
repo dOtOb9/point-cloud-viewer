@@ -2900,3 +2900,50 @@ $ npm run build:wasm / typecheck / lint / test / build
 5. Android実機: `gh run download <run-id> -n android-apk`でAPKを取得し、生のLAS/LAZの
    変換が今までどおり完了することを確認する(`parallel-lod`はAndroidでも有効)
 
+### 追記: M4-9とのrebase後の再検証(2026-10-03)
+
+本タスクの作業中に`origin/main`へM4-9(E57/PLY/PCDを中間LASを経ずに直接COPCへ
+変換する)・M2-2の追加修正(RGBの8bit判定)が入ったため、`git rebase origin/main`で
+取り込んだ(コンフリクトはwasmバイナリの再生成コミット1箇所のみ。再生成し直して解消、
+詳細は下記コミット参照)。
+
+**M4-9が追加した`crates/pcv-convert/src/import/`(`convert.rs`・`mod.rs`)が、
+本タスクの`CancelCheck`の型変更(`&dyn CancelCheck`→`&(dyn CancelCheck + Sync)`)より
+前の型のままだったため、rebase後にビルドが失敗した。** 同じ機械的な型変更を
+この2ファイルにも適用し(`fix(M4-8): M4-9のimportモジュールのCancelCheck型を
+Sync対応に揃える`というコミットで分離)、ビルドを通した。
+
+rebase後に受け入れ条件を再確認した:
+
+- `cargo test --workspace --release`: 全て成功(pcv-convertのライブラリテストは
+  M4-9の追加分を含め41件、import_e57/import_pcd/import_plyもM4-9の直接COPC化に
+  伴い更新された形で成功)
+- `cargo test -p pcv-convert --test streaming_conversion native_output_hash_matches_recorded_value`:
+  **成功**(M4-9はLAS/LAZ経路[`crate::streaming`]には触れていないため、この
+  回帰テストへの影響は無いことを確認した)
+- `post_process_stage_bench`を3回再実行(beer.laz)した。内訳:
+
+  | 実行 | [1]octree分割 | [2]ノード圧縮 | 合計 |
+  |---|---|---|---|
+  | A | 28.062秒(32.2%) | 57.521秒(65.9%) | 87.256秒 |
+  | B | 29.389秒(33.0%) | 57.905秒(65.1%) | 88.926秒 |
+  | C | 27.197秒(33.5%) | 52.553秒(64.7%) | 81.273秒 |
+
+  **正直に書く**: この3回は、本タスクの実装直後に測った値(octree分割12.7〜18.6秒・
+  ノード圧縮15.3〜33.0秒)より全体的に2〜3倍遅い。`vendor/copc-writer`の
+  コードは`fix(M4-8)`コミット(`import/`の型変更のみ、`lod.rs`・`writer.rs`は
+  無変更)以外rebase後に変えていないため、**実装自体の性能が落ちたのではなく、
+  計測時点のマシン負荷が高かった可能性が高い**(このセッション中、並行して
+  別エージェントがM4-9の作業をしていたため、CPU負荷が競合していたと考えられる)。
+  3回の内訳同士は比較的近い値(32〜34%/65〜66%)で揃っており、計測の仕組み自体は
+  rebase後も正しく動いていることが分かる。**並列化前の基準との直接比較
+  (同じ負荷条件での再測定)は行っていない**ため、"約2倍"という当初の結論を
+  この3回だけで裏付け直すことはできないが、構造的な正しさ(バイト一致・
+  メモリ非比例・キャンセル)は上記の自動テストで確認済みであり、ここは
+  揺らいでいない。
+- `cargo test --manifest-path vendor/copc-writer/Cargo.toml --release --features parallel-lod`:
+  22件全て成功(再確認)
+
+コミット: `perf(M4-8)`・`feat(M4-8)`・`chore(M4-8)`・`docs(M4-8)`(今回の実装)に続けて、
+`fix(M4-8): M4-9のimportモジュールのCancelCheck型をSync対応に揃える`を追加した。
+
