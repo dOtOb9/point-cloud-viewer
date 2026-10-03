@@ -1,4 +1,4 @@
-//! PLY → LAS の受け入れテスト(M4-4)。
+//! PLY → COPC の受け入れテスト(M4-4→M4-9で中間LASを経ない形に書き換え)。
 //!
 //! ASCII・binary_little_endian・binary_big_endianの3形式すべてを確かめる。
 //! `ply-rs`を使わず自前実装にした(`crates/pcv-convert/src/import/ply.rs`
@@ -6,7 +6,11 @@
 //! `face`要素(可変長のlistプロパティ)を混ぜたケースで、vertex以外の要素も
 //! 正しくスキップできる(バイト位置がずれない)ことも確認する。
 
-use pcv_convert::import::to_las;
+mod common;
+
+use copc_core::NeverCancel;
+use copc_writer::CopcWriterParams;
+use pcv_convert::import::convert_path_to_copc;
 
 type SamplePoint = (f32, f32, f32, u8, u8, u8, f32);
 
@@ -95,68 +99,87 @@ fn push_i32(out: &mut Vec<u8>, value: i32, little_endian: bool) {
     }
 }
 
-fn assert_las_matches_sample(las_path: &std::path::Path) {
+/// `in.ply`を変換して開き、`sample_points()`と座標・色・強度が一致することを
+/// 確認する(スケールの丸め誤差の範囲内。M4-9受け入れ条件)。
+fn assert_copc_matches_sample(copc_path: &std::path::Path) {
     let points = sample_points();
-    let mut reader = las::Reader::from_path(las_path).expect("open las");
-    assert_eq!(reader.header().number_of_points(), points.len() as u64);
-    let transforms = *reader.header().transforms();
+    let (declared, actual) = common::read_all_points(copc_path);
+    assert_eq!(declared, points.len() as u64);
 
-    let read_points: Vec<_> = reader
-        .read_all()
-        .expect("read all points")
-        .points()
-        .map(|p| p.expect("point"))
+    let expected_16bit_colors: Vec<[u16; 3]> = points
+        .iter()
+        .map(|&(_, _, _, r, g, b, _)| [u16::from(r) * 257, u16::from(g) * 257, u16::from(b) * 257])
         .collect();
-    assert_eq!(read_points.len(), points.len());
+    let expected_u8_colors = common::expected_u8_colors(&expected_16bit_colors);
 
-    for ((x, y, z, r, g, b, intensity), actual) in points.iter().zip(read_points.iter()) {
-        assert!((actual.x - *x as f64).abs() <= transforms.x.scale / 2.0 + 1e-9);
-        assert!((actual.y - *y as f64).abs() <= transforms.y.scale / 2.0 + 1e-9);
-        assert!((actual.z - *z as f64).abs() <= transforms.z.scale / 2.0 + 1e-9);
+    let expected: Vec<(f64, f64, f64, [u8; 3], u16)> = points
+        .iter()
+        .zip(expected_u8_colors.iter())
+        .map(|(&(x, y, z, _, _, _, intensity), &color)| {
+            let expected_intensity = (intensity.clamp(0.0, 1.0) * 65535.0).round() as u16;
+            (
+                f64::from(x),
+                f64::from(y),
+                f64::from(z),
+                color,
+                expected_intensity,
+            )
+        })
+        .collect();
 
-        let color = actual.color.expect("color present");
-        assert_eq!(color.red, u16::from(*r) * 257);
-        assert_eq!(color.green, u16::from(*g) * 257);
-        assert_eq!(color.blue, u16::from(*b) * 257);
+    // スケールはmm以下精度で選ばれる(`scale.rs`)ので、丸め誤差は高々0.5mm。
+    // f32(ノードローカル相対座標)の丸めぶんの余裕も持たせる。
+    common::assert_points_match_unordered(&expected, &actual, 0.001);
+}
 
-        let expected_intensity = (intensity.clamp(0.0, 1.0) * 65535.0).round() as u16;
-        assert_eq!(actual.intensity, expected_intensity);
-    }
+fn convert(input_path: &std::path::Path, output_path: &std::path::Path) -> u64 {
+    let dir = output_path.parent().unwrap();
+    let summary = convert_path_to_copc(
+        input_path,
+        output_path,
+        dir,
+        &CopcWriterParams::default(),
+        &NeverCancel,
+        None,
+        |_| {},
+    )
+    .expect("convert_path_to_copc");
+    assert!(!summary.crs_known);
+    summary.point_count
 }
 
 #[test]
 fn ascii_ply_round_trips_xyz_color_and_intensity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input_path = dir.path().join("in.ply");
-    let output_path = dir.path().join("out.las");
+    let output_path = dir.path().join("out.copc.laz");
 
     std::fs::write(&input_path, build_ascii_ply(&sample_points(), false)).expect("write ply");
 
-    let summary = to_las(&input_path, &output_path, None).expect("to_las");
-    assert_eq!(summary.point_count, sample_points().len() as u64);
-    assert!(!summary.crs_known);
-    assert_las_matches_sample(&output_path);
+    let point_count = convert(&input_path, &output_path);
+    assert_eq!(point_count, sample_points().len() as u64);
+    assert_copc_matches_sample(&output_path);
 }
 
 #[test]
 fn binary_little_endian_ply_round_trips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input_path = dir.path().join("in.ply");
-    let output_path = dir.path().join("out.las");
+    let output_path = dir.path().join("out.copc.laz");
 
     std::fs::write(&input_path, build_binary_ply(&sample_points(), true, false))
         .expect("write ply");
 
-    let summary = to_las(&input_path, &output_path, None).expect("to_las");
-    assert_eq!(summary.point_count, sample_points().len() as u64);
-    assert_las_matches_sample(&output_path);
+    let point_count = convert(&input_path, &output_path);
+    assert_eq!(point_count, sample_points().len() as u64);
+    assert_copc_matches_sample(&output_path);
 }
 
 #[test]
 fn binary_big_endian_ply_round_trips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input_path = dir.path().join("in.ply");
-    let output_path = dir.path().join("out.las");
+    let output_path = dir.path().join("out.copc.laz");
 
     std::fs::write(
         &input_path,
@@ -164,9 +187,9 @@ fn binary_big_endian_ply_round_trips() {
     )
     .expect("write ply");
 
-    let summary = to_las(&input_path, &output_path, None).expect("to_las");
-    assert_eq!(summary.point_count, sample_points().len() as u64);
-    assert_las_matches_sample(&output_path);
+    let point_count = convert(&input_path, &output_path);
+    assert_eq!(point_count, sample_points().len() as u64);
+    assert_copc_matches_sample(&output_path);
 }
 
 /// `face`要素(可変長のlistプロパティ)が`vertex`の後ろにあるメッシュ形式のPLYでも、
@@ -177,24 +200,24 @@ fn binary_big_endian_ply_round_trips() {
 fn ascii_ply_with_face_element_skips_it_correctly() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input_path = dir.path().join("in.ply");
-    let output_path = dir.path().join("out.las");
+    let output_path = dir.path().join("out.copc.laz");
 
     std::fs::write(&input_path, build_ascii_ply(&sample_points(), true)).expect("write ply");
 
-    let summary = to_las(&input_path, &output_path, None).expect("to_las");
-    assert_eq!(summary.point_count, sample_points().len() as u64);
-    assert_las_matches_sample(&output_path);
+    let point_count = convert(&input_path, &output_path);
+    assert_eq!(point_count, sample_points().len() as u64);
+    assert_copc_matches_sample(&output_path);
 }
 
 #[test]
 fn binary_ply_with_face_element_skips_it_correctly() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input_path = dir.path().join("in.ply");
-    let output_path = dir.path().join("out.las");
+    let output_path = dir.path().join("out.copc.laz");
 
     std::fs::write(&input_path, build_binary_ply(&sample_points(), true, true)).expect("write ply");
 
-    let summary = to_las(&input_path, &output_path, None).expect("to_las");
-    assert_eq!(summary.point_count, sample_points().len() as u64);
-    assert_las_matches_sample(&output_path);
+    let point_count = convert(&input_path, &output_path);
+    assert_eq!(point_count, sample_points().len() as u64);
+    assert_copc_matches_sample(&output_path);
 }

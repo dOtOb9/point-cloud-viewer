@@ -1,4 +1,4 @@
-//! E57 → LAS の受け入れテスト(M4-4)。
+//! E57 → COPC の受け入れテスト(M4-4→M4-9で中間LASを経ない形に書き換え)。
 //!
 //! `e57`クレート自身の`E57Writer`でテスト用のE57ファイルを組み立てる
 //! (E57はバイナリ形式が複雑なため、自前でバイト列を組み立てるのは現実的でない。
@@ -15,16 +15,20 @@
 //! (`crates/pcv-convert/src/import/e57.rs`のモジュールコメントに
 //! 引用した`pc_reader_simple.rs`の実装を参照)。
 
+mod common;
+
+use copc_core::NeverCancel;
+use copc_writer::CopcWriterParams;
 use e57::{
     E57Writer, Quaternion, Record, RecordDataType, RecordName, RecordValue, Transform, Translation,
 };
-use pcv_convert::import::to_las;
+use pcv_convert::import::convert_path_to_copc;
 
 #[test]
 fn combines_multiple_scans_applying_pose_and_spherical_conversion() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input_path = dir.path().join("in.e57");
-    let output_path = dir.path().join("out.las");
+    let output_path = dir.path().join("out.copc.laz");
 
     let mut writer = E57Writer::from_file(&input_path, "guid-root").expect("create e57 writer");
 
@@ -113,63 +117,63 @@ fn combines_multiple_scans_applying_pose_and_spherical_conversion() {
 
     writer.finalize().expect("finalize e57");
 
-    // ---- 変換 ----
-    let summary = to_las(&input_path, &output_path, None).expect("to_las");
+    // ---- 変換(中間LASを経ず直接COPCへ) ----
+    let summary = convert_path_to_copc(
+        &input_path,
+        &output_path,
+        dir.path(),
+        &CopcWriterParams::default(),
+        &NeverCancel,
+        None,
+        |_| {},
+    )
+    .expect("convert_path_to_copc");
     assert_eq!(summary.point_count, 5);
     assert!(!summary.crs_known);
 
-    let mut reader = las::Reader::from_path(&output_path).expect("open las");
-    let transforms = *reader.header().transforms();
-    let points: Vec<_> = reader
-        .read_all()
-        .expect("read all points")
-        .points()
-        .map(|p| p.expect("point"))
-        .collect();
+    let (declared, points) = common::read_all_points(&output_path);
+    assert_eq!(declared, 5);
     assert_eq!(points.len(), 5);
 
-    let coord_tolerance = |scale: f64| scale / 2.0 + 1e-6;
-
     // スキャン1: 姿勢=並進のみなので、座標は「局所座標 + 並進(100,200,300)」。
-    let expected_scan1 = [
-        // (x, y, z, r16, g16, b16, intensity16)
-        (100.0, 200.0, 300.0, 0u16, 0u16, 0u16, 0u16),
-        (101.0, 200.0, 300.0, 65535, 0, 0, 65535),
+    // 期待する16bit色は、E57の0-255値域を0.0..1.0へ正規化してから
+    // 65535を掛けた値(`e57.rs`のモジュールコメント参照)。
+    let expected_16bit_scan1 = [
+        (100.0, 200.0, 300.0, [0u16, 0, 0], 0u16),
+        (101.0, 200.0, 300.0, [65535, 0, 0], 65535),
         // 色域0-255からの正規化は65535/255=257が整数になるため、
         // 単純に「元の値 * 257」に一致する: 128*257=32896、64*257=16448、
         // 32*257=8224。強度域0-1000は257のような都合の良い比にならないため、
         // 250/1000*65535=16383.75→16384のように丸めが入る。
-        (100.0, 201.0, 300.0, 32896, 16448, 8224, 16384),
+        (100.0, 201.0, 300.0, [32896, 16448, 8224], 16384),
         // 255*257=65535、999/1000*65535=65469.465→65469。
-        (100.0, 200.0, 301.0, 0, 65535, 32896, 65469),
+        (100.0, 200.0, 301.0, [0, 65535, 32896], 65469),
     ];
-    for (i, (ex, ey, ez, er, eg, eb, ei)) in expected_scan1.into_iter().enumerate() {
-        let p = &points[i];
-        assert!(
-            (p.x - ex).abs() <= coord_tolerance(transforms.x.scale),
-            "point {i}: x mismatch (got {}, expected {ex})",
-            p.x
-        );
-        assert!((p.y - ey).abs() <= coord_tolerance(transforms.y.scale));
-        assert!((p.z - ez).abs() <= coord_tolerance(transforms.z.scale));
-        let color = p.color.expect("scan1 has color");
-        assert_eq!(color.red, er, "point {i}: red mismatch");
-        assert_eq!(color.green, eg, "point {i}: green mismatch");
-        assert_eq!(color.blue, eb, "point {i}: blue mismatch");
-        assert_eq!(p.intensity, ei, "point {i}: intensity mismatch");
-    }
-
     // スキャン2: 局所(10,0,0) --回転(x,y,z)->(-y,x,z)--> (0,10,0) --+並進(5,5,5)--> (5,15,5)。
-    let scan2_point = &points[4];
-    assert!((scan2_point.x - 5.0).abs() <= coord_tolerance(transforms.x.scale));
-    assert!((scan2_point.y - 15.0).abs() <= coord_tolerance(transforms.y.scale));
-    assert!((scan2_point.z - 5.0).abs() <= coord_tolerance(transforms.z.scale));
-    // スキャン2は色を持たないが、ファイル全体では(スキャン1が色を持つため)
-    // 点フォーマットは色ありになるので、この点の色は既定値の黒になる。
-    assert_eq!(
-        scan2_point.color,
-        Some(las::Color::new(0, 0, 0)),
-        "scan2 has no color of its own, defaults to black"
-    );
-    assert_eq!(scan2_point.intensity, 0);
+    // 色を持たないが、ファイル全体では(スキャン1が色を持つため)点フォーマットは
+    // 色ありになるので、この点の色は既定値の黒(16bit)になる
+    // (`e57.rs`の`for_each_point`、`point.color.unwrap_or([0,0,0])`参照)。
+    let expected_16bit_scan2 = (5.0, 15.0, 5.0, [0u16, 0, 0], 0u16);
+
+    let all_expected_16bit: Vec<[u16; 3]> = expected_16bit_scan1
+        .iter()
+        .map(|&(_, _, _, c, _)| c)
+        .chain(std::iter::once(expected_16bit_scan2.3))
+        .collect();
+    let all_expected_u8 = common::expected_u8_colors(&all_expected_16bit);
+
+    let expected: Vec<(f64, f64, f64, [u8; 3], u16)> = expected_16bit_scan1
+        .iter()
+        .zip(all_expected_u8.iter().take(4))
+        .map(|(&(x, y, z, _, i), &c)| (x, y, z, c, i))
+        .chain(std::iter::once({
+            let (x, y, z, _, i) = expected_16bit_scan2;
+            (x, y, z, all_expected_u8[4], i)
+        }))
+        .collect();
+
+    // scaleの丸め誤差(choose_scale_offsetの決め方どおり、高々scale/2。
+    // 入力の範囲は数百メートル規模なので最も細かいスケール0.1mmが選ばれる
+    // はずで、十分小さい固定値で確認する)。
+    common::assert_points_match_unordered(&expected, &points, 0.001);
 }

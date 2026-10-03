@@ -1,23 +1,23 @@
-//! M4-4受け入れ条件: 「書き出したLASを`copc-writer`でCOPCに変換し`pcv-core`で
-//! 開けることを、少なくとも1形式で統合テストする」。
+//! M4-9受け入れ条件: 「E57/PLY/PCD → COPCが、中間LASを作らずに行われる」ことを、
+//! ある程度の点数(2,000点、1ノードに収まらない規模ではないが、E57を直接COPCへ
+//! 流す経路全体を通す)で確かめる。
 //!
-//! 優先度が最も高いE57で確認する(`TaskSheets/ADR-0008-formats-and-crs.md`の
-//! 優先順位「E57 → PLY → PCD」参照)。経路は
-//! E57 → (`pcv_convert::import::to_las`) → LAS → (`copc_writer::convert_las_to_copc_streaming`、
-//! ADR-0006で採用済みの経路) → COPC → (`pcv_core::CopcFile::open`)。
-//! `crates/pcv-convert/examples/verify.rs`(M4-1の検証)と同じ確認observableを使う。
+//! M4-4時点はこのテストが「E57→(`to_las`)→LAS→(`copc_writer::convert_las_to_copc_streaming`)
+//! →COPC」という2段階の経路を確認していたが、M4-9で中間LASを廃止したため、
+//! 経路は「E57→(`pcv_convert::import::convert_path_to_copc`)→COPC」の1段階になった。
+
+mod common;
 
 use copc_core::NeverCancel;
-use copc_writer::{convert_las_to_copc_streaming, CopcWriterParams};
+use copc_writer::CopcWriterParams;
 use e57::{E57Writer, Record};
-use pcv_convert::import::to_las;
+use pcv_convert::import::convert_path_to_copc;
 use pcv_core::CopcFile;
 
 #[test]
-fn e57_to_las_to_copc_opens_in_pcv_core() {
+fn e57_converts_directly_to_copc_without_an_intermediate_las() {
     let dir = tempfile::tempdir().expect("tempdir");
     let e57_path = dir.path().join("in.e57");
-    let las_path = dir.path().join("intermediate.las");
     let copc_path = dir.path().join("out.copc.laz");
 
     // ---- E57を組み立てる(直交座標+色、姿勢無し) ----
@@ -50,15 +50,27 @@ fn e57_to_las_to_copc_opens_in_pcv_core() {
     pc.finalize().expect("finalize scan");
     writer.finalize().expect("finalize e57");
 
-    // ---- E57 → LAS(このクレートの担当) ----
-    let summary = to_las(&e57_path, &las_path, None).expect("to_las");
+    // ---- E57 → COPC(中間LASを経ない。本クレートの担当する経路全体) ----
+    let summary = convert_path_to_copc(
+        &e57_path,
+        &copc_path,
+        dir.path(),
+        &CopcWriterParams::default(),
+        &NeverCancel,
+        None,
+        |_| {},
+    )
+    .expect("convert_path_to_copc");
     assert_eq!(summary.point_count, N as u64);
 
-    // ---- LAS → COPC(ADR-0006で採用済みのcopc-writer経路。M4-1bのexamples/convert_streaming.rsと同じ呼び方) ----
-    let params = CopcWriterParams::default();
-    let spill_dir = dir.path().to_path_buf();
-    convert_las_to_copc_streaming(&las_path, &copc_path, &params, &spill_dir, &NeverCancel)
-        .expect("convert las to copc");
+    // 中間LASを一切作っていないこと(受け入れ条件)。tempdir内に
+    // `.las`/`.laz`拡張子のファイルが無いことで裏付ける
+    // (出力・spillの一時ファイル以外に中間生成物が無いことの確認)。
+    for entry in std::fs::read_dir(dir.path()).expect("read tempdir") {
+        let path = entry.expect("dir entry").path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        assert!(ext != "las", "中間LASが作られている: {}", path.display());
+    }
 
     // ---- pcv-coreで開けることを確認する(examples/verify.rsと同じ確認内容) ----
     let mut copc = CopcFile::open(&copc_path).expect("open copc with pcv-core");
@@ -77,4 +89,9 @@ fn e57_to_las_to_copc_opens_in_pcv_core() {
         let buffer = copc.read_node(key).expect("read_node");
         assert!(buffer.point_count > 0);
     }
+
+    // 座標・色も一致することを確認する(`common::read_all_points`を使い回す)。
+    let (declared, points) = common::read_all_points(&copc_path);
+    assert_eq!(declared, N as u64);
+    assert_eq!(points.len(), N);
 }
