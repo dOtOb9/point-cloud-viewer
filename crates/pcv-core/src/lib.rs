@@ -7,6 +7,7 @@
 //! M1-1でCOPCリーダーを実装した。採用クレートの選定理由は
 //! `TaskSheets/ADR-0003-copc-crate.md` を参照。
 
+mod color_depth;
 mod copc;
 pub mod crs;
 mod node_format;

@@ -14,6 +14,7 @@ use std::str::FromStr;
 use copc_core::{CopcInfo, VoxelKey};
 use copc_reader::CopcReader;
 
+use crate::color_depth::{self, ColorBitDepth};
 use crate::node_format::{encode_node, NodeBuffer, NodePoint};
 
 /// pcv-core が返すエラー。`tauri::Error` などには変換しない
@@ -171,18 +172,25 @@ pub struct CopcFile<R: Read + Seek + Send = BufReader<File>> {
     reader: CopcReader<R>,
     info: CloudInfo,
     hierarchy: Hierarchy,
+    /// 色の1チャンネルあたりのbit深度。ファイルを開いたときに1回だけ判定し、
+    /// `read_node`はこれを使い回す(ノードごとに判定し直すと、ノードによって
+    /// 明るさが変わってしまう。`color_depth`モジュール冒頭のコメント参照)。
+    /// `info.has_color`が`false`なら`None`。
+    color_bit_depth: Option<ColorBitDepth>,
 }
 
 impl CopcFile<BufReader<File>> {
     /// ネイティブ経路。`std::fs::File`をパスから開く。
     pub fn open(path: &Path) -> Result<Self> {
-        let reader = CopcReader::from_path(path).map_err(CopcError::Open)?;
+        let mut reader = CopcReader::from_path(path).map_err(CopcError::Open)?;
         let info = build_cloud_info(&reader);
         let hierarchy = build_hierarchy(&reader);
+        let color_bit_depth = detect_color_bit_depth(&mut reader, &hierarchy, info.has_color)?;
         Ok(Self {
             reader,
             info,
             hierarchy,
+            color_bit_depth,
         })
     }
 }
@@ -192,13 +200,15 @@ impl<R: Read + Seek + Send> CopcFile<R> {
     /// そのまま受け取る。ファイル全体を読むかどうか・どこからバイト列を
     /// 取ってくるかは`R`の実装次第で、`pcv-core`はここでは関知しない。
     pub fn from_reader(reader: R) -> Result<Self> {
-        let reader = CopcReader::open(reader).map_err(CopcError::Open)?;
+        let mut reader = CopcReader::open(reader).map_err(CopcError::Open)?;
         let info = build_cloud_info(&reader);
         let hierarchy = build_hierarchy(&reader);
+        let color_bit_depth = detect_color_bit_depth(&mut reader, &hierarchy, info.has_color)?;
         Ok(Self {
             reader,
             info,
             hierarchy,
+            color_bit_depth,
         })
     }
 
@@ -235,15 +245,19 @@ impl<R: Read + Seek + Send> CopcFile<R> {
             .read_node(target_key)
             .map_err(|source| CopcError::ReadNode { key, source })?;
 
+        // ファイルを開いたときに判定済みのbit深度を使う（フィールドのコメント参照）。
+        // `has_color`がtrueなのに`None`になることは無い想定だが、万一の保険として
+        // 既存動作（16bit扱い）にフォールバックする。
+        let depth = self.color_bit_depth.unwrap_or(ColorBitDepth::Sixteen);
+
         let mut node_points = Vec::with_capacity(node.point_count as usize);
         for point in points {
             let color = if has_color {
                 point.color.map(|c| {
-                    // LASの色は16bit。8bitのRGBAに落とす（上位バイトを取るのが一般的な変換）。
                     [
-                        (c.red >> 8) as u8,
-                        (c.green >> 8) as u8,
-                        (c.blue >> 8) as u8,
+                        depth.to_u8(c.red),
+                        depth.to_u8(c.green),
+                        depth.to_u8(c.blue),
                         255,
                     ]
                 })
@@ -310,6 +324,46 @@ where
         );
     }
     Hierarchy { nodes }
+}
+
+/// ファイルを開いたときに1回だけ、色が8bitか16bitかを判定する。
+///
+/// 判定方法・誤判定しうる場合は`color_depth`モジュール冒頭のコメントを参照。
+/// ここでは「ルートノード（無ければhierarchy中最も粗いノード）を1つ選んで
+/// 実際に読み、その点のR/G/Bを`color_depth::detect`に渡す」という、
+/// `read_node`と同じ経路を使って判定する。
+///
+/// `has_color`が`false`のファイル（色属性を持たない）では判定自体が無意味
+/// なので`None`を返す。色を持つのにhierarchyへ読める節点が1つも無い
+/// （点数0のファイルなど、実際には起こらない想定だが）場合は、判定材料が
+/// 無いため安全側（16bit扱い。既存の挙動を変えない）にしておく。
+fn detect_color_bit_depth<R>(
+    reader: &mut CopcReader<R>,
+    hierarchy: &Hierarchy,
+    has_color: bool,
+) -> Result<Option<ColorBitDepth>>
+where
+    R: Read + Seek + Send,
+{
+    if !has_color {
+        return Ok(None);
+    }
+    let Some(node) = hierarchy
+        .get(NodeKey::root())
+        .or_else(|| hierarchy.nodes().next())
+    else {
+        return Ok(Some(ColorBitDepth::Sixteen));
+    };
+    let key = node.key;
+    let target_key = VoxelKey::from(key);
+    let points = reader
+        .read_node(target_key)
+        .map_err(|source| CopcError::ReadNode { key, source })?;
+    let colors = points
+        .into_iter()
+        .filter_map(|p| p.color)
+        .map(|c| (c.red, c.green, c.blue));
+    Ok(Some(color_depth::detect(colors)))
 }
 
 /// voxelキーからそのノードのワールド座標BBOXを計算する。
@@ -444,6 +498,136 @@ mod copc_file_tests {
         .expect("テスト用COPCの書き出しに失敗");
 
         (dir, path, point_total)
+    }
+
+    /// `synthetic_copc_file`と同じだが、`has_color=true`で全点に指定した
+    /// (red, green, blue)を設定する。色のbit深度判定（実機不具合「RGBモードで
+    /// 真っ黒になる」の修正。TaskSheets/M2-shading-and-ui.mdのM2-2参照）の
+    /// 統合テストで使う。
+    fn synthetic_copc_file_with_color(
+        red: u16,
+        green: u16,
+        blue: u16,
+    ) -> (tempfile::TempDir, std::path::PathBuf, usize) {
+        let mut points = Vec::new();
+        let point_total = 500;
+        for i in 0..point_total {
+            let t = i as f64 / point_total as f64 * std::f64::consts::TAU;
+            points.push(CopcPointFields {
+                x: 500_000.0 + 50.0 * t.cos(),
+                y: 4_000_000.0 + 50.0 * t.sin(),
+                z: 10.0 + i as f64 * 0.001,
+                intensity: (i % 65_536) as u16,
+                return_number: 1,
+                number_of_returns: 1,
+                synthetic: 0,
+                key_point: 0,
+                withheld: 0,
+                overlap: 0,
+                scan_channel: 0,
+                scan_direction_flag: 0,
+                edge_of_flight_line: 0,
+                classification: 2,
+                user_data: 0,
+                scan_angle: 0.0,
+                point_source_id: 1,
+                gps_time: 1.0e9 + i as f64,
+                red,
+                green,
+                blue,
+                extra_bytes: Vec::new(),
+            });
+        }
+
+        let bounds = points.iter().fold(
+            copc_core::Bounds::point(points[0].x, points[0].y, points[0].z),
+            |mut bounds, p| {
+                bounds.extend(p.x, p.y, p.z);
+                bounds
+            },
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir作成に失敗");
+        let path = dir.path().join("synthetic_color.copc.laz");
+        let source = SyntheticSource { points };
+        write_source(
+            &path,
+            &source,
+            true,
+            bounds,
+            &CopcWriterParams::new(128),
+            &CopcWriteMetadata::default(),
+        )
+        .expect("テスト用COPCの書き出しに失敗");
+
+        (dir, path, point_total)
+    }
+
+    /// ノードのバイナリ内の、与えたインデックスの点の色(R,G,B,A)を読む。
+    /// レイアウトは`node_format.rs`参照
+    /// (ヘッダ32B + 1点20B、点内オフセット12..16が色)。
+    fn point_color_at(buf: &NodeBuffer, index: usize) -> (u8, u8, u8, u8) {
+        let offset = crate::node_format::HEADER_BYTES + index * crate::node_format::POINT_STRIDE;
+        (
+            buf.bytes[offset + 12],
+            buf.bytes[offset + 13],
+            buf.bytes[offset + 14],
+            buf.bytes[offset + 15],
+        )
+    }
+
+    #[test]
+    fn read_node_does_not_turn_8bit_color_into_black() {
+        // beer.lazの実データ(TaskSheets/M2-shading-and-ui.mdのM2-2で実際に
+        // 読んで確認した。全チャンネル0-255)を模して、0-255に収まる値(8bit相当)を
+        // 全点のRGBに設定する。修正前の無条件`(c.red >> 8) as u8`では
+        // 10 >> 8 == 0 のように全点の色が(0,0,0)になり真っ黒になっていた
+        // (所有者報告の不具合)。その回帰テスト。
+        let (_dir, path, _point_total) = synthetic_copc_file_with_color(10, 20, 30);
+        let mut file = CopcFile::open(&path).unwrap();
+
+        let key = file
+            .hierarchy()
+            .get(NodeKey::root())
+            .map(|n| n.key)
+            .unwrap_or(NodeKey::root());
+        let buf = file.read_node(key).unwrap();
+        assert!(buf.point_count > 0);
+
+        let (r, g, b, a) = point_color_at(&buf, 0);
+        assert_eq!(
+            (r, g, b, a),
+            (10, 20, 30, 255),
+            "8bit色がそのまま通らず黒(0,0,0)になっている(真っ黒バグの再発)"
+        );
+    }
+
+    #[test]
+    fn read_node_still_shifts_genuine_16bit_color_down_to_8bit() {
+        // autzen-classified.copc.laz・points-jack_he.copc.lazの実データ
+        // (TaskSheets/M2-shading-and-ui.mdのM2-2で確認済み。255を超える値を含む)
+        // を模して、256以上の値を設定する。8bit判定に倒れて誤って素通し
+        // されないことを確認する。
+        let (_dir, path, _point_total) = synthetic_copc_file_with_color(2048, 8704, 63744);
+        let mut file = CopcFile::open(&path).unwrap();
+
+        let key = file
+            .hierarchy()
+            .get(NodeKey::root())
+            .map(|n| n.key)
+            .unwrap_or(NodeKey::root());
+        let buf = file.read_node(key).unwrap();
+
+        let (r, g, b, _a) = point_color_at(&buf, 0);
+        assert_eq!(
+            (r, g, b),
+            (
+                (2048u16 >> 8) as u8,
+                (8704u16 >> 8) as u8,
+                (63744u16 >> 8) as u8
+            ),
+            "16bitの色は引き続き上位バイトへ落とされるべき"
+        );
     }
 
     #[test]
