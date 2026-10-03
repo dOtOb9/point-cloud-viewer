@@ -836,3 +836,188 @@ M1 の工程で、テストと CI をすべて通過しながら実機で初め�
 
 **いずれも「テストが緑」では検出できなかった。** 合成データと単体テストの限界を示している。
 [TEST-DATA.md](./TEST-DATA.md) に「数億点でしか構成は検証できない」と書いた通りだった。
+
+---
+
+## M1 完了後に見つかった不具合: ファイルを切り替えると前のファイルのノード要求が新しいファイルに対して処理される → 修正した（2026-10-03、Sonnet）
+
+M1 は上記の通り 2026-09-23 に完了としたが、M4-9（LAS/LAZ を中間ファイルを経ずに直接
+COPC へ変換する）の作業中、所有者から実機で再現する不具合の報告があった。原因は
+M1-4 で作った `NodeLoader`（このファイルのスコープ）にあったため、ここに記録する。
+
+### 症状（所有者の報告）
+
+COPC を開いたあとに LAS を開くと（LAS は変換されて COPC として開かれる）、エラー
+バナーに次のようなエラーが多数出る。
+
+```
+ノード読み出しエラー
+ノード7-26-36-9の読み出しに失敗した: ノードキー 7-26-36-9 はこのファイルのhierarchyに存在しない
+```
+
+### 原因
+
+`src/renderer/node-loader.ts` の `NodeLoader` は、どのファイルに対する要求かを
+一切区別していなかった。`readNode(key)` はキーだけを裏側（Tauri の `pcv://`、Web の
+`Worker`）へ送り、裏側は**その時点で開いているファイル**に対してキーを解決して
+処理する。
+
+ファイルを切り替えるとき、`useCopcViewer.ts` の `openFile` は `source.open(path)`
+のあと `renderer.clearCache()`（当時の名前。今回 `resetForNewFile()` に改名）で
+`NodeCache` を空にしていたが、`NodeLoader` の `pending`（まだ送っていない、欲しい
+ノード）・`inFlight`（送信済みで応答待ちのノード）はそのまま残っていた。加えて、
+`source.open(path)` を `await` している間もレンダラの `requestAnimationFrame` ループは
+止まらず、**まだ古いhierarchyのまま** `NodeLoader.setWanted()` を呼び続けるため、
+「切り替えのための `open` リクエスト」より後に「古いファイル宛ての `readNode`
+リクエスト」が裏側へ送られ続ける。
+
+- Tauri 版: `pcv://` は `tauri::async_runtime::spawn_blocking` で非同期に処理される
+  （`src-tauri/src/copc_state.rs`）。`open_copc` が `CopcState` を新しいファイルの
+  プールへ差し替えた**後**に、古いファイル宛てのリクエストの `spawn_blocking` が
+  実行されると、**新しいファイルの hierarchy に対して古いキーを検索する**ことになり、
+  見つからずにエラーになる（症状そのもの）。
+- Web 版: `copc.worker.ts` はメッセージを FIFO で順番に処理する1本の Worker。
+  「open」より後に送られた「readNode」(旧ファイル宛て)は、Workerに届く頃には
+  `openFile` が新しいファイルに差し替わっており、同様の問題になる。
+
+**さらに深刻な隠れた不具合**: 運悪くキー（`"level-x-y-z"` というoctreeアドレス。
+ルートの `"0-0-0-0"` のように浅いレベルでは両方のファイルに存在しがち）が新しい
+ファイルの hierarchy にも存在する場合、読み出し自体はエラーにならず**成功**する。
+この場合、**新しいファイルのバイト列が、古いキーのノードとしてそのまま
+`NodeCache` に入り、画面に表示されてしまう**。エラーにならないため、気づける
+手段が無かった。
+
+### 直したこと
+
+1. **フロント: `NodeLoader` に世代カウンタを導入した**（`node-loader.ts`）。
+   ファイルを開くたびに `resetForNewFile()`（`point-cloud-renderer.ts`、旧
+   `clearCache()` を改名・拡張）から `NodeLoader.reset()` を呼ぶ。`reset()` は
+   世代を1つ進め、`pending`/`inFlight` を空にする。`startLoad(key)` は開始時点の
+   世代を覚えておき（`requestGeneration`）、結果（成功・失敗どちらも）が届いた
+   時点で `this.generation` と比較する。一致しなければ、キャッシュに入れず、
+   エラーとしても報告せず、黙って捨てる。
+   - `inFlight` の後始末（`finally`）も世代が一致する場合だけ行う。これをしないと、
+     「古い世代の `finally` が、同じキー文字列で始まった**新しい世代**の
+     `inFlight` エントリを誤って消してしまう」という事故になる（octreeキーは
+     ファイルをまたいで同じ文字列になりうるため）。
+2. **`resetForNewFile()`** は `NodeCache.dispose()`（GPUバッファの `destroy` 込み、
+   既存の実装のまま）と `NodeLoader.reset()` の両方を行う。WebGPUデバイス消失からの
+   復帰（`handleDeviceRecovered()`）は**ファイルが変わるわけではない**ため
+   `loader.reset()` は呼ばず、従来通り `cache.dispose()` だけにした（同じ世代の
+   ノードを読み直すだけで矛盾は起きない）。
+3. **裏側（Tauri・Web）にも世代を持たせた**（「望ましい」とされていた対応。理由は
+   下記）。
+   - Tauri: `open_copc` が返すレスポンスに `generation: u64` を追加した
+     （`src-tauri/src/copc_state.rs` の `CopcState`/`OpenedFile`。`open_copc`を
+     呼ぶたびに進む通し番号）。`TauriSource`（`src/datasource/tauri.ts`）はこれを
+     覚えておき、`readNode` の `pcv://` セグメントを `"<generation>:<key>"` の形式に
+     変えて送り返す。`handle_pcv_protocol`（`src-tauri/src/lib.rs`）はこれを
+     分解し、`copc_state::read_node_bytes` が現在の世代と比較する。一致しなければ
+     新しい `ReadNodeError::Stale` を返し、`Normal`(400)/`Panicked`(500) とは別の
+     専用ステータス（409 Conflict）で応答する。
+   - Web: `copc.worker.ts` が `open` のたびに `openGeneration` を進め、
+     `open-result` に含めて返す。`WebSource`（`web.ts`）はこれを覚えておき、
+     `readNode` メッセージ（`web-protocol.ts` の `ReadNodeRequest.generation`）に
+     含めて送り返す。Worker側で世代が一致しなければ、実際の読み出しを行わず
+     `readNode-stale` 応答を返す。
+   - フロントはこの「裏側が検出した古い世代」を `StaleNodeRequestError`
+     （新規、`src/datasource/stale-node-error.ts`）として受け取り、`NodeLoader`
+     は**フロント自身の世代カウンタの状態に関わらず無条件に**黙って捨てる。
+   - **なぜフロント側の世代カウンタだけでは不十分と判断したか**: `useCopcViewer.ts`
+     の `openFile` は `await source.open(path)` が解決した**後**に
+     `renderer.resetForNewFile()`（フロントの世代カウンタを進める処理）を呼ぶ。
+     一方、裏側（Rust の `CopcState`、Workerの`openFile`変数）は `open` の処理が
+     完了した時点で**既に**新しいファイルへ切り替わっている。この2つのタイミングの
+     間（`open` の invoke/postMessage が JS に返ってくるまでの往復)には、
+     「切り替え前に送った `readNode` の応答」と「`open` 自体の応答」のどちらが
+     先に JS のイベントループに届くかは OS/IPC のスケジューリング次第で確定しない
+     狭い窓が残る。この窓の間に届いた古い `readNode` の応答は、フロントの世代
+     カウンタがまだ進んでいないため、フロント側のチェックだけではすり抜けてしまう。
+     裏側が「今開いているファイルと世代が違う」ことを検出して伝えることで、この
+     窓を確実に塞いだ。
+4. **変換中に別のファイルを開いた場合・デバイス消失から復帰した場合の確認（コードで
+   確認。実機では確認していない）**:
+   - 変換中（`status === "converting"`）に別のファイルの `openFile()` が呼ばれても、
+     最終的に「どのファイルが表示されるか」は既存の競合（`openFile` の多重呼び出しに
+     対するガードが無い。これは今回のスコープ外の別の問題）に左右されるが、**ノードの
+     読み込みについては**、どの順番で `resetForNewFile()` が呼ばれても、一番最後に
+     呼ばれた世代だけが有効になり、それ以前の世代（変換前のファイル・別の変換結果）の
+     読み込みは成功・失敗を問わずすべて黙って捨てられる。「正しくないファイルの
+     ノードが紛れ込む」という今回のバグの形では再発しない。
+   - デバイス消失からの復帰は上記の通り `loader.reset()` を呼ばない設計にしたため、
+     復帰中に別のファイルを開いた場合も、`resetForNewFile()` 側の世代管理だけで
+     矛盾なく処理される（デバイス復帰自体はファイルの世代に影響しない）。
+
+### 新規テスト
+
+- `src/renderer/node-loader.test.ts`（新規）: `readNode()` の応答タイミングを
+  自由に操作できる偽の `DataSource`（`FakeDataSource`）を使い、受け入れ条件の
+  3点をそのまま確認した。
+  - (a) 切り替え前に始まった読み込みが切り替え後に**成功**しても、キャッシュに
+    入らない（`onLoaded` が呼ばれない）
+  - (b) 切り替え前に始まった読み込みが切り替え後に**失敗**しても、エラーとして
+    報告されない（`onFailed` が呼ばれない）
+  - (c) 切り替え後の新しい要求は普通に処理される
+  - 加えて: `maxConcurrent` を1に絞っても、切り替え後は古い `inFlight` を
+    引きずらずすぐに新しい要求が始まること、裏側の `StaleNodeRequestError` は
+    フロントの世代カウンタが同じでも黙って捨てられることを確認した。
+- `src-tauri/src/copc_state.rs` の
+  `read_node_bytes_rejects_stale_generation_after_reopen`（新規）: 同じ
+  `CopcState` でファイルを開き直すと世代が進むこと、古い世代の読み出しは
+  `ReadNodeError::Stale` になり `Normal`/`Panicked` にはならないこと、新しい
+  世代なら普通に読めることを確認した。
+- `src/datasource/web.test.ts`（既存ファイルに追加）: `WebSource` が `open` の
+  応答の世代番号を次の `readNode` リクエストへ含めること、`readNode-stale`
+  応答が `StaleNodeRequestError` として reject されることを確認した。
+- `src/datasource/web-protocol.test.ts`（既存）: `buildReadNodeRequest` が
+  `generation` 引数をそのままメッセージに含めることを確認するよう更新した。
+
+### 確認したコマンドと結果
+
+- `cargo fmt --check`: 差分なし
+- `cargo clippy --workspace --all-targets -- -D warnings`: 警告0件
+- `cargo test --workspace`: 全クレート成功（`pcv-tauri` 7件、ほか既存分すべて含め
+  合計100件超、失敗0）。新規テスト
+  `copc_state::tests::read_node_bytes_rejects_stale_generation_after_reopen` も成功
+- `npm run typecheck`: エラー0件
+- `npm run lint`: エラー0件
+- `npm run test`（vitest）: 29ファイル・247件すべて成功（新規
+  `node-loader.test.ts` の6件を含む）
+- `npm run build`: 成功（`crates/pcv-wasm`・wasm32は今回のスコープで変更していない
+  ため、`npm run build:wasm` と wasm32 ビルドの再実行は行っていない）
+
+### 正直に: 確認できていないこと
+
+- **実機・実際のアプリでの確認はできない**（このエージェントはGUIを操作できない）。
+  所有者が確かめる手順は次の節の通り
+- 「裏側の世代チェックが実際にこのタイミングの競合を防いでいる」ことは、
+  タイミング依存のため単体テストで直接は確認していない。`read_node_bytes`
+  自身の「世代が一致しなければStaleを返す」という判定ロジックと、フロント側の
+  世代カウンタが正しく機能することは、それぞれ新規テストで直接確認した
+
+### 所有者が確かめる手順
+
+1. `npm run tauri dev` でアプリを起動し、COPC（例: `sofi.copc.laz` や
+   `autzen-classified.copc.laz`）を開く。点群が表示されることを確認する
+2. 続けて、生の LAS/LAZ ファイルを開く（変換が始まり、完了後に自動的に開かれる）。
+   エラーバナー（画面上部）に「ノードキー ... はこのファイルのhierarchyに
+   存在しない」のようなメッセージが**出ないこと**を確認する
+3. 2で開いたファイルの点群が正しく表示され、前のファイル（1で開いたCOPC）の
+   点が混ざっていないこと（形状・範囲が2のファイルと一致していること）を
+   目視で確認する
+4. 余裕があれば、1と2を数回繰り返す（切り替えのタイミングを変えて競合の窓を
+   引き当てやすくするため）。Rust側の標準出力（`npm run tauri dev` のターミナル）に
+   `[pcv] opened ...` のログが開くたびに出ること、世代番号が毎回進んでいることも
+   `log::debug!`（`RUST_LOG=debug` で見える）で確認できる
+5. Web版（`npm run dev` でブラウザから開くか、GitHub Pages）でも同様に、COPCを
+   開いた後にローカルファイル選択で別のファイル（生LAS/LAZ、変換を挟む）を開き、
+   同様にエラーが出ないこと・正しいファイルが表示されることを確認する
+
+### 並行作業との調整
+
+- `vendor/copc-writer/`・`crates/pcv-convert/`（変換の後処理の圧縮の並列化、
+  別エージェント担当）には触れていない
+- `src/ui/shell/Dock*`（ui-forge、ADR-0014、所有者が別セッションで作業中）には
+  触れていない
+- 作業中、`origin/main` の進捗（M4-8 の並列化、M4-9 のE57/PLY/PCD対応）を
+  都度 `git fetch && git rebase` して取り込んだ
