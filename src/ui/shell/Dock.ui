@@ -1,0 +1,78 @@
+{
+  "$schema": "../../../node_modules/ui-forge/schema/ui.schema.json",
+  "version": 1,
+  "component": "DockLayout",
+  "root": {
+    "id": "root",
+    "type": "Canvas",
+    "props": {
+      "layer": "overlay"
+    },
+    "children": [
+      {
+        "id": "dock",
+        "type": "Panel",
+        "slot": {
+          "anchor": "bottom-center",
+          "margin": "md"
+        },
+        "props": {
+          "padding": "xs",
+          "radius": "full",
+          "shadow": true,
+          "surface": {
+            "bind": "surface"
+          },
+          "textSize": "sm"
+        },
+        "children": [
+          {
+            "id": "dock_buttons",
+            "type": "HBox",
+            "props": {
+              "gap": "xs"
+            },
+            "children": [
+              {
+                "id": "layer_button",
+                "type": "Button",
+                "props": {
+                  "active": {
+                    "bind": "layerOpen"
+                  },
+                  "label": "レイヤー",
+                  "onClick": {
+                    "event": "onToggleLayer"
+                  }
+                }
+              },
+              {
+                "id": "info_button",
+                "type": "Button",
+                "props": {
+                  "active": {
+                    "bind": "infoOpen"
+                  },
+                  "label": "情報",
+                  "onClick": {
+                    "event": "onToggleInfo"
+                  }
+                }
+              },
+              {
+                "id": "settings_button",
+                "type": "Button",
+                "props": {
+                  "label": "設定",
+                  "onClick": {
+                    "event": "onOpenSettings"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

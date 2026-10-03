@@ -16,6 +16,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # I-1 (ADR-0014): Dock.uiだけ直して生成し忘れると、ここでCIが落ちる。
+      - run: npm run ui:check
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test

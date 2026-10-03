@@ -12,7 +12,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build:wasm": "cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm"
+    "build:wasm": "cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm",
+    "ui:gen": "ui-forge gen src/ui/shell/Dock.ui src/ui/shell/Dock.generated.tsx",
+    "ui:check": "ui-forge check src/ui/shell/Dock.ui src/ui/shell/Dock.generated.tsx"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -34,9 +36,11 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.12.0",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.1",
+    "ui-forge": "github:dOtOb9/ui-forge#19f02462ef7af49e7d07dbe268fd6d3fb986bdc2",
     "vite": "^8.0.16",
     "vitest": "^5.0.1"
   }
