@@ -121,7 +121,7 @@ pub fn convert_to_copc<R>(
     output: &Path,
     spill_dir: &Path,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     crs_wkt: Option<String>,
     on_progress: impl FnMut(ReadProgress),
 ) -> Result<ImportSummary, ImportError>
@@ -171,7 +171,7 @@ pub fn convert_path_to_copc(
     output: &Path,
     spill_dir: &Path,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     crs_wkt: Option<String>,
     on_progress: impl FnMut(ReadProgress),
 ) -> Result<ImportSummary, ImportError> {

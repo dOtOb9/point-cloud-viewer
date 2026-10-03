@@ -75,7 +75,7 @@ pub(crate) fn run_import<S: PointSource>(
     output: &Path,
     spill_dir: &Path,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     crs_wkt: Option<String>,
     mut on_progress: impl FnMut(ReadProgress),
 ) -> Result<ImportSummary, ImportError> {
