@@ -502,7 +502,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       }
 
       const opened = await source.open(path);
-      renderer.clearCache();
+      renderer.resetForNewFile();
       renderer.setHierarchy(opened.nodes);
       // M2-2実機不具合の修正: 標高の正規化レンジは、ノードのbounds(octreeセル、
       // 立方体でZ範囲が水平方向に引き伸ばされる)ではなく、LASヘッダーの

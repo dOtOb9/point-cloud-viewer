@@ -348,8 +348,23 @@ export class PointCloudRenderer {
     this.elevationRange = elevationRangeFromCloudBounds(cloudMin, cloudMax);
   }
 
-  /** キャッシュをすべて捨てる。別のファイルを開いたときに呼ぶ。 */
-  clearCache(): void {
+  /**
+   * 別のファイルを開いたときに呼ぶ（`useCopcViewer.ts`の`openFile`参照）。
+   * キャッシュをすべて捨てる（GPUバッファの`destroy`込み。`NodeCache.dispose()`
+   * 参照）のに加え、`NodeLoader`も`reset()`する。
+   *
+   * **不具合修正（TaskSheets/M4-import-and-conversion.md）**: 以前はキャッシュだけ
+   * 空にしていたが、`NodeLoader`の`pending`/`inFlight`（前のファイルに対する
+   * ロード待ち・取得中のノード）がそのまま残っていた。`readNode(key)`はキーだけを
+   * 送り、裏側（Tauriの`pcv://`、Webの`Worker`）は「今開いているファイル」に
+   * 対して処理するため、切り替え前に欲しがっていたノードの取得が新しいファイルに
+   * 対して処理され、(1) 存在しないキーで読み出しエラーが出る、(2) 運悪くキーが
+   * 両方のファイルに存在すると前のファイルの点が新しいファイルのキャッシュに
+   * 紛れ込む、という2つの不具合になっていた。`NodeLoader.reset()`で世代を進め、
+   * 古い世代の結果を黙って捨てるようにして直した（`node-loader.ts`参照）。
+   */
+  resetForNewFile(): void {
+    this.loader?.reset();
     this.cache.dispose();
   }
 
@@ -510,6 +525,11 @@ export class PointCloudRenderer {
    * 生バイト取得でデバイスに依存しないため影響を受けず、キャッシュが空になった
    * ことで次のフレームから`selectNodesForFrame`が改めて必要なノードを
    * `wanted`に含め、自然に読み込み直される。
+   *
+   * **`resetForNewFile()`とは違い、`loader.reset()`は呼ばない。** デバイス消失は
+   * 開いているファイルが変わるわけではない（同じファイル・同じ世代のまま）ので、
+   * 取得中のノードは無効化する必要が無く、キャッシュだけ空にすれば十分
+   * （ファイル切り替え時の不具合修正、`resetForNewFile()`のコメント参照）。
    */
   private handleDeviceRecovered(): void {
     this.cache.dispose();

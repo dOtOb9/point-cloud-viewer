@@ -3,6 +3,7 @@
 
 import type { DataSource } from "../datasource/DataSource";
 import { parseNodeBuffer, type ParsedNode } from "../datasource/node-format";
+import { StaleNodeRequestError } from "../datasource/stale-node-error";
 
 export interface NodeLoadRequest {
   key: string;
@@ -87,6 +88,23 @@ export class NodeLoader {
   /** 取得中のノードキー。 */
   private inFlight = new Set<string>();
 
+  /**
+   * ファイルを切り替えた回数（`reset()`を呼ぶたびに進む）。不具合修正: 以前は
+   * ファイルを切り替えても`pending`/`inFlight`がそのまま残り、切り替え前に
+   * 欲しがっていたノードの取得が新しいファイルに対して処理されていた
+   * （`readNode(key)`はキーだけを送り、裏側＝今開いているファイルに対して
+   * 処理されるため）。これにより (1) 新しいファイルのhierarchyに存在しない
+   * キーで読み出しエラーが出る、(2) 運悪くキーが両方のファイルに存在すると、
+   * 前のファイルの点が新しいファイルのキャッシュに紛れ込む、という2つの不具合が
+   * 起きていた（詳細はTaskSheets/M4-import-and-conversion.md）。
+   *
+   * `startLoad`は呼ばれた時点の`generation`を結果が返るまで覚えておき
+   * （`requestGeneration`）、結果が届いた時点で`this.generation`と比較する。
+   * 一致しなければ、`reset()`より後に始まった取得（=今のファイルの取得）ではない
+   * ということなので、キャッシュに入れず、エラーとしても報告せず、黙って捨てる。
+   */
+  private generation = 0;
+
   constructor(
     dataSource: DataSource,
     onLoaded: (key: string, node: ParsedNode) => void,
@@ -120,8 +138,29 @@ export class NodeLoader {
     this.pump();
   }
 
+  /**
+   * 別のファイルを開くときに呼ぶ（`point-cloud-renderer.ts`の
+   * `resetForNewFile()`経由）。世代を進め、まだ結果が届いていない取得中・
+   * ロード待ちのノードをすべて無効化する。
+   *
+   * 取得中のPromise自体は止められない（前からのコメントの通り、fetchの
+   * AbortControllerまでは導入していない）。しかし`startLoad`が結果到着時に
+   * 「自分が始まった時点の世代」と`this.generation`を比較するため、ここで
+   * 世代を進めておけば、既に飛んでいるリクエストの結果が後から届いても
+   * （成功・失敗どちらでも）無視される（クラス冒頭の`generation`フィールドの
+   * コメント参照）。
+   */
+  reset(): void {
+    this.generation++;
+    this.pending.clear();
+    this.inFlight.clear();
+  }
+
   dispose(): void {
     this.pending.clear();
+    this.inFlight.clear();
+    // disposeより後に届く結果も同じ仕組み（generation）で捨てる。
+    this.generation++;
     // 取得中のPromise自体は止められない（fetchのAbortControllerまでは今回は導入しない）。
     // 完了時のコールバックは呼ばれるが、呼び出し側（renderer）が破棄済みなら無視すればよい。
   }
@@ -149,16 +188,29 @@ export class NodeLoader {
 
   private startLoad(key: string): void {
     this.inFlight.add(key);
+    // 結果が届いた時点でこの取得が「今の世代」のものかを確かめるため、
+    // 開始時点の世代を覚えておく（`generation`フィールドのコメント参照）。
+    const requestGeneration = this.generation;
     this.dataSource
       .readNode(key)
       .then((buffer) => {
+        if (requestGeneration !== this.generation) return; // 古い世代の結果は捨てる
         const parsed = parseNodeBuffer(buffer);
         this.onLoaded(key, parsed);
       })
       .catch((error: unknown) => {
+        // 裏側（Tauri/Web）が「古い世代のリクエスト」と検出した場合は、
+        // 世代カウンタの状態に関わらず常に黙って捨てる（stale-node-error.ts参照。
+        // フロント自身の世代カウンタがまだ進んでいない狭い競合の窓を塞ぐため）。
+        if (error instanceof StaleNodeRequestError) return;
+        if (requestGeneration !== this.generation) return; // 古い世代の失敗はエラー報告しない
         this.onFailed(key, error);
       })
       .finally(() => {
+        // 古い世代の後始末（inFlightからの削除・pump）は行わない。reset()が
+        // 既にinFlightを空にしており、今の世代が同じキーを取得中かもしれない
+        // ため、ここで触ると今の世代の状態を壊しかねない。
+        if (requestGeneration !== this.generation) return;
         this.inFlight.delete(key);
         this.pump();
       });
