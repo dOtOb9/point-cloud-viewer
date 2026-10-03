@@ -35,6 +35,31 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 | [`Dock.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dock.tsx)（下部中央） | レイヤー/情報パネルの開閉、設定を開くボタン |
 | [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/SettingsModal.tsx) | モバイル向け最適化、テーマ、更新チェックの設定、診断パネル |
 
+### `Dock` だけはレイアウトを `.ui` ファイルで書いている（I-1, ADR-0014）
+
+[`Dock.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dock.tsx) は他のパネルと違い、JSX でレイアウトを直接書いていない。
+[ui-forge](https://github.com/dOtOb9/ui-forge) というこのプロジェクト専用のツールが
+[`Dock.ui`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dock.ui)（レイアウトと見た目を書いた JSON。正）から
+[`Dock.generated.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dock.generated.tsx)（生成物。手で編集しない）を作り、
+`Dock.tsx` はそれを呼ぶだけの薄い包みになっている（`glassEnabled` を `surface` に変換する以外のロジックは持たない）。
+
+```
+Dock.ui              レイアウトと見た目(正)。ui-forgeのプレビューで開いて確かめ・編集する
+Dock.generated.tsx   Dock.uiからの生成物。`npm run ui:gen`で作る。CIの`npm run ui:check`が最新かを検査する
+Dock.tsx             薄い包み。glassEnabled → surfaceの変換などロジックだけを持つ
+```
+
+見た目の変化点はドックの内部に 1 つだけある: 生成物は外枠が `Canvas`（画面全面を覆う
+`fixed inset-0` の層。`pointer-events-none`）と、その中に絶対配置される `Panel`（元の
+Dock の外枠に対応。`absolute` で位置決め）の 2 段構造になる。クリックの挙動と見た目は
+変わらない（`Canvas` の層は `pointer-events-none` なので、ドックの外では何も遮らない）。
+`Dock.tsx`・`Dock.generated.tsx` と同じディレクトリの `Dock.test.tsx` が、置き換え前後で
+外枠のクラスの集合が一致することと、ハイライト・クリックの振る舞いが変わらないことを
+`renderToStaticMarkup`/`react-dom/client` で確かめている。
+
+最初に `Dock` から置き換えた理由、他のパネルへ広げるかの判断基準は
+[ADR-0014](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0014-ui-forge.md) を参照。
+
 **EDL のオン/オフは `SettingsModal`（設定画面）にあります。** `LayerPanel` には
 ありません。これは当初 `LayerPanel` にあったものが、[M3-8](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/M3-release-and-update.md) のモバイル最適化
 作業で、レンダースケール・点の形・ガラス表現・点予算の上限と並ぶ「モバイル最適化」
