@@ -45,24 +45,18 @@ struct IndexRun {
     count: usize,
 }
 
+#[cfg(not(feature = "parallel-lod"))]
 pub(crate) fn build_lod_index<S: CopcPointSource>(
     source: &S,
     center: (f64, f64, f64),
     halfsize: f64,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     fs: &dyn ScratchFs,
 ) -> Result<LodIndex> {
     cancel.check()?;
-    let total_points = u32::try_from(source.len()).map_err(|_| {
-        Error::InvalidInput("COPC writer supports at most u32::MAX points per file".into())
-    })?;
-    if params.max_points_per_node == 0 {
-        return Err(Error::InvalidInput(
-            "max_points_per_node must be greater than zero".into(),
-        ));
-    }
-    let max_points_per_node = params.max_points_per_node as usize;
+    let total_points = checked_total_points(source)?;
+    let max_points_per_node = checked_max_points_per_node(params)?;
     let root_run = write_root_index_run(total_points, cancel, fs)?;
     let mut order_offset = 0;
     let mut nodes = Vec::new();
@@ -91,10 +85,250 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
     Ok(LodIndex { nodes, order })
 }
 
+/// Parallel implementation: M4-8(`TaskSheets/M4-import-and-conversion.md`)で
+/// 後処理の内訳を実測したところ、octreeの分割(本関数)が後処理全体の約半分
+/// 〜7割を占めることが分かった(ノードごとのLAZ圧縮より大きい)。この関数の
+/// 分割は「ルートの直下の子(オクタント)ごとに完全に独立」という構造
+/// (あるオクタントの点は他のオクタントの分割処理と一切データを共有しない)
+/// なので、ルート直下の子をrayonで並列に処理する。
+///
+/// # 設計: なぜ「ルート直下の1段」だけを並列化するか
+///
+/// 各部分木を独立した一時ファイル(ローカルのorder)へ逐次(`LodIndexBuilder::assign`、
+/// 変更なし)で書き、並列処理が終わったらオクタント順(0→7)でグローバルな
+/// orderファイルへバイト列をそのまま連結する(オフセットを足すだけで中身は
+/// 変えない)。**これにより、連結後のorderファイルの中身は逐次版と完全に
+/// 一致する**(逐次版もDFS順=「ノード自身の割り当て→子をオクタント順に処理」
+/// という同じ順序でorderファイルを埋めるため)。
+///
+/// 全レベルを再帰的に並列化する(子のそのまた子も並列化する)案も検討したが、
+/// 部分木ごとに新しい一時ファイルを作るコストがあるため、葉に近い小さな
+/// 部分木まで並列化すると「小さすぎる仕事を並列化してかえって遅くなる」
+/// (`TaskSheets/M4-import-and-conversion.md`のM4-7がバッチサイズ64Kiで
+/// 観測した逆転と同種)おそれがある。ルート直下の1段(最大8並列)に留め、
+/// その中はこれまでどおり逐次の`assign`を再利用することで、新しい
+/// 一時ファイルの数を「最大8+各部分木が元々作る分」に抑えた。
+///
+/// # メモリ
+///
+/// 各部分木のローカルorderは一時ファイル(ディスク)であり、メモリに保持する
+/// のは標準の入出力バッファ(`INDEX_IO_BUFFER_BYTES`)程度。同時に走る部分木の
+/// 数は`rayon`のスレッドプール次第だが、`rayon`既定のプールサイズは論理コア数
+/// 程度であり、ノード数や点数には比例しない。
+#[cfg(feature = "parallel-lod")]
+pub(crate) fn build_lod_index<S: CopcPointSource>(
+    source: &S,
+    center: (f64, f64, f64),
+    halfsize: f64,
+    params: &CopcWriterParams,
+    cancel: &(dyn CancelCheck + Sync),
+    fs: &dyn ScratchFs,
+) -> Result<LodIndex> {
+    use rayon::prelude::*;
+
+    cancel.check()?;
+    let total_points = checked_total_points(source)?;
+    let max_points_per_node = checked_max_points_per_node(params)?;
+    let bounds = Bounds::cube(center, halfsize);
+    let root_run = write_root_index_run(total_points, cancel, fs)?;
+
+    // ルートが葉に収まるなら分割の余地が無い。逐次版と全く同じ処理にする。
+    if root_run.count <= max_points_per_node {
+        let mut order_offset = 0u64;
+        let mut nodes = Vec::new();
+        let order_writer = fs.create_temp("order")?;
+        let order = {
+            let mut order_writer = BufWriter::with_capacity(INDEX_IO_BUFFER_BYTES, order_writer);
+            append_index_run_to_order(&root_run, &mut order_writer, &mut order_offset, cancel)?;
+            nodes.push(LodNodeRange {
+                key: VoxelKey::root(),
+                start: 0,
+                count: root_run.count,
+            });
+            order_writer
+                .flush()
+                .map_err(|e| Error::io("flush LOD index order", e))?;
+            let boxed = order_writer
+                .into_inner()
+                .map_err(|e| Error::io("flush LOD index order", e.into_error()))?;
+            boxed.finish_temp()?
+        };
+        return Ok(LodIndex { nodes, order });
+    }
+
+    // ルート自身の割り当て分は、逐次版の`LodIndexBuilder::assign`と全く同じ
+    // 処理でグローバルなorderファイルの先頭に書く(オクタント分割そのものは
+    // 1回しか起きないため、ここは逐次のままでコストは小さい)。
+    let mut children = partition_index_run(source, &root_run, bounds, cancel, fs)?;
+    let mut order_offset = 0u64;
+    let mut nodes = Vec::new();
+    let order_writer = fs.create_temp("order")?;
+    let mut order_writer = BufWriter::with_capacity(INDEX_IO_BUFFER_BYTES, order_writer);
+    let selected_counts = append_lod_selection_to_order(
+        &children,
+        max_points_per_node,
+        &mut order_writer,
+        &mut order_offset,
+        cancel,
+    )?;
+    let selected_total: usize = selected_counts.iter().sum();
+    nodes.push(LodNodeRange {
+        key: VoxelKey::root(),
+        start: 0,
+        count: selected_total,
+    });
+
+    // 残った子をオクタント順を保ったまま集め、並列に処理する。
+    let mut remaining: Vec<(u8, IndexRun, Bounds)> = Vec::new();
+    for (octant, child) in children.iter_mut().enumerate() {
+        let Some(mut child_run) = child.take() else {
+            continue;
+        };
+        let selected = selected_counts[octant];
+        if selected >= child_run.count {
+            continue;
+        }
+        child_run.start += selected as u64 * INDEX_RECORD_BYTES;
+        child_run.count -= selected;
+        remaining.push((octant as u8, child_run, bounds.octant(octant as u8)));
+    }
+
+    cancel.check()?;
+    let branch_results: Vec<Result<BranchSubtree>> = remaining
+        .into_par_iter()
+        .map(|(octant, child_run, child_bounds)| {
+            let key = VoxelKey::root().child(octant)?;
+            build_branch_subtree(
+                source,
+                key,
+                child_run,
+                child_bounds,
+                max_points_per_node,
+                cancel,
+                fs,
+            )
+        })
+        .collect();
+
+    // オクタント順(`remaining`に積んだ順=0→7)のまま連結するので、逐次版と
+    // 同じDFS順になり、orderファイルの中身はバイト単位で一致する。
+    for result in branch_results {
+        let branch = result?;
+        let base_offset = order_offset;
+        copy_scratch_reader(branch.order.as_ref(), branch.order_len, &mut order_writer)?;
+        order_offset = order_offset
+            .checked_add(branch.order_len)
+            .ok_or_else(|| Error::InvalidInput("LOD index order exceeds u64 range".into()))?;
+        for mut node in branch.nodes {
+            node.start = node
+                .start
+                .checked_add(base_offset)
+                .ok_or_else(|| Error::InvalidInput("LOD index order exceeds u64 range".into()))?;
+            nodes.push(node);
+        }
+    }
+
+    order_writer
+        .flush()
+        .map_err(|e| Error::io("flush LOD index order", e))?;
+    let order = order_writer
+        .into_inner()
+        .map_err(|e| Error::io("flush LOD index order", e.into_error()))?
+        .finish_temp()?;
+    nodes.sort_by_key(|node| node.key);
+    Ok(LodIndex { nodes, order })
+}
+
+/// 1つの部分木(あるオクタント以下の全て)の処理結果。並列ワーカーから
+/// メインスレッドへ返すためのまとまり。
+#[cfg(feature = "parallel-lod")]
+struct BranchSubtree {
+    /// この部分木が見つけた全ノード(`start`はこの部分木のローカルorderの中の
+    /// 相対オフセット。呼び出し側がグローバルなオフセットへ足し直す)。
+    nodes: Vec<LodNodeRange>,
+    /// この部分木専用のローカルorder一時ファイル。
+    order: Box<dyn ScratchReader>,
+    /// ローカルorderの総バイト数。
+    order_len: u64,
+}
+
+/// 部分木を1つ、独立したローカルの一時ファイルへ逐次処理する。
+/// `LodIndexBuilder::assign`をそのまま再利用する(分割アルゴリズム自体は
+/// 変えていない。ローカルのoffset/nodesを使うだけ)。
+#[cfg(feature = "parallel-lod")]
+fn build_branch_subtree<S: CopcPointSource>(
+    source: &S,
+    key: VoxelKey,
+    run: IndexRun,
+    bounds: Bounds,
+    max_points_per_node: usize,
+    cancel: &(dyn CancelCheck + Sync),
+    fs: &dyn ScratchFs,
+) -> Result<BranchSubtree> {
+    let mut order_offset = 0u64;
+    let mut nodes = Vec::new();
+    let order_writer = fs.create_temp("order-branch")?;
+    let mut order_writer = BufWriter::with_capacity(INDEX_IO_BUFFER_BYTES, order_writer);
+    {
+        let mut builder = LodIndexBuilder {
+            source,
+            max_points_per_node,
+            cancel,
+            fs,
+            order_writer: &mut order_writer,
+            order_offset: &mut order_offset,
+            nodes: &mut nodes,
+        };
+        builder.assign(key, run, bounds)?;
+    }
+    order_writer
+        .flush()
+        .map_err(|e| Error::io("flush LOD branch order", e))?;
+    let order = order_writer
+        .into_inner()
+        .map_err(|e| Error::io("flush LOD branch order", e.into_error()))?
+        .finish_temp()?;
+    Ok(BranchSubtree {
+        nodes,
+        order,
+        order_len: order_offset,
+    })
+}
+
+/// 部分木のローカルorderの中身を、グローバルなorderファイルへそのまま
+/// (バイトを変えずに)連結する。
+#[cfg(feature = "parallel-lod")]
+fn copy_scratch_reader<W: Write>(reader: &dyn ScratchReader, len: u64, out: &mut W) -> Result<()> {
+    let mut stream = reader.open_at(0)?;
+    let copied =
+        std::io::copy(&mut stream, out).map_err(|e| Error::io("copy LOD branch order", e))?;
+    if copied != len {
+        return Err(Error::InvalidData(format!(
+            "LOD branch order copy is {copied} bytes, expected {len}"
+        )));
+    }
+    Ok(())
+}
+
+fn checked_total_points<S: CopcPointSource>(source: &S) -> Result<u32> {
+    u32::try_from(source.len()).map_err(|_| {
+        Error::InvalidInput("COPC writer supports at most u32::MAX points per file".into())
+    })
+}
+
+fn checked_max_points_per_node(params: &CopcWriterParams) -> Result<usize> {
+    if params.max_points_per_node == 0 {
+        return Err(Error::InvalidInput(
+            "max_points_per_node must be greater than zero".into(),
+        ));
+    }
+    Ok(params.max_points_per_node as usize)
+}
+
 struct LodIndexBuilder<'a, S: CopcPointSource, W: Write> {
     source: &'a S,
     max_points_per_node: usize,
-    cancel: &'a dyn CancelCheck,
+    cancel: &'a (dyn CancelCheck + Sync),
     fs: &'a dyn ScratchFs,
     order_writer: &'a mut W,
     order_offset: &'a mut u64,
@@ -162,7 +396,7 @@ impl<S: CopcPointSource, W: Write> LodIndexBuilder<'_, S, W> {
 
 fn write_root_index_run(
     total_points: u32,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     fs: &dyn ScratchFs,
 ) -> Result<IndexRun> {
     let temp = fs.create_temp("root")?;
@@ -190,7 +424,7 @@ fn partition_index_run<S: CopcPointSource>(
     source: &S,
     run: &IndexRun,
     bounds: Bounds,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     fs: &dyn ScratchFs,
 ) -> Result<[Option<IndexRun>; 8]> {
     let mut reader = open_index_run(run)?;
@@ -243,7 +477,7 @@ fn append_lod_selection_to_order<W: Write>(
     max_points_per_node: usize,
     order_writer: &mut W,
     order_offset: &mut u64,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<[usize; 8]> {
     let mut readers: [Option<BufReader<Box<dyn Read + Send>>>; 8] = std::array::from_fn(|_| None);
     for octant in 0..8 {
@@ -288,7 +522,7 @@ fn append_index_run_to_order<W: Write>(
     run: &IndexRun,
     order_writer: &mut W,
     order_offset: &mut u64,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<()> {
     let mut reader = open_index_run(run)?;
     for read_index in 0..run.count {

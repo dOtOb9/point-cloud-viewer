@@ -289,6 +289,86 @@ $ npm run build:wasm / typecheck / lint / test / build
 3. 変換が完了したCOPCファイルが、今までどおり正しく表示されることを確認する
    (M4-6b節の「所有者が確かめる手順」と同じ)
 
+## M4-8 追記: octreeの分割(LOD構築)を並列化した(2026-10-03、Opus計画・Sonnet実装)
+
+### 背景
+
+`TaskSheets/M4-import-and-conversion.md`のM4-8で、変換の後処理(octree構築・ノードごとの
+LAZ圧縮・書き出し)の内訳を実測したところ、**octreeの分割(LOD構築、`lod.rs`の
+`build_lod_index`)が後処理全体の約半分〜7割を占める最大の部分**だと分かった。この分割は
+「ルート直下のオクタントごとに独立」という構造なので並列化した。詳細・実測値はタスクシート参照。
+
+### 変更したこと
+
+1. **`lod.rs`に`build_lod_index`の並列版を追加した**(`parallel-lod`フィーチャ)。
+   ルートを8オクタントへ分割した後、**残った子(最大8個)をオクタントごとに独立した
+   ローカルの一時ファイルへ`rayon`で並列に処理**し、オクタント順(0→7)で結果を
+   グローバルなorderファイルへそのまま連結する(オフセットを足すだけ)。逐次版も
+   同じDFS順でorderファイルを埋めるため、**連結後の内容は逐次版とバイト単位で一致する**。
+   全レベルを再帰的に並列化せず「ルート直下の1段」に留めた理由はタスクシート参照
+   (部分木ごとに新しい一時ファイルを作るコストと、葉に近い小さい部分木まで並列化
+   することの見合わなさ)。
+2. **`CopcPointSource`トレイトに`Sync`を上位トレイトとして追加した**(`source.rs`)。
+   複数スレッドから`&S`を共有して`xyz()`を呼ぶ必要があるため。これに伴い、
+   `SpillSource`(`source.rs`)・`SpillReader`(`spill.rs`)が内部の使い回しバッファに
+   使っていた`RefCell`(`Sync`でない)を`Mutex`に変えた。`record_into`(ノード圧縮が
+   単一スレッドから呼ぶ)からしか触れないため、実質的なロック競合は無い。
+3. **`copc_core::CancelCheck`トレイトオブジェクトの参照型を`&dyn CancelCheck`から
+   `&(dyn CancelCheck + Sync)`に変えた**(`lod.rs`・`writer.rs`・`validate.rs`、および
+   `crates/pcv-convert/src/streaming.rs`の対応箇所)。同じ理由(複数スレッドから
+   `cancel.check()`を呼ぶ)。`copc_core`自体は編集できない(vendorしていない外部
+   クレート)ため、トレイト定義は変えず受け取る側の型だけを変えた。既存の実装
+   (`NeverCancel`・`AtomicCancel`)はどちらも元から`Sync`なので、呼び出し側の
+   コード変更は不要だった。
+4. **`Cargo.toml`の`parallel`フィーチャを`parallel-lod`/`parallel-compress`に分割した。**
+   `parallel-compress`は**upstream(`copc-writer` 0.9.0そのもの)に元からあった**
+   ノードごとのLAZ圧縮の並列実装(`writer.rs`の`#[cfg(feature = "parallel")]
+   compress_nodes`。本タスクでは一切変更していない)を指す。これまで一度も有効化
+   されたことが無く未検証だったため、本タスクで実際に試した。
+5. **計測専用API(`PostProcessStageTimings`・`write_copc_from_spill_with_fs_and_timings`)を
+   `writer.rs`に追加した。** 本番の変換経路は使わない。内訳の実測に使った
+   (`crates/pcv-convert/examples/post_process_stage_bench.rs`)。
+
+### `parallel-compress`を採用しなかった理由
+
+実際に有効にして`native_output_hash_matches_recorded_value`(ネイティブ出力のバイト同一性の
+回帰テスト)を実行したところ、**出力がバイト単位で変わった**(ファイルサイズ自体が数バイト
+違う。ヘッダーから点データ領域まで広範囲に差分がある)。使い捨ての比較スクリプトで調べた
+ところ、「連続した1本の`LasZipCompressor`でチャンク境界ごとに`finish_current_chunk()`する」
+(逐次版)場合と、「ノードごとに新しい`LasZipCompressor`を作って独立に圧縮する」
+(upstreamの並列版)場合とで、**LAZの圧縮バイト列そのものが異なる**ことが分かった。
+`laz`クレート内部の挙動差が原因と見られるが、深追いしていない(本タスクの担当範囲は
+`copc-writer`の利用方法であり、`laz`クレート自体のバグ調査は範囲外と判断した)。
+
+「どうしてもバイト単位の一致を保てない場合は、止まって理由を報告する(期待値を書き換えて
+済ませないこと)」という約束に従い、**`parallel-compress`は採用しなかった**
+(`crates/pcv-convert`は`parallel-lod`だけを指定する)。`parallel-compress`自体のコードは
+削除せず、フィーチャとして残してある(将来`laz`クレート側の挙動差が解消されるか、
+バイト同一性を要求しない用途が出てきたら使える)。
+
+### 確認したこと
+
+- `cargo test --manifest-path vendor/copc-writer/Cargo.toml --release --features parallel-lod`:
+  既存19件(`lod.rs`の既存テストが並列版を実際に通す)+新規2件
+  (`parallel_lod_open_files_bounded`・`parallel_lod_cancel`)+`scratch_read_is_bounded`、
+  合計22件成功
+- `cargo test -p pcv-convert --test streaming_conversion`(`native_output_hash_matches_recorded_value`
+  含む): `parallel-lod`有効・フィーチャ無しのどちらでも成功。`parallel-compress`を混ぜると失敗
+  (上記の理由)
+- 新規テスト`parallel_lod_open_files_bounded.rs`: 点数が10倍でも、同時に開いている
+  一時ファイル数のピークが10倍にはならない(3倍以内)ことを確認
+- 新規テスト`parallel_lod_cancel.rs`: octreeの分割が並列化された後もキャンセルが働き、
+  キャンセル経路でも一時ファイルが全て手放されることを確認
+- `cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown`:
+  成功。`crates/pcv-wasm`は`parallel-lod`/`parallel-compress`のどちらも有効にしていない
+  (別ワークスペースで`default-features = false`のまま)ため、`rayon`はwasm32向けビルドに
+  一切入り込まない。ただし`CopcPointSource: Sync`化・`RefCell`→`Mutex`化はフィーチャに
+  関わらず常にコンパイルされる変更のため、生成されるwasmバイナリのバイト列自体は変わる
+  (`npm run build:wasm`で再生成した。TypeScript向けの型定義に差分は無い)
+
+実測値(beer.laz、66,848,096点)・判断の詳細は`TaskSheets/M4-import-and-conversion.md`の
+M4-8を参照。
+
 ## いつ削除するか
 
 `main`に一度取り込んだ後は、Web版の変換経路(`crates/pcv-wasm`)が

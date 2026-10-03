@@ -236,7 +236,7 @@ pub fn convert<R, F>(
     output: &Path,
     spill_dir: &Path,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     on_progress: F,
 ) -> copc_core::Result<()>
 where
@@ -274,7 +274,7 @@ pub fn convert_path<F>(
     output: &Path,
     spill_dir: &Path,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     on_progress: F,
 ) -> copc_core::Result<()>
 where

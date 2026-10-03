@@ -11,6 +11,7 @@
 
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use copc_core::{
@@ -77,6 +78,27 @@ impl Default for CopcWriterParams {
     }
 }
 
+/// 計測専用: 後処理(octree構築・ノード圧縮・書き出し)の内訳。
+///
+/// 本番の変換経路(`write_copc_from_spill_with_fs`・`write_streaming_with_cancel`等)は
+/// これを使わない(常に`None`を渡す。計測コストはInstant::now()呼び出し数回分のみで、
+/// `None`のときはその呼び出しさえ発生しない)。M4-8(`TaskSheets/M4-import-and-conversion.md`)の
+/// 計測ハーネス(`crates/pcv-convert/examples/post_process_stage_bench.rs`)専用に、
+/// `write_copc_from_spill_with_fs_and_timings`経由で使う。
+///
+/// 3つのフィールドの合計は、後処理全体(`write_copc_from_spill_with_fs`1回の呼び出し)の
+/// 所要時間とほぼ一致する(計測区間に漏れが無いように、関数の実行区間を過不足なく
+/// 3つに割っている)。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PostProcessStageTimings {
+    /// octreeの分割(LODの索引作り、点のノードへの振り分け。`build_lod_index`)。
+    pub lod_index_build: Duration,
+    /// ノードごとのLAZ圧縮(圧縮したバイト列を出力ストリームへ書く部分を含む。`compress_nodes`)。
+    pub node_compression: Duration,
+    /// 出力ファイルのヘッダー・VLR・hierarchyの書き出し(圧縮以外の全て)。
+    pub header_and_hierarchy_write: Duration,
+}
+
 #[cfg(feature = "native-fs")]
 pub fn write_source<S: CopcPointSource>(
     path: &Path,
@@ -105,7 +127,7 @@ pub fn write_source_with_cancel<S: CopcPointSource>(
     bounds: Bounds,
     params: &CopcWriterParams,
     metadata: &CopcWriteMetadata,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<()> {
     cancel.check()?;
     if source.is_empty() {
@@ -127,6 +149,7 @@ pub fn write_source_with_cancel<S: CopcPointSource>(
         &metadata.to_output(),
         None,
         &fs,
+        None,
     )
 }
 
@@ -138,7 +161,7 @@ pub fn write_streaming_with_cancel<I>(
     params: &CopcWriterParams,
     metadata: &CopcWriteMetadata,
     spill_dir: &Path,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<()>
 where
     I: IntoIterator<Item = Result<LasPointRecord>>,
@@ -160,7 +183,15 @@ where
     cancel.check()?;
     let reader = spill.finalize()?;
     let lod_fs = NativeScratchFs::new(std::env::temp_dir());
-    write_copc_from_spill(path, reader, params, cancel, &metadata.to_output(), &lod_fs)
+    write_copc_from_spill(
+        path,
+        reader,
+        params,
+        cancel,
+        &metadata.to_output(),
+        &lod_fs,
+        None,
+    )
 }
 
 #[cfg(feature = "native-fs")]
@@ -169,7 +200,7 @@ pub fn convert_las_to_copc_streaming(
     copc_path: &Path,
     params: &CopcWriterParams,
     spill_dir: &Path,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<()> {
     convert_las_to_copc_streaming_inner(las_path, copc_path, params, spill_dir, cancel, None)
 }
@@ -182,7 +213,7 @@ pub fn convert_las_to_copc_streaming_with_crs_wkt_override(
     copc_path: &Path,
     params: &CopcWriterParams,
     spill_dir: &Path,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     crs_wkt_override: Option<&str>,
 ) -> Result<()> {
     convert_las_to_copc_streaming_inner(
@@ -201,7 +232,7 @@ fn convert_las_to_copc_streaming_inner(
     copc_path: &Path,
     params: &CopcWriterParams,
     spill_dir: &Path,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     crs_wkt_override: Option<&str>,
 ) -> Result<()> {
     cancel.check()?;
@@ -241,7 +272,15 @@ fn convert_las_to_copc_streaming_inner(
     cancel.check()?;
     let reader = spill.finalize()?;
     let lod_fs = NativeScratchFs::new(std::env::temp_dir());
-    write_copc_from_spill(copc_path, reader, params, cancel, &output_metadata, &lod_fs)
+    write_copc_from_spill(
+        copc_path,
+        reader,
+        params,
+        cancel,
+        &output_metadata,
+        &lod_fs,
+        None,
+    )
 }
 
 /// M4-6b(`TaskSheets/M4-import-and-conversion.md`参照)で追加した公開関数。
@@ -261,19 +300,53 @@ pub fn write_copc_from_spill_with_fs(
     path: &Path,
     reader: SpillReader,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     metadata: &CopcWriteMetadata,
 ) -> Result<()> {
-    write_copc_from_spill(path, reader, params, cancel, &metadata.to_output(), fs)
+    write_copc_from_spill(
+        path,
+        reader,
+        params,
+        cancel,
+        &metadata.to_output(),
+        fs,
+        None,
+    )
 }
 
+/// M4-8(`TaskSheets/M4-import-and-conversion.md`)の計測ハーネス専用。
+/// `write_copc_from_spill_with_fs`と同じ処理を行い、あわせて内訳
+/// ([`PostProcessStageTimings`])を返す。本番の変換経路はこちらを呼ばない。
+pub fn write_copc_from_spill_with_fs_and_timings(
+    fs: &dyn ScratchFs,
+    path: &Path,
+    reader: SpillReader,
+    params: &CopcWriterParams,
+    cancel: &(dyn CancelCheck + Sync),
+    metadata: &CopcWriteMetadata,
+) -> Result<PostProcessStageTimings> {
+    let mut timings = PostProcessStageTimings::default();
+    write_copc_from_spill(
+        path,
+        reader,
+        params,
+        cancel,
+        &metadata.to_output(),
+        fs,
+        Some(&mut timings),
+    )?;
+    Ok(timings)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_copc_from_spill(
     path: &Path,
     reader: SpillReader,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     metadata: &OutputLasMetadata,
     fs: &dyn ScratchFs,
+    stage_timings: Option<&mut PostProcessStageTimings>,
 ) -> Result<()> {
     cancel.check()?;
     if params.max_points_per_node == 0 {
@@ -301,6 +374,7 @@ fn write_copc_from_spill(
         metadata,
         Some(stats),
         fs,
+        stage_timings,
     )
 }
 
@@ -311,10 +385,11 @@ fn write_copc_inner<S: CopcPointSource>(
     has_color: bool,
     bounds: Bounds,
     params: &CopcWriterParams,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
     metadata: &OutputLasMetadata,
     intake_stats: Option<PointStats>,
     fs: &dyn ScratchFs,
+    mut stage_timings: Option<&mut PostProcessStageTimings>,
 ) -> Result<()> {
     cancel.check()?;
     if params.max_points_per_node == 0 {
@@ -362,9 +437,14 @@ fn write_copc_inner<S: CopcPointSource>(
     };
     let (center, halfsize) = cube_from_bounds(&bounds);
 
+    let lod_build_start = Instant::now();
     let lod_index = build_lod_index(source, center, halfsize, params, cancel, fs)?;
+    if let Some(timings) = stage_timings.as_mut() {
+        timings.lod_index_build += lod_build_start.elapsed();
+    }
     cancel.check()?;
 
+    let header_write_start = Instant::now();
     let var_vlr = LazVlrBuilder::default()
         .with_point_format(point_format_id, extra_byte_count)
         .map_err(|e| Error::Las(format!("laz items: {e}")))?
@@ -486,6 +566,11 @@ fn write_copc_inner<S: CopcPointSource>(
         )));
     }
 
+    if let Some(timings) = stage_timings.as_mut() {
+        timings.header_and_hierarchy_write += header_write_start.elapsed();
+    }
+
+    let compress_start = Instant::now();
     let hierarchy = compress_nodes(
         &mut writer,
         &var_vlr,
@@ -497,7 +582,11 @@ fn write_copc_inner<S: CopcPointSource>(
         &point_format,
         cancel,
     )?;
+    if let Some(timings) = stage_timings.as_mut() {
+        timings.node_compression += compress_start.elapsed();
+    }
 
+    let hierarchy_write_start = Instant::now();
     let hierarchy_evlr_start = writer
         .stream_position()
         .map_err(|e| Error::io("record hierarchy EVLR start", e))?;
@@ -560,6 +649,9 @@ fn write_copc_inner<S: CopcPointSource>(
         .into_inner()
         .map_err(|e| Error::io("flush COPC file", e.into_error()))?;
     output_writer.finish_output()?;
+    if let Some(timings) = stage_timings.as_mut() {
+        timings.header_and_hierarchy_write += hierarchy_write_start.elapsed();
+    }
     Ok(())
 }
 
@@ -582,7 +674,7 @@ fn encode_node_points<S: CopcPointSource>(
     scale: (f64, f64, f64),
     offset: (f64, f64, f64),
     point_format: &LasFormat,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<()> {
     raw.clear();
     let raw_len = node
@@ -625,7 +717,7 @@ fn hierarchy_entry(key: VoxelKey, offset: u64, byte_size: u64, count: usize) -> 
 /// Compress each LOD node into one COPC chunk, returning the hierarchy
 /// entries. Sequential implementation: one `LasZipCompressor` streams every
 /// chunk in order.
-#[cfg(not(feature = "parallel"))]
+#[cfg(not(feature = "parallel-compress"))]
 #[allow(clippy::too_many_arguments)]
 fn compress_nodes<W: Write + Seek + Send + Sync, S: CopcPointSource>(
     writer: &mut W,
@@ -636,7 +728,7 @@ fn compress_nodes<W: Write + Seek + Send + Sync, S: CopcPointSource>(
     offset: (f64, f64, f64),
     record_len: usize,
     point_format: &LasFormat,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<Vec<Entry>> {
     let mut compressor = LasZipCompressor::new(&mut *writer, var_vlr.clone())
         .map_err(|e| Error::Las(format!("compressor: {e}")))?;
@@ -702,7 +794,7 @@ fn compress_nodes<W: Write + Seek + Send + Sync, S: CopcPointSource>(
 /// Peak memory is roughly `2 * batch * max_points_per_node * record_len`
 /// bytes for the raw and compressed batch buffers, with
 /// `batch = 2 * rayon::current_num_threads()`.
-#[cfg(feature = "parallel")]
+#[cfg(feature = "parallel-compress")]
 #[allow(clippy::too_many_arguments)]
 fn compress_nodes<W: Write + Seek + Send, S: CopcPointSource>(
     writer: &mut W,
@@ -713,7 +805,7 @@ fn compress_nodes<W: Write + Seek + Send, S: CopcPointSource>(
     offset: (f64, f64, f64),
     record_len: usize,
     point_format: &LasFormat,
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<Vec<Entry>> {
     use laz::laszip::{ChunkTable, ChunkTableEntry};
     use rayon::prelude::*;
@@ -803,7 +895,7 @@ fn compress_nodes<W: Write + Seek + Send, S: CopcPointSource>(
 
 /// Compress one node's raw points as a standalone variable-size LAZ chunk and
 /// return exactly the chunk bytes (no chunk-table offset, no chunk table).
-#[cfg(feature = "parallel")]
+#[cfg(feature = "parallel-compress")]
 fn compress_standalone_chunk(raw_points: &[u8], var_vlr: &laz::LazVlr) -> Result<Vec<u8>> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     let mut compressor = LasZipCompressor::new(&mut cursor, var_vlr.clone())

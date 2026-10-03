@@ -136,7 +136,7 @@ pub(crate) fn validate_source_points<S: CopcPointSource>(
     bounds: Bounds,
     scale: (f64, f64, f64),
     offset: (f64, f64, f64),
-    cancel: &dyn CancelCheck,
+    cancel: &(dyn CancelCheck + Sync),
 ) -> Result<PointStats> {
     let extra_byte_count = usize::from(source.extra_byte_count());
     let mut stats = PointStats::new();

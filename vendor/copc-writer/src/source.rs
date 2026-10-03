@@ -1,6 +1,6 @@
 //! Point-data sources consumed by the COPC writer.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use copc_core::{Bounds, ColumnData, Error, LasColumnBatch, LasDimension, LasPointRecord, Result};
 
@@ -35,7 +35,13 @@ pub struct CopcPointFields {
 }
 
 /// Abstract point-data source for COPC emission.
-pub trait CopcPointSource {
+///
+/// M4-8(`TaskSheets/M4-import-and-conversion.md`)でoctree分割(LOD構築)を
+/// 並列化するため、`Sync`を上位トレイトにした。これにより`&S`を複数スレッド
+/// から共有して`xyz`を呼べる(各実装が内部可変状態を持つ場合は`Mutex`等の
+/// スレッド安全な手段を使う必要がある。`SpillSource`/`SpillReader`の
+/// `record_scratch`がその例)。
+pub trait CopcPointSource: Sync {
     fn len(&self) -> usize;
     /// Return the coordinates used for octree assignment.
     fn xyz(&self, index: usize) -> Result<(f64, f64, f64)>;
@@ -347,14 +353,16 @@ fn unexpected_column_type(dimension: LasDimension, expected: &str, actual: &Colu
 /// Source view over a finalized writer spill file.
 pub(crate) struct SpillSource<'a> {
     reader: &'a SpillReader,
-    scratch: RefCell<LasPointRecord>,
+    /// M4-8: `RefCell`は`Sync`でないため`Mutex`にした
+    /// (`spill.rs`の`SpillReader::record_scratch`と同じ理由)。
+    scratch: Mutex<LasPointRecord>,
 }
 
 impl<'a> SpillSource<'a> {
     pub(crate) fn new(reader: &'a SpillReader) -> Self {
         Self {
             reader,
-            scratch: RefCell::new(LasPointRecord::default()),
+            scratch: Mutex::new(LasPointRecord::default()),
         }
     }
 }
@@ -370,7 +378,10 @@ impl CopcPointSource for SpillSource<'_> {
     }
 
     fn fields_into(&self, index: usize, out: &mut CopcPointFields) -> Result<()> {
-        let mut record = self.scratch.borrow_mut();
+        let mut record = self
+            .scratch
+            .lock()
+            .expect("scratchのロックが汚染されていない");
         self.reader.record_into(index, &mut record)?;
         out.x = record.x;
         out.y = record.y;

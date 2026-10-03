@@ -7,8 +7,8 @@
 //! +mmapで、振る舞いは変わっていない(改修前後で出力がバイト同一であることを
 //! 確認済み。`PATCH.md`参照)。
 
-use std::cell::RefCell;
 use std::io::{BufWriter, Write};
+use std::sync::Mutex;
 
 use copc_core::{
     deserialize_le_into, serialize_le, Bounds, Error, LasPointRecord, Result, StreamingLayout,
@@ -115,7 +115,7 @@ impl SpillWriter {
             count,
             bounds,
             stats: self.stats,
-            record_scratch: RefCell::new(Vec::new()),
+            record_scratch: Mutex::new(Vec::new()),
         })
     }
 }
@@ -138,7 +138,15 @@ pub struct SpillReader {
     bounds: Bounds,
     stats: PointStats,
     /// `record_into`が読み込みに使い回すバッファ(毎回アロケートしないため)。
-    record_scratch: RefCell<Vec<u8>>,
+    ///
+    /// M4-8(`TaskSheets/M4-import-and-conversion.md`): octree分割の並列化で
+    /// `SpillSource`(ひいては`SpillReader`)を複数スレッドから`&self`で共有する
+    /// 必要が生じた(`CopcPointSource: Sync`)。`RefCell`は`Sync`でないため
+    /// `Mutex`に変えた。`record_into`はノード圧縮(`encode_node_points`)の
+    /// 単一スレッドループからしか呼ばれない(並列化したのはoctree分割の
+    /// `xyz_at`呼び出しだけで、こちらは`record_scratch`に一切触れない)ため、
+    /// 競合は実質発生せず、ロック自体のコストのみが追加の負担になる。
+    record_scratch: Mutex<Vec<u8>>,
 }
 
 impl SpillReader {
@@ -207,7 +215,10 @@ impl SpillReader {
             )));
         }
         let start = self.record_offset(index)?;
-        let mut scratch = self.record_scratch.borrow_mut();
+        let mut scratch = self
+            .record_scratch
+            .lock()
+            .expect("record_scratchのロックが汚染されていない");
         if scratch.len() != self.record_width {
             scratch.resize(self.record_width, 0);
         }
