@@ -1183,6 +1183,133 @@ intensity=65535が1点だけ混ざる）、レンジ全体がその外れ値ま�
 全体をスキャンして書き込む値で、1点の外れ値ではなく実データの範囲その
 ものであるため）。
 
+#### 追記: RGBモードで点群が真っ黒になる不具合の調査と修正
+
+所有者の報告:「RGB が真っ黒。他（標高・強度・分類）は多分正常」。
+
+**調査（コーディネーターの見立てを実データで確認した）**
+
+`crates/pcv-core/src/copc.rs`の`read_node`が、LASの色（16bit）を
+`(c.red >> 8) as u8`のように無条件で8bitへ落としていた。この式は、
+**0〜255の値がそのまま16bit欄に入っている（LAS仕様違反だが実在する）
+ファイルに対しては全点を0にしてしまう**（例: 10 >> 8 == 0）。これが
+見立てだった。実際にファイルを読んで確かめるため、`crates/pcv-convert/
+examples/`に一時的な調査用プログラム（R/G/Bそれぞれの最小・最大値を
+数える。`las::Reader`で全点を読む）を置いて実行した（**コミットはして
+いない**。調査専用で、以後は不要なため）。
+
+| ファイル | point format | 走査点数 | R | G | B | 判定 |
+|---|---|---|---|---|---|---|
+| `data\autzen-classified.copc.laz` | 7 | 10,653,336 | 2048–63744 | 8704–65024 | 18688–63488 | 16bit（255超あり） |
+| `data\beer.laz` | 2 | 66,848,096 | 0–255 | 0–255 | 0–255 | **8bit相当（全点255以下）** |
+| `data\points-jack_he.copc.laz` | 7 | 382,130,047 | 0–65279 | 0–65279 | 0–65279 | 16bit（255超あり） |
+
+（`sofi.copc.laz`はpoint format 6でRGBを持たないため対象外。指示通り
+スキップした。）
+
+**変換で色が落ちていないかの確認:** `beer.laz`を`pcv-convert`の本番変換
+経路（`cargo run -p pcv-convert --release --example convert_streaming`、
+out-of-coreのstreaming変換。`copc-writer`の`convert_las_to_copc_streaming`
+を呼ぶだけの既存exampleをそのまま使った）でCOPCへ変換し、同じ調査用
+プログラムで出力を読み直した。
+
+```
+=== beer-converted.copc.laz（beer.lazを変換した出力） ===
+point format id: 7
+走査した点数: 66,848,096
+R: min=0 max=255 / G: min=0 max=255 / B: min=0 max=255
+全チャンネルが255以下か(=8bitっぽいか): true
+```
+
+変換後も値はそのまま（0–255）で、point formatが2→7（COPCが要求する
+RGB付きフォーマット）に変わっただけだった。**変換で色が落ちているわけ
+ではない。**
+
+**判断:** 見立てどおりだった。`beer.laz`は0–255の範囲にしか値が無い
+8bit相当のRGBを16bit欄にそのまま持つファイルで、`autzen-classified.
+copc.laz`と`points-jack_he.copc.laz`はどちらも実際に255を超える値を
+持つ本物の16bitデータだった。`beer.laz`を`pcv-convert`で変換してビュー
+アで開き、着色を「RGB」にすると、変換後も8bit相当の値が保たれたまま
+`read_node`の`>> 8`に通り、全点が0（真っ黒）になる、という経路で不具合
+が再現する。
+
+**修正:** `crates/pcv-core/src/color_depth.rs`を新設し、色が8bitか16bit
+かを判定する純粋関数`detect`と、判定結果に応じて16bit幅の値を8bitへ
+変換する`ColorBitDepth::to_u8`を置いた。
+
+- 判定方法: `CopcFile::open`/`from_reader`が**ファイルを開いたときに
+  1回だけ**、ルートノード（無ければhierarchy中最も粗いノード）を実際に
+  読み、その点のR/G/Bをすべて`detect`に渡す。1つでも255を超える
+  チャンネルがあれば16bit、全チャンネルが255以下なら8bitと判定し、
+  結果を`CopcFile`のフィールド（`color_bit_depth: Option<ColorBitDepth>`）
+  にキャッシュする。`read_node`は毎回この判定済みの値を使い回すだけで、
+  **ノードごとに判定し直すことはしない**（ノードごとに判定すると、
+  たまたま暗い部分だけを含むノードが8bitと誤判定され、同じファイルの
+  中でノードの境界を境に明るさが不連続に変わってしまうため）
+- 誤判定しうる場合: 本当に16bitで、かつ判定に使ったノードの点がたまたま
+  全て暗い（R/G/Bのいずれも255以下にしかならない）場合は8bitと誤判定
+  される。ただしこの場合でも、8bitとして素通しした結果（例: 128なら
+  そのまま128）は、本来の16bit値を`>> 8`した結果（128 >> 8 == 0）より
+  元の明るさに近い絵になるため、今回の不具合（本当に暗いだけの16bit
+  データを真っ黒にしてしまう）よりは安全側に倒れると判断した
+  （`color_depth.rs`冒頭のコメントに詳しく記録した）
+- `pcv-wasm`（Web版）は`pcv_core::CopcFile::read_node`をそのまま呼ぶ
+  だけなので、`pcv-core`側のこの修正だけでTauri版・Web版の両方に効く
+  （`crates/pcv-wasm/src/lib.rs`の`read_node`を確認した。Web版固有の
+  追加対応は不要）
+
+**テスト:**
+
+- `color_depth.rs`の単体テスト: 8bitの入力（全チャンネル255以下）、
+  16bitの入力（255を超えるチャンネルを含む）、全点が0の入力の3パターン
+  と、`ColorBitDepth::to_u8`の両モードの変換を確認した
+- `copc.rs`に統合テストを2つ追加した。どちらも`copc-writer`で小さな
+  合成COPCをその場で書き出し、`read_node`で読んだバイト列から色を
+  直接取り出して確認する
+  - `read_node_does_not_turn_8bit_color_into_black`: 全点のRGBを
+    (10, 20, 30)（8bit相当）にしたCOPCを読み、色が(0,0,0)にならず
+    (10,20,30,255)のまま出ることを確認する回帰テスト
+  - `read_node_still_shifts_genuine_16bit_color_down_to_8bit`: 全点の
+    RGBを(2048, 8704, 63744)（255超、実データに近い値）にしたCOPCを
+    読み、引き続き`>> 8`相当の変換がかかることを確認する
+
+**触ったファイル:** 追加: `crates/pcv-core/src/color_depth.rs`。変更:
+`crates/pcv-core/src/lib.rs`（モジュール追加）、`crates/pcv-core/src/
+copc.rs`（`CopcFile`に`color_bit_depth`フィールド追加、`open`/
+`from_reader`で`detect_color_bit_depth`を呼ぶよう変更、`read_node`の
+色変換を判定結果ベースに変更、統合テスト2件追加）。`crates/pcv-wasm/`は
+変更していない（上記の通り`pcv-core`経由で自動的に効くため）。
+`src/wasm/pcv-wasm/`配下の生成物は`npm run build:wasm`で再生成しコミット
+した。
+
+**確認したこと:** `cargo fmt --check` / `cargo clippy --workspace
+--all-targets -- -D warnings` / `cargo test --workspace`（全41+39件、
+計画どおり全てpass）、`cargo build -p pcv-core --target
+wasm32-unknown-unknown`、`npm run build:wasm`（`crates/pcv-wasm`の
+wasm32ビルドを含む）、`npm run typecheck` / `lint` / `test`
+（28ファイル240件pass）/ `build`が全て通ることを確認した。
+
+**確認していないこと（GUIを持たないための限界）:** 実際に`beer.laz`を
+変換したCOPCをビューアで開き、着色を「RGB」にしたときに色が見える
+ことは、所有者の実機確認が必要。
+
+**自分で確かめる手順:**
+
+```bash
+# 1. beer.lazを変換（まだ変換済みの出力が無ければ）
+cargo run -p pcv-convert --release --example convert_streaming -- \
+    data\beer.laz data\beer.copc.laz
+
+# 2. ビューアを起動
+npm run tauri dev
+```
+
+- 変換した`beer.copc.laz`を開き、着色が既定の「RGB」になっているときに
+  色（真っ黒ではない、元の点群の色）が見えるか
+- 続けて`autzen-classified.copc.laz`・`points-jack_he.copc.laz`を開き、
+  これまでどおりRGBが正しく表示されるか（16bitファイルの表示が今回の
+  変更で崩れていないことの確認）
+
 ---
 
 ## M2-3: UI シェル
