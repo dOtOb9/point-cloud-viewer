@@ -173,9 +173,27 @@ fn handle_pcv_protocol(
         return;
     }
 
-    let Ok(key) = segment.parse::<pcv_core::NodeKey>() else {
+    // ノード読み出しのセグメント形式: "<generation>:<level>-<x>-<y>-<z>"。
+    // `generation`は`open_copc`がフロントに返した値（`src/datasource/tauri.ts`の
+    // `TauriSource.currentGeneration`）をそのまま送り返したもの。ファイルを
+    // 切り替えた後に届いた古い世代のリクエストを`copc_state::read_node_bytes`が
+    // 見分けられるようにするため（`src-tauri/src/copc_state.rs`の`OpenedFile`の
+    // ドキュメントコメント、`TaskSheets/M4-import-and-conversion.md`参照）。
+    let Some((generation_str, key_str)) = segment.split_once(':') else {
         responder.respond(bad_request_response(&format!(
-            "unknown pcv:// path (expected /<size> or /<level>-<x>-<y>-<z>): {segment}"
+            "unknown pcv:// path (expected /<size> or /<generation>:<level>-<x>-<y>-<z>): {segment}"
+        )));
+        return;
+    };
+    let Ok(generation) = generation_str.parse::<u64>() else {
+        responder.respond(bad_request_response(&format!(
+            "invalid generation in pcv:// path: {generation_str}"
+        )));
+        return;
+    };
+    let Ok(key) = key_str.parse::<pcv_core::NodeKey>() else {
+        responder.respond(bad_request_response(&format!(
+            "unknown pcv:// node key: {key_str}"
         )));
         return;
     };
@@ -185,7 +203,7 @@ fn handle_pcv_protocol(
     let app_handle = ctx.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<CopcState>();
-        let response = match copc_state::read_node_bytes(&state, key) {
+        let response = match copc_state::read_node_bytes(&state, generation, key) {
             Ok(bytes) => octet_stream_response(bytes),
             // 通常のエラー（ファイル未オープン、キー不正など）。クライアント
             // （フロント）の呼び方が悪いケースなので400。
@@ -200,6 +218,18 @@ fn handle_pcv_protocol(
             Err(copc_state::ReadNodeError::Panicked(message)) => {
                 log::error!("[pcv] node {key} read panicked: {message}");
                 internal_server_error_response(&message)
+            }
+            // ファイル切り替え時の不具合の修正: リクエストが指定した世代が、
+            // 現在開いているファイルの世代と一致しない。クライアントの呼び方の
+            // 誤りでも、サーバの異常でもない正常な競合状態なのでwarn/errorログは
+            // 出さず、専用のステータス(409)で返す。フロント（`StaleNodeRequestError`、
+            // `src/datasource/stale-node-error.ts`）はこれをエラーバナーに出さず
+            // 黙って捨てる。
+            Err(copc_state::ReadNodeError::Stale) => {
+                log::debug!(
+                    "[pcv] discarding stale request for node {key} (requested generation {generation})"
+                );
+                stale_generation_response()
             }
         };
         responder.respond(response);
@@ -239,6 +269,21 @@ fn internal_server_error_response(message: &str) -> tauri::http::Response<Vec<u8
         .header(tauri::http::header::CONTENT_TYPE, "text/plain")
         .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(message.as_bytes().to_vec())
+        .unwrap()
+}
+
+/// `copc_state::ReadNodeError::Stale`用（ファイルを切り替えた後に届いた、古い
+/// 世代のリクエスト）。400（クライアントの入力ミス）でも500（サーバの異常）でも
+/// ない、「切り替えのタイミングで古いリクエストが追いついてきただけ」の正常な
+/// 競合状態を表すため、専用のステータス(409 Conflict)にする。フロントの
+/// `TauriSource.readNode()`（`src/datasource/tauri.ts`）がこのステータスを見分け、
+/// `StaleNodeRequestError`を投げる。
+fn stale_generation_response() -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(tauri::http::StatusCode::CONFLICT)
+        .header(tauri::http::header::CONTENT_TYPE, "text/plain")
+        .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(b"stale generation (file was switched)".to_vec())
         .unwrap()
 }
 

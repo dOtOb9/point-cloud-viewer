@@ -103,6 +103,7 @@ use std::io::BufReader;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use pcv_core::{CloudInfo, CopcFile, HierarchyNode, NodeKey};
@@ -300,12 +301,46 @@ fn open_uri_reader<R: Runtime>(app: &AppHandle<R>, uri: &str) -> Result<CopcFile
     CopcFile::from_reader(BufReader::new(file)).map_err(|e| e.to_string())
 }
 
+/// 現在開いているファイルの世代番号つきのプール。`open_copc`を呼ぶたびに
+/// 新しい`generation`が割り当てられる（`CopcState::next_generation`参照）。
+///
+/// ## 世代番号を持つ理由（ファイル切り替え時の不具合の修正）
+///
+/// 所有者の報告: COPCを開いたあとに別のファイル（LASを変換したCOPC）を開くと、
+/// 「ノードキー 7-26-36-9 はこのファイルのhierarchyに存在しない」のようなエラーが
+/// 多数出る。原因は、`pcv://`のノード読み出しが
+/// `tauri::async_runtime::spawn_blocking`で非同期に処理される（M2）ため、
+/// **リクエストがいつ届いたか**と**実際に`read_node_bytes`が実行されるタイミング**
+/// の間にズレがあること。切り替え前に送られたリクエストのスレッドがまだ実行されて
+/// いないうちに`open_copc`が`CopcState`を新しいファイルへ差し替えてしまうと、
+/// そのリクエストは古いファイルのキーを新しいファイルのhierarchyに対して検索する
+/// ことになり、見つからずにエラーになる（キーがたまたま両方に存在する場合は、
+/// さらに悪いことに新しいファイルのバイト列が古いキーのノードとしてキャッシュに
+/// 入ってしまう。`TaskSheets/M4-import-and-conversion.md`参照）。
+///
+/// フロント（`src/renderer/node-loader.ts`の`NodeLoader.reset()`）側でも
+/// 「ファイル切り替え後に届いた結果は捨てる」対処をしているが、
+/// 「`open_copc`のinvokeが返る」のと「切り替え前に送った`readNode`のfetchが返る」
+/// のどちらが先にJS側に届くかはOS/IPCのスケジューリング次第で確定しないため、
+/// フロント側の世代カウンタがまだ進んでいない狭い窓が理論上残る。この`generation`は
+/// その窓をサーバ側で塞ぐためのもので、`read_node_bytes`はリクエストが指定した
+/// 世代と`CopcState`の現在の世代を比較し、一致しなければ`ReadNodeError::Stale`
+/// として（`Normal`/`Panicked`とは別の、エラーではない結果として）拒否する。
+struct OpenedFile {
+    generation: u64,
+    pool: Arc<CopcPool>,
+}
+
 /// 現在開いているCOPCファイル。同時に1つしか開けない前提（M1時点ではタブ等は無い）。
-/// 中身は`CopcPool`（上記参照）。`Arc`にしているのは、`read_node_bytes`が
-/// `CopcState`のロックをプールの参照を取り出す一瞬だけに留め、実際の読み出しは
-/// ロックの外で行うため（`Arc::clone`してすぐロックを手放す）。
+/// `Arc<CopcPool>`にしているのは、`read_node_bytes`が`CopcState`のロックを
+/// プールの参照を取り出す一瞬だけに留め、実際の読み出しはロックの外で行うため
+/// （`Arc::clone`してすぐロックを手放す）。`next_generation`は`open_copc`が
+/// 呼ばれるたびに1ずつ進む通し番号（`OpenedFile`のドキュメント参照）。
 #[derive(Default)]
-pub struct CopcState(Mutex<Option<Arc<CopcPool>>>);
+pub struct CopcState {
+    opened: Mutex<Option<OpenedFile>>,
+    next_generation: AtomicU64,
+}
 
 /// `open_copc` がフロントに返す、点群全体のサマリ。`CloudInfo`をそのままJSONにできる
 /// 形へ詰め替える（pcv-coreはserdeに依存しないので、DTOはここで定義する）。
@@ -357,6 +392,10 @@ impl From<&HierarchyNode> for HierarchyNodeDto {
 pub struct OpenCopcResponse {
     pub info: CloudInfoDto,
     pub nodes: Vec<HierarchyNodeDto>,
+    /// このファイルに割り当てられた世代番号。`src/datasource/tauri.ts`の
+    /// `TauriSource`が覚えておき、以後の`readNode`の`pcv://`URLに含めて送り返す
+    /// （`OpenedFile`のドキュメントコメント参照）。
+    pub generation: u64,
 }
 
 /// COPCファイルを開き、以後の `pcv://<key>` リクエストがこのファイルを参照するようにする。
@@ -413,16 +452,28 @@ fn open_copc_impl(
         .collect();
     pool.checkin(file);
 
+    // 呼ぶたびに1つ進む通し番号。同じファイルを開き直した場合も新しい世代になる
+    // （`OpenedFile`のドキュメント参照。「古い世代を無効化する」という目的に対しては
+    // 同じファイルかどうかを気にする必要が無いため、単純な方が良い）。
+    let generation = state.next_generation.fetch_add(1, Ordering::SeqCst);
+
     println!(
-        "[pcv] opened {path}: {} points, {} nodes (reader pool size {})",
+        "[pcv] opened {path}: {} points, {} nodes (reader pool size {}, generation {generation})",
         info.point_count,
         nodes.len(),
         pool.pool_size
     );
 
-    *state.0.lock().expect("CopcState mutex poisoned") = Some(Arc::new(pool));
+    *state.opened.lock().expect("CopcState mutex poisoned") = Some(OpenedFile {
+        generation,
+        pool: Arc::new(pool),
+    });
 
-    Ok(OpenCopcResponse { info, nodes })
+    Ok(OpenCopcResponse {
+        info,
+        nodes,
+        generation,
+    })
 }
 
 /// `read_node_bytes`が返すエラー。`lib.rs`の`handle_pcv_protocol`は、これがどちらの
@@ -436,6 +487,14 @@ pub enum ReadNodeError {
     Normal(String),
     /// `read_node`の呼び出し中にpanicが起き、`catch_unwind`で捕まえた。
     Panicked(String),
+    /// リクエストが指定した世代が、現在開いているファイルの世代と一致しない
+    /// （ファイルを切り替えた後に届いた、古いリクエスト）。`OpenedFile`の
+    /// ドキュメントコメント参照。`Normal`/`Panicked`と違い、これは「何かが
+    /// おかしい」ことを表すエラーではなく、ファイル切り替え時に普通に起こりうる
+    /// 競合状態なので、`lib.rs`側は警告ログを出さずHTTP 409で返す
+    /// （フロントはこれを`StaleNodeRequestError`としてエラーバナーに出さず
+    /// 黙って捨てる。`src/datasource/stale-node-error.ts`参照）。
+    Stale,
 }
 
 /// `catch_unwind`が返す`Box<dyn Any + Send>`から、人間が読めるメッセージを取り出す。
@@ -473,15 +532,25 @@ thread_local! {
 /// 冒頭のコメント「M3: panicが起きてもアプリを落とさない」参照）。panicを
 /// 捕まえたら、そのリーダーは`checkin`せずに捨て、`replenish_after_panic`で
 /// プールを補充してから`ReadNodeError::Panicked`を返す。
-pub fn read_node_bytes(state: &CopcState, key: NodeKey) -> Result<Vec<u8>, ReadNodeError> {
+///
+/// `requested_generation`はリクエスト元（フロント）が`open_copc`から受け取った、
+/// 送信時点での世代番号。現在開いているファイルの世代と一致しなければ
+/// `ReadNodeError::Stale`を返し、ファイルを読まずに終える（`OpenedFile`の
+/// ドキュメントコメント、ファイル切り替え時の不具合の修正参照）。
+pub fn read_node_bytes(
+    state: &CopcState,
+    requested_generation: u64,
+    key: NodeKey,
+) -> Result<Vec<u8>, ReadNodeError> {
     let pool = {
-        let guard = state.0.lock().expect("CopcState mutex poisoned");
-        guard
-            .as_ref()
-            .ok_or_else(|| {
-                ReadNodeError::Normal("no COPC file is open (call open_copc first)".to_string())
-            })?
-            .clone()
+        let guard = state.opened.lock().expect("CopcState mutex poisoned");
+        let opened = guard.as_ref().ok_or_else(|| {
+            ReadNodeError::Normal("no COPC file is open (call open_copc first)".to_string())
+        })?;
+        if opened.generation != requested_generation {
+            return Err(ReadNodeError::Stale);
+        }
+        opened.pool.clone()
     };
 
     let mut file = pool.checkout();
@@ -615,7 +684,7 @@ mod tests {
 
         assert_eq!(response.info.point_count, 500);
         assert!(!response.nodes.is_empty());
-        assert!(state.0.lock().unwrap().is_some());
+        assert!(state.opened.lock().unwrap().is_some());
     }
 
     /// 受け入れ条件: パスから`CopcPool`が組めること。明示的なプールサイズが
@@ -692,7 +761,7 @@ mod tests {
 
         let first_node = &response.nodes[0];
         let key = NodeKey::from_str(&first_node.key).unwrap();
-        let bytes = read_node_bytes(&state, key).unwrap();
+        let bytes = read_node_bytes(&state, response.generation, key).unwrap();
 
         // M1-2のヘッダ形式をここでも直接検証する（フロントのパーサと同じ並び）。
         assert_eq!(&bytes[0..4], pcv_core::MAGIC);
@@ -709,13 +778,55 @@ mod tests {
     #[test]
     fn read_node_bytes_fails_before_any_file_is_open() {
         let state = CopcState::default();
-        let err = read_node_bytes(&state, NodeKey::root()).unwrap_err();
+        let err = read_node_bytes(&state, 0, NodeKey::root()).unwrap_err();
         match err {
             ReadNodeError::Normal(message) => assert!(message.contains("no COPC file is open")),
-            ReadNodeError::Panicked(message) => {
-                panic!("Normalになるはずが Panicked だった: {message}")
-            }
+            other => panic!("Normalになるはずが別の結果だった: {other:?}"),
         }
+    }
+
+    /// 受け入れ条件（ファイル切り替え時の不具合の修正）: 同じ`CopcState`で
+    /// ファイルを開き直すと世代番号が進むこと、そして
+    /// (a) 古い世代を指定した`readNode`相当の呼び出しは`Stale`として拒否され
+    ///     `Normal`/`Panicked`にはならないこと（=エラーバナーを出す経路に乗らない）、
+    /// (b) 新しい世代を指定すれば普通に読めること、を確認する。
+    ///
+    /// 実際の競合（`open_copc`の裏で古いリクエストの`spawn_blocking`が後から
+    /// 実行される）はタイミング依存で単体テストにしにくいため、ここでは
+    /// 「世代が一致しなければ拒否する」という`read_node_bytes`自身の判定ロジックを
+    /// 直接検証する（`handle_pcv_protocol`からの実際のURL組み立て・振り分けは
+    /// Tauriのランタイムが要るため、この単体テストの対象にしていない。
+    /// `src-tauri/src/lib.rs`のドキュメント参照）。
+    #[test]
+    fn read_node_bytes_rejects_stale_generation_after_reopen() {
+        let (_dir, path) = synthetic_copc_file();
+        let state = CopcState::default();
+
+        let pool1 = CopcPool::open_path(&path, default_pool_size()).unwrap();
+        let response1 = open_copc_impl(pool1, path.to_str().unwrap(), &state).unwrap();
+        let key = NodeKey::from_str(&response1.nodes[0].key).unwrap();
+
+        // 同じファイルをもう一度開き直す。中身は同じでも、世代は進む
+        // （`open_copc_impl`は「同じファイルかどうか」を見ずに常に新しい世代を
+        // 割り当てる。`OpenedFile`のドキュメント参照）。
+        let pool2 = CopcPool::open_path(&path, default_pool_size()).unwrap();
+        let response2 = open_copc_impl(pool2, path.to_str().unwrap(), &state).unwrap();
+        assert_ne!(
+            response1.generation, response2.generation,
+            "開き直すたびに世代が進むこと"
+        );
+
+        // (a) 古い世代（response1）を指定した読み出しはStaleで拒否される。
+        let err = read_node_bytes(&state, response1.generation, key).unwrap_err();
+        match err {
+            ReadNodeError::Stale => {}
+            other => panic!("Staleになるはずが別の結果だった: {other:?}"),
+        }
+
+        // (b) 新しい世代（response2、=現在開いているファイル）を指定すれば
+        // 普通に読める。
+        let bytes = read_node_bytes(&state, response2.generation, key).unwrap();
+        assert_eq!(&bytes[0..4], pcv_core::MAGIC);
     }
 
     /// 受け入れ条件（TaskSheets/ADR-0013）: 読み出しの途中でpanicが起きても、
@@ -736,7 +847,7 @@ mod tests {
 
         // (a) 次の1回だけpanicさせる。
         PANIC_ON_NEXT_READ.with(|flag| flag.set(true));
-        let err = read_node_bytes(&state, key).unwrap_err();
+        let err = read_node_bytes(&state, response.generation, key).unwrap_err();
         match &err {
             ReadNodeError::Panicked(message) => {
                 assert!(
@@ -744,9 +855,7 @@ mod tests {
                     "パニックメッセージにノードキーが含まれるべき: {message}"
                 );
             }
-            ReadNodeError::Normal(message) => {
-                panic!("Panickedになるはずが Normal だった: {message}")
-            }
+            other => panic!("Panickedになるはずが別の結果だった: {other:?}"),
         }
         // フラグは`read_node_bytes`内で読んだ時点でfalseに戻る（一回限り）ので、
         // ここでも明示的に確認しておく（次のアサーションが偶然通っただけ、を防ぐ）。
@@ -756,7 +865,7 @@ mod tests {
         // （panicしたリーダーがプールに残らず、かつプールが縮んでいないこと）。
         for node in &response.nodes {
             let node_key = NodeKey::from_str(&node.key).unwrap();
-            let bytes = read_node_bytes(&state, node_key).unwrap();
+            let bytes = read_node_bytes(&state, response.generation, node_key).unwrap();
             assert_eq!(&bytes[0..4], pcv_core::MAGIC);
         }
     }
