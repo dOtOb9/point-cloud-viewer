@@ -62,13 +62,33 @@ pub struct CopcWriterParams {
     /// octree subdivides until nodes fit this budget, up to an internal depth
     /// cap that keeps voxel keys in range.
     pub max_points_per_node: u32,
+    /// M4-10(`TaskSheets/M4-import-and-conversion.md`): ノードごとのLAZ圧縮を
+    /// `rayon`で並列に行うかどうか。`new()`の既定値は、`parallel-compress`
+    /// フィーチャが有効ならtrue、無効なら(そもそも並列実装がコンパイルされて
+    /// いないため)常にfalse扱いになる(`compress_nodes_dispatch`参照)。
+    ///
+    /// このフィールドを公開しているのは、同じビルド内で逐次・並列の両方の
+    /// 経路をテストから選べるようにするため(逐次のバイト一致回帰テストと、
+    /// 並列の点集合一致テストを同じcrateで両立させる。`crates/pcv-convert/
+    /// tests/streaming_conversion.rs`参照)。本番の呼び出し側(`pcv-convert`)は
+    /// このフィールドを変更せず、既定値(featureが有効なら並列)のまま使う。
+    pub parallel_node_compression: bool,
 }
 
 impl CopcWriterParams {
     pub fn new(max_points_per_node: u32) -> Self {
         Self {
             max_points_per_node,
+            parallel_node_compression: cfg!(feature = "parallel-compress"),
         }
+    }
+
+    /// ノードごとのLAZ圧縮を並列で行うかどうかを明示的に指定する
+    /// (`parallel-compress`フィーチャが無効なビルドでは常に逐次にフォール
+    /// バックする。`compress_nodes_dispatch`参照)。
+    pub fn with_parallel_node_compression(mut self, enabled: bool) -> Self {
+        self.parallel_node_compression = enabled;
+        self
     }
 }
 
@@ -150,6 +170,7 @@ pub fn write_source_with_cancel<S: CopcPointSource>(
         None,
         &fs,
         None,
+        None,
     )
 }
 
@@ -190,6 +211,7 @@ where
         cancel,
         &metadata.to_output(),
         &lod_fs,
+        None,
         None,
     )
 }
@@ -280,6 +302,7 @@ fn convert_las_to_copc_streaming_inner(
         &output_metadata,
         &lod_fs,
         None,
+        None,
     )
 }
 
@@ -311,6 +334,7 @@ pub fn write_copc_from_spill_with_fs(
         &metadata.to_output(),
         fs,
         None,
+        None,
     )
 }
 
@@ -334,8 +358,38 @@ pub fn write_copc_from_spill_with_fs_and_timings(
         &metadata.to_output(),
         fs,
         Some(&mut timings),
+        None,
     )?;
     Ok(timings)
+}
+
+/// M4-10(`TaskSheets/M4-import-and-conversion.md`)の回帰テスト専用。
+/// `write_copc_from_spill_with_fs`と同じ処理を行い、あわせて
+/// `compress_nodes_parallel`が実際に処理したバッチ(`rayon`で並列圧縮する
+/// ノードのまとまり)ごとのノード数を返す。`parallel_node_compression`が
+/// falseの場合、またはそもそも`parallel-compress`フィーチャが無効な
+/// ビルドでは常に空になる(バッチという概念が無い逐次経路のため)。
+/// 本番の変換経路はこちらを呼ばない。
+pub fn write_copc_from_spill_with_fs_and_batch_sizes(
+    fs: &dyn ScratchFs,
+    path: &Path,
+    reader: SpillReader,
+    params: &CopcWriterParams,
+    cancel: &(dyn CancelCheck + Sync),
+    metadata: &CopcWriteMetadata,
+) -> Result<Vec<usize>> {
+    let mut batch_sizes = Vec::new();
+    write_copc_from_spill(
+        path,
+        reader,
+        params,
+        cancel,
+        &metadata.to_output(),
+        fs,
+        None,
+        Some(&mut batch_sizes),
+    )?;
+    Ok(batch_sizes)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -347,6 +401,7 @@ fn write_copc_from_spill(
     metadata: &OutputLasMetadata,
     fs: &dyn ScratchFs,
     stage_timings: Option<&mut PostProcessStageTimings>,
+    batch_sizes: Option<&mut Vec<usize>>,
 ) -> Result<()> {
     cancel.check()?;
     if params.max_points_per_node == 0 {
@@ -375,6 +430,7 @@ fn write_copc_from_spill(
         Some(stats),
         fs,
         stage_timings,
+        batch_sizes,
     )
 }
 
@@ -390,6 +446,7 @@ fn write_copc_inner<S: CopcPointSource>(
     intake_stats: Option<PointStats>,
     fs: &dyn ScratchFs,
     mut stage_timings: Option<&mut PostProcessStageTimings>,
+    batch_sizes: Option<&mut Vec<usize>>,
 ) -> Result<()> {
     cancel.check()?;
     if params.max_points_per_node == 0 {
@@ -571,7 +628,7 @@ fn write_copc_inner<S: CopcPointSource>(
     }
 
     let compress_start = Instant::now();
-    let hierarchy = compress_nodes(
+    let hierarchy = compress_nodes_dispatch(
         &mut writer,
         &var_vlr,
         &lod_index,
@@ -581,6 +638,8 @@ fn write_copc_inner<S: CopcPointSource>(
         usize::from(point_record_length),
         &point_format,
         cancel,
+        params.parallel_node_compression,
+        batch_sizes,
     )?;
     if let Some(timings) = stage_timings.as_mut() {
         timings.node_compression += compress_start.elapsed();
@@ -714,12 +773,99 @@ fn hierarchy_entry(key: VoxelKey, offset: u64, byte_size: u64, count: usize) -> 
     })
 }
 
+/// M4-10(`TaskSheets/M4-import-and-conversion.md`): `compress_nodes_sequential`
+/// と`compress_nodes_parallel`(`parallel-compress`フィーチャが有効なときだけ
+/// コンパイルされる)のどちらを呼ぶかを、`CopcWriterParams::
+/// parallel_node_compression`(実行時のフラグ)で選ぶ。
+///
+/// M4-8では`#[cfg(feature = "parallel-compress")]`で関数そのものを排他的に
+/// 切り替えていたため、同じビルド内で両方の経路を実行できなかった
+/// (ハッシュ一致の回帰テストと点集合一致のテストを同じcrateで両立できない)。
+/// M4-10で所有者が「バイト単位の一致」を「点の集合の一致」へ条件を緩めたのを
+/// 機に、両方の実装を常にコンパイルし(フィーチャがオフなら逐次だけ)、
+/// 実行時フラグで切り替える形に変えた。`parallel-compress`フィーチャが無効な
+/// ビルド(Web/wasm32)では、`parallel_node_compression`の値に関わらず常に
+/// 逐次経路を使う(並列実装自体がコンパイルされていないため)。
+#[cfg(feature = "parallel-compress")]
+#[allow(clippy::too_many_arguments)]
+fn compress_nodes_dispatch<W: Write + Seek + Send + Sync, S: CopcPointSource>(
+    writer: &mut W,
+    var_vlr: &laz::LazVlr,
+    lod_index: &crate::lod::LodIndex,
+    source: &S,
+    scale: (f64, f64, f64),
+    offset: (f64, f64, f64),
+    record_len: usize,
+    point_format: &LasFormat,
+    cancel: &(dyn CancelCheck + Sync),
+    want_parallel: bool,
+    batch_sizes: Option<&mut Vec<usize>>,
+) -> Result<Vec<Entry>> {
+    if want_parallel {
+        return compress_nodes_parallel(
+            writer,
+            var_vlr,
+            lod_index,
+            source,
+            scale,
+            offset,
+            record_len,
+            point_format,
+            cancel,
+            batch_sizes,
+        );
+    }
+    let _ = batch_sizes; // 逐次経路にはバッチという概念が無い。
+    compress_nodes_sequential(
+        writer,
+        var_vlr,
+        lod_index,
+        source,
+        scale,
+        offset,
+        record_len,
+        point_format,
+        cancel,
+    )
+}
+
+#[cfg(not(feature = "parallel-compress"))]
+#[allow(clippy::too_many_arguments)]
+fn compress_nodes_dispatch<W: Write + Seek + Send + Sync, S: CopcPointSource>(
+    writer: &mut W,
+    var_vlr: &laz::LazVlr,
+    lod_index: &crate::lod::LodIndex,
+    source: &S,
+    scale: (f64, f64, f64),
+    offset: (f64, f64, f64),
+    record_len: usize,
+    point_format: &LasFormat,
+    cancel: &(dyn CancelCheck + Sync),
+    want_parallel: bool,
+    batch_sizes: Option<&mut Vec<usize>>,
+) -> Result<Vec<Entry>> {
+    // `parallel-compress`が無効なビルド(Web/wasm32)では並列実装自体が
+    // コンパイルされていないため、フラグの値に関わらず常に逐次。
+    let _ = want_parallel;
+    let _ = batch_sizes;
+    compress_nodes_sequential(
+        writer,
+        var_vlr,
+        lod_index,
+        source,
+        scale,
+        offset,
+        record_len,
+        point_format,
+        cancel,
+    )
+}
+
 /// Compress each LOD node into one COPC chunk, returning the hierarchy
 /// entries. Sequential implementation: one `LasZipCompressor` streams every
 /// chunk in order.
-#[cfg(not(feature = "parallel-compress"))]
 #[allow(clippy::too_many_arguments)]
-fn compress_nodes<W: Write + Seek + Send + Sync, S: CopcPointSource>(
+fn compress_nodes_sequential<W: Write + Seek + Send + Sync, S: CopcPointSource>(
     writer: &mut W,
     var_vlr: &laz::LazVlr,
     lod_index: &crate::lod::LodIndex,
@@ -796,7 +942,7 @@ fn compress_nodes<W: Write + Seek + Send + Sync, S: CopcPointSource>(
 /// `batch = 2 * rayon::current_num_threads()`.
 #[cfg(feature = "parallel-compress")]
 #[allow(clippy::too_many_arguments)]
-fn compress_nodes<W: Write + Seek + Send, S: CopcPointSource>(
+fn compress_nodes_parallel<W: Write + Seek + Send, S: CopcPointSource>(
     writer: &mut W,
     var_vlr: &laz::LazVlr,
     lod_index: &crate::lod::LodIndex,
@@ -806,6 +952,7 @@ fn compress_nodes<W: Write + Seek + Send, S: CopcPointSource>(
     record_len: usize,
     point_format: &LasFormat,
     cancel: &(dyn CancelCheck + Sync),
+    mut batch_sizes: Option<&mut Vec<usize>>,
 ) -> Result<Vec<Entry>> {
     use laz::laszip::{ChunkTable, ChunkTableEntry};
     use rayon::prelude::*;
@@ -825,6 +972,9 @@ fn compress_nodes<W: Write + Seek + Send, S: CopcPointSource>(
 
     for batch in lod_index.nodes.chunks(batch_size) {
         cancel.check()?;
+        if let Some(sizes) = batch_sizes.as_mut() {
+            sizes.push(batch.len());
+        }
         let mut raw_chunks = Vec::with_capacity(batch.len());
         for node in batch {
             let mut raw = Vec::new();

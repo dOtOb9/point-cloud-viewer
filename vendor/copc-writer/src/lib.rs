@@ -38,7 +38,10 @@ pub use writer::{
 };
 // M4-8: 後処理の内訳を計測するための計測専用API
 // (`crates/pcv-convert/examples/post_process_stage_bench.rs`からのみ使う)。
+// M4-10: `write_copc_from_spill_with_fs_and_batch_sizes`はノードごとのLAZ圧縮
+// (`parallel-compress`)の並列バッチ構成を確かめる回帰テスト専用API
+// (`vendor/copc-writer/tests/parallel_compress_batch_bounded.rs`からのみ使う)。
 pub use writer::{
-    write_copc_from_spill_with_fs, write_copc_from_spill_with_fs_and_timings, CopcWriterParams,
-    PostProcessStageTimings,
+    write_copc_from_spill_with_fs, write_copc_from_spill_with_fs_and_batch_sizes,
+    write_copc_from_spill_with_fs_and_timings, CopcWriterParams, PostProcessStageTimings,
 };
