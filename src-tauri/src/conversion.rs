@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use copc_writer::CopcWriterParams;
+use pcv_convert::import::{self, SourceFormat};
 use pcv_convert::streaming::{convert, AtomicCancel, ReadProgress};
 use pcv_convert::{cache, copc_detect, disk_space, output_path};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -281,6 +282,11 @@ fn decide_and_start(
     let cancel_flag = Arc::new(AtomicBool::new(false));
     *state.0.lock().expect("ConversionState mutex poisoned") = Some(cancel_flag.clone());
 
+    // M4-9: E57/PLY/PCDかどうかで変換経路を分ける(`run_conversion_thread`参照)。
+    // 拡張子で判定する(`pcv_convert::import::detect_format`。LAS/LAZ自身は
+    // `None`を返すので、この場合は今までどおりLAS/LAZ経路を使う)。
+    let import_format = import::detect_format(path_for_naming);
+
     let app_for_thread = app.clone();
     let output_for_thread = output_path.clone();
     std::thread::spawn(move || {
@@ -291,6 +297,7 @@ fn decide_and_start(
             spill_dir,
             source_fingerprint,
             cancel_flag,
+            import_format,
         );
     });
 
@@ -320,6 +327,12 @@ fn resolve_spill_dir(app: &AppHandle, temp_dir_override: Option<&str>) -> Result
     Ok(std::env::temp_dir())
 }
 
+/// `import_format`が`None`ならLAS/LAZ経路(`pcv_convert::streaming::convert`)、
+/// `Some`ならE57/PLY/PCD経路(`pcv_convert::import::convert_to_copc`、M4-9で
+/// 中間LASを経ずに追加した)を使う。どちらも同じ`ReadProgress`・
+/// `copc_core::Error`でやり取りするため(`import::ImportError`から
+/// `copc_core::Error`への変換は`pcv_convert`側に書いた)、この関数の残りの
+/// 部分(進捗イベント・キャッシュ・完了/失敗イベント)は経路によらず共通にできる。
 #[allow(clippy::too_many_arguments)]
 fn run_conversion_thread(
     app: AppHandle,
@@ -328,6 +341,7 @@ fn run_conversion_thread(
     spill_dir: PathBuf,
     source_fingerprint: cache::SourceFingerprint,
     cancel_flag: Arc<AtomicBool>,
+    import_format: Option<SourceFormat>,
 ) {
     let file = match open_for_convert() {
         Ok(file) => file,
@@ -363,14 +377,30 @@ fn run_conversion_thread(
     };
 
     let cancel = AtomicCancel(cancel_flag);
-    let result = convert(
-        BufReader::new(file),
-        &output_path,
-        &spill_dir,
-        &CopcWriterParams::default(),
-        &cancel,
-        on_progress,
-    );
+    let result: copc_core::Result<()> = match import_format {
+        None => convert(
+            BufReader::new(file),
+            &output_path,
+            &spill_dir,
+            &CopcWriterParams::default(),
+            &cancel,
+            on_progress,
+        ),
+        Some(format) => import::convert_to_copc(
+            BufReader::new(file),
+            format,
+            &output_path,
+            &spill_dir,
+            &CopcWriterParams::default(),
+            &cancel,
+            // CRSは推測しない(ADR-0008、`import`モジュールのドキュメント参照)。
+            // UIでの選択画面は作らないという指示どおり、常に「不明」のまま渡す。
+            None,
+            on_progress,
+        )
+        .map(|_summary| ())
+        .map_err(copc_core::Error::from),
+    };
 
     match result {
         Ok(()) => {

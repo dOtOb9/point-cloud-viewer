@@ -85,7 +85,15 @@ export async function pickLocalFile(): Promise<string | null> {
     // M4-3: 生のLAS/LAZも選べるようにする(受け入れ条件)。COPCかどうかは
     // 拡張子ではなくヘッダーで判定する(`start_las_conversion`側、
     // `pcv_convert::copc_detect`)ため、ここでは.las/.lazをまとめて許可するだけでよい。
-    filters: [{ name: "LAS/LAZ (.las / .laz / .copc.laz)", extensions: ["las", "laz"] }],
+    // M4-9: E57/PLY/PCDも同じダイアログから選べるようにする(受け入れ条件)。
+    // どの形式かは拡張子で判定する(`pcv_convert::import::detect_format`、
+    // `start_las_conversion`側で分岐する)。
+    filters: [
+      {
+        name: "点群ファイル (.las / .laz / .copc.laz / .e57 / .ply / .pcd)",
+        extensions: ["las", "laz", "e57", "ply", "pcd"],
+      },
+    ],
   });
 }
 
