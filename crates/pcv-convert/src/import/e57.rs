@@ -1,4 +1,4 @@
-//! E57(地上型レーザースキャナの事実上の標準) → 共通の点群表現への変換。
+//! E57(地上型レーザースキャナの事実上の標準) → ストリーミングの点ソース。
 //!
 //! # クレート選定
 //!
@@ -18,8 +18,8 @@
 //!
 //! つまり「姿勢を適用してから1つにまとめる」「球面座標を直交座標に直す」は
 //! いずれもこのイテレータの既定動作そのものであり、自前実装は不要。
-//! ここでは複数のスキャンを順番にイテレートし、結果をそのまま1つの
-//! `Vec`にまとめるだけでよい。姿勢適用の正しさは`tests/import_e57.rs`の
+//! ここでは複数のスキャンを順番にイテレートし、点が来るたびに`visit`へ
+//! 渡すだけでよい。姿勢適用の正しさは`tests/import_e57.rs`の
 //! `applies_per_scan_pose_before_merging`で確認する。
 //!
 //! # 強度・色の範囲の違いへの対応
@@ -33,74 +33,103 @@
 //! 値域の申告が無いファイルでは、クレートが記録型自体の範囲
 //! (`RecordDataType`のmin/max)にフォールバックする(`e57`クレート
 //! `pc_reader_simple.rs`の`Range::intensity_from_pointcloud`参照)。
+//!
+//! # M4-9: ストリーミング化
+//!
+//! M4-4時点は全スキャンの全点を`Vec<ImportedPoint>`にまとめてから返していた。
+//! `e57`クレート自身の`PointCloudReaderSimple`は元々1点ずつ読むイテレータ
+//! なので、`Vec`に貯める代わりに読んだその場で`visit`へ渡すだけで
+//! ストリーミングになる(クレート側の読み方自体は変えていない)。
 
-use std::io::{BufReader, Read, Seek};
-use std::path::Path;
+use std::io::{Read, Seek};
 
 use e57::{CartesianCoordinate, E57Reader};
 
-use super::point::{ImportedCloud, ImportedPoint};
+use super::point::{PointSource, RawPoint};
+use super::ImportError;
 
-pub(crate) fn read(path: &Path) -> e57::Result<ImportedCloud> {
-    let file = std::fs::File::open(path)
-        .or_else(|e| e57::Error::invalid(format!("E57ファイルを開けなかった: {e}")))?;
-    read_from(BufReader::new(file))
+/// `read_from`で開いたE57から、ストリーミングで点を取り出す。
+///
+/// `pointclouds`・`has_color`・`total_points`は`open`の時点でメタデータだけから
+/// 分かる(全点を読まない)。`for_each_point`が消費する`PointSource`の設計
+/// (`point.rs`のドキュメント参照)と、E57の借用イテレータの制約がちょうど
+/// 噛み合う。
+pub(crate) struct E57Source<R: Read + Seek> {
+    reader: E57Reader<R>,
+    pointclouds: Vec<e57::PointCloud>,
+    has_color: bool,
+    total_points: u64,
 }
 
-/// パスだけでなく`Read + Seek`から読めるコア実装。将来Androidで
-/// `content://`のURIから得たファイル記述子(`std::fs::File`、Read+Seekを実装)を
-/// 直接渡せるようにするための分離(ADR-0006「Android」追記参照。
-/// 現時点ではこのモジュールの外には公開していない。理由は
-/// `TaskSheets/ADR-0008-formats-and-crs.md`のM4-4追記を参照)。
-pub(crate) fn read_from<R: Read + Seek>(reader: R) -> e57::Result<ImportedCloud> {
-    let mut reader = E57Reader::new(reader)?;
-    let pointclouds = reader.pointclouds();
+impl<R: Read + Seek> E57Source<R> {
+    /// パスだけでなく`Read + Seek`から開けるコア実装(Androidの`content://`の
+    /// URIから得たファイル記述子を直接渡せるようにするための分離。
+    /// `crate::streaming::convert`と同じ考え方)。
+    pub(crate) fn open(reader: R) -> Result<Self, ImportError> {
+        let reader = E57Reader::new(reader)?;
+        let pointclouds = reader.pointclouds();
+        let has_color = pointclouds.iter().any(e57::PointCloud::has_color);
+        let total_points = pointclouds.iter().map(|pc| pc.records).sum();
+        Ok(Self {
+            reader,
+            pointclouds,
+            has_color,
+            total_points,
+        })
+    }
+}
 
-    let mut points = Vec::new();
-    let mut has_color = false;
-
-    for pc in &pointclouds {
-        if pc.has_color() {
-            has_color = true;
-        }
-
-        let mut pc_reader = reader.pointcloud_simple(pc)?;
-        for point in &mut pc_reader {
-            let point = point?;
-            // 姿勢適用・球面→直交変換は既定で済んでいる(モジュール冒頭コメント参照)。
-            // それでもCartesianが無効なのは、方向のみ(Direction)か、
-            // 構造化(グリッド)データの欠測スロットのように「実点が無い」場合。
-            // どちらも測量的な意味を持つ3D点ではないため書き出さない
-            // (この分だけE57ヘッダの申告点数`pc.records`より`points.len()`が
-            // 少なくなりうる。テストで使う合成データは全点validにしているため、
-            // この食い違いは起きない)。
-            let CartesianCoordinate::Valid { x, y, z } = point.cartesian else {
-                continue;
-            };
-
-            let color = point
-                .color
-                .map(|c| {
-                    [
-                        normalize_unit_to_u16(c.red),
-                        normalize_unit_to_u16(c.green),
-                        normalize_unit_to_u16(c.blue),
-                    ]
-                })
-                .unwrap_or([0, 0, 0]);
-            let intensity = point.intensity.map(normalize_unit_to_u16).unwrap_or(0);
-
-            points.push(ImportedPoint {
-                x,
-                y,
-                z,
-                color,
-                intensity,
-            });
-        }
+impl<R: Read + Seek> PointSource for E57Source<R> {
+    fn has_color(&self) -> bool {
+        self.has_color
     }
 
-    Ok(ImportedCloud { points, has_color })
+    fn declared_point_count(&self) -> u64 {
+        self.total_points
+    }
+
+    fn for_each_point(
+        mut self,
+        visit: &mut dyn FnMut(RawPoint) -> Result<(), ImportError>,
+    ) -> Result<(), ImportError> {
+        for pc in &self.pointclouds {
+            let mut pc_reader = self.reader.pointcloud_simple(pc)?;
+            for point in &mut pc_reader {
+                let point = point?;
+                // 姿勢適用・球面→直交変換は既定で済んでいる(モジュール冒頭コメント参照)。
+                // それでもCartesianが無効なのは、方向のみ(Direction)か、
+                // 構造化(グリッド)データの欠測スロットのように「実点が無い」場合。
+                // どちらも測量的な意味を持つ3D点ではないため書き出さない
+                // (この分だけE57ヘッダの申告点数`pc.records`の合計より、実際に
+                // `visit`が呼ばれる回数が少なくなりうる。テストで使う合成データは
+                // 全点validにしているため、この食い違いは起きない)。
+                let CartesianCoordinate::Valid { x, y, z } = point.cartesian else {
+                    continue;
+                };
+
+                let color = point
+                    .color
+                    .map(|c| {
+                        [
+                            normalize_unit_to_u16(c.red),
+                            normalize_unit_to_u16(c.green),
+                            normalize_unit_to_u16(c.blue),
+                        ]
+                    })
+                    .unwrap_or([0, 0, 0]);
+                let intensity = point.intensity.map(normalize_unit_to_u16).unwrap_or(0);
+
+                visit(RawPoint {
+                    x,
+                    y,
+                    z,
+                    color,
+                    intensity,
+                })?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `PointCloudReaderSimple`が既定で0.0..=1.0へ正規化した値を、

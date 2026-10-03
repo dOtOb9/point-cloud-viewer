@@ -1,4 +1,4 @@
-//! PLY(Polygon File Format、写真測量・研究用途で広く使われる) → 共通の点群表現への変換。
+//! PLY(Polygon File Format、写真測量・研究用途で広く使われる) → ストリーミングの点ソース。
 //!
 //! # クレート選定: 自前実装にした理由
 //!
@@ -36,13 +36,24 @@
 //! 面情報を使わないため中身は捨てるが、**バイト位置がずれないよう
 //! 正しくスキップする必要がある**(特にbinaryでは、要素ごとの行の長さが
 //! 分からないと後続を正しく読めない)。そのため、リスト型プロパティも含めて
-//! 全要素を同じ汎用ループで読み進め、`vertex`要素の行だけを保持する設計にした。
+//! 全要素を同じ汎用ループで読み進め、`vertex`要素の行だけを`visit`へ渡す
+//! 設計にした。
+//!
+//! # M4-9: ストリーミング化
+//!
+//! M4-4時点は`reader.read_to_end(&mut bytes)`でファイル全体を`Vec<u8>`へ
+//! 読んでから解析していた(メモリがファイルサイズに比例する)。M4-9で、
+//! ヘッダーだけを`BufRead::read_line`で行単位に読み(ヘッダーは高々数KB)、
+//! データ本体は`BufRead`から直接(ASCIIは行単位、binaryはプロパティの値ごとに
+//! 固定長バイト列)読み進めてその場で`visit`へ渡す形に書き換えた。保持する
+//! メモリは「現在読んでいる1行・1点ぶんの値」だけで、点数には比例しない。
 
-use std::path::Path;
+use std::io::{BufRead, Read};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
-use super::point::{ImportedCloud, ImportedPoint};
+use super::point::{PointSource, RawPoint};
+use super::ImportError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlyError {
@@ -252,8 +263,8 @@ impl VertexLayout {
     }
 
     /// 1行分の生の値(プロパティごとにVec。scalarなら長さ1、listなら要素数分)から
-    /// `ImportedPoint`を組み立てる。
-    fn extract(&self, values: &[Vec<f64>]) -> ImportedPoint {
+    /// `RawPoint`を組み立てる。
+    fn extract(&self, values: &[Vec<f64>]) -> RawPoint {
         let x = values[self.x_idx][0];
         let y = values[self.y_idx][0];
         let z = values[self.z_idx][0];
@@ -269,7 +280,7 @@ impl VertexLayout {
             Some(i) => scale_intensity_to_u16(values[i.idx][0], i.ty),
             None => 0,
         };
-        ImportedPoint {
+        RawPoint {
             x,
             y,
             z,
@@ -303,55 +314,87 @@ fn scale_intensity_to_u16(value: f64, ty: ScalarType) -> u16 {
     }
 }
 
-pub(crate) fn read(path: &Path) -> Result<ImportedCloud, PlyError> {
-    read_from(std::fs::File::open(path)?)
+/// ヘッダーを読んだ後の`BufRead`から、ストリーミングで点を取り出す。
+pub(crate) struct PlySource<R: BufRead> {
+    reader: R,
+    format: PlyFormat,
+    elements: Vec<ElementDef>,
+    layout: VertexLayout,
+    has_color: bool,
+    vertex_count: u64,
 }
 
-/// パスだけでなく`Read`から読めるコア実装(理由は`e57.rs`の`read_from`の
-/// コメントと同じ。PLYは全体をメモリに読んでからバイト列として解析するため、
-/// `Seek`は要らない)。
-pub(crate) fn read_from<R: std::io::Read>(mut reader: R) -> Result<ImportedCloud, PlyError> {
-    let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes)?;
-    let (header_text, data) = split_header_and_data(&bytes)?;
-    let header = parse_header(&header_text)?;
+impl<R: BufRead> PlySource<R> {
+    /// パスだけでなく`BufRead`から開けるコア実装(他形式の`open`と同じ考え方。
+    /// PLYは先頭から順に読むだけで済むので`Seek`は要らない)。
+    pub(crate) fn open(mut reader: R) -> Result<Self, ImportError> {
+        let header = read_header(&mut reader).map_err(ImportError::Ply)?;
 
-    let vertex_element = header
-        .elements
-        .iter()
-        .find(|e| e.name == "vertex")
-        .ok_or(PlyError::MissingVertexElement)?;
-    let layout = VertexLayout::resolve(vertex_element)?;
-    let has_color = layout.has_color();
+        let vertex_element = header
+            .elements
+            .iter()
+            .find(|e| e.name == "vertex")
+            .ok_or(PlyError::MissingVertexElement)
+            .map_err(ImportError::Ply)?;
+        let layout = VertexLayout::resolve(vertex_element).map_err(ImportError::Ply)?;
+        let has_color = layout.has_color();
+        let vertex_count = vertex_element.count as u64;
 
-    let points = match header.format {
-        PlyFormat::Ascii => read_ascii_body(data, &header, &layout)?,
-        PlyFormat::BinaryLittleEndian => read_binary_body(data, &header, &layout, false)?,
-        PlyFormat::BinaryBigEndian => read_binary_body(data, &header, &layout, true)?,
-    };
-
-    Ok(ImportedCloud { points, has_color })
+        Ok(Self {
+            reader,
+            format: header.format,
+            elements: header.elements,
+            layout,
+            has_color,
+            vertex_count,
+        })
+    }
 }
 
-/// `end_header`行の直後(改行込み)を境に、ヘッダ文字列とデータバイト列に分ける。
-/// ヘッダはASCII(PLY仕様)なので、バイト列のまま部分一致を探索できる。
-fn split_header_and_data(bytes: &[u8]) -> Result<(String, &[u8]), PlyError> {
-    const MARKER: &[u8] = b"end_header";
-    let pos = bytes
-        .windows(MARKER.len())
-        .position(|window| window == MARKER)
-        .ok_or(PlyError::MissingEndHeader)?;
-    let mut data_start = pos + MARKER.len();
-    if bytes.get(data_start) == Some(&b'\r') {
-        data_start += 1;
+impl<R: BufRead> PointSource for PlySource<R> {
+    fn has_color(&self) -> bool {
+        self.has_color
     }
-    if bytes.get(data_start) == Some(&b'\n') {
-        data_start += 1;
+
+    fn declared_point_count(&self) -> u64 {
+        self.vertex_count
     }
-    let header_text = std::str::from_utf8(&bytes[..data_start])
-        .map_err(|_| PlyError::InvalidHeader("ヘッダがUTF8として不正".to_string()))?
-        .to_string();
-    Ok((header_text, &bytes[data_start..]))
+
+    fn for_each_point(
+        mut self,
+        visit: &mut dyn FnMut(RawPoint) -> Result<(), ImportError>,
+    ) -> Result<(), ImportError> {
+        match self.format {
+            PlyFormat::Ascii => {
+                stream_ascii_body(&mut self.reader, &self.elements, &self.layout, visit)
+            }
+            PlyFormat::BinaryLittleEndian => {
+                stream_binary_body(&mut self.reader, &self.elements, &self.layout, false, visit)
+            }
+            PlyFormat::BinaryBigEndian => {
+                stream_binary_body(&mut self.reader, &self.elements, &self.layout, true, visit)
+            }
+        }
+    }
+}
+
+/// `end_header`行まで(含む)を行単位で読み、ヘッダーテキストとして解析する。
+/// 呼び出し後、`reader`の読み取り位置はデータ本体の先頭にある。
+fn read_header<R: BufRead>(reader: &mut R) -> Result<PlyHeader, PlyError> {
+    let mut header_text = String::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            return Err(PlyError::MissingEndHeader);
+        }
+        header_text.push_str(&line);
+        if line.trim_end_matches(['\r', '\n']) == "end_header" {
+            break;
+        }
+    }
+    parse_header(&header_text)
 }
 
 fn parse_header(header_text: &str) -> Result<PlyHeader, PlyError> {
@@ -451,40 +494,52 @@ fn parse_header(header_text: &str) -> Result<PlyHeader, PlyError> {
     Ok(PlyHeader { format, elements })
 }
 
-/// 全要素を順番に読み、`vertex`要素の行だけ`ImportedPoint`として保持する。
-/// `vertex`以外(`face`等)もリスト型プロパティを含めて正しく読み進めることで、
-/// 後続のバイト位置がずれないようにする(モジュール冒頭コメント参照)。
-fn read_ascii_body(
-    data: &[u8],
-    header: &PlyHeader,
+/// 全要素を順番に読み、`vertex`要素の行だけ`visit`へ渡す。`vertex`以外
+/// (`face`等)もリスト型プロパティを含めて正しく読み進めることで、
+/// 後続のバイト位置(行)がずれないようにする(モジュール冒頭コメント参照)。
+fn stream_ascii_body<R: BufRead>(
+    reader: &mut R,
+    elements: &[ElementDef],
     layout: &VertexLayout,
-) -> Result<Vec<ImportedPoint>, PlyError> {
-    let text = std::str::from_utf8(data)
-        .map_err(|_| PlyError::InvalidData("ASCIIデータがUTF8として不正".to_string()))?;
-    let mut lines = text.lines();
-    let mut points = Vec::new();
-
-    for element in &header.elements {
+    visit: &mut dyn FnMut(RawPoint) -> Result<(), ImportError>,
+) -> Result<(), ImportError> {
+    let mut line = String::new();
+    for element in elements {
         for _ in 0..element.count {
-            let line = lines.next().ok_or(PlyError::UnexpectedEof)?;
-            let mut tokens = line.split_whitespace();
+            line.clear();
+            let n = reader.read_line(&mut line).map_err(PlyError::from)?;
+            if n == 0 {
+                return Err(ImportError::Ply(PlyError::UnexpectedEof));
+            }
+            let mut tokens = line.trim_end_matches(['\r', '\n']).split_whitespace();
             let mut values: Vec<Vec<f64>> = Vec::with_capacity(element.properties.len());
 
             for prop in &element.properties {
                 match prop {
                     PropertyDef::Scalar { .. } => {
-                        let tok = tokens.next().ok_or(PlyError::UnexpectedEof)?;
-                        values.push(vec![parse_ascii_number(tok)?]);
+                        let tok = tokens
+                            .next()
+                            .ok_or(PlyError::UnexpectedEof)
+                            .map_err(ImportError::Ply)?;
+                        values.push(vec![parse_ascii_number(tok).map_err(ImportError::Ply)?]);
                     }
                     PropertyDef::List { .. } => {
-                        let count_tok = tokens.next().ok_or(PlyError::UnexpectedEof)?;
+                        let count_tok = tokens
+                            .next()
+                            .ok_or(PlyError::UnexpectedEof)
+                            .map_err(ImportError::Ply)?;
                         let count = count_tok.parse::<usize>().map_err(|_| {
-                            PlyError::InvalidData("listの要素数が数値でない".to_string())
+                            ImportError::Ply(PlyError::InvalidData(
+                                "listの要素数が数値でない".to_string(),
+                            ))
                         })?;
                         let mut list_values = Vec::with_capacity(count);
                         for _ in 0..count {
-                            let tok = tokens.next().ok_or(PlyError::UnexpectedEof)?;
-                            list_values.push(parse_ascii_number(tok)?);
+                            let tok = tokens
+                                .next()
+                                .ok_or(PlyError::UnexpectedEof)
+                                .map_err(ImportError::Ply)?;
+                            list_values.push(parse_ascii_number(tok).map_err(ImportError::Ply)?);
                         }
                         values.push(list_values);
                     }
@@ -492,12 +547,12 @@ fn read_ascii_body(
             }
 
             if element.name == "vertex" {
-                points.push(layout.extract(&values));
+                visit(layout.extract(&values))?;
             }
         }
     }
 
-    Ok(points)
+    Ok(())
 }
 
 fn parse_ascii_number(token: &str) -> Result<f64, PlyError> {
@@ -506,31 +561,36 @@ fn parse_ascii_number(token: &str) -> Result<f64, PlyError> {
         .map_err(|_| PlyError::InvalidData(format!("数値として読めない: {token}")))
 }
 
-fn read_binary_body(
-    data: &[u8],
-    header: &PlyHeader,
+fn stream_binary_body<R: Read>(
+    reader: &mut R,
+    elements: &[ElementDef],
     layout: &VertexLayout,
     big_endian: bool,
-) -> Result<Vec<ImportedPoint>, PlyError> {
-    let mut cursor = 0usize;
-    let mut points = Vec::new();
-
-    for element in &header.elements {
+    visit: &mut dyn FnMut(RawPoint) -> Result<(), ImportError>,
+) -> Result<(), ImportError> {
+    for element in elements {
         for _ in 0..element.count {
             let mut values: Vec<Vec<f64>> = Vec::with_capacity(element.properties.len());
 
             for prop in &element.properties {
                 match prop {
                     PropertyDef::Scalar { ty, .. } => {
-                        values.push(vec![read_scalar(data, &mut cursor, *ty, big_endian)?]);
+                        values.push(vec![
+                            read_scalar(reader, *ty, big_endian).map_err(ImportError::Ply)?
+                        ]);
                     }
                     PropertyDef::List {
                         count_ty, elem_ty, ..
                     } => {
-                        let count = read_scalar(data, &mut cursor, *count_ty, big_endian)? as usize;
+                        let count = read_scalar(reader, *count_ty, big_endian)
+                            .map_err(ImportError::Ply)?
+                            as usize;
                         let mut list_values = Vec::with_capacity(count);
                         for _ in 0..count {
-                            list_values.push(read_scalar(data, &mut cursor, *elem_ty, big_endian)?);
+                            list_values.push(
+                                read_scalar(reader, *elem_ty, big_endian)
+                                    .map_err(ImportError::Ply)?,
+                            );
                         }
                         values.push(list_values);
                     }
@@ -538,23 +598,26 @@ fn read_binary_body(
             }
 
             if element.name == "vertex" {
-                points.push(layout.extract(&values));
+                visit(layout.extract(&values))?;
             }
         }
     }
 
-    Ok(points)
+    Ok(())
 }
 
-fn read_scalar(
-    data: &[u8],
-    cursor: &mut usize,
-    ty: ScalarType,
-    big_endian: bool,
-) -> Result<f64, PlyError> {
+/// 1スカラ分(最大8バイト、`ScalarType::Float64`)を読む。`Read::read_exact`が
+/// 途中でEOFになった場合は`UnexpectedEof`として扱う(標準の`io::ErrorKind`は
+/// `UnexpectedEof`という専用の種別を持つため、それを見て区別する)。
+fn read_scalar<R: Read>(reader: &mut R, ty: ScalarType, big_endian: bool) -> Result<f64, PlyError> {
     let size = ty.byte_size();
-    let end = *cursor + size;
-    let slice = data.get(*cursor..end).ok_or(PlyError::UnexpectedEof)?;
-    *cursor = end;
-    Ok(ty.decode(slice, big_endian))
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf[..size]).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            PlyError::UnexpectedEof
+        } else {
+            PlyError::Io(e)
+        }
+    })?;
+    Ok(ty.decode(&buf[..size], big_endian))
 }

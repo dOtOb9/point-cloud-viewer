@@ -1,29 +1,43 @@
-//! M4-4: E57 / PLY / PCD → LAS のインポータ。
+//! M4-9: E57 / PLY / PCD → COPC のインポータ(中間LASを経ない)。
 //!
-//! # なぜLASを経由するのか
+//! # 経緯(M4-4→M4-9)
 //!
-//! `copc-writer`によるLAS/LAZ→COPC変換(ADR-0006)は入力にLAS/LAZしか取らない。
-//! そこでE57/PLY/PCDは、いったんプレーンなLAS(`.las`、非圧縮)へ書き出し、
-//! あとは既存のLAS/LAZ→COPC経路にそのまま乗せる設計にした
-//! (`TaskSheets/M4-import-and-conversion.md`のM4-4「設計」参照)。
-//! このモジュールの担当は「E57/PLY/PCD → LAS」の変換だけで、COPCには一切触れない。
+//! M4-4時点は「E57/PLY/PCDをいったんプレーンなLASへ書き出し、既存のLAS/LAZ→COPC
+//! 経路にそのまま乗せる」設計だった(`las_out.rs`、現在は削除済み)。この設計には
+//! 2つの問題があった(`TaskSheets/M4-import-and-conversion.md`のM4-9参照):
+//!
+//! 1. 各形式の読み込みが全点を`Vec`に貯めてからLASへ書いていた(メモリが点数に
+//!    比例する。数千万点で数GBになり、Android・Webでは破綻する)
+//! 2. 中間LAS(非圧縮)を書いてから読み直しており、余計なディスクI/Oと時間がかかる
+//!
+//! M4-9で、各形式の読み込みを「1点読むたびに即座にCOPCの書き出しへ渡す」形
+//! (`point::PointSource`)に作り直し、中間LASを無くした。`to_las`と`las_out.rs`は
+//! 削除した。
 //!
 //! # モジュール構成
 //!
-//! - [`point`][]: 3形式の読み込み側が共通で使う、メモリ上の点の表現
-//! - [`scale`][]: LASのscale/offsetの選び方(純粋関数、mm以下の精度を保証)
-//! - [`las_out`][]: 共通の点群表現からプレーンなLASを書き出す
+//! - [`point`][]: 3形式が共通で使う、1点ぶんの値(`RawPoint`)とストリーミングの口
+//!   (`PointSource`トレイト)
+//! - [`scale`][]: LASのscale/offsetの選び方(純粋関数、mm以下の精度を保証)。
+//!   M4-4からそのまま流用する
+//! - [`convert`][]: `PointSource`からCOPCへ書き出す本体(`run_import`)
 //! - [`e57`][]・[`ply`][]・[`pcd`][]: 各形式の読み込み(形式ごとの属性の対応・
 //!   単位の違いはそれぞれのモジュール冒頭のコメントに記録する)
 
+mod convert;
 pub mod e57;
-mod las_out;
 pub mod pcd;
 pub mod ply;
 mod point;
 mod scale;
 
+use std::io::{Read, Seek};
 use std::path::Path;
+
+use copc_core::CancelCheck;
+use copc_writer::CopcWriterParams;
+
+use crate::streaming::ReadProgress;
 
 /// 拡張子から取り込み元の形式を判定する。大文字小文字は区別しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,9 +47,9 @@ pub enum SourceFormat {
     Pcd,
 }
 
-/// パスの拡張子から`SourceFormat`を判定する。M4-3(呼び出し側)がこれで
-/// E57/PLY/PCD/LAS/LAZのどれを開いたかを振り分けられるようにする
-/// (LAS/LAZ自身はこのモジュールの対象外なので`None`を返す)。
+/// パスの拡張子から`SourceFormat`を判定する。`src-tauri`側がE57/PLY/PCD/LAS/LAZの
+/// どれを開いたかを振り分けるために使う(LAS/LAZ自身はこのモジュールの対象外なので
+/// `None`を返す)。
 pub fn detect_format(path: &Path) -> Option<SourceFormat> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -46,10 +60,10 @@ pub fn detect_format(path: &Path) -> Option<SourceFormat> {
     }
 }
 
-/// `to_las`の結果。
+/// `convert_to_copc`の結果。
 #[derive(Debug, Clone)]
 pub struct ImportSummary {
-    /// 実際にLASへ書き出した点数。
+    /// 実際にCOPCへ書き出した点数。
     pub point_count: u64,
     /// CRS(座標参照系)が分かっているか。`false`なら「不明」として扱われており、
     /// 呼び出し側は推測でCRSを補ってはならない(ADR-0008「対応しないもの」節、
@@ -67,27 +81,99 @@ pub enum ImportError {
     Ply(#[from] ply::PlyError),
     #[error("PCDの読み込みに失敗した: {0}")]
     Pcd(#[from] pcd::PcdError),
-    #[error("LASの書き出しに失敗した: {0}")]
-    Las(#[from] las::Error),
-    #[error("入力に点が1つも無い")]
-    Empty,
+    #[error("{0}")]
+    Copc(#[from] copc_core::Error),
 }
 
-/// `input`(E57/PLY/PCD)を読み、`output`へプレーンなLASとして書き出す。
+/// `src-tauri`がLAS/LAZ経路(`crate::streaming::convert`、`copc_core::Error`を
+/// 直接返す)とこの経路(`convert_to_copc`、`ImportError`を返す)を同じ
+/// `match`で扱えるようにする変換。`Copc`はそのまま中身を取り出す
+/// (`copc_core::Error::Cancelled`かどうかの判定を呼び出し側が引き続き
+/// できるようにするため)。それ以外(形式の解析に失敗した等)は
+/// `InvalidInput`として包む(キャンセルではない、ただの失敗として扱う)。
+impl From<ImportError> for copc_core::Error {
+    fn from(err: ImportError) -> Self {
+        match err {
+            ImportError::Copc(e) => e,
+            other => copc_core::Error::InvalidInput(other.to_string()),
+        }
+    }
+}
+
+/// `input`(E57/PLY/PCD)を読み、`output`へCOPCとして直接書き出す(中間LASを
+/// 経ない。モジュール冒頭コメント参照)。
 ///
-/// - `input`の拡張子から形式を自動判定する(`detect_format`)
-/// - `crs_wkt`: 利用者がCRSを指定する口。分かっているCRSのWKTバイト列を渡すと
-///   出力LASのヘッダーに書き込む(`las::Header::set_wkt_crs`)。`None`なら
-///   「不明」のままにする(PLY/PCDにCRSの概念が無いこと、E57も一般に
-///   測地系を持たないローカル座標であることがADR-0008に記録されている。
-///   推測で平面直角座標系などを補わない)。WKT文字列そのものを組み立てる処理
-///   ―― 例えばEPSGコードからの変換 ―― は今回の範囲外
-///   (`TaskSheets/ADR-0008-formats-and-crs.md`のM4-4追記を参照)。UIでの
-///   選択画面は作らない(タスクシートの指示どおり)
-pub fn to_las(
+/// - `format`: `detect_format`で判定した形式。呼び出し側が既に判定済みの値を
+///   渡す形にしている(このバイト列ソースが「どのパスから開かれたか」を
+///   このモジュール自身は知らないため)
+/// - `spill_dir`・`params`・`cancel`・`on_progress`: LAS/LAZ経路
+///   (`crate::streaming::convert`)と同じ役割・同じ型。`src-tauri`側は両方の
+///   経路を同じ呼び出し形で扱える(`src-tauri/src/conversion.rs`参照)
+/// - `crs_wkt`: 利用者がCRSを指定する口。分かっているCRSのWKT文字列を渡すと
+///   出力に書き込む。`None`なら「不明」のままにする(PLY/PCDにCRSの概念が
+///   無いこと、E57も一般に測地系を持たないローカル座標であることがADR-0008に
+///   記録されている。推測で平面直角座標系などを補わない)。UIでの選択画面は
+///   作らない(タスクシートの指示どおり)
+#[allow(clippy::too_many_arguments)]
+pub fn convert_to_copc<R>(
+    source: R,
+    format: SourceFormat,
+    output: &Path,
+    spill_dir: &Path,
+    params: &CopcWriterParams,
+    cancel: &dyn CancelCheck,
+    crs_wkt: Option<String>,
+    on_progress: impl FnMut(ReadProgress),
+) -> Result<ImportSummary, ImportError>
+where
+    R: Read + Seek + Send + Sync + 'static,
+{
+    // 3形式とも`BufRead`(PLY/PCD)または`Read + Seek`(E57)で足りるため、
+    // 1箇所で`BufReader`に包んでおけば全形式で使い回せる。
+    let buffered = std::io::BufReader::new(source);
+    match format {
+        SourceFormat::E57 => convert::run_import(
+            e57::E57Source::open(buffered)?,
+            output,
+            spill_dir,
+            params,
+            cancel,
+            crs_wkt,
+            on_progress,
+        ),
+        SourceFormat::Ply => convert::run_import(
+            ply::PlySource::open(buffered)?,
+            output,
+            spill_dir,
+            params,
+            cancel,
+            crs_wkt,
+            on_progress,
+        ),
+        SourceFormat::Pcd => convert::run_import(
+            pcd::PcdSource::open(buffered)?,
+            output,
+            spill_dir,
+            params,
+            cancel,
+            crs_wkt,
+            on_progress,
+        ),
+    }
+}
+
+/// パスから開く便利関数(デスクトップの通常経路。テストからも使う)。
+/// Android(`content://`)は`convert_to_copc`を直接、`tauri-plugin-fs`で開いた
+/// `File`を渡して呼ぶ(`crate::streaming::convert_path`と同じ考え方)。
+#[allow(clippy::too_many_arguments)]
+pub fn convert_path_to_copc(
     input: &Path,
     output: &Path,
-    crs_wkt: Option<Vec<u8>>,
+    spill_dir: &Path,
+    params: &CopcWriterParams,
+    cancel: &dyn CancelCheck,
+    crs_wkt: Option<String>,
+    on_progress: impl FnMut(ReadProgress),
 ) -> Result<ImportSummary, ImportError> {
     let format = detect_format(input).ok_or_else(|| {
         ImportError::UnknownFormat(
@@ -98,14 +184,18 @@ pub fn to_las(
                 .to_string(),
         )
     })?;
-
-    let cloud = match format {
-        SourceFormat::E57 => e57::read(input)?,
-        SourceFormat::Ply => ply::read(input)?,
-        SourceFormat::Pcd => pcd::read(input)?,
-    };
-
-    las_out::write(output, &cloud, crs_wkt)
+    let file = std::fs::File::open(input)
+        .map_err(|e| ImportError::Copc(copc_core::Error::io("open source E57/PLY/PCD", e)))?;
+    convert_to_copc(
+        file,
+        format,
+        output,
+        spill_dir,
+        params,
+        cancel,
+        crs_wkt,
+        on_progress,
+    )
 }
 
 #[cfg(test)]
@@ -137,8 +227,17 @@ mod tests {
     }
 
     #[test]
-    fn to_las_rejects_unknown_extension() {
-        let err = to_las(Path::new("unknown.xyz"), Path::new("out.las"), None).unwrap_err();
+    fn convert_path_to_copc_rejects_unknown_extension() {
+        let err = convert_path_to_copc(
+            Path::new("unknown.xyz"),
+            Path::new("out.copc.laz"),
+            Path::new("."),
+            &CopcWriterParams::default(),
+            &copc_core::NeverCancel,
+            None,
+            |_| {},
+        )
+        .unwrap_err();
         assert!(matches!(err, ImportError::UnknownFormat(ext) if ext == "xyz"));
     }
 }
