@@ -2601,3 +2601,302 @@ run idは、push後にコーディネーターが確認すること(「所有者
 `crates/pcv-convert/src/import/`配下と`src-tauri/src/conversion.rs`・
 `src/datasource/tauri.ts`)。
 
+---
+
+## M4-8: 後処理(octree構築・ノードごとのLAZ圧縮・書き出し)を速くする(2026-10-03、Opus計画・Sonnet実装)
+
+### 背景・所有者の要望
+
+M4-7で読み込み(LAZ展開)を並列化し、beer.lazの読み込み段階が約5倍速くなった。その結果、
+**並列化していない後処理(M4-7実測で64〜73秒)が変換時間の大半を占めるようになった。**
+所有者も「octree構築に時間がかかっている」と見ている。`TaskSheets/ADR-0007-pcv-protocol-concurrency.md`の
+教訓(並列度だけを上げて1回あたりのコストを疑わなかった失敗)に倣い、今回も**まず測ってから
+並列化するか決める**。
+
+開発機: Core i5-14600K(14コア/20論理スレッド)、RAM 31.8GB、Windows 11(M4-7と同じ機体)。
+計測対象: `C:\rust\point-cloud-viewer\data\beer.laz`(66,848,096点、448.7MiB。worktreeの外の
+絶対パスから読んだ。出力はコミットしていない)。
+
+### 1. まず測る: 後処理の内訳(実測)
+
+専用の計測ハーネス`crates/pcv-convert/examples/post_process_stage_bench.rs`を新設した
+(`cargo run -p pcv-convert --release --example post_process_stage_bench -- <file>`)。
+
+後処理を次の3段階に分けて測るため、`vendor/copc-writer`に**計測専用のAPI**
+(`PostProcessStageTimings`構造体、`write_copc_from_spill_with_fs_and_timings`関数。
+本番の変換経路は使わない)を追加した。既存の`write_copc_inner`に`Instant`での区間計測を
+3箇所(octree分割の前後・ノード圧縮の前後・残り)挟んだだけで、アルゴリズム自体は
+変えていない。
+
+1. **octreeの分割**(LODの索引作り、点のノードへの振り分け。`lod.rs`の`build_lod_index`)
+2. **ノードごとのLAZ圧縮**(圧縮したバイト列を出力ストリームへ書く部分を含む。`writer.rs`の`compress_nodes`)
+3. **書き出し**(ヘッダー・VLR・hierarchyの書き出し。圧縮以外の全て)
+
+あわせて、**一時ファイルの読み戻し(`read_at`)の重さ**を単独で測った。`SpillReader::xyz_at`
+(octree分割が点ごとに呼ぶ、24バイトの範囲読み)と`record_into`(ノード圧縮が点ごとに呼ぶ、
+レコード全体の範囲読み)を、本番と同じ経路(mmap上の範囲読み)で全点ぶんまとめて1回だけ
+区間計測する方式にした。個々の`read_at`呼び出しを`Instant`で包む案(`ScratchFs`ラッパー)も
+検討したが、数億回の呼び出しに計測自体のオーバーヘッド(関数呼び出し+`Instant::now()`2回)
+が無視できない大きさで乗ってしまう(観測者効果)ため採用しなかった。
+
+**実測結果**(`cargo run -p pcv-convert --release --example post_process_stage_bench -- beer.laz`、
+改修前のコードで4回実行):
+
+| 実行 | [1]octree分割 | [2]ノード圧縮 | [3]書き出し | 合計 |
+|---|---|---|---|---|
+| 1回目 | 48.610秒(69.9%) | 20.601秒(29.6%) | 0.004秒(0.0%) | 69.552秒 |
+| 2回目 | 39.694秒(52.0%) | 36.051秒(47.2%) | 0.087秒(0.1%) | 76.372秒 |
+| 3回目 | 32.601秒(70.9%) | 12.862秒(28.0%) | 0.195秒(0.4%) | 45.992秒 |
+| 4回目 | 33.350秒(70.8%) | 13.317秒(28.3%) | 0.101秒(0.2%) | 47.113秒 |
+
+4回とも揺れが大きい(合計46〜76秒)。`ADR-0006`が記録した既知の揺れ(OSページキャッシュの
+温まり方・Defenderのリアルタイム保護等)と同種とみられ、原因は深追いしていない。揺れは
+あるものの、**4回中3回でoctreeの分割がノード圧縮より明確に大きく(約70%)、残り1回でも
+ほぼ互角(52.0% vs 47.2%、分割の方がわずかに大きい)**。書き出し(ヘッダー・VLR・hierarchy)は
+常に1秒未満で無視できる。
+
+参考として、`read_at`単独の実測(全点ぶん一括、揺れが大きいため参考値):
+`xyz_at`全点が0.861〜4.463秒、`record_into`全点が0.867〜2.409秒。どちらも後処理全体
+(46〜76秒)に対して小さく、**読み戻し自体(mmap上の範囲読み)が後処理のボトルネックでは
+ない**ことを示している。
+
+**寄り道: fsync(`sync_all`)を疑って計測した(結果、原因ではなかった)**。`NativeScratchFs`の
+`finish_temp`は一時ファイルを確定するたびに`sync_all`(fsync)を呼んでおり、octree分割は
+多数の一時ファイル(root・partition・order)を作っては確定するため、「大量のfsyncが
+ボトルネックではないか」という仮説を立てた。一時的に呼び出し回数・累積時間を数える
+カウンタを仕込んで測ったところ、1,990回・合計4.619秒だった(octree分割の実測41.556秒の
+約11%)。**ボトルネックではなかった**ため、この仮説は退け、カウンタは削除した
+(ADR-0007の教訓どおり、疑ったら実測で裏付けを取り、裏付けが無ければ別の説明を探す)。
+
+### 判断
+
+**octreeの分割(LOD構築)が後処理全体の過半数(4回中3回で約70%、残り1回でも52%で
+最大)を占めるため、事前に決めた基準(最大の部分が半分以上かつ並列化できる構造なら
+並列化する)に従い、分割の並列化に進む。**
+
+分割の構造: `lod.rs`の`build_lod_index`は、ルートを8分木のオクタントへ分割した後、
+**各オクタント以下の部分木を完全に独立に処理する**(あるオクタントの点は他のオクタントの
+分割処理と一切データを共有しない)。これは「ノードや部分木ごとに独立」という、並列化を
+進めてよい構造にそのまま当てはまる。
+
+### 2. 並列化の実装
+
+#### `rayon`は既に依存に入っている(確認)
+
+`crates/pcv-convert`は M4-7で`las`の`laz-parallel`フィーチャ(内部で`rayon`を使う)を
+既に有効にしており、ワークスペースの依存グラフに`rayon`が既にある。`vendor/copc-writer`
+自体にも**upstream由来の`parallel`フィーチャ(`dep:rayon`)が最初からあった**(後述)。
+
+#### octreeの分割(`parallel-lod`フィーチャ、新規実装)
+
+`vendor/copc-writer/src/lod.rs`の`build_lod_index`に`#[cfg(feature = "parallel-lod")]`の
+並列版を追加した(既存の逐次版は`#[cfg(not(feature = "parallel-lod"))]`で残した。
+`writer.rs`の`compress_nodes`が逐次/並列を`cfg`で切り替えている既存の作法と同じ)。
+
+**設計: なぜ「ルート直下の1段」だけを並列化するか**。ルートを8オクタントへ分割した後、
+**残った子(最大8個)をオクタントごとに独立したローカルの一時ファイル(order-branch)へ
+逐次処理し**(既存の`LodIndexBuilder::assign`をそのまま再利用、アルゴリズム自体は
+変えていない)、`rayon`でこれを並列に実行する。全レベルを再帰的に並列化する(子の
+そのまた子も並列化する)案も検討したが、部分木ごとに新しい一時ファイルを作るコストが
+あるため、葉に近い小さな部分木まで並列化すると「小さすぎる仕事を並列化してかえって
+遅くなる」(M4-7がバッチサイズ64Kiで観測した逆転と同種)おそれがあり、実装の見通しの
+良さも考慮して1段に留めた。
+
+**出力の決定性**: 並列処理が終わったら、**オクタント順(0→7)でローカルのorderファイルの
+中身をグローバルなorderファイルへバイトをそのまま連結する**(オフセットを足すだけ)。
+逐次版も同じDFS順(ノード自身の割り当て→子をオクタント順に処理)でorderファイルを
+埋めるため、連結後の内容は逐次版とバイト単位で一致する。既存の回帰テスト
+`native_output_hash_matches_recorded_value`(ネイティブ出力のハッシュ一致)で確認した。
+
+**`CopcPointSource: Sync`化(前提作業)**: 複数スレッドから`&S`(点データソース)を
+共有して`xyz()`を呼ぶ必要があるため、`CopcPointSource`トレイトに`Sync`を上位トレイトとして
+追加した。これに伴い、`SpillSource`(`source.rs`)・`SpillReader`(`spill.rs`)が内部の
+使い回しバッファに使っていた`RefCell`(`Sync`でない)を`Mutex`に変えた。`record_into`
+(ノード圧縮が単一スレッドから呼ぶ。並列化したのは`xyz_at`呼び出し側=octree分割だけ)
+からしか触れないため、実質的なロック競合は無い。
+
+**`CancelCheck`の型を`&dyn CancelCheck`→`&(dyn CancelCheck + Sync)`に変更**: 同じ理由
+(複数スレッドから`cancel.check()`を呼ぶ)で、`copc_core::CancelCheck`トレイトオブジェクトの
+参照型に`Sync`マーカーを足した。`copc_core`クレート自体は編集できない(vendorしていない
+外部クレート)ため、トレイト定義は変えず、受け取る側の型だけを変えた。既存の実装
+(`NeverCancel`・`AtomicCancel`)はどちらも元から`Sync`なので、呼び出し側のコード変更は
+不要(型が自動的に合う)。`vendor/copc-writer`内の該当箇所と、`crates/pcv-convert/src/streaming.rs`
+の`convert`/`convert_path`の型注釈を機械的に揃えた(振る舞いは変えていない)。
+
+#### ノードごとのLAZ圧縮(`parallel-compress`フィーチャ、**採用しなかった**)
+
+`vendor/copc-writer`の`writer.rs`を読んだところ、**ノードごとのLAZ圧縮を並列化する
+実装が、upstream(`copc-writer` 0.9.0そのもの)に元から存在していた**ことが分かった
+(`#[cfg(feature = "parallel")] fn compress_nodes`。`rayon`でバッチ単位
+(`batch = 2 * rayon::current_num_threads()`、同時に圧縮するノード数の上限そのもの)
+に区切り、ノードごとに独立した`LasZipCompressor`で圧縮してから、元の順序で書き出す
+実装。チャンクテーブルは自前で組み立て直す)。このフィーチャはこれまで一度も
+有効化されたことが無く(`pcv-convert`は`copc-writer = "0.9.0"`とだけ書いていた)、
+**検証もされていなかった**。
+
+実際に有効にして`native_output_hash_matches_recorded_value`を実行したところ、
+**出力がバイト単位で変わった(ファイルサイズ自体が3バイト違う。ヘッダーのEVLRオフセットから
+hierarchy領域まで広範囲に差分がある)**。`cargo test -p pcv-convert --test streaming_conversion
+native_output_hash_matches_recorded_value`を次の4通り(`crates/pcv-convert/Cargo.toml`の
+`copc-writer`依存のフィーチャを切り替えて再ビルド)で実行し、切り分けた:
+
+| 構成 | 結果 |
+|---|---|
+| `parallel-lod`+`parallel-compress`(両方) | 失敗 |
+| `parallel-compress`のみ | 失敗(両方のときと同じハッシュ。`parallel-lod`の有無は無関係) |
+| `parallel-lod`のみ | **成功** |
+| フィーチャ無し(逐次のみ。`CopcPointSource: Sync`化・`RefCell`→`Mutex`化は
+  含むがoctree分割・ノード圧縮はどちらも逐次) | **成功**(念のため最後に確認) |
+
+`parallel-lod`のみ・フィーチャ無しのどちらも、本タスク開始前から記録されている
+期待ハッシュ(`EXPECTED_HASH`)と一致した。**出力のバイト不一致は`parallel-compress`
+(upstream由来、本タスクでは実装していない)だけが原因で、`CopcPointSource: Sync`化・
+`RefCell`→`Mutex`化・`parallel-lod`はどれも出力に影響していない。**
+
+専用の使い捨てスクリプト(`examples/dump_synthetic_output.rs`。確認後に削除済み、
+`main`には含めていない)で、同じ合成LASを逐次版・`parallel-compress`版それぞれで
+変換して`cmp -l`でバイト差分を取ったところ、ヘッダーのEVLRオフセット・COPC info VLRの
+`root_hier_offset`(ファイルサイズが違うので当然ずれる)に加えて、**点データ領域の
+途中にも複数箇所の差分があった**。これは「連続した1本の`LasZipCompressor`でチャンク
+境界ごとに`finish_current_chunk()`する」(逐次版)場合と、「ノードごとに新しい
+`LasZipCompressor`を作って独立に圧縮する」(upstreamの並列版)場合とで、**LAZの
+圧縮バイト列そのものが異なる**ことを示している。`laz`クレート内部の挙動差が原因と
+見られるが、このタスクでは深追いしていない(本タスクの担当範囲は`copc-writer`の
+利用方法であり、`laz`クレート自体のバグ調査は範囲外と判断した)。
+
+**「どうしてもバイト単位の一致を保てない場合は、止まって理由を報告する(期待値を
+書き換えて済ませないこと)」という約束に従い、`parallel-compress`は採用しない。**
+`crates/pcv-convert/Cargo.toml`では`parallel-lod`だけを有効にした。
+
+この2つの並列化を独立に検証・選択できるよう、`vendor/copc-writer/Cargo.toml`の
+`parallel`フィーチャを`parallel-lod`(本タスクの新規実装)と`parallel-compress`
+(upstream由来、未採用)に分割した。`parallel = ["parallel-lod", "parallel-compress"]`
+は後方互換のため残したが、`pcv-convert`はこれを使わず`parallel-lod`だけを指定する。
+
+#### メモリ: 同時に開く一時ファイル数が点数に比例しないことを確認
+
+新規テスト`vendor/copc-writer/tests/parallel_lod_open_files_bounded.rs`。`ScratchFs`を
+薄くラップし、「一時ファイルが作られてから(writer→readerの変換をまたいで)完全に
+手放されるまで」の区間をRAIIで数える`OpenFileTracker`を用意した。点数が10倍違う
+2つの入力(20,000点・200,000点、同じ`max_points_per_node`)を変換し、**同時に開いていた
+一時ファイル数のピークが10倍にはならない**(3倍以内という機械的な閾値で判定。実際の
+構造上は`rayon`のスレッド数程度の定数倍にしかならないはず)ことを確認した。
+
+#### キャンセル: 並列化の後も働くことを確認
+
+新規テスト`vendor/copc-writer/tests/parallel_lod_cancel.rs`。呼ばれた回数を数えて
+途中で`Err(Cancelled)`を返す`CancelCheck`実装(スリープや実時間に頼らない決定的な
+方法)で、octreeの分割が本格化した頃合い(21回目の`check()`呼び出し)にキャンセルが
+入るようにし、(1)呼び出し全体が`Err(Error::Cancelled)`を返すこと、(2)キャンセル経路でも
+一時ファイルが全て手放される(RAIIで0に戻る)ことを確認した。`rayon`の各並列ワーカーは
+それぞれ独立に`cancel.check()`を呼ぶ(既存の`LodIndexBuilder::assign`が元から持っていた
+ポーリングをそのまま使い回しているだけ)ため、1つの共有フラグで全ワーカーが気づいて
+止まる。
+
+#### Web: 対象外であることの確認
+
+`crates/pcv-wasm`は別のワークスペース(このタスクのCargo.tomlとは独立したビルドグラフ)
+で`copc-writer`に`default-features = false`のまま依存しており、`parallel-lod`・
+`parallel-compress`のどちらも有効にしていない(`rayon`はwasm32向けビルドに一切
+入り込まない)。ただし`CopcPointSource: Sync`化・`RefCell`→`Mutex`化は**フィーチャに
+関わらず常にコンパイルされる**変更のため、wasm32向けの生成物(`pcv_wasm_bg.wasm`)の
+バイト列自体は変わる(`npm run build:wasm`で再生成し、コミットに含めた)。TypeScript向けの
+型定義(`.d.ts`)には差分が無い(API面は変わっていない)ことを確認した。
+
+### 3. 実測: 並列化の前後比較(デスクトップ、beer.laz)
+
+`parallel-lod`を有効にした状態で、同じ計測ハーネスを3回実行した。
+
+| 実行 | [1]octree分割 | [2]ノード圧縮(変更なし) | 合計 |
+|---|---|---|---|
+| 1回目 | **12.681秒**(44.8%) | 15.310秒(54.0%) | 28.333秒 |
+| 2回目 | **18.370秒**(35.1%) | 33.035秒(63.1%) | 52.346秒 |
+| 3回目 | **18.552秒**(36.7%) | 31.087秒(61.5%) | 50.548秒 |
+
+**octreeの分割(並列化した部分)**: 改修前4回(32.601・33.350・39.694・48.610秒、中央値
+約36.5秒)→改修後3回(12.681・18.370・18.552秒、中央値18.370秒)。**中央値で約2.0倍
+(36.5秒/18.4秒)速くなった。**
+
+**後処理合計**: ノード圧縮(変更していない)自体の揺れが依然として大きい(12.9〜36.1秒)
+ため、合計の改善率はこの揺れに埋もれて明確には出ていない(改修前合計の中央値
+約58.6秒 vs 改修後合計の中央値50.5秒)。**正直に書く: 並列化した部分(octree分割)
+単体では明確に約2倍速くなっているが、後処理「合計」としての体感速度向上は、
+ノード圧縮側のシステムノイズに隠れて今回の計測では綺麗に見えていない。** 圧縮側の
+揺れの原因はADR-0006・本タスク冒頭と同種(未解決)で、本タスクの範囲ではない
+(`parallel-compress`は上記の理由で採用していない)。
+
+### 確認したコマンドと結果
+
+```
+$ cargo fmt --all -- --check
+(出力無し、終了コード0)
+
+$ cargo fmt --manifest-path vendor/copc-writer/Cargo.toml -- --check
+(出力無し、終了コード0)
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+(警告・エラー無し)
+
+$ cargo test --workspace --release
+pcv-convert(ライブラリ41件・import_e57等の統合テスト・streaming_conversion 6件
+  [native_output_hash_matches_recorded_valueを含む]・parallel_laz_decompression 2件・
+  roundtrip 1件): 全て成功
+pcv-core(31件)・pcv-tauri(6件): 全て成功
+doc-tests: 0件(対象無し)
+
+$ cargo test --manifest-path vendor/copc-writer/Cargo.toml --release --features parallel-lod
+19件(ライブラリ。lod.rsの既存テストが並列版を実際に通している)+
+parallel_lod_cancel(新規)1件+parallel_lod_open_files_bounded(新規)1件+
+scratch_read_is_bounded(M4-6の既存回帰テスト)1件、合計22件成功
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+成功
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -p pcv-wasm -- -D warnings
+pcv-wasm自身は警告0件
+
+$ cargo test --manifest-path crates/pcv-wasm/Cargo.toml
+ユニット17件+統合2件、すべて成功
+
+$ npm run build:wasm / typecheck / lint / test / build
+いずれも成功(testは28ファイル240件)
+```
+
+**vendor clippyについて**: `cargo clippy --manifest-path vendor/copc-writer/Cargo.toml
+--all-targets -- -D warnings`は本タスクと無関係の既存のlint(`ScratchReader`トレイトが
+`len`を持つが`is_empty`を持たない、`clippy::len_without_is_empty`)で失敗する。
+`git diff origin/main -- vendor/copc-writer/src/scratch.rs`で確認したところ、この
+トレイト定義は本タスクで一切変更していない(diffが空)ため、**本タスクが持ち込んだ
+問題ではない**。CI(`ci.yml`)も`cargo clippy --workspace --all-targets`(`vendor`は
+ワークスペース除外)しか実行しないため、本タスクの受け入れ条件には影響しない。
+
+### 新規・変更したファイル
+
+- `vendor/copc-writer/src/writer.rs`: `PostProcessStageTimings`(計測専用)、
+  `write_copc_from_spill_with_fs_and_timings`(計測専用)、`CancelCheck`の型を
+  `&(dyn CancelCheck + Sync)`に変更
+- `vendor/copc-writer/src/lod.rs`: `build_lod_index`の並列版(`parallel-lod`)を追加
+- `vendor/copc-writer/src/source.rs`・`spill.rs`: `CopcPointSource: Sync`化に伴う
+  `RefCell`→`Mutex`
+- `vendor/copc-writer/src/validate.rs`: `CancelCheck`の型変更(機械的)
+- `vendor/copc-writer/Cargo.toml`: `parallel`を`parallel-lod`/`parallel-compress`に分割、
+  新規テスト2件を登録
+- `vendor/copc-writer/tests/parallel_lod_open_files_bounded.rs`・`parallel_lod_cancel.rs`: 新規
+- `crates/pcv-convert/Cargo.toml`: `copc-writer`に`parallel-lod`フィーチャを指定
+- `crates/pcv-convert/examples/post_process_stage_bench.rs`: 新規(計測ハーネス)
+- `src/wasm/pcv-wasm/*`: `npm run build:wasm`による再生成(API面の変更なし)
+
+### 所有者が確かめる手順
+
+1. **デスクトップ: 大きめの生LAS/LAZ(beer.laz等、数千万点)を変換する。** 変換が
+   今までどおり完了し、結果が正しく表示されることを確認する
+2. 可能であれば、タスクマネージャ等で後処理中(進捗表示が「後処理中」になった後)に
+   複数のCPUコアが使われていることを確認する(octreeの分割がルート直下で並列に
+   走っている区間)
+3. **キャンセル**: 変換中(特に後処理が始まった後)にキャンセルを押し、今までどおり
+   止まり、一時ファイルが残っていないことを確認する
+4. 同じファイルを複数回変換し、出力が毎回同じになる(バイト単位で決定的)ことを
+   確認したい場合は、出力のハッシュ(例: PowerShellの`Get-FileHash`)を比較する
+5. Android実機: `gh run download <run-id> -n android-apk`でAPKを取得し、生のLAS/LAZの
+   変換が今までどおり完了することを確認する(`parallel-lod`はAndroidでも有効)
+
