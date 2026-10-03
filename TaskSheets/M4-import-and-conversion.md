@@ -1,8 +1,9 @@
 # M4: 各種形式の取り込みと COPC への変換、および CRS
 
-- 状態: 進行中（M4-1〜M4-6b完了。M4-2 の決定は ADR-0006。M4-4は「E57/PLY/PCD→LAS」
-  部分のみ完了、アプリへの配線は範囲外のまま。実機・実際のブラウザでの目視確認は
-  各節の「所有者が確かめる手順」参照）
+- 状態: 進行中（M4-1〜M4-7完了。M4-2 の決定は ADR-0006。M4-9で、M4-4の
+  「E57/PLY/PCD→LAS→COPC」を「E57/PLY/PCD→COPC直接」に作り直し、アプリへの
+  配線(デスクトップ・Android)も完了した。Webへはつないでいない(M4-9参照)。
+  実機・実際のブラウザでの目視確認は各節の「所有者が確かめる手順」参照）
 - 前提: [ADR-0001](./ADR-0001-architecture.md)（COPC の採用）、[ADR-0008](./ADR-0008-formats-and-crs.md)（対応形式と CRS）
 
 ## このマイルストーンの目的
@@ -691,6 +692,13 @@ CI（`ci.yml`）: 本タスクの一連のpushが緑であることを`gh run li
 ---
 
 ## M4-4: E57 / PLY / PCD の取り込み
+
+> **M4-9で中間LASの経路は廃止した。** この節が記録する「E57/PLY/PCD→LAS」
+> (`to_las`、`las_out.rs`)は、M4-9で「E57/PLY/PCD→COPC」の直接変換
+> (`convert_to_copc`)に置き換わっている。`to_las`・`las_out.rs`は削除済み。
+> この節はM4-4時点の設計判断(クレート選定・属性の対応表・スケールの選び方の
+> 元になった考え方)の記録として残す。詳細はM4-9の節とADR-0008の2026-10-03
+> 追記を参照。
 
 ### やること
 
@@ -2409,5 +2417,187 @@ dist/assets/copc.worker-*.js             15.08 kB
    (上記「正直に: Web版は推定」のとおり、実測はまだ無い)
 6. コア数の少ない端末(スマートフォン等)でも、変換が壊れずに完了する
    ことを確認する(並列化されないだけで、動作自体は保証されるはず)
-(以下に追記)
+
+---
+
+## M4-9: E57/PLY/PCDを中間LASを経ずに直接COPCへ変換する(2026-10-03、Sonnet)
+
+### なぜこの節が要ったか(コーディネーターがコードで確認した問題)
+
+M4-4(「E57/PLY/PCDの取り込み」節)が実装した経路は、`crates/pcv-convert/src/import/point.rs`の
+`ImportedCloud{ points: Vec<ImportedPoint> }`に**全点をメモリへ読み込んでから**、
+いったんプレーンなLAS(非圧縮)へ書き出し(`las_out.rs`)、その後は既存のLAS/LAZ→COPC経路
+(`copc-writer`、ADR-0006)にそのまま乗せる設計だった。これには2つの問題があった。
+
+1. メモリが点数に比例する(M4-1・M4-6が素朴な全点メモリ実装として退けたのと同じ問題)。
+   数千万点で数GBになり、Android・Webでは破綻する規模
+2. 中間LAS(非圧縮)を書いてから読み直しており、余計なディスクI/Oと時間がかかる
+3. **アプリへのつなぎ込みが未実装**だった(ファイル選択からE57/PLY/PCDを開けなかった)
+
+### やったこと
+
+- `crates/pcv-convert/src/import/point.rs`: `ImportedCloud`(全点を`Vec`に持つ)を
+  廃止し、`RawPoint`(1点ぶんの値)と`PointSource`トレイト(`has_color`・
+  `declared_point_count`はヘッダーだけで分かる値、`for_each_point(self, visit)`が
+  1点読むたびに即座に`visit`コールバックへ渡す)に置き換えた
+- `crates/pcv-convert/src/import/convert.rs`(新設): `PointSource`から直接COPCへ
+  書き出す`run_import`。設計の要点は下記「1パスで書ける」参照
+- `e57.rs`・`ply.rs`・`pcd.rs`: それぞれ`PointSource`を実装するストリーミング
+  読み込みに書き換えた。詳細は各モジュール冒頭のコメントと、ADR-0008の
+  2026-10-03追記を参照
+- `las_out.rs`・`to_las`を削除した。変換の経路を1本(`convert_to_copc`)にした
+- `src-tauri/src/conversion.rs`・`src/datasource/tauri.ts`: デスクトップ・Android
+  のファイル選択からE57/PLY/PCDを開けるようにした(下記「アプリへのつなぎ込み」参照)
+
+設計上の判断(1パスで足りる理由、PCDの`binary_compressed`の例外と上限値、
+CRSが不明でも`pcv-core`で開けること、Webへつながなかった理由)は、実装の
+詳細に深く関わるため**ADR-0008の2026-10-03追記**にまとめた。この節は
+受け入れ条件との対応と、確認したコマンド・所有者が確かめる手順に絞る。
+
+### 受け入れ条件との対応
+
+- [x] E57 / PLY / PCD → COPC が、中間LASを作らずに行われる。`to_las`と
+      `las_out.rs`が無くなっている(`git rm`済み、上記「やったこと」参照)
+- [x] **新規テスト**: メモリが点数に比例しないこと。
+      `crates/pcv-convert/tests/import_memory_is_bounded.rs`(新設)。
+      `vendor/copc-writer/tests/scratch_read_is_bounded.rs`と同じ考え方
+      (1回の`read()`呼び出しが要求する最大バイト数を代理指標にする)だが、
+      「点数を変えても最大読み取りサイズが変わらないこと」を直接比較する形に
+      した(小:1,000点程度 vs 大:20万点(E57は5万点)で、入力への最大読み取り
+      サイズが完全に一致することを確認)。PLYのASCII/binary、PCDのASCII/binary
+      (非圧縮)、E57の計5パターンを確認した。`binary_compressed`は対象外
+      (ADR-0008参照)
+- [x] 各形式の小さな合成ファイルを直接COPCにし、`pcv-core`で開けて、点数・
+      座標(スケールの丸めの範囲内)・色が元と一致することを確認した
+      (`tests/import_e57.rs`・`import_ply.rs`・`import_pcd.rs`、いずれも
+      `pcv_core::CopcFile`でCOPCを開いてノードをデコードする形に書き換えた。
+      共通の検証コードは`tests/common/mod.rs`に切り出した)。E57は姿勢の適用も
+      確認した(`import_e57.rs`の`combines_multiple_scans_applying_pose_and_spherical_conversion`、
+      M4-4のテストを書き換えて残した)。色の検証では、`pcv-core`が
+      COPC出力を読む際に行う「8bit色か16bit色かの自動判定」
+      (`crates/pcv-core/src/color_depth.rs`、直近のバグ修正対象)を踏まえ、
+      期待する16bit色から同じ判定規則で8bit色を導く形にした
+      (`tests/common/mod.rs`の`expected_u8_colors`)
+- [x] CRSが不明でも出力が`pcv-core`で開ける(`tests/import_pcd.rs`の
+      `crs_wkt_is_written_when_provided_and_unknown_when_not`で確認)
+- [x] デスクトップ・Androidのファイル選択からE57/PLY/PCDを開け、進捗・
+      キャンセル・キャッシュがLAS/LAZと同じく働く(下記「アプリへのつなぎ込み」
+      参照。**Android実機での確認はできていない**。下記「所有者が確かめる手順」参照)
+- [x] Webの扱い(つないだか、知らせるだけか)と理由が記録されている
+      (ADR-0008参照。結論: 今回はつながない)
+
+### アプリへのつなぎ込み(デスクトップ・Android)
+
+`src-tauri/src/conversion.rs`の`decide_and_start`が
+`pcv_convert::import::detect_format(path_for_naming)`でE57/PLY/PCDかどうかを
+拡張子から判定し、`run_conversion_thread`に`import_format: Option<SourceFormat>`
+として渡す。`None`(LAS/LAZ)なら今までどおり`streaming::convert`、`Some`なら
+新設の`import::convert_to_copc`を呼ぶ。どちらも同じ`ReadProgress`・
+`copc_core::Result<()>`でやり取りする(`ImportError`から`copc_core::Error`への
+`From`実装を`pcv_convert`側に用意し、`Cancelled`かどうかの判定を含めて呼び出し側が
+経路によらず同じ`match`で扱えるようにした)ため、**進捗イベント・キャンセル・
+キャッシュ(同じファイルを二度変換しない)・空き容量の事前チェック・一時
+ディレクトリの誘導は、M4-3がLAS/LAZ向けに作った仕組みにそのまま乗っている**
+(新しい仕組みは増やしていない)。
+
+`src/datasource/tauri.ts`の`pickLocalFile`のファイル選択フィルタに
+`e57`/`ply`/`pcd`拡張子を追加した(デスクトップ・Androidとも同じ
+`tauri-plugin-dialog`の`open()`を使うため、片方だけの対応にはならない)。
+
+CRSのUI選択は作っていない(タスクシートの指示どおり)。`convert_to_copc`への
+`crs_wkt`は常に`None`を渡す(ADR-0008「CRSが不明でも`pcv-core`で開けること」参照)。
+
+### 範囲外にしたこと(正直に)
+
+- **Web版への配線**: wasm32でビルドできる見込みが高いことまでは確認したが
+  (ADR-0008参照)、実際の配線(OPFS経由のバッチ駆動、UI、進捗・キャンセル)は
+  行っていない。Web版は引き続き「デスクトップ版で変換してください」という
+  案内のまま
+- **CRSの推測・UI選択**: ADR-0008・M4-4から変えていない。推測しない方針のまま
+- **binary_compressedの上限を超えた場合の回避策**(分割変換など)は提供していない。
+  エラーメッセージで「デスクトップ版で、より小さく分割するか、ASCII/binary
+  (非圧縮)形式に変換してください」と案内するに留める
+- **Android実機・GUIでの確認全般**: 確認手段が無いため、下記「所有者が
+  確かめる手順」に委ねる
+
+### 確認したコマンドと結果
+
+```
+$ cargo fmt --all -- --check
+(差分なし)
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+(警告・エラー無し)
+
+$ cargo test --workspace
+pcv-convert(ユニットテスト): 41 passed
+pcv-convert(統合テスト: import_e57/import_memory_is_bounded/import_pcd/
+            import_ply/import_to_copc/parallel_laz_decompression/
+            roundtrip/streaming_conversion):
+            1+5+5+5+1+2+1+6 = 26 passed
+pcv-core: 39 passed
+pcv-tauri: 6 passed
+失敗 0
+
+$ cargo build -p pcv-core --target wasm32-unknown-unknown
+Finished(成功。規約1を満たす。`pcv-core`には一切触れていない)
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+Finished(成功。`crates/pcv-wasm`には一切触れていない、既存の挙動を壊していないことの確認)
+
+$ npx tsc --noEmit
+(出力無し、終了コード0)
+
+$ npx eslint .
+(出力無し、終了コード0)
+
+$ npx vitest run
+Test Files  28 passed (28)
+     Tests  240 passed (240)
+
+$ npm run build
+✓ 78 modules transformed.
+✓ built in 768ms
+```
+
+`npm run build:wasm`は`crates/pcv-wasm`に触れていないため実行していない
+(wasm生成物に変更が無い)。
+
+CI(`ci.yml`)・Pages(`pages.yml`)・Androidビルド(`gh workflow run release.yml`)の
+run idは、push後にコーディネーターが確認すること(「所有者への報告」節に記す)。
+
+### 所有者が確かめる手順
+
+1. **デスクトップ: E57/PLY/PCDを開く**
+   - 拡張子`.e57`/`.ply`/`.pcd`のファイルを「ファイルを選ぶ…」で選ぶ。
+     進捗(%・プログレスバー・経過時間)が出て、変換完了後に自動的に点群が
+     表示されることを確認する(LAS/LAZと同じ見せ方のはず)
+   - 変換中に「キャンセル」を押し、UIが操作できたまま変換が止まり、
+     一時ファイルと書きかけの出力が残っていないことを確認する
+   - 同じファイルをもう一度開き、変換が走らず即座に開くことを確認する
+   - 色・座標が元のファイルと対応しているか、見た目で確認する(測量用途の
+     実データがあれば、QGIS等の別ツールで同じファイルを開いて見た目を
+     比べるとより確実)
+2. **デスクトップ: PCDのbinary_compressedで大きすぎる入力**
+   - 展開後サイズが512MiBを超えるbinary_compressedのPCD(もしあれば)を
+     開こうとして、展開を始める前にエラーバナーで知らされることを確認する
+     (無ければこの手順はスキップしてよい。自動テストで同等の状況は確認済み)
+3. **Android実機**: `gh run download <run-id> -n android-apk`でAPKを取得し、
+   OPPO Pad Air等にインストールする。E57/PLY/PCDファイルを選び、
+   - 変換が始まり進捗が出るか
+   - 完了後に自動的に開くか
+   - `adb logcat -s pcv:*`でエラーが出ていないか(ADR-0013)
+   を確認する。**これらはすべて未確認**(実機・Android向けビルド環境が
+   この開発環境に無いため)
+4. **Web版**: `.e57`/`.ply`/`.pcd`はそもそもOSのファイル選択ダイアログに
+   出てこない(`accept`フィルタを変えていないため)ことを確認する。意図した
+   挙動(今回はつながない)であり、不具合ではない
+
+### 並行作業との調整
+
+`vendor/copc-writer/`には一切触れていない(別のエージェントが変換の後処理の
+並列化を進めている)。`crates/pcv-convert/src/streaming.rs`も変更していない
+(LAS/LAZ経路は`crate::streaming::convert`のまま、今回触ったのは
+`crates/pcv-convert/src/import/`配下と`src-tauri/src/conversion.rs`・
+`src/datasource/tauri.ts`)。
 

@@ -290,3 +290,161 @@ ADR-0006の追記（2026-09-24、変換をAndroidでも行う）を受け、E57/
 - `read_from`の公開API化（上記「Androidに向けた設計」参照）
 - PCDの`x`/`y`/`z`以外の座標系（動径・円柱座標等の非標準拡張）、
   PLYの法線・テクスチャ座標などの幾何以外の属性
+
+## 追記（2026-10-03）: 中間LASを廃止し、直接COPCへ変換する（M4-9）
+
+[M4-import-and-conversion.md](./M4-import-and-conversion.md)のM4-9として、上の
+M4-4が選んだ「E57/PLY/PCD→LAS→(既存経路)→COPC」という2段階の設計をやめ、
+「E57/PLY/PCD→COPC」の1段階にした。理由と変更点だけをここに記す
+（実装の詳細はM4-9タスクシートと各モジュールのコメント参照）。
+
+### なぜ変えたか
+
+M4-4の設計には2つの問題があった。
+
+1. 各形式の読み込みが全点を`Vec`(`ImportedCloud::points`)に貯めてからLASへ
+   書いていた。メモリが点数に比例し、数千万点で数GBになる(Android・Webでは
+   破綻する規模)
+2. 中間LAS(非圧縮)を書いてから`copc-writer`に読み直させており、余計な
+   ディスクI/Oと時間がかかっていた
+
+### 1パスで書ける(当初の「2パス」案は不要だった)
+
+M4-9タスクシートの当初の指示は「1回目で点数と範囲(bounds)だけを数え、
+2回目で点を流す」という2パス方式だった。これは`copc_core::StreamingLayout`が
+点を渡す前にbounds・スケール・オフセットを要求する、という前提に基づいていたが、
+`vendor/copc-writer`のソース(`spill.rs`・`writer.rs`)を読むと誤りだと分かった。
+
+- `StreamingLayout`はGPS時刻・色・NIR・波形・extra bytesの有無しか持たず、
+  boundsもスケール・オフセットも含まない
+- `SpillWriter::push`は点の生のf64座標を一時ファイルへ書きつつ、
+  **boundsを副作用として自動的に積算する**(量子化は行わない)
+- 公開関数`write_copc_from_spill_with_fs`は「スパイル済みの`SpillReader`
+  (bounds確定済み)」と「スケール・オフセットを含む`CopcWriteMetadata`」を
+  **別々の引数**として受け取る
+
+つまり「全点をスパイルし終えてからboundsを読み、それを使ってスケール・
+オフセットを選び、そのあとで初めて書き出しを呼ぶ」という順序がAPI上
+そのまま可能であり、入力を2回読む必要が無い。これは目新しい設計ではなく、
+Web版(`crates/pcv-wasm/src/convert.rs`の`WasmConverter`、M4-6b)が**既に
+同じ部品**(`SpillWriter`→`finalize`→`write_copc_from_spill_with_fs`)を
+LAS/LAZ→COPCに使っている。本タスクはこれを「入力にスケール・オフセットの
+手がかりが無い形式」向けに、「finalizeしてから選ぶ」順序で組み合わせ直した
+だけである(`crates/pcv-convert/src/import/convert.rs`の`run_import`)。
+
+採用した経路（`convert.rs`のモジュールコメントも参照）:
+
+1. 各形式の読み込みを`PointSource`トレイト(`point.rs`)に統一する。
+   `has_color`・`declared_point_count`はヘッダー/メタデータだけで分かる値
+   (全点を読まない)、`for_each_point(self, visit)`が1点読むたびに即座に
+   `visit`へ渡す(E57の借用イテレータの制約上、`self`消費・コールバック
+   渡しの設計にした。`point.rs`のドキュメント参照)
+2. `run_import`が`SpillWriter::create`→(`for_each_point`内で)`push`を
+   1回のループで回す(これが入力を読む唯一のパス)
+3. `spill.finalize()`で得た`bounds`から`scale.rs`(M4-4からそのまま流用、
+   mm以下の精度)でスケール・オフセットを選ぶ
+4. `write_copc_from_spill_with_fs`を呼ぶ
+
+### 各形式のストリーミング化
+
+- **E57**: `e57`クレートの`PointCloudReaderSimple`は元々1点ずつ読む
+  イテレータだったため、`Vec`に貯める代わりに読んだその場で`visit`へ
+  渡すだけでよい(クレート側の読み方自体は変えていない)
+- **PLY**: M4-4時点は`read_to_end`でファイル全体を`Vec<u8>`へ読んでから
+  解析していた(メモリがファイルサイズに比例)。ヘッダーだけを
+  `BufRead::read_line`で行単位に読み(高々数KB)、データ本体は`BufRead`から
+  直接(ASCIIは行単位、binaryはプロパティの値ごとに固定長バイト列)読み
+  進めてその場で`visit`へ渡す形に書き換えた
+- **PCD**: `pcd_rs::DynReader`はASCII(`read_line`)・binary(`read_chunk`)の
+  どちらも元から1レコード分だけを読み進める設計だった(ソースで確認済み)。
+  M4-4時点の実装は、この既にストリーミングなイテレータの結果を`Vec`に
+  貯め直していただけだったので、貯めるのをやめるだけでよかった
+
+### 例外: PCDの`binary_compressed`
+
+PCDの`binary_compressed`はファイル全体が1つのLZF圧縮ブロックであり、
+`pcd-rs`は展開時に展開後サイズ丸ごとの`col_major`バッファ＋行優先へ転置した
+もう1つの**全体コピー**(`row_major`)を作る(ソースで確認済み。列優先⇔
+行優先の変換にバッファ全体のランダムアクセスが要るため、1レコードずつの
+変換では済まない)。**この形式だけは展開後サイズの最大2倍のメモリを使う**。
+フォーマットの仕様上、圧縮ブロックが1つなので部分展開ができず、
+`pcv-convert`側のコードを直しても避けられない。
+
+**対策**: ヘッダー直後の`uncompressed_size`フィールド(PCD`binary_compressed`
+データ節の先頭8バイトは仕様上`compressed_size`・`uncompressed_size`という
+2つのu32と決まっている)だけを自前で覗き見て、上限
+(`MAX_BINARY_COMPRESSED_UNCOMPRESSED_BYTES` = **512MiB**)を超えるなら
+`pcd-rs`の重い展開を呼ぶ前にエラーで知らせる(`pcd.rs`)。
+
+**512MiBの根拠**(実測ではなく、構造だけから見積もった判断値であることを
+明記する): `pcd-rs`の展開は`col_major`+`row_major`の2バッファ(展開後
+サイズの最大2倍)を同時に確保する。本アプリの変換先はデスクトップ・
+Android(ADR-0006「変換を行う環境の範囲」、Androidは実機RAM 4GBを基準値と
+して記録済み)。512MiBを上限にすると、ピークはおよそ1〜1.5GiB(2倍の
+バッファ+圧縮データ自体+その後のspill等)に収まり、4GB機でもOS・アプリ
+本体の分を残して動く見込みがある、という判断。`disk_space.rs`の11倍係数
+(sofiの実測比から逆算)のような実測比ではない。
+
+### CRSが不明でも`pcv-core`で開けること
+
+M4-4と同じく、CRSは推測しない。`convert_to_copc`の`crs_wkt: Option<String>`
+が`None`のときは、`CopcWriteMetadata::default()`のまま(`wkt_crs`無し)で
+`write_copc_from_spill_with_fs`へ渡す。`copc-writer`の
+`OutputLasMetadata::ensure_wkt_conformance`(M4-3で確認済みの既存の仕組み、
+`metadata.rs`参照)が、CRS無しでも「空のWKT CRS VLR＋global encodingの
+WKTビット」を補って書くため、点フォーマット7(RGB付き)のCOPCでも
+`pcv-core`の「WKTビットを要求する」制約(M4-1・M4-3で記録済み)に違反しない。
+`tests/import_pcd.rs`の`crs_wkt_is_written_when_provided_and_unknown_when_not`で、
+CRS未指定の出力が`pcv_core::CopcFile::open`で開けることを確認した。
+
+### アプリへのつなぎ込み(デスクトップ・Android)
+
+`src-tauri/src/conversion.rs`の`decide_and_start`が
+`pcv_convert::import::detect_format(path_for_naming)`でE57/PLY/PCDかどうかを
+判定し、`run_conversion_thread`が`import_format: Option<SourceFormat>`に
+応じて経路を分ける(`None`なら既存のLAS/LAZ経路`streaming::convert`、
+`Some`なら`import::convert_to_copc`)。どちらも`ReadProgress`・
+`copc_core::Error`で結果をやり取りする(`ImportError`から`copc_core::Error`
+への変換を`pcv_convert`側に用意した)ため、進捗イベント・キャッシュ・
+完了/失敗イベント・空き容量チェック・一時ディレクトリの誘導は**LAS/LAZと
+完全に共通**で、M4-3の仕組みにそのまま乗る。`src/datasource/tauri.ts`の
+`pickLocalFile`のファイル選択フィルタに`e57`/`ply`/`pcd`拡張子を追加した。
+
+CRSのUI選択は作っていない(タスクシートの指示どおり)。`crs_wkt`は常に
+`None`を渡す。
+
+### Web版: wasm32でのビルド可否(調査のみ、配線は未実施)
+
+[M4-6a](./M4-import-and-conversion.md#m4-6-web-での変換2026-09-30-着手まず調査)
+と同じ要領で、`e57` 0.11.13・`pcd-rs` 0.13.0が`wasm32-unknown-unknown`で
+ビルドできるかを、最小限の使い捨てクレート(`.scratch-wasm-probe/`。
+調査専用で`main`には入れていない)で確かめた。
+
+```
+$ cargo build --target wasm32-unknown-unknown   # e57 + pcd-rsだけを依存に持つ最小クレート
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.47s
+```
+
+両方とも警告無くビルドできた。`cargo tree --target wasm32-unknown-unknown`で
+依存グラフを見ると、`tempfile`・`memmap2`のようなOS依存のクレートは
+一切現れない(`e57`は`roxmltree`、`pcd-rs`は`byteorder`・`itertools`・
+`regex`・`thiserror`程度で、どちらも`std::fs`やスレッドに直接触れていない)。
+PLYは本アプリの自前実装(`ply.rs`)で、依存するのは`byteorder`のみ
+(wasm対応は`copc-writer`の調査で既に確認済みの軽量クレート)。
+
+**つなぐかどうかの判断**: ビルドできる見込みは高いが、実際にWebへ配線するには
+M4-6bと同等の作業(OPFSの`ScratchFs`実装の再利用はできるが、各形式の
+読み込みをOPFS経由のバッチ駆動に合わせて`crates/pcv-wasm`側に**別途
+実装し直す**必要がある。`pcv-convert`自体は`las`/`laz`に依存しネイティブ
+専用のため、Web版は元々`pcv-wasm`が独立した実装を持つ設計になっている
+M4-6bと同じ構図)、UIでのファイル選択・進捗・キャンセルの配線が要り、
+本タスクの残り時間では実装しきれないと判断した。
+
+**結論: 今回はWebへつながない。** Web版は引き続き、生LAS/LAZと同じく
+「デスクトップ版でCOPCに変換してから開いてください」という案内を出す
+(`src/datasource/copc-header.ts`の既存の仕組みは拡張子でなくLASヘッダーを
+見て判定するため、E57/PLY/PCDはそもそも対象外。Web版のローカルファイル
+選択(`<input type="file">`)の`accept`は引き続き`.las,.laz`のみで、
+E57/PLY/PCDはOSのファイル選択ダイアログにすら出てこない)。wasm32で
+ビルドできる見込みが高いことは確認済みなので、Webへのつなぎ込みは
+今後の課題として切り出せる状態にある。
