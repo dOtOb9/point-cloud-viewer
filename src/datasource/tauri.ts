@@ -21,13 +21,26 @@ import {
   type ConversionProgressDto,
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
+import { StaleNodeRequestError } from "./stale-node-error";
 
 // `open_copc` (src-tauri/src/copc_state.rs) がJSONで返す形。DTOの中身とcamelCaseへの
 // 変換自体は`copc-dto.ts`にある（Web版の`pcv-wasm`も同じ形のJSONを返すため共有する）。
 interface OpenCopcResponseDto {
   info: CloudInfoDto;
   nodes: HierarchyNodeDto[];
+  /** ファイル切り替え時の不具合の修正: このファイルに割り当てられた世代番号
+   *  （`OpenedFile`のドキュメントコメント参照）。`TauriSource`が覚えておき、
+   *  以後の`readNode`の`pcv://`URLに含めて送り返す。 */
+  generation: number;
 }
+
+/**
+ * ファイル切り替え時の不具合の修正: Rust側（`src-tauri/src/lib.rs`の
+ * `stale_generation_response()`）が「古い世代のリクエスト」を表すのに使う
+ * HTTPステータス。400（クライアントの入力ミス）でも500（サーバの異常）でもない、
+ * ファイル切り替え時に普通に起こりうる正常な競合状態を表すため専用の値にした。
+ */
+const STALE_GENERATION_HTTP_STATUS = 409;
 
 /**
  * M0 計測用の制御メッセージ。GUI を目視できない環境でも判断できるよう、
@@ -181,6 +194,16 @@ export async function onConversionFailed(
  * （ADR-0001）。M0時点ではベンチ用エンドポイントを叩くだけ。
  */
 export class TauriSource implements DataSource {
+  /**
+   * ファイル切り替え時の不具合の修正: `open_copc`が返した、現在開いている
+   * ファイルの世代番号（`OpenCopcResponseDto.generation`）。`readNode`の
+   * `pcv://`URLに含めて送り返し、Rust側（`copc_state::read_node_bytes`）が
+   * 切り替え後に届いた古いリクエストを見分けられるようにする。まだ`open`を
+   * 呼んでいない間は0（Rust側はこの値を見る前に「ファイルが開かれていない」を
+   * 検出してエラーを返すため実害は無い。`copc_state.rs`参照）。
+   */
+  private currentGeneration = 0;
+
   async fetchBench(sizeBytes: number): Promise<ArrayBuffer> {
     // convertFileSrc がプラットフォームごとのURL形式（Windows/Androidは
     // http://pcv.localhost/..., macOS/Linuxは pcv://localhost/...）を組み立てる。
@@ -199,6 +222,7 @@ export class TauriSource implements DataSource {
       path,
       poolSize: readerPoolSize ?? null,
     });
+    this.currentGeneration = dto.generation;
     return {
       info: toCloudInfo(dto.info),
       nodes: dto.nodes.map(toHierarchyNodeInfo),
@@ -206,10 +230,19 @@ export class TauriSource implements DataSource {
   }
 
   async readNode(key: string): Promise<ArrayBuffer> {
-    // keyは "level-x-y-z" の1セグメント文字列（M0で判明した制約: convertFileSrcは
-    // 引数全体を1セグメントとしてencodeURIComponentするため、"/"を含むパスは使えない）。
-    const url = convertFileSrc(key, "pcv");
+    // セグメント形式: "<generation>:<level>-<x>-<y>-<z>"（M0で判明した制約:
+    // convertFileSrcは引数全体を1セグメントとしてencodeURIComponentするため、
+    // "/"を含むパスは使えない。generationの意味は`currentGeneration`フィールドの
+    // コメント、Rust側は`src-tauri/src/lib.rs`の`handle_pcv_protocol`参照）。
+    const segment = `${this.currentGeneration}:${key}`;
+    const url = convertFileSrc(segment, "pcv");
     const res = await fetch(url);
+    if (res.status === STALE_GENERATION_HTTP_STATUS) {
+      // ファイル切り替え時の不具合の修正: Rust側が「古い世代のリクエスト」と
+      // 判定した。エラーではなく、呼び出し側（NodeLoader）が黙って捨てるべき
+      // 結果なので、専用の型で伝える（stale-node-error.ts参照）。
+      throw new StaleNodeRequestError(key);
+    }
     if (!res.ok) {
       // M3(ADR-0013): 500の場合、本文にはRust側がcatch_unwindで捕まえた
       // panicメッセージ・ノードキーが入っている
@@ -218,7 +251,7 @@ export class TauriSource implements DataSource {
       // ここで本文を読み捨てるとその情報が失われ、GpuErrorBannerに
       // 「500」としか出せなくなるため、必ず読んでエラーメッセージに含める。
       const body = await res.text().catch(() => "");
-      throw new Error(body || `pcv://${key} failed: ${res.status}`);
+      throw new Error(body || `pcv://${segment} failed: ${res.status}`);
     }
     return await res.arrayBuffer();
   }

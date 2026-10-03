@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { WebSource, type WorkerLike } from "./web";
 import type { WorkerRequest, WorkerResponse } from "./web-protocol";
+import { StaleNodeRequestError } from "./stale-node-error";
 
 /** 送られたメッセージを記録し、テストから任意のタイミングで応答を返せる偽Worker。 */
 class FakeWorker implements WorkerLike {
@@ -55,6 +56,7 @@ describe("WebSource.open", () => {
       },
       nodes: [],
       bytesRead: 128,
+      generation: 1,
     });
 
     const opened = await openPromise;
@@ -77,6 +79,7 @@ describe("WebSource.open", () => {
       info: { point_count: 0, min: [0, 0, 0], max: [0, 0, 0], scale: [1, 1, 1], offset: [0, 0, 0], has_color: false },
       nodes: [],
       bytesRead: 0,
+      generation: 1,
     });
     await openPromise;
   });
@@ -109,6 +112,41 @@ describe("WebSource.readNode", () => {
     worker.respond({ type: "error", id: req.id, ok: false, message: "boom" });
 
     await expect(readPromise).rejects.toThrow("boom");
+  });
+
+  it("openの応答で受け取った世代番号を次のreadNodeリクエストに含める(ファイル切り替え時の不具合の修正)", async () => {
+    const { source, worker } = makeSource();
+    const file = new File([new Uint8Array([1])], "a.copc.laz");
+    const key = source.registerFile(file);
+
+    const openPromise = source.open(key);
+    const openReq = worker.sent[0];
+    worker.respond({
+      type: "open-result",
+      id: openReq.id,
+      ok: true,
+      info: { point_count: 0, min: [0, 0, 0], max: [0, 0, 0], scale: [1, 1, 1], offset: [0, 0, 0], has_color: false },
+      nodes: [],
+      bytesRead: 0,
+      generation: 7,
+    });
+    await openPromise;
+
+    void source.readNode("0-0-0-0");
+    const readReq = worker.sent[1];
+    expect(readReq.type).toBe("readNode");
+    if (readReq.type !== "readNode") throw new Error("unreachable");
+    expect(readReq.generation).toBe(7);
+  });
+
+  it("readNode-stale応答はStaleNodeRequestErrorとしてrejectされる(ファイル切り替え時の不具合の修正)", async () => {
+    const { source, worker } = makeSource();
+    const readPromise = source.readNode("0-0-0-0");
+    const req = worker.sent[0];
+
+    worker.respond({ type: "readNode-stale", id: req.id });
+
+    await expect(readPromise).rejects.toBeInstanceOf(StaleNodeRequestError);
   });
 });
 

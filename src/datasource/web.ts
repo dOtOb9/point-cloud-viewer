@@ -29,6 +29,7 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from "./web-protocol";
+import { StaleNodeRequestError } from "./stale-node-error";
 
 /**
  * `Worker`から実際に使うメソッドだけを切り出した最小限のインターフェース。
@@ -60,6 +61,13 @@ export class WebSource implements DataSource {
   private nextRequestId = 1;
   private nextFileSequence = 0;
   private lastBytesRead = 0;
+  /** ファイル切り替え時の不具合の修正: Workerが`open-result`で返した、現在
+   *  開いているファイルの世代番号。`readNode`リクエストに含めて送り返し、
+   *  Worker側（`copc.worker.ts`）が切り替え後に届いた古いリクエストを
+   *  見分けられるようにする。まだ`open`を呼んでいない間は0
+   *  （Worker側はこの値を見る前に「まだopenされていない」を検出して
+   *  エラーを投げるため実害は無い。`copc.worker.ts`参照）。 */
+  private currentGeneration = 0;
 
   // M4-6b: 変換(生LAS/LAZ→COPC)の進捗・完了・失敗を購読するリスナー。
   // open/readNodeの「1リクエスト1応答」(`pending`マップ)とは違い、1回の
@@ -116,6 +124,7 @@ export class WebSource implements DataSource {
       throw new Error(`open()に対して予期しない応答: ${response.type}`);
     }
     this.lastBytesRead = response.bytesRead;
+    this.currentGeneration = response.generation;
     return {
       info: toCloudInfo(response.info),
       nodes: response.nodes.map(toHierarchyNodeInfo),
@@ -124,7 +133,13 @@ export class WebSource implements DataSource {
 
   async readNode(key: string): Promise<ArrayBuffer> {
     const id = this.nextRequestId++;
-    const response = await this.send(buildReadNodeRequest(id, key));
+    const response = await this.send(buildReadNodeRequest(id, key, this.currentGeneration));
+    if (response.type === "readNode-stale") {
+      // ファイル切り替え時の不具合の修正: Worker側が「古い世代のリクエスト」と
+      // 判定した。エラーではなく、呼び出し側（NodeLoader）が黙って捨てるべき
+      // 結果なので、専用の型で伝える（stale-node-error.ts参照）。
+      throw new StaleNodeRequestError(key);
+    }
     if (response.type !== "readNode-result") {
       throw new Error(`readNode()に対して予期しない応答: ${response.type}`);
     }

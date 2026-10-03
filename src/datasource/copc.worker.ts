@@ -52,6 +52,24 @@ const scope = self as unknown as WorkerScope;
 let wasmReady: Promise<void> | null = null;
 let openFile: WasmCopcFile | null = null;
 
+// ファイル切り替え時の不具合の修正（TaskSheets/M4-import-and-conversion.md参照）。
+//
+// このWorkerはメインスレッドからのメッセージをFIFOで順番に処理する。「open」で
+// `openFile`を差し替えた後は、それより前に受け取った「readNode」(旧ファイル宛て)
+// は既に処理済みのはずに思えるが、実際には「open」を待っている間
+// （`WebSource.open()`のPromiseがまだ解決していない間）も、レンダラのrAFループは
+// 止まらず、旧hierarchyに基づいて`NodeLoader`が新しい「readNode」をこのWorkerへ
+// 送り続けている。これらは「open」より後に送信されるため、Workerに届く頃には
+// 既に`openFile`が新しいファイルに差し替わっており、旧ファイルのキーを新しい
+// ファイルのhierarchyに対して検索することになる（キーが存在しなければエラー、
+// 運悪く存在すれば新しいファイルのバイト列が旧キーの結果として返ってしまう）。
+//
+// `openGeneration`は「open」のたびに進む通し番号。`WebSource`は`open-result`で
+// 受け取った値を覚えておき、以後の「readNode」に含めて送り返す
+// （`ReadNodeRequest.generation`）。ここで一致を確認し、違えば実際の読み出しを
+// 行わずに`ReadNodeStaleResponse`を返す。
+let openGeneration = 0;
+
 // M4-6b: 変換のキャンセル要求。読み込みバッチの合間にこのフラグを見る
 // (`handleConvertStart`参照)。後処理(finish)の間はチェックできない
 // (`crates/pcv-wasm/src/convert.rs`のドキュメント参照)。1本のWorkerでは
@@ -116,7 +134,7 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         handleOpen(request.id, request.source);
         return;
       case "readNode":
-        handleReadNode(request.id, request.key);
+        handleReadNode(request.id, request.key, request.generation);
         return;
       case "convertStart":
         await handleConvertStart(request.id, request.file, request.maxPointsPerNode);
@@ -135,6 +153,11 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
 function handleOpen(id: number, source: OpenSource): void {
   openFile =
     source.kind === "file" ? WasmCopcFile.openFile(source.file) : WasmCopcFile.openUrl(source.url);
+  // 呼ぶたびに1つ進む通し番号。同じファイルを開き直した場合も新しい世代になる
+  // （「古い世代を無効化する」という目的に対しては同じファイルかどうかを
+  // 気にする必要が無いため、単純な方が良い。Tauri側`src-tauri/src/copc_state.rs`の
+  // `OpenedFile`と同じ考え方）。
+  openGeneration += 1;
 
   const info = openFile.info() as CloudInfoDto;
   const nodes = openFile.hierarchy() as HierarchyNodeDto[];
@@ -145,12 +168,20 @@ function handleOpen(id: number, source: OpenSource): void {
     info,
     nodes,
     bytesRead: openFile.bytesRead(),
+    generation: openGeneration,
   });
 }
 
-function handleReadNode(id: number, key: string): void {
+function handleReadNode(id: number, key: string, generation: number): void {
   if (!openFile) {
     throw new Error("readNodeが呼ばれたが、まだopenされていない");
+  }
+  if (generation !== openGeneration) {
+    // ファイル切り替え時の不具合の修正: 切り替え前に送られた、古い世代の
+    // リクエスト。実際の読み出しは行わず、専用の応答で知らせる
+    // （モジュール冒頭の`openGeneration`のコメント参照）。
+    scope.postMessage({ type: "readNode-stale", id });
+    return;
   }
   const bytes = openFile.readNode(key);
   // wasm-bindgenが生成するグルーコードは`Vec<u8>`の戻り値をwasmのリニアメモリから

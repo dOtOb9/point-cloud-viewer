@@ -24,6 +24,12 @@ export interface ReadNodeRequest {
   type: "readNode";
   id: number;
   key: string;
+  /** ファイル切り替え時の不具合の修正: `open`時にWorkerが返した世代番号
+   *  （`OpenResponse.generation`）をそのまま送り返す。Worker側
+   *  （`copc.worker.ts`）は、これが今開いているファイルの世代と違えば
+   *  `ReadNodeStaleResponse`を返し、実際の読み出しは行わない
+   *  （`src/datasource/stale-node-error.ts`参照）。 */
+  generation: number;
 }
 
 /**
@@ -61,6 +67,10 @@ export interface OpenResponse {
   nodes: HierarchyNodeDto[];
   /** そのopen呼び出し時点までにWorkerが読んだ合計バイト数(統計・受け入れ確認用)。 */
   bytesRead: number;
+  /** ファイル切り替え時の不具合の修正: このファイルに割り当てられた世代番号
+   *  （`copc.worker.ts`の`openGeneration`）。`WebSource`が覚えておき、以後の
+   *  `readNode`リクエストに含めて送り返す。 */
+  generation: number;
 }
 
 export interface ReadNodeResponse {
@@ -70,6 +80,18 @@ export interface ReadNodeResponse {
   /** `postMessage`のtransferable listに載せてコピーせず渡す。 */
   buffer: ArrayBuffer;
   bytesRead: number;
+}
+
+/**
+ * ファイル切り替え時の不具合の修正: `ReadNodeRequest.generation`が、Worker側が
+ * 今開いているファイルの世代と違った場合の応答。`error`（本当の失敗）とは区別し、
+ * `WebSource`はこれを`StaleNodeRequestError`に変換する
+ * （`src/datasource/stale-node-error.ts`参照。`NodeLoader`はこれを
+ * エラーバナーに出さず黙って捨てる）。
+ */
+export interface ReadNodeStaleResponse {
+  type: "readNode-stale";
+  id: number;
 }
 
 export interface ErrorResponse {
@@ -111,6 +133,7 @@ export interface ConvertFailedResponse {
 export type WorkerResponse =
   | OpenResponse
   | ReadNodeResponse
+  | ReadNodeStaleResponse
   | ErrorResponse
   | ConvertProgressResponse
   | ConvertDoneResponse
@@ -124,8 +147,8 @@ export function buildOpenUrlRequest(id: number, url: string): OpenRequest {
   return { type: "open", id, source: { kind: "url", url } };
 }
 
-export function buildReadNodeRequest(id: number, key: string): ReadNodeRequest {
-  return { type: "readNode", id, key };
+export function buildReadNodeRequest(id: number, key: string, generation: number): ReadNodeRequest {
+  return { type: "readNode", id, key, generation };
 }
 
 /**

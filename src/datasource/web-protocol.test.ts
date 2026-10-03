@@ -57,9 +57,9 @@ describe("buildOpenFileRequest / buildOpenUrlRequest / buildReadNodeRequest", ()
     });
   });
 
-  it("readNodeリクエストを組み立てる", () => {
-    const req = buildReadNodeRequest(9, "2-1-0-1");
-    expect(req).toEqual({ type: "readNode", id: 9, key: "2-1-0-1" });
+  it("readNodeリクエストを組み立てる(世代番号込み。ファイル切り替え時の不具合の修正)", () => {
+    const req = buildReadNodeRequest(9, "2-1-0-1", 3);
+    expect(req).toEqual({ type: "readNode", id: 9, key: "2-1-0-1", generation: 3 });
   });
 });
 
