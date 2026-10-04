@@ -107,11 +107,14 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
               <>
                 <input
                   type="file"
-                  // M4-3: 生のLAS/LAZも選べるようにする。Web版はこれを開けない
-                  // (ヘッダーで判定し、COPCでなければ`openFile`がエラーメッセージを
-                  // 出す。`src/state/useCopcViewer.ts`参照)ため、選択自体は許すが
-                  // 実質COPCしか開けない、という形になる。
-                  accept=".las,.laz"
+                  // M4-3/M4-6b/M4-9追記: 生のLAS/LAZ・PCDも選べるようにする
+                  // (Web版はOPFS上で直接COPCへ変換できる。`useCopcViewer.ts`の
+                  // `openFile`参照)。PLY/E57はWeb版の変換経路をまだ用意して
+                  // いないため、ここには含めない(`accept`は選択候補を絞る
+                  // だけの目安であり、OSのファイル選択で「すべてのファイル」を
+                  // 選べば依然として選択自体はできる。その場合は`openFile`が
+                  // 「デスクトップ版で変換してください」という案内を出す)。
+                  accept=".las,.laz,.pcd"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) void viewer.openFile(file);

@@ -18,11 +18,13 @@ import type { DataSource, OpenedCloud } from "./DataSource";
 import { toCloudInfo, toHierarchyNodeInfo } from "./copc-dto";
 import { toConversionProgress, type ConversionOutcome, type ConversionProgress } from "./conversion-dto";
 import * as opfs from "./opfs";
+import { estimatePointCountForLasFile, estimatePointCountForPcdFile } from "./point-count-estimate";
 import {
   buildConvertCancelRequest,
   buildConvertStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
+  buildPcdConvertStartRequest,
   buildReadNodeRequest,
   classifyOpenPath,
   makeFileKey,
@@ -30,6 +32,33 @@ import {
   type WorkerResponse,
 } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
+
+/**
+ * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 容量の事前確認。
+ * `pointCountEstimator`(形式ごとのヘッダー読み取り、`point-count-estimate.ts`)
+ * で点数が読めればそれを根拠に見積もり、読めなければファイルサイズからの
+ * フォールバックに倒す(壊れたヘッダー等でも変換を試みる機会は残す。安全側に
+ * 「大きめに見積もって弾く」方向のフォールバックなので、誤って変換を
+ * 始めてしまう心配は無い)。`ConversionOutcome`の`insufficientSpace`、
+ * 足りていれば`null`を返す。
+ */
+async function checkInsufficientSpace(
+  file: File,
+  pointCountEstimator: (file: File) => Promise<number | null>,
+): Promise<ConversionOutcome | null> {
+  const pointCount = await pointCountEstimator(file);
+  const requiredBytes =
+    pointCount !== null ? opfs.requiredBytesForPointCount(pointCount) : opfs.requiredScratchBytes(file.size);
+  const estimate = await opfs.estimateQuota();
+  if (!opfs.hasEnoughQuota(estimate, requiredBytes)) {
+    return {
+      kind: "insufficientSpace",
+      requiredBytes,
+      availableBytes: estimate.quota - estimate.usage,
+    };
+  }
+  return null;
+}
 
 /**
  * `Worker`から実際に使うメソッドだけを切り出した最小限のインターフェース。
@@ -194,18 +223,43 @@ export class WebSource implements DataSource {
       return { kind: "opfsUnavailable" };
     }
 
-    const estimate = await opfs.estimateQuota();
-    if (!opfs.hasEnoughQuota(estimate, file.size)) {
-      return {
-        kind: "insufficientSpace",
-        requiredBytes: opfs.requiredScratchBytes(file.size),
-        availableBytes: estimate.quota - estimate.usage,
-      };
-    }
+    const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
+    if (insufficient) return insufficient;
 
     const id = this.nextRequestId++;
     this.activeConvertId = id;
     this.worker.postMessage(buildConvertStartRequest(id, file, isMobile));
+    return { kind: "converting" };
+  }
+
+  /**
+   * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 生PCD→COPCの変換を
+   * 始める。`startConversion`(LAS/LAZ)とほぼ同じ役割分担だが、容量の見積もりを
+   * PCDヘッダーの`POINTS`から求める点が違う(旧来のファイルサイズ×11という
+   * 見積もりはLAZ(圧縮)の実測から来ており、非圧縮・f64のPCDでは大きく外れ、
+   * 実機で「空き容量不足」と誤判定される不具合があった)。呼び出し側
+   * (`src/state/useCopcViewer.ts`)は、`source-format.ts`の
+   * `detectSourceFormatByName`でPCDと判定してからこれを呼ぶ。
+   */
+  async startPcdConversion(file: File, isMobile: boolean): Promise<ConversionOutcome> {
+    const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
+
+    const cached = await opfs.findCachedOutput(fingerprint);
+    if (cached) {
+      const key = this.registerFile(cached);
+      return { kind: "cached", outputPath: key };
+    }
+
+    if (!(await opfs.isOpfsAvailable())) {
+      return { kind: "opfsUnavailable" };
+    }
+
+    const insufficient = await checkInsufficientSpace(file, estimatePointCountForPcdFile);
+    if (insufficient) return insufficient;
+
+    const id = this.nextRequestId++;
+    this.activeConvertId = id;
+    this.worker.postMessage(buildPcdConvertStartRequest(id, file, isMobile));
     return { kind: "converting" };
   }
 

@@ -13,6 +13,7 @@ import {
 import { WebSource } from "../datasource/web";
 import { isCopcFile } from "../datasource/copc-header";
 import { getConvertedFile } from "../datasource/opfs";
+import { detectSourceFormatByName } from "../datasource/source-format";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { CloudInfo, DataSource } from "../datasource/DataSource";
 import type { ConversionProgress } from "../datasource/conversion-dto";
@@ -427,7 +428,26 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         if (await isCopcFile(pathOrFile)) {
           path = source.registerFile(pathOrFile);
         } else {
-          const outcome = await source.startConversion(pathOrFile, deviceProfileDefaults.isMobile);
+          // M4-9追記: 形式を先に判定してから変換経路を選ぶ(実機不具合の修正:
+          // 以前はCOPCでないファイルを全てLAS/LAZ変換の経路に回しており、
+          // PCD(非圧縮・f64座標)がLAS/LAZ向けの容量見積もりで誤って
+          // 「空き容量不足」と判定されていた)。PLY/E57はこのセッションでは
+          // Web版の変換経路をまだ用意していない(`TaskSheets/
+          // M4-import-and-conversion.md`のM4-9/M4-6参照。pcd-rs・e57クレート
+          // 自体はwasm32でビルドできることを確認済みだが、実装は見送った)ため、
+          // 誤解を招く容量チェックを試みず、ここで案内を出して終える。
+          const format = detectSourceFormatByName(pathOrFile.name);
+          if (format === "ply" || format === "e57") {
+            setStatus("error");
+            setError(
+              `このファイル形式(${format.toUpperCase()})はWeb版ではまだ変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。`,
+            );
+            return;
+          }
+          const outcome =
+            format === "pcd"
+              ? await source.startPcdConversion(pathOrFile, deviceProfileDefaults.isMobile)
+              : await source.startConversion(pathOrFile, deviceProfileDefaults.isMobile);
           switch (outcome.kind) {
             case "alreadyCopc":
               // startConversion自身はこの値を返さない設計(呼び出し前に

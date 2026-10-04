@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_wasmconverter_free: (a: number, b: number) => void;
 export const __wbg_wasmcopcfile_free: (a: number, b: number) => void;
+export const __wbg_wasmpcdconverter_free: (a: number, b: number) => void;
 export const decompressLazRange: (a: any, b: number, c: number) => [number, number, number, number];
 export const init_panic_hook: () => void;
 export const opfsScratchPoolSize: () => number;
@@ -19,6 +20,10 @@ export const wasmcopcfile_openFile: (a: any) => [number, number, number];
 export const wasmcopcfile_openUrl: (a: number, b: number) => [number, number, number];
 export const wasmcopcfile_readNode: (a: number, b: number, c: number) => [number, number, number, number];
 export const wasmcopcfile_totalSize: (a: number) => number;
+export const wasmpcdconverter_feed: (a: number, b: number) => [number, number, number];
+export const wasmpcdconverter_finish: (a: number) => [number, number, number];
+export const wasmpcdconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];
+export const wasmpcdconverter_totalPoints: (a: number) => number;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_exn_store: (a: number) => void;

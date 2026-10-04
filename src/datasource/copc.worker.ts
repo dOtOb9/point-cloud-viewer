@@ -31,13 +31,14 @@ import init, {
   opfsScratchPoolSize,
   WasmConverter,
   WasmCopcFile,
+  WasmPcdConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { PreparingStepDto } from "./conversion-dto";
 import { decompressWorkerCountFor, pointRangesFor } from "./decompress-partition";
 import type { DecompressRequest, DecompressResponse } from "./laz-decompress.worker";
 import * as opfs from "./opfs";
-import type { OpenSource, WorkerRequest, WorkerResponse } from "./web-protocol";
+import type { OpenSource, PcdConvertStartRequest, WorkerRequest, WorkerResponse } from "./web-protocol";
 
 /**
  * `self`の型をDOM libとWebWorker libの衝突を避けつつ最小限だけ宣言する
@@ -139,6 +140,9 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         return;
       case "convertStart":
         await handleConvertStart(request.id, request.file, request.maxPointsPerNode, request.isMobile);
+        return;
+      case "pcdConvertStart":
+        await handlePcdConvertStart(request);
         return;
     }
   } catch (err) {
@@ -318,9 +322,10 @@ async function runParallelReadPhase(
   }
 }
 
-/** 元のファイル名から、ダウンロード時に提案する分かりやすい名前を作る。 */
+/** 元のファイル名から、ダウンロード時に提案する分かりやすい名前を作る。
+ *  M4-9追記: PCDの拡張子も対象に含めた(LAS/LAZ専用だった)。 */
 function suggestedFileNameFor(sourceFileName: string): string {
-  const withoutExtension = sourceFileName.replace(/\.(laz|las)$/i, "");
+  const withoutExtension = sourceFileName.replace(/\.(laz|las|pcd)$/i, "");
   return `${withoutExtension}.copc.laz`;
 }
 
@@ -513,6 +518,152 @@ async function runConversion(
     });
   } finally {
     // 受け入れ条件: 成功・失敗・キャンセルのいずれでも一時ファイルを必ず消す。
+    converter?.free();
+    opfs.closeHandles(scratchHandles);
+    if (outputHandle) opfs.closeHandles([outputHandle]);
+    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
+    if (!succeeded) {
+      await opfs.removeOutputFile(outputName);
+    }
+    if (activeConvertId === id) activeConvertId = null;
+  }
+}
+
+// --- M4-9追記: PCD→COPCの変換(TaskSheets/M4-import-and-conversion.md参照) ---
+//
+// LAS/LAZ版(`runConversion`)とほぼ同じ構造だが、2点だけ単純になっている:
+// 1. PCDの読み込みはLAZのような並列展開の仕組み(M4-7)を持たない(`pcd-rs`は
+//    エントロピー復号を伴わない。`crates/pcv-wasm/src/pcd_import.rs`の
+//    モジュールドキュメント参照)ため、`feed`は常に逐次バッチループ
+// 2. キャンセルの制約・後処理段階(finish)が割り込めないことはLAS/LAZ版と同じ
+//    (`WasmPcdConverter`も`WasmConverter`と同じ`SpillWriter`→
+//    `write_copc_from_spill_with_fs`を使うため)
+
+/** `WasmPcdConverter::feed`が返すDTO(`FeedResultDto`と同じ形)。 */
+interface PcdFeedResultDto {
+  points_read: number;
+  total_points: number;
+  done: boolean;
+}
+
+/** `WasmPcdConverter::finish`が返すDTO(`FinishResultDto`と同じ形)。 */
+interface PcdFinishResultDto {
+  point_count: number;
+}
+
+async function handlePcdConvertStart(request: PcdConvertStartRequest): Promise<void> {
+  const { id, file, maxPointsPerNode } = request;
+  reportPreparing(id, { step: "acquiring_lock" });
+  const outcome = await opfs.withConversionLock(navigator.locks, () =>
+    runPcdConversion(id, file, maxPointsPerNode),
+  );
+  if (outcome.kind === "busy") {
+    scope.postMessage({
+      type: "convert-failed",
+      id,
+      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
+      cancelled: false,
+    });
+  }
+}
+
+async function runPcdConversion(id: number, file: File, maxPointsPerNode: number): Promise<void> {
+  activeConvertId = id;
+  convertCancelRequested = false;
+
+  const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
+  const outputName = opfs.outputFileNameFor(fingerprint);
+  const startedAt = performance.now();
+  const elapsedSecs = () => (performance.now() - startedAt) / 1000;
+
+  let scratchDirName: string | null = null;
+  let scratchHandles: FileSystemSyncAccessHandle[] = [];
+  let outputHandle: FileSystemSyncAccessHandle | null = null;
+  let converter: WasmPcdConverter | null = null;
+  let succeeded = false;
+
+  try {
+    reportPreparing(id, { step: "cleaning_stale_scratch" });
+    try {
+      await opfs.cleanupStaleScratchDirs();
+    } catch {
+      // 失敗しても変換自体は試みる。
+    }
+
+    const poolSize = opfsScratchPoolSize();
+    const pool = await opfs.createScratchPool(poolSize, (opened, total) => {
+      reportPreparing(id, { step: "opening_scratch_files", opened, total });
+    });
+    scratchDirName = pool.dirName;
+    scratchHandles = pool.handles;
+    reportPreparing(id, { step: "opening_output_file" });
+    outputHandle = await opfs.createOutputHandle(outputName);
+
+    reportPreparing(id, { step: "reading_header" });
+    converter = new WasmPcdConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
+
+    const totalPoints = converter.totalPoints();
+    // PCDには並列展開が無いため、常に逐次バッチループ(LAS/LAZ版の
+    // `workerCount <= 1`のときと同じ経路)。
+    for (;;) {
+      if (convertCancelRequested) {
+        scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+        return;
+      }
+      const result = converter.feed(CONVERT_BATCH_SIZE) as PcdFeedResultDto;
+      scope.postMessage({
+        type: "convert-progress",
+        id,
+        progress: {
+          phase: "reading",
+          points_read: result.points_read,
+          total_points: totalPoints,
+          elapsed_secs: elapsedSecs(),
+        },
+      });
+      if (result.done) break;
+      await yieldToEventLoop();
+    }
+
+    if (convertCancelRequested) {
+      scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+      return;
+    }
+
+    scope.postMessage({
+      type: "convert-progress",
+      id,
+      progress: { phase: "post_processing", elapsed_secs: elapsedSecs() },
+    });
+    let finishResult: PcdFinishResultDto;
+    try {
+      finishResult = converter.finish() as PcdFinishResultDto;
+    } finally {
+      converter = null;
+    }
+
+    if (convertCancelRequested) {
+      scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+      return;
+    }
+
+    await opfs.writeCacheMeta(fingerprint, outputName);
+    succeeded = true;
+    scope.postMessage({
+      type: "convert-done",
+      id,
+      outputName,
+      suggestedFileName: suggestedFileNameFor(file.name),
+      pointCount: finishResult.point_count,
+    });
+  } catch (err) {
+    scope.postMessage({
+      type: "convert-failed",
+      id,
+      message: err instanceof Error ? err.message : String(err),
+      cancelled: false,
+    });
+  } finally {
     converter?.free();
     opfs.closeHandles(scratchHandles);
     if (outputHandle) opfs.closeHandles([outputHandle]);

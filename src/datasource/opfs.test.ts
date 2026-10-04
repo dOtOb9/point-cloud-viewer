@@ -11,7 +11,10 @@ import {
   isScratchDirName,
   openHandlePool,
   outputFileNameFor,
+  OUTPUT_BYTES_PER_POINT,
+  requiredBytesForPointCount,
   requiredScratchBytes,
+  SCRATCH_BYTES_PER_POINT,
   SCRATCH_SIZE_FACTOR,
   withConversionLock,
   type FileFingerprint,
@@ -45,24 +48,50 @@ describe("outputFileNameFor", () => {
   });
 });
 
-describe("requiredScratchBytes / hasEnoughQuota", () => {
+describe("requiredScratchBytes(フォールバック、ファイルサイズから)", () => {
   it("ADR-0006の実測どおり入力サイズの11倍を必要量とする", () => {
     expect(SCRATCH_SIZE_FACTOR).toBe(11);
     expect(requiredScratchBytes(1_000)).toBe(11_000);
   });
+});
 
+// M4-9追記: 容量の見積もりを点数から出す(実機不具合の修正。
+// opfs.tsのrequiredBytesForPointCountのドキュメント参照)。
+describe("requiredBytesForPointCount", () => {
+  it("M4-1bの実測(60 B/点の一時領域+10 B/点の出力)を根拠にした値を返す", () => {
+    expect(SCRATCH_BYTES_PER_POINT).toBe(60);
+    expect(OUTPUT_BYTES_PER_POINT).toBe(10);
+    expect(requiredBytesForPointCount(1_000)).toBe(70_000);
+  });
+
+  it("点数に比例する(ファイルサイズに依存しない)", () => {
+    expect(requiredBytesForPointCount(2_000)).toBe(requiredBytesForPointCount(1_000) * 2);
+  });
+
+  it("非圧縮PCD(sofi.pcd相当、3.64億点)でも、旧実装のファイルサイズ×11より\
+現実的な値になる", () => {
+    const sofiPointCount = 364_384_576;
+    const sofiPcdFileSizeBytes = 9.47 * 1024 ** 3;
+    const byPointCount = requiredBytesForPointCount(sofiPointCount);
+    const byFileSizeFallback = requiredScratchBytes(sofiPcdFileSizeBytes);
+    // 旧実装(ファイルサイズ×11)は9.47GB×11≈104GBという、実際には不要な
+    // 過大な見積もりになっていた(実機不具合の原因)。点数からの見積もりは
+    // それよりずっと小さい値になるはず。
+    expect(byPointCount).toBeLessThan(byFileSizeFallback);
+  });
+});
+
+describe("hasEnoughQuota", () => {
   it("空き容量が必要量以上なら足りると判定する", () => {
-    const inputSize = 1_000_000;
-    const required = requiredScratchBytes(inputSize);
-    expect(hasEnoughQuota({ quota: required, usage: 0 }, inputSize)).toBe(true);
-    expect(hasEnoughQuota({ quota: required - 1, usage: 0 }, inputSize)).toBe(false);
+    const required = 11_000_000;
+    expect(hasEnoughQuota({ quota: required, usage: 0 }, required)).toBe(true);
+    expect(hasEnoughQuota({ quota: required - 1, usage: 0 }, required)).toBe(false);
   });
 
   it("使用済み(usage)を差し引いた空きで判定する", () => {
-    const inputSize = 1_000;
-    const required = requiredScratchBytes(inputSize);
-    expect(hasEnoughQuota({ quota: required + 500, usage: 500 }, inputSize)).toBe(true);
-    expect(hasEnoughQuota({ quota: required + 500, usage: 501 }, inputSize)).toBe(false);
+    const required = 11_000;
+    expect(hasEnoughQuota({ quota: required + 500, usage: 500 }, required)).toBe(true);
+    expect(hasEnoughQuota({ quota: required + 500, usage: 501 }, required)).toBe(false);
   });
 });
 

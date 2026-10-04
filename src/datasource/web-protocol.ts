@@ -53,6 +53,23 @@ export interface ConvertStartRequest {
 }
 
 /**
+ * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 生PCD→COPCの変換の開始。
+ * `ConvertStartRequest`(LAS/LAZ)と同じ役割だが、Worker側
+ * (`copc.worker.ts`)はPCD専用の`WasmPcdConverter`(`crates/pcv-wasm/src/
+ * pcd_import.rs`)を使う別の経路(`handlePcdConvertStart`)で処理する
+ * (PCDの読み込みはLAZのような並列展開の仕組み(M4-7)を持たないため、
+ * LAS/LAZ版の複雑さを持ち込まずに済む)。応答(`convert-progress`/
+ * `convert-done`/`convert-failed`)はLAS/LAZ版と共通の型を使う。
+ */
+export interface PcdConvertStartRequest {
+  type: "pcdConvertStart";
+  id: number;
+  file: File;
+  maxPointsPerNode: number;
+  isMobile: boolean;
+}
+
+/**
  * 進行中の変換のキャンセルを要求する。応答は無い(fire-and-forget)。
  * Workerが読み込みバッチの合間にこのメッセージを処理できたときだけ
  * 効く(`crates/pcv-wasm/src/convert.rs`のドキュメント参照。後処理段階
@@ -63,7 +80,12 @@ export interface ConvertCancelRequest {
   id: number;
 }
 
-export type WorkerRequest = OpenRequest | ReadNodeRequest | ConvertStartRequest | ConvertCancelRequest;
+export type WorkerRequest =
+  | OpenRequest
+  | ReadNodeRequest
+  | ConvertStartRequest
+  | PcdConvertStartRequest
+  | ConvertCancelRequest;
 
 export interface OpenResponse {
   type: "open-result";
@@ -189,4 +211,13 @@ export function buildConvertStartRequest(
 
 export function buildConvertCancelRequest(id: number): ConvertCancelRequest {
   return { type: "convertCancel", id };
+}
+
+export function buildPcdConvertStartRequest(
+  id: number,
+  file: File,
+  isMobile: boolean,
+  maxPointsPerNode: number = DEFAULT_MAX_POINTS_PER_NODE,
+): PcdConvertStartRequest {
+  return { type: "pcdConvertStart", id, file, maxPointsPerNode, isMobile };
 }

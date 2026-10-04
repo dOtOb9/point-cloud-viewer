@@ -223,6 +223,79 @@ export class WasmCopcFile {
 if (Symbol.dispose) WasmCopcFile.prototype[Symbol.dispose] = WasmCopcFile.prototype.free;
 
 /**
+ * Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`の
+ * `handlePcdConvertStart`が使う。メソッド構成は`convert.rs`の
+ * `WasmConverter`に揃えてある(`totalPoints`/`feed`/`finish`)。
+ */
+export class WasmPcdConverter {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmPcdConverterFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmpcdconverter_free(ptr, 0);
+    }
+    /**
+     * 最大`batch_size`点を読み、spillへ書く。LAS/LAZ版と違い並列展開は無い
+     * (モジュールドキュメント参照)ので、呼び出し側は常にこの逐次バッチ
+     * ループで進める。
+     * @param {number} batch_size
+     * @returns {any}
+     */
+    feed(batch_size) {
+        const ret = wasm.wasmpcdconverter_feed(this.__wbg_ptr, batch_size);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * 読み込みを終え、octreeを構築してOPFSの出力ハンドルへ書き出す
+     * (`convert.rs`の`WasmConverter::finish`と同じ役割)。
+     * @returns {any}
+     */
+    finish() {
+        const ptr = this.__destroy_into_raw();
+        const ret = wasm.wasmpcdconverter_finish(ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @param {File} file
+     * @param {Array<any>} scratch_handles
+     * @param {FileSystemSyncAccessHandle} output_handle
+     * @param {string} output_name
+     * @param {number} max_points_per_node
+     */
+    constructor(file, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmpcdconverter_new(file, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmPcdConverterFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * 入力の総点数(ヘッダーの申告値)。`convert.rs`の`WasmConverter::total_points`
+     * と同じ役割。
+     * @returns {number}
+     */
+    totalPoints() {
+        const ret = wasm.wasmpcdconverter_totalPoints(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmPcdConverter.prototype[Symbol.dispose] = WasmPcdConverter.prototype.free;
+
+/**
  * M4-7: 展開専用Worker(`src/datasource/laz-decompress.worker.ts`)から呼ぶ。
  * `file`の点インデックス`[start_index, start_index + count)`の範囲を展開し、
  * `copc_core::serialize_le`形式(`WasmConverter::recordWidth()`ちょうどの
@@ -475,6 +548,9 @@ const WasmConverterFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmCopcFileFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcopcfile_free(ptr, 1));
+const WasmPcdConverterFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmpcdconverter_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

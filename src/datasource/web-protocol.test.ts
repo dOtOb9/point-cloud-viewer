@@ -8,6 +8,7 @@ import {
   buildConvertStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
+  buildPcdConvertStartRequest,
   buildReadNodeRequest,
   classifyOpenPath,
   DEFAULT_MAX_POINTS_PER_NODE,
@@ -91,5 +92,27 @@ describe("buildConvertStartRequest / buildConvertCancelRequest", () => {
   it("convertCancelリクエストを組み立てる", () => {
     const req = buildConvertCancelRequest(12);
     expect(req).toEqual({ type: "convertCancel", id: 12 });
+  });
+});
+
+// M4-9追記(TaskSheets/M4-import-and-conversion.md): PCD→COPC変換の開始リクエスト。
+describe("buildPcdConvertStartRequest", () => {
+  it("pcdConvertStartリクエストを組み立てる", () => {
+    const file = new File([new Uint8Array([1, 2, 3])], "cloud.pcd");
+    const req = buildPcdConvertStartRequest(20, file, false);
+    expect(req).toEqual({
+      type: "pcdConvertStart",
+      id: 20,
+      file,
+      maxPointsPerNode: DEFAULT_MAX_POINTS_PER_NODE,
+      isMobile: false,
+    });
+  });
+
+  it("isMobileとmaxPointsPerNodeを明示的に指定できる", () => {
+    const file = new File([new Uint8Array([1])], "cloud.pcd");
+    const req = buildPcdConvertStartRequest(21, file, true, 5_000);
+    expect(req.isMobile).toBe(true);
+    expect(req.maxPointsPerNode).toBe(5_000);
   });
 });

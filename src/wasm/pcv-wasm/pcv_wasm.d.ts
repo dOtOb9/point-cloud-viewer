@@ -102,6 +102,33 @@ export class WasmCopcFile {
 }
 
 /**
+ * Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`の
+ * `handlePcdConvertStart`が使う。メソッド構成は`convert.rs`の
+ * `WasmConverter`に揃えてある(`totalPoints`/`feed`/`finish`)。
+ */
+export class WasmPcdConverter {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * 最大`batch_size`点を読み、spillへ書く。LAS/LAZ版と違い並列展開は無い
+     * (モジュールドキュメント参照)ので、呼び出し側は常にこの逐次バッチ
+     * ループで進める。
+     */
+    feed(batch_size: number): any;
+    /**
+     * 読み込みを終え、octreeを構築してOPFSの出力ハンドルへ書き出す
+     * (`convert.rs`の`WasmConverter::finish`と同じ役割)。
+     */
+    finish(): any;
+    constructor(file: File, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+    /**
+     * 入力の総点数(ヘッダーの申告値)。`convert.rs`の`WasmConverter::total_points`
+     * と同じ役割。
+     */
+    totalPoints(): number;
+}
+
+/**
  * M4-7: 展開専用Worker(`src/datasource/laz-decompress.worker.ts`)から呼ぶ。
  * `file`の点インデックス`[start_index, start_index + count)`の範囲を展開し、
  * `copc_core::serialize_le`形式(`WasmConverter::recordWidth()`ちょうどの
@@ -152,6 +179,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
+    readonly __wbg_wasmpcdconverter_free: (a: number, b: number) => void;
     readonly decompressLazRange: (a: any, b: number, c: number) => [number, number, number, number];
     readonly init_panic_hook: () => void;
     readonly opfsScratchPoolSize: () => number;
@@ -168,6 +196,10 @@ export interface InitOutput {
     readonly wasmcopcfile_openUrl: (a: number, b: number) => [number, number, number];
     readonly wasmcopcfile_readNode: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmcopcfile_totalSize: (a: number) => number;
+    readonly wasmpcdconverter_feed: (a: number, b: number) => [number, number, number];
+    readonly wasmpcdconverter_finish: (a: number) => [number, number, number];
+    readonly wasmpcdconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];
+    readonly wasmpcdconverter_totalPoints: (a: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

@@ -26,15 +26,48 @@ export interface FileFingerprint {
 }
 
 /**
- * ADR-0006の実測(sofi: 入力2.03GB→一時ファイルピーク21.864GB、比≈10.77倍)を
- * 根拠に11倍を必要容量の見積もりとする。デスクトップ版
- * (`crates/pcv-convert/src/disk_space.rs`)と同じ係数を使う。
+ * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): ファイルサイズからの
+ * 見積もり。**点数が分かる場合は使わず、`requiredBytesForPointCount`を使う
+ * こと。** この係数(ADR-0006の実測、sofi: 入力2.03GB→一時ファイルピーク
+ * 21.864GB、比≈10.77倍)は**LAZ(圧縮)の実測**から来ており、非圧縮・f64の
+ * PCD等では大きく外れる(実機不具合の原因。所有者がPCD(sofi.pcd、9.47GB)を
+ * Web版で開こうとしたとき、9.47GB×11≈104GBという誤った見積もりで「空き容量
+ * 不足」と判定された)。点数が読み取れない(ヘッダーが壊れている等)場合の
+ * フォールバックとしてのみ残す。デスクトップ版(`crates/pcv-convert/src/
+ * disk_space.rs`)と同じ係数を使う。
  */
 export const SCRATCH_SIZE_FACTOR = 11;
 
-/** 変換に必要な一時領域の見積もり(バイト)。 */
+/** 変換に必要な一時領域の見積もり(バイト、ファイルサイズから。上記の
+ *  ドキュメント参照)。 */
 export function requiredScratchBytes(inputSizeBytes: number): number {
   return inputSizeBytes * SCRATCH_SIZE_FACTOR;
+}
+
+/**
+ * M4-9追記: 1点あたりの一時領域(OPFSスクラッチ)の見積もり(バイト)。
+ * ADR-0006/M4-1bの実測(一時ファイルのピーク÷点数): beer.laz 49.31〜59.06
+ * B/点、sofi.copc.laz 51.06〜60.00 B/点(計測方法によって2系統の値が
+ * 記録されている。`TaskSheets/M4-import-and-conversion.md`のM4-1b参照)。
+ * 安全側に、記録されている中で最大の値(60)を採用する。
+ */
+export const SCRATCH_BYTES_PER_POINT = 60;
+
+/**
+ * M4-9追記: 1点あたりの出力COPCサイズの見積もり(バイト)。M4-1bの実測
+ * (出力サイズ÷点数): beer.laz 7.48 B/点、sofi.copc.laz 9.07 B/点。
+ * 安全側に切り上げて10とする。
+ */
+export const OUTPUT_BYTES_PER_POINT = 10;
+
+/**
+ * 点数から、変換に必要な領域(一時ファイル+出力COPC)の見積もり(バイト)。
+ * ファイルサイズではなく点数から見積もることで、入力の圧縮の有無・座標の
+ * データ型によらず一貫した見積もりになる(`requiredScratchBytes`のドキュメント
+ * 参照。実機不具合の修正)。
+ */
+export function requiredBytesForPointCount(pointCount: number): number {
+  return pointCount * (SCRATCH_BYTES_PER_POINT + OUTPUT_BYTES_PER_POINT);
 }
 
 export interface QuotaEstimate {
@@ -44,10 +77,14 @@ export interface QuotaEstimate {
   usage: number;
 }
 
-/** 空き容量(quota-usage)が、変換に必要な見積り以上あるか。 */
-export function hasEnoughQuota(estimate: QuotaEstimate, inputSizeBytes: number): boolean {
+/**
+ * 空き容量(quota-usage)が、変換に必要な見積り(`requiredBytes`、呼び出し側が
+ * `requiredBytesForPointCount`または`requiredScratchBytes`で求めた値)以上
+ * あるか。
+ */
+export function hasEnoughQuota(estimate: QuotaEstimate, requiredBytes: number): boolean {
   const available = estimate.quota - estimate.usage;
-  return available >= requiredScratchBytes(inputSizeBytes);
+  return available >= requiredBytes;
 }
 
 /**
