@@ -369,6 +369,200 @@ LAZ圧縮・書き出し)の内訳を実測したところ、**octreeの分割(L
 実測値(beer.laz、66,848,096点)・判断の詳細は`TaskSheets/M4-import-and-conversion.md`の
 M4-8を参照。
 
+## M4-10 追記: ノードごとのLAZ圧縮の並列化(parallel-compress)を採用した(2026-10-03〜04、Opus計画・Sonnet実装)
+
+### 背景・所有者の決定
+
+M4-8で、`copc-writer`に元からあった(upstream由来の)ノードごとのLAZ圧縮の並列実装
+(`parallel-compress`フィーチャ)を試したところ、出力がバイト単位で変わった
+(ファイルサイズ自体が数バイト違う)ため、「バイト単位で一致しなければ止まる」という
+当時の約束に従って採用しなかった(M4-8追記の「`parallel-compress`を採用しなかった理由」
+参照)。
+
+**所有者が2026-10-03、この条件を「点の集合が一致すること」へ緩めることを承認した。**
+これを受けて、出力が変わる理由を確かめ、点の内容(座標・強度・分類・色の多重集合、
+ノード構成)が変わらないことを確認したうえで、`parallel-compress`をデスクトップ・
+Androidで採用した。
+
+### 1. 出力が変わる理由(確かめたこと)
+
+`writer.rs`の2つの`compress_nodes`実装を読み比べた。
+
+- **逐次実装**: ルートからリーフまでの全ノードを1本の`LasZipCompressor`で順に処理する。
+  ノードの境界で`finish_current_chunk()`を呼んで「可変長チャンク」を区切るが、
+  圧縮器(エントロピー符号器)自体は1つのオブジェクトのまま使い回す。
+- **並列実装**(upstream由来、本タスクでは中身を変えていない): ノードをバッチ
+  (`2 * rayon::current_num_threads()`個ずつ)にまとめ、バッチ内の各ノードを
+  **新しく作った独立した`LasZipCompressor`**でそれぞれ圧縮し(`compress_standalone_chunk`)、
+  `rayon`で並列に実行してから、元の順序でまとめて書き出す。チャンクテーブルは
+  (upstreamの実装が)自前で組み立て直す。
+
+この2つの構造の違いから、変わりうる(そして実際に変わった)のは次の3つだけで、
+**点の内容そのものではない**:
+
+1. **圧縮バイト列そのもの**: 「1本の圧縮器でチャンク境界ごとに区切る」のと
+   「ノードごとに真新しい圧縮器を使う」のとでは、`laz`クレート内部のエントロピー
+   符号化の文脈(コーデックの初期状態・統計モデルの引き継ぎ方)が異なり、同じ入力点
+   列でも出力されるビット列が異なりうる。LASzipの可変長チャンクは「各チャンクは
+   独立に復号できる」ことを保証するためのものだが、「独立に復号できる」ことと
+   「どのバイト列に符号化するか」は別の話で、実装によって後者は変わりうる。
+2. **チャンクの区切り(バイト列中の並び)**: 並列実装は「バッチごとに圧縮してから
+   書き出す」ため、各ノードの圧縮済みバイト列の**長さ**が逐次実装と異なり(1の結果)、
+   ファイル中での開始位置・サイズも変わる。
+3. **hierarchyのオフセット**: 2の結果、`hierarchy_entry`が記録する各ノードの
+   `offset`/`byte_size`が変わり、COPC info VLRの`root_hier_offset`や、
+   ファイル全体のサイズも変わる。
+
+**点の内容(座標・強度・分類・色)は変わらない**という予想の根拠: どちらの実装も、
+各ノードに割り当てる点の集合(`lod_index`、`compress_nodes`より前に確定済み)・
+各点を生バイト列へエンコードする関数(`encode_node_points`→`encode_point_record`、
+`scale`/`offset`も共通)は完全に同じコードパスを通る。違うのはその後の「生バイト列を
+どう圧縮するか」だけなので、正しく復号できれば同じ点が出てくるはず、という予想が立つ。
+
+**この予想を、読むだけでなく実際に動かして確認した**(新規テスト
+`crates/pcv-convert/tests/streaming_conversion.rs`の
+`parallel_compress_point_set_matches_sequential`。詳細は下記)。同じ合成入力を
+逐次・並列それぞれで変換し、`pcv-core`で両方を開いて、(1)ノード構成(キーごとの点数)が
+一致すること、(2)全ノードを合わせた点の多重集合(座標・強度・分類・色)が一致すること
+を確認し、**両方とも一致した**。予想どおり、点が欠ける・重複する・座標が変わるといった
+問題は無かった。
+
+### 2. 逐次/並列を実行時に選べるようにした(設計変更)
+
+M4-8時点では、`compress_nodes`を`#[cfg(feature = "parallel-compress")]`で
+**排他的に**切り替えていた(フィーチャが有効なビルドでは並列版しかコンパイルされない)。
+これだと、`native_output_hash_matches_recorded_value`(逐次のバイト一致)と
+新しい点集合一致テストを**同じcrateの同じビルドで両立できない**(一方を通すには
+`cargo test`をフィーチャを変えて複数回実行する必要がある)。
+
+そこで、`compress_nodes`を`compress_nodes_sequential`(常にコンパイル)と
+`compress_nodes_parallel`(`parallel-compress`フィーチャが有効なときだけ
+コンパイル、中身は無変更)に分け、新しい`CopcWriterParams::parallel_node_compression`
+(実行時のbool。`new()`の既定値は`parallel-compress`フィーチャの有無と同じ)を
+`compress_nodes_dispatch`が見て選ぶ形にした。`parallel-compress`フィーチャが
+無効なビルド(Web/wasm32)では、このフラグの値に関わらず常に逐次(並列実装自体が
+コンパイルされていないため)。本番の呼び出し側(`pcv-convert`)はこのフィールドを
+変更せず、既定値のまま使う。
+
+副産物として、並列圧縮が実際に処理したバッチ(ノードのまとまり)のノード数を
+記録する回帰テスト専用API(`write_copc_from_spill_with_fs_and_batch_sizes`)も
+追加した(メモリの確認に使う。下記参照)。
+
+### 3. 回帰テストの置き換え
+
+`crates/pcv-convert/tests/streaming_conversion.rs`:
+
+- **`native_output_hash_matches_recorded_value`(既存、残す)**: 既定が
+  `parallel-compress`を有効にしたため、`CopcWriterParams::
+  with_parallel_node_compression(false)`で**逐次経路を明示的に強制**するよう
+  変更した。期待ハッシュ値自体は変えていない(逐次のアルゴリズムは無変更のため)。
+- **`parallel_compress_point_set_matches_sequential`(新規)**: 同じ合成入力
+  (x/y/z全軸に散らし、複数ノード・複数階層に分かれる規模)を逐次・並列それぞれで
+  変換し、`pcv-core`で両方を開いて、hierarchyの全ノードの点を集め、(1)ノード構成
+  (キーごとの点数)、(2)点数・全点の(座標・強度・分類・色)の多重集合、の両方が
+  一致することを確認する。座標はノードバイナリ形式(`pcv_core::node_format`)の
+  ヘッダに書かれた原点(f32)とノードローカル相対座標(f32)から世界座標(f64)を
+  復元し、ビット列(`f64::to_bits`)で比較する(浮動小数点はEq/Ordを実装しないため、
+  またノードごとの原点は逐次・並列で決定的に一致するはずという前提に基づく)。
+
+`vendor/copc-writer/tests/`に新規追加:
+
+- **`parallel_compress_batch_bounded.rs`**: `write_copc_from_spill_with_fs_and_batch_sizes`で、
+  点数が10倍(100,000→1,000,000、どちらも`max_points_per_node=20`で多数のノードに
+  分かれる)でも、観測された最大バッチサイズ(同時に圧縮するノード数)が変わらない
+  (`2 * rayon::current_num_threads()`で頭打ちになる)ことを確認する。
+- **`parallel_compress_cancel.rs`**: ノードごとのLAZ圧縮が並列化された後も
+  `cancel.check()`が働くことを確認する。LOD構築・圧縮どちらも`cancel.check()`を
+  呼ぶため、「圧縮フェーズの終盤でキャンセルする」ことを機種依存のパラメータを
+  仮定せずに決定的に作るため、まずキャンセルせずに1回実行して総呼び出し回数を数え、
+  その直前(残り10回以内)でキャンセルする2段構えにした。
+
+### 4. メモリ: 同時に圧縮するノード数が点数に比例しないことを確認
+
+`parallel_compress_batch_bounded.rs`(上記)で確認した。`compress_nodes_parallel`の
+バッチサイズ(`batch_size = 2 * rayon::current_num_threads()`)はスレッド数だけで
+決まる定数で、総ノード数に依存しない。ピークメモリはおおよそ
+`2 * batch_size * max_points_per_node * record_len`バイト(生バッファと圧縮済み
+バッファの両方を同時に抱える分)で、これも総ノード数に依存しない。
+
+### 5. Web: 対象外であることの確認(変更なし)
+
+`crates/pcv-wasm`は引き続き別ワークスペースで`parallel-lod`・`parallel-compress`の
+どちらも有効にしていない(wasm32向けビルドに`rayon`は一切入り込まない)。
+`CopcWriterParams`に新しいフィールドを足したこと・`compress_nodes_dispatch`の導入は
+フィーチャに関わらず常にコンパイルされる変更のため、生成されるwasmバイナリの
+バイト列自体は変わる(`npm run build:wasm`で再生成した。TypeScript向けの型定義
+(`.d.ts`)に差分は無い)。
+
+### 6. 実測: 並列化の前後比較(デスクトップ、beer.laz)
+
+実測値・中央値・ばらつきの詳細は`TaskSheets/M4-import-and-conversion.md`のM4-10を参照。
+
+### 確認したコマンドと結果
+
+```
+$ cargo fmt --all -- --check / cargo fmt --manifest-path vendor/copc-writer/Cargo.toml -- --check
+いずれも差分無し
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+警告・エラー無し
+
+$ cargo test --workspace --release
+全て成功(pcv-convertの新規parallel_compress_point_set_matches_sequentialを含む)
+
+$ cargo test --manifest-path vendor/copc-writer/Cargo.toml --release --features parallel-lod,parallel-compress
+24件(既存19件のライブラリテスト+新規parallel_compress_batch_bounded・
+parallel_compress_cancel+既存のparallel_lod_cancel・parallel_lod_open_files_bounded・
+scratch_read_is_bounded)全て成功
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+成功
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -p pcv-wasm -- -D warnings
+pcv-wasm自身は警告0件
+
+$ cargo test --manifest-path crates/pcv-wasm/Cargo.toml
+ユニット17件+統合2件、すべて成功
+
+$ npm run build:wasm / typecheck / lint / test / build
+いずれも成功
+```
+
+**vendor clippyについて**: M4-8と同じく、`cargo clippy --manifest-path
+vendor/copc-writer/Cargo.toml --all-targets -- -D warnings`は本タスクと無関係の
+既存のlint(`ScratchReader`トレイトの`clippy::len_without_is_empty`、`scratch.rs`は
+本タスクで変更していない)で失敗する。CI(`ci.yml`)は`cargo clippy --workspace
+--all-targets`(`vendor`はワークスペース除外)しか実行しないため、受け入れ条件には
+影響しない。
+
+### 新規・変更したファイル
+
+- `vendor/copc-writer/src/writer.rs`: `CopcWriterParams::parallel_node_compression`
+  (新フィールド)・`with_parallel_node_compression`(builder)、
+  `compress_nodes_sequential`/`compress_nodes_parallel`/`compress_nodes_dispatch`
+  (実行時切り替え)、`write_copc_from_spill_with_fs_and_batch_sizes`(回帰テスト専用API)
+- `vendor/copc-writer/src/lib.rs`: 上記の新規公開API
+- `vendor/copc-writer/Cargo.toml`: 新規テスト2件を登録
+- `vendor/copc-writer/tests/parallel_compress_batch_bounded.rs`・
+  `parallel_compress_cancel.rs`: 新規
+- `crates/pcv-convert/Cargo.toml`: `copc-writer`に`parallel-compress`フィーチャを追加
+- `crates/pcv-convert/tests/streaming_conversion.rs`: 逐次経路の明示的強制、
+  点集合一致テストの新規追加
+- `crates/pcv-convert/examples/post_process_stage_bench.rs`: `--sequential-compress`
+  フラグを追加(前後比較用)
+- `src/wasm/pcv-wasm/*`: `npm run build:wasm`による再生成(API面の変更なし)
+
+### 所有者が確かめる手順
+
+1. **デスクトップ: 大きめの生LAS/LAZ(beer.laz等、数千万点)を変換する。** 変換が
+   今までどおり完了し、結果が正しく表示されることを確認する
+2. **キャンセル**: 変換中(特に後処理が始まった後)にキャンセルを押し、今までどおり
+   止まることを確認する
+3. 同じファイルを複数回変換しても、`pcv-core`で開いたときに同じ点群として表示される
+   ことを確認する(バイト単位では一致しなくなったが、点の内容は一致するはず)
+4. Android実機: `gh run download <run-id> -n android-apk`でAPKを取得し、生のLAS/LAZの
+   変換が今までどおり完了することを確認する(`parallel-compress`はAndroidでも有効)
+
 ## いつ削除するか
 
 `main`に一度取り込んだ後は、Web版の変換経路(`crates/pcv-wasm`)が
