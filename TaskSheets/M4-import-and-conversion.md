@@ -2249,6 +2249,14 @@ CI・Pagesのrun idは所有者への最終報告に記載する。
 4. **デスクトップ・Android(回帰確認)**: 変わっていないはずだが、念のため
    生のLAS/LAZを開いて変換が今までどおり動くことを確認する
 
+### 関連: Web版でPCDを開くと「空き容量が足りません」と出る不具合(別件、2026-10-04)
+
+同じセッションで、所有者からもう一件(Web版でPCDを開くと容量不足と誤判定される
+不具合)の報告を受けて対応した。本節(準備中に落ちる不具合)とは原因が別
+(こちらは容量の見積もり方式とPCD変換経路が未接続だったこと)だが、どちらも
+Web版の変換まわりの作業なので、記録はM4-9に置いた。詳細・所有者が確かめる
+手順は**M4-9の「追記2」**を参照。
+
 ---
 
 ## M4-7: 入力の読み込み(LAZの展開)を並列化する(2026-10-02、Sonnet)
@@ -3069,6 +3077,209 @@ CI(`ci.yml`)の最新runは、push後に所有者または次のエージェン�
    着色になるはず。`autzen.pcd`は色を持つため、元の`autzen-classified.copc.laz`
    を開いたときと近い見た目になるはず(座標の丸め誤差程度の差はありうる、
    上記「範囲外にしたこと」参照)
+
+---
+
+### 追記2: Web版でPCDを開くと「空き容量が足りません」と出る不具合の調査と対応(2026-10-04、Sonnet)
+
+#### 症状(所有者の報告)
+
+Web版でPCD(`data/sofi.pcd`、9.47GB、364,384,576点、座標f64)を開くと、
+変換を試みる前に「空き容量が足りません」と出る。
+
+#### 原因(コーディネーターの見立てを確認)
+
+1. **Web版はCOPCでないファイルをすべてLAS/LAZ変換の経路に回していた。**
+   `src/state/useCopcViewer.ts`の`openFile`は、`isCopcFile`(ヘッダー判定)で
+   「COPCでない」と分かったファイルを、形式を確かめずに`WebSource.
+   startConversion`(LAS/LAZ専用)へ渡していた。PCD・PLY・E57をWeb版で変換する
+   経路は、M4-9本体では「後回し」にしたまま繋いでいなかった(本節冒頭の
+   「実施記録」参照)
+2. **容量の事前確認がファイルサイズ×11で見積もっていた。** `src/datasource/
+   opfs.ts`の旧`hasEnoughQuota`は「入力ファイルサイズ×11」で見積もっていた。
+   この係数はADR-0006/M4-1bの実測(sofi.copc.laz、**LAZ圧縮**)から来ており、
+   **非圧縮・f64座標のPCDでは大きく外れる**: 9.47GB×11≈104GBという、実際に
+   必要な量(後述)の何倍もの過大な見積もりになり、ブラウザのストレージ
+   クォータ(`TaskSheets/M4-import-and-conversion.md`のM4-6a 7節、Chrome/
+   Chromium系で総容量の60%等)を簡単に超えてしまっていた
+
+#### 直したこと
+
+**1. 容量の見積もりを点数から出す(`src/datasource/point-count-estimate.ts`、新設)**
+
+変換の一時領域(OPFSスクラッチ)・出力COPCのサイズはどちらも**点数**に
+ほぼ比例する(copc-writerの設計、M4-1b/ADR-0006の実測)。ファイルサイズでは
+なく点数から見積もることで、入力の圧縮の有無・座標のデータ型によらず
+一貫した見積もりになる。
+
+- LAS/LAZ: ヘッダーのバイト配置(ASPRS LAS仕様書)を直接読む。LAS 1.4は
+  64bitの点数フィールド(オフセット247)を持つため、32bitのレガシー
+  フィールド(オフセット107。点数が`u32`に収まらない、または点フォーマット
+  6〜10では0になりうる)より優先する
+- PCD: ヘッダー(ASCIIテキスト)の`POINTS`行を読む。無ければ`WIDTH`×
+  `HEIGHT`で計算する(PCD仕様では`POINTS`は必須だが、安全策として)
+- PLY: ヘッダー(binary形式でもヘッダー自体は常にASCII)の`element vertex N`
+  行を読む
+- E57: このセッションでは実装していない(後述「やらなかったこと」参照)
+
+どの読み取りも**ヘッダー(ファイル先頭の小さい範囲)だけ**で完結し、
+メインスレッドから`File.slice`+`arrayBuffer()`/`text()`で読める
+(`FileReaderSync`のようなWorker専用APIは不要)。
+
+1点あたりのバイト数は`src/datasource/opfs.ts`に新設した定数で管理する:
+`SCRATCH_BYTES_PER_POINT`(=60、M4-1bの実測した一時ディスクのピーク÷点数の
+うち安全側の最大値)+`OUTPUT_BYTES_PER_POINT`(=10、M4-1bの実測した出力
+サイズ÷点数を切り上げ)。ファイルサイズ×11という旧来の見積もりは、点数が
+読み取れない場合のフォールバックとして`requiredScratchBytes`に残した。
+
+**2. 形式を先に判定してから変換経路を選ぶ(`src/datasource/source-format.ts`、新設)**
+
+`detectSourceFormatByName`(拡張子判定、`crates/pcv-convert/src/import/
+mod.rs`の`detect_format`と同じ考え方)で、`useCopcViewer.ts`の`openFile`が
+`isCopcFile`の次に形式を確かめ、PCDならPCD専用の経路、PLY/E57なら
+(後述の理由で)案内を出して終える、という分岐にした。
+
+**3. Web版でPCDを中間LASを経ずに直接COPCへ変換する(`WasmPcdConverter`)**
+
+`crates/pcv-wasm/src/pcd_import.rs`(新設)に、`crates/pcv-convert/src/
+import/pcd.rs`と同じロジック(`pcd-rs`でのフィールド対応、
+`binary_compressed`の展開後サイズ上限512MiBの事前チェック、
+`scale`/`offset`の選び方)をOPFS向けに移植した。`WasmConverter`(LAS/LAZ)と
+同じ部品(`SpillWriter`→`finalize`→`write_copc_from_spill_with_fs`)を使うが、
+PCDの読み込みはLAZのようなエントロピー復号を伴わないため、M4-7の並列展開の
+仕組みは持たない(`feed`は常に逐次バッチループ)。
+
+Worker側(`src/datasource/copc.worker.ts`)は、新しいメッセージ
+`pcdConvertStart`で`handlePcdConvertStart`/`runPcdConversion`を呼ぶ
+(LAS/LAZ版`runConversion`とほぼ同じ構造の、並列展開を持たない簡略版)。
+準備段階の進捗表示(M4-6追記4で実装した`preparing`フェーズ)・キャンセル・
+キャッシュ(`opfs.ts`の指紋ベースの仕組みをそのまま流用)・ダウンロードは
+LAS/LAZ版と同じ仕組みに乗る(コードの変更不要だった)。
+
+**なぜ`crates/pcv-convert`を直接の依存にしなかったか**: `crates/pcv-wasm/
+Cargo.toml`の`pcd-rs`依存のコメントに詳細を記録した。要点は2つ:
+
+1. `pcv-wasm`はルートワークスペースの外にある独立した1クレートの
+   ワークスペースだが、`pcv-convert`はルートワークスペースの通常メンバー。
+   パス依存で引き込むと、`pcv-convert`の`Cargo.toml`がワークスペースを
+   持たないため上位のルートワークスペースへ参加しようとし、`pcv-wasm`
+   自身の独立したワークスペース宣言と衝突してcargoがエラーになる
+   (実際に試して確認した)
+2. 仮にこれを回避できたとしても、`pcv-convert`の`copc-writer`依存は
+   `parallel-lod`/`parallel-compress`(`rayon`使用)を要求しており、
+   同じ`[patch.crates-io]`先(`vendor/copc-writer`)を共有する以上、
+   依存グラフのフィーチャ統合で`pcv-wasm`のwasm32ビルドにまで`rayon`が
+   混入してしまう(「wasm32向けビルドに`rayon`は入り込まない」という、
+   このプロジェクトの前提を破る)
+
+そのため、PCDの読み込みロジック自体を`pcd_import.rs`に独立に書いた
+(意図した重複。`pcd-rs`・`byteorder`はwasm32-unknown-unknownでのビルドを
+実際に確認した上で、新規の直接依存として追加した)。
+
+#### やらなかったこと(正直に)
+
+- **Web版でのPLY/E57の変換**: `e57`クレートも`pcd-rs`と同様に
+  wasm32-unknown-unknownでビルドできることを実際に確認した(デフォルト
+  フィーチャで、新規に`cargo build --target wasm32-unknown-unknown`する
+  最小クレートを作って検証した)。PLYも外部クレートに依存しない自前実装
+  (`crates/pcv-convert/src/import/ply.rs`、約600行)なので技術的な障害は
+  無い。**それでも本セッションでは実装を見送った**: PCD(具体的に報告された
+  不具合の形式)の修正を優先し、PLY/E57はコードの複製量(PLYは600行規模、
+  E57はXMLパーサ込みで139行だが呼び出し側の設計も含めると相応の量)と
+  レビュー・テストに必要な時間を考えると、このセッションの範囲では
+  中途半端に終わらせるリスクの方が大きいと判断した。PLY/E57を選んだ場合は
+  「このファイル形式はWeb版ではまだ変換できません。デスクトップ版で
+  COPC(.copc.laz)に変換してから開いてください」という案内を出す
+  (`useCopcViewer.ts`)。将来実装する場合は、この追記と`pcd_import.rs`の
+  構造をそのまま踏襲できる見込み
+- **E57の点数見積もり**: PCD/PLYと違い、E57はXML+バイナリ構造で、
+  スキャンごとの点数の合計を軽量に読む実装をこのセッションでは用意して
+  いない(そもそもWeb版のE57変換自体を見送っているため、見積もりだけ
+  作っても使い道が無い)
+- **実際のブラウザでの動作確認**: GUIを目視できない環境のため、Web版で
+  実際にPCDを選んで「空き容量不足」が解消すること、変換が完走すること、
+  開いた点群が正しく表示されることは確認できていない。下記「所有者が
+  確かめる手順」に委ねる
+
+#### 新規テスト
+
+- `src/datasource/point-count-estimate.test.ts`: LAS(1.2のレガシーフィールド・
+  1.4の拡張フィールド・拡張フィールドが0のときのフォールバック)・PCD
+  (`POINTS`・`WIDTH`×`HEIGHT`フォールバック)・PLY(`element vertex`、
+  他のelementが混在する場合)の各ヘッダー解析を確認する
+- `src/datasource/source-format.test.ts`: 拡張子判定(大文字小文字を
+  区別しない、未知の拡張子は`unknown`)
+- `src/datasource/opfs.test.ts`に追加: `requiredBytesForPointCount`
+  (M4-1bの実測値どおりの係数か、点数に比例するか、sofi.pcd相当で旧来の
+  ファイルサイズ×11の見積もりより現実的な値になるか)、`hasEnoughQuota`の
+  シグネチャ変更(ファイルサイズではなく見積もり済みのバイト数を受け取る
+  形に変えた)
+- `src/datasource/web-protocol.test.ts`に追加: `buildPcdConvertStartRequest`
+- `crates/pcv-wasm/tests/memory_pcd_conversion.rs`(新設): `MemoryScratchFs`
+  経由で、バッチ駆動のPCD読み込み→spill→COPC書き出しが`pcv-core`で開ける
+  ことを確認する統合テスト(`memory_scratch_conversion.rs`のPCD版)
+- `crates/pcv-wasm/src/pcd_import.rs`の`#[cfg(test)]`: `choose_scale_offset`
+  の回帰テスト(`crates/pcv-convert/src/import/scale.rs`の複製であることの
+  確認)、パック済みrgbのデコード、`binary_compressed`の展開後サイズの
+  覗き見(検出する場合・しない場合の両方)
+
+#### 確認したコマンドと結果
+
+```
+$ cargo test --manifest-path crates/pcv-wasm/Cargo.toml
+24 passed(unittests、pcd_import::testsの新規5件を含む)
+1 passed(memory_pcd_conversion、新規)
+1 passed(memory_scratch_conversion)
+1 passed(buffered_file_reader_reduces_read_calls)
+2 passed(sequential_lod_open_files_bounded)
+
+$ cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check
+(差分無し)
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --all-targets -- -D warnings
+(pcv-wasm自身は警告0件)
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+Finished(成功。pcd-rsを新規に含めても成功することを確認)
+
+$ cargo fmt --all -- --check / cargo clippy --workspace --all-targets -- -D warnings / cargo test --workspace --release
+いずれも差分無し・警告0件・成功(vendor/copc-writer・crates/pcv-convertは
+無変更)
+
+$ npm run build:wasm
+成功(pcv_wasm_bg.wasmを再生成。808,094→1,089,920バイト。pcd-rsを含めた分
+サイズが増えた。.d.tsに`WasmPcdConverter`クラスが追加されたことを確認した)
+
+$ npx tsc --noEmit / npx eslint . / npx vitest run / npm run build
+すべて成功(testは31ファイル276件)
+```
+
+CI・Pagesのrun idは所有者への最終報告に記載する。
+
+#### 並行作業との分担
+
+`vendor/copc-writer/`・`crates/pcv-convert/`には触れていない(並行作業中の
+別エージェントが後処理の圧縮の並列化・PCDテストデータ作りを担当している
+ため。調べるために読んだだけ)。
+
+#### 所有者が確かめる手順
+
+1. **Web版: `data/sofi.pcd`を開く。** GitHub PagesのサイトでPCDファイルを
+   選ぶ(ファイル選択ダイアログの絞り込みに`.pcd`を追加したので、既定の
+   表示でも選べるはず)。「空き容量が足りません」と出ずに変換が始まり、
+   進捗(%・プログレスバー)が表示され、完了後に自動的に点群が表示される
+   ことを確認する
+2. **Web版: `data/autzen.pcd`(小さい方、約320MB)も同様に確認する。**
+   色が付いて表示されることを確認する(RGBを持つPCDのため)
+3. **Web版: 同じファイルの再変換防止。** 同じPCDをもう一度選び、変換が
+   走らず即座に開くことを確認する
+4. **Web版: PLY/E57を選んだ場合の案内。** もし手元にPLY/E57ファイルが
+   あれば、「すべてのファイル」であえて選び、「このファイル形式は
+   Web版ではまだ変換できません。デスクトップ版で変換してください」という
+   趣旨のメッセージが、誤った「空き容量不足」ではなく表示されることを
+   確認する
+5. **デスクトップ・Android(回帰確認)**: 変わっていないはずだが、念のため
+   E57/PLY/PCD・LAS/LAZを開いて変換が今までどおり動くことを確認する
 
 ---
 
