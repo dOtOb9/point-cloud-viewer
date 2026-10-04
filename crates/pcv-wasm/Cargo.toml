@@ -43,6 +43,22 @@ las = { version = "0.10", features = ["laz"] }
 # (wasm32-unknown-unknownには実行時に使えないため。vendor/copc-writer/PATCH.md参照)。
 # OpfsScratchFs(opfs.rs)が&dyn ScratchFsとしてcopc-writer本体に渡る。
 copc-writer = { version = "0.9.0", default-features = false }
+# M4-6/M4-9(TaskSheets/M4-import-and-conversion.md追記): PCD→COPCの直接変換
+# (pcd_import.rs)に使う。`crates/pcv-convert`と同じ版(0.13.0)。
+#
+# なぜ`crates/pcv-convert`の`src/import/`に直接依存しないか: pcv-wasmは
+# ルートワークスペースの外にある独立した1クレートのワークスペース(このファイル
+# 冒頭のコメント参照)。`pcv-convert`はルートワークスペースの通常メンバーなので、
+# パス依存で引き込むとワークスペースの二重定義でcargoがエラーになる
+# (実際に試して確認済み)うえ、`pcv-convert`の`copc-writer`依存は
+# `parallel-lod`/`parallel-compress`(rayon使用)を要求しており、同じ
+# `[patch.crates-io]`先(vendor/copc-writer)を共有する以上、依存グラフの
+# フィーチャ統合でpcv-wasmのwasm32ビルドにまで`rayon`が混入してしまう
+# (このプロジェクトが前提とする「wasm32向けビルドにrayonは入り込まない」を
+# 破る)。そのためPCDの読み込みロジック(`pcv-convert/src/import/pcd.rs`相当)は
+# `pcd_import.rs`に独立に書いた(意図した重複。コメントに理由を記録する)。
+pcd-rs = "0.13.0"
+byteorder = "1"
 
 [dependencies.web-sys]
 version = "0.3"

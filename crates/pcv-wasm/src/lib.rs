@@ -20,6 +20,7 @@ mod dto;
 mod file_reader;
 mod http_reader;
 mod opfs;
+mod pcd_import;
 mod range_math;
 mod stats;
 mod util;
@@ -35,6 +36,8 @@ use web_sys::File;
 
 // M4-6b: Web版の変換(WasmConverter)。`src/datasource/copc.worker.ts`が使う。
 pub use convert::WasmConverter;
+// M4-6/M4-9追記: Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`が使う。
+pub use pcd_import::WasmPcdConverter;
 
 /// `opfs.rs`の`OPFS_SCRATCH_POOL_SIZE`をJS側にも公開する。TypeScript側
 /// (`src/datasource/opfs.ts`)が事前に開くOPFS一時ファイルの個数を、この値と

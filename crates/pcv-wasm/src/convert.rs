@@ -155,7 +155,10 @@ fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
 const READ_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 /// `js_sys::Array`(`FileSystemSyncAccessHandle`の配列)を`Vec`へ変換する。
-fn handles_from_js_array(array: &Array) -> Result<Vec<FileSystemSyncAccessHandle>, JsValue> {
+/// `pcd_import.rs`の`WasmPcdConverter::new`も使う(`pub(crate)`)。
+pub(crate) fn handles_from_js_array(
+    array: &Array,
+) -> Result<Vec<FileSystemSyncAccessHandle>, JsValue> {
     let mut handles = Vec::with_capacity(array.length() as usize);
     for value in array.iter() {
         let handle: FileSystemSyncAccessHandle = value.dyn_into().map_err(|_| {
