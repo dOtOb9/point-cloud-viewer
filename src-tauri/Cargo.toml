@@ -33,6 +33,14 @@ copc-core = "0.9.0"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 log = "0.4.34"
+# `pcv://`のパスのパーセントデコード用（`lib.rs`の`parse_pcv_path`参照）。
+# フロントは`convertFileSrc`でURLを組み立てるが、この関数は引数全体を
+# 1回の`encodeURIComponent`でエンコードするため、パスの区切り文字（`/`）も
+# `%2F`になって届く。新しい依存に見えるが、`url`クレート（`tauri`が内部で
+# 使っている）が既にこの正確なバージョンをビルドグラフに含んでいる
+# （`Cargo.lock`の`percent-encoding 2.3.2`）ため、直接依存を1行足しても
+# ビルドに新しいクレートが増えるわけではない。
+percent-encoding = "2.3"
 
 [dev-dependencies]
 # open_copc/read_node_bytes をテストするために、その場で極小のCOPCを生成する。

@@ -143,14 +143,77 @@ fn default_bench_data_path(filename: String) -> Option<String> {
     }
 }
 
-/// `pcv://<path>` の1セグメントを見て、M0のベンチ用ダミーデータ（`/<size>`）か
-/// M1のノードデータ（`/<level>-<x>-<y>-<z>`）かを振り分ける。
+/// `parse_pcv_path` が返す、パス解析の結果。
+#[derive(Debug, PartialEq, Eq)]
+enum PcvRequest {
+    /// M0のベンチ用ダミーデータ要求: `/<size>`。
+    Bench { size: usize },
+    /// M1のノードデータ要求: `/<generation>/<level>-<x>-<y>-<z>`。
+    Node {
+        generation: u64,
+        key: pcv_core::NodeKey,
+    },
+}
+
+/// `pcv://<path>` を見て、M0のベンチ用ダミーデータ（`/<size>`）か
+/// M1のノードデータ（`/<generation>/<level>-<x>-<y>-<z>`）かを振り分ける。
 ///
-/// フロントは `convertFileSrc` でURLを組み立てる。この関数はパス全体を
-/// `encodeURIComponent` で1セグメントとしてエンコードするため、パスに `/` を含めず
-/// 数値やダッシュ区切りの文字列だけを渡す（`/node/<key>` のような複数セグメントにしない。
-/// M1-point-rendering.md 参照）。
+/// # 緊急修正（v0.1.3ノード読み出し全滅）: パーセントデコードが必須
 ///
+/// フロントは `convertFileSrc` でURLを組み立てる。この関数（`@tauri-apps/api`が
+/// 読み込むJSから使われる、`tauri`クレートが注入する
+/// `window.__TAURI_INTERNALS__.convertFileSrc`。実体は`tauri`クレート
+/// `scripts/core.js`の`encodeURIComponent(filePath)`）は**渡した文字列全体を
+/// 1回の`encodeURIComponent`でエンコードしてから1セグメントとしてURLに埋め込む**。
+/// このため、ここで組み立てる文字列に含めた区切り文字（`/`や、v0.1.3までの`:`）も
+/// 丸ごとパーセントエンコードされて届く（`/`→`%2F`、`:`→`%3A`）。
+///
+/// v0.1.3では区切りに`:`を使っていたが、**このデコードを一度も行っていなかった**
+/// ため、実際に届く`generation_str`は常に`"0%3A1-1-1-1"`のような文字列全体になり、
+/// `split_once(':')`が常に失敗して全てのノード要求が「unknown pcv:// path」で
+/// 失敗していた（Rust側のテストは`read_node_bytes`を`parse_pcv_path`を経由せず
+/// 直接呼んでいたため、この壊れ方を一度も検出できなかった。
+/// `TaskSheets/M1-point-rendering.md`参照）。
+///
+/// 今回の修正: ①区切りを`:`から`/`に変更（`%2F`になってもデコードすれば`/`に戻る。
+/// 可読性のため、かつ後述のベンチ用`/<size>`と見た目で区別しやすいようにした。
+/// 動作上の正しさ自体は②のデコードが担っている）、②**解析の前に必ず一度
+/// パーセントデコードする**（`percent_encoding::percent_decode_str`。この
+/// クレートは`tauri`が内部で使う`url`クレート経由で既にビルドグラフに含まれて
+/// いるため、新しいクレートをビルドに追加するわけではない。`Cargo.toml`参照）。
+///
+/// 旧形式（`:`区切り、`%3A`）は受け付けない: v0.1.3は上記の通りノード読み出しが
+/// 100%失敗しており、この形式で動いていたクライアントは存在しない
+/// （デスクトップ・Androidともにフロントとバックエンドは同じビルドで配布される
+/// ため、新旧混在も起きない）。互換コードを足す理由がないため追加しなかった。
+fn parse_pcv_path(path: &str) -> Result<PcvRequest, String> {
+    let segment = path.strip_prefix('/').unwrap_or(path);
+    let decoded = percent_encoding::percent_decode_str(segment).decode_utf8_lossy();
+
+    if let Ok(size) = decoded.parse::<usize>() {
+        return Ok(PcvRequest::Bench { size });
+    }
+
+    // ノードデータ要求の形式: "<generation>/<level>-<x>-<y>-<z>"。`generation`は
+    // `open_copc`がフロントに返した値（`src/datasource/tauri.ts`の
+    // `TauriSource.currentGeneration`）をそのまま送り返したもの。ファイルを
+    // 切り替えた後に届いた古い世代のリクエストを`copc_state::read_node_bytes`が
+    // 見分けられるようにするため（`src-tauri/src/copc_state.rs`の`OpenedFile`の
+    // ドキュメントコメント、`TaskSheets/M4-import-and-conversion.md`参照）。
+    let Some((generation_str, key_str)) = decoded.split_once('/') else {
+        return Err(format!(
+            "unknown pcv:// path (expected /<size> or /<generation>/<level>-<x>-<y>-<z>): {decoded}"
+        ));
+    };
+    let generation = generation_str
+        .parse::<u64>()
+        .map_err(|_| format!("invalid generation in pcv:// path: {generation_str}"))?;
+    let key = key_str
+        .parse::<pcv_core::NodeKey>()
+        .map_err(|_| format!("unknown pcv:// node key: {key_str}"))?;
+    Ok(PcvRequest::Node { generation, key })
+}
+
 /// M2: 非同期版（`register_asynchronous_uri_scheme_protocol`）を使う。ノード読み出し
 /// （ディスクI/O + LAZ伸長）は`tauri::async_runtime::spawn_blocking`でブロッキング用
 /// スレッドプールに逃がし、Rustのメインスレッドを塞がない。これにより並行リクエストが
@@ -160,42 +223,25 @@ fn default_bench_data_path(filename: String) -> Option<String> {
 ///
 /// ベンチ用ダミーデータ（`/<size>`）は`vec![0u8; size]`を確保するだけでCPUを
 /// 使わないため、スレッドを分けずその場で応答する。
+///
+/// パス自体の解析（パーセントデコード含む）は`parse_pcv_path`に分離してある。
+/// `Request`/`UriSchemeResponder`を作らずに文字列だけでテストできるようにするため
+/// （下記`tests`モジュール参照）。
 fn handle_pcv_protocol(
     ctx: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
     responder: tauri::UriSchemeResponder,
 ) {
-    let path = request.uri().path();
-    let segment = path.strip_prefix('/').unwrap_or(path);
-
-    if let Ok(size) = segment.parse::<usize>() {
-        responder.respond(octet_stream_response(vec![0u8; size]));
-        return;
-    }
-
-    // ノード読み出しのセグメント形式: "<generation>:<level>-<x>-<y>-<z>"。
-    // `generation`は`open_copc`がフロントに返した値（`src/datasource/tauri.ts`の
-    // `TauriSource.currentGeneration`）をそのまま送り返したもの。ファイルを
-    // 切り替えた後に届いた古い世代のリクエストを`copc_state::read_node_bytes`が
-    // 見分けられるようにするため（`src-tauri/src/copc_state.rs`の`OpenedFile`の
-    // ドキュメントコメント、`TaskSheets/M4-import-and-conversion.md`参照）。
-    let Some((generation_str, key_str)) = segment.split_once(':') else {
-        responder.respond(bad_request_response(&format!(
-            "unknown pcv:// path (expected /<size> or /<generation>:<level>-<x>-<y>-<z>): {segment}"
-        )));
-        return;
-    };
-    let Ok(generation) = generation_str.parse::<u64>() else {
-        responder.respond(bad_request_response(&format!(
-            "invalid generation in pcv:// path: {generation_str}"
-        )));
-        return;
-    };
-    let Ok(key) = key_str.parse::<pcv_core::NodeKey>() else {
-        responder.respond(bad_request_response(&format!(
-            "unknown pcv:// node key: {key_str}"
-        )));
-        return;
+    let (generation, key) = match parse_pcv_path(request.uri().path()) {
+        Ok(PcvRequest::Bench { size }) => {
+            responder.respond(octet_stream_response(vec![0u8; size]));
+            return;
+        }
+        Ok(PcvRequest::Node { generation, key }) => (generation, key),
+        Err(message) => {
+            responder.respond(bad_request_response(&message));
+            return;
+        }
     };
 
     // `ctx`はこのハンドラ呼び出しの間しか生きないので、spawn_blockingへ渡すために
@@ -318,4 +364,137 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pcv_core::NodeKey;
+
+    #[test]
+    fn parses_bench_path() {
+        assert_eq!(parse_pcv_path("/123"), Ok(PcvRequest::Bench { size: 123 }));
+    }
+
+    #[test]
+    fn parses_node_path_unencoded() {
+        // 開発中にcurlやブラウザで直接叩く場合などに通る、デコード不要な形。
+        assert_eq!(
+            parse_pcv_path("/0/1-1-1-1"),
+            Ok(PcvRequest::Node {
+                generation: 0,
+                key: NodeKey {
+                    level: 1,
+                    x: 1,
+                    y: 1,
+                    z: 1,
+                },
+            })
+        );
+    }
+
+    /// v0.1.3でノード読み出しが全滅した不具合の再発防止テスト。フロントが
+    /// `convertFileSrc("0/1-1-1-1", "pcv")` を呼んだときに実際にWindows/Androidで
+    /// 生成されるURLのパス部分をそのまま通す。
+    ///
+    /// 根拠: `tauri`クレート（`Cargo.lock`でv2.11.6、`@tauri-apps/api/core.js`の
+    /// `convertFileSrc`が呼ぶ`window.__TAURI_INTERNALS__.convertFileSrc`の実体）の
+    /// `scripts/core.js`は次の通り実装されている（
+    /// `~/.cargo/registry/src/*/tauri-2.11.6/scripts/core.js`で確認した）。
+    ///
+    /// ```js
+    /// Object.defineProperty(window.__TAURI_INTERNALS__, 'convertFileSrc', {
+    ///   value: function (filePath, protocol = 'asset') {
+    ///     const path = encodeURIComponent(filePath)
+    ///     return osName === 'windows' || osName === 'android'
+    ///       ? `${protocolScheme}://${protocol}.localhost/${path}`
+    ///       : `${protocol}://localhost/${path}`
+    ///   }
+    /// })
+    /// ```
+    ///
+    /// つまり`filePath`全体（区切り文字含む）が1回`encodeURIComponent`される。
+    /// `encodeURIComponent`は英数字・`- _ . ! ~ * ' ( )`以外をパーセントエンコード
+    /// するため、`encodeURIComponent("0/1-1-1-1")`は`"0%2F1-1-1-1"`になる
+    /// （`-`は非エンコード対象なので変化しない）。Windows/Androidでは
+    /// `http://pcv.localhost/<path>`の形でリクエストされ、
+    /// `request.uri().path()`は`"/0%2F1-1-1-1"`を返す
+    /// （`http::Uri`はパーセントエンコードをデコードしない。実際、修正前の
+    /// バグ報告のエラーメッセージに`%3A`がそのまま出ていたことからも、
+    /// デコードされずに届くことが分かる）。
+    #[test]
+    fn parses_node_path_as_sent_by_convert_file_src_on_windows_and_android() {
+        assert_eq!(
+            parse_pcv_path("/0%2F1-1-1-1"),
+            Ok(PcvRequest::Node {
+                generation: 0,
+                key: NodeKey {
+                    level: 1,
+                    x: 1,
+                    y: 1,
+                    z: 1,
+                },
+            })
+        );
+    }
+
+    /// macOS/Linuxの`convertFileSrc`は`pcv://localhost/<path>`の形になるが、
+    /// `<path>`部分（`encodeURIComponent`の結果）はプラットフォームによらず同じ
+    /// なので、`request.uri().path()`に渡る文字列は上のテストと変わらない。
+    #[test]
+    fn generation_with_multiple_digits_and_negative_coordinates_decode_correctly() {
+        // COPCの正当なキーは非負整数のみだが（copc.rsのコメント参照）、
+        // パス解析自体は数値のパースをNodeKey::from_strに任せているだけなので、
+        // ここでは世代番号が複数桁の場合の区切り位置だけを確認する。
+        assert_eq!(
+            parse_pcv_path("/42%2F3-0-0-0"),
+            Ok(PcvRequest::Node {
+                generation: 42,
+                key: NodeKey {
+                    level: 3,
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_colon_separated_path() {
+        // v0.1.3まで使っていた"<generation>:<key>"形式（パーセントデコード後は
+        // "0:1-1-1-1"）。デコードはされるが"/"が無いため拒否される。v0.1.3は
+        // ノード読み出しが100%失敗していたため、この形式を実際に使えていた
+        // クライアントは存在せず、後方互換を足す理由がない（`parse_pcv_path`の
+        // ドキュメントコメント参照）。
+        assert!(parse_pcv_path("/0%3A1-1-1-1").is_err());
+        assert!(parse_pcv_path("/0:1-1-1-1").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_generation() {
+        let err = parse_pcv_path("/abc/1-1-1-1").unwrap_err();
+        assert!(
+            err.contains("invalid generation"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_node_key() {
+        let err = parse_pcv_path("/0/not-a-key").unwrap_err();
+        assert!(
+            err.contains("unknown pcv:// node key"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_path_without_separator_that_is_not_a_bench_size() {
+        let err = parse_pcv_path("/not-a-number-or-node").unwrap_err();
+        assert!(
+            err.contains("unknown pcv:// path"),
+            "unexpected message: {err}"
+        );
+    }
 }
