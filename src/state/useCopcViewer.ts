@@ -427,7 +427,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         if (await isCopcFile(pathOrFile)) {
           path = source.registerFile(pathOrFile);
         } else {
-          const outcome = await source.startConversion(pathOrFile);
+          const outcome = await source.startConversion(pathOrFile, deviceProfileDefaults.isMobile);
           switch (outcome.kind) {
             case "alreadyCopc":
               // startConversion自身はこの値を返さない設計(呼び出し前に
@@ -531,7 +531,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, [colorMode, tempDir, setDownloadReady]);
+  }, [colorMode, tempDir, setDownloadReady, deviceProfileDefaults.isMobile]);
 
   // `openFileRef`を毎レンダー最新化する。マウント時に一度だけ張るイベント
   // 購読(上のuseEffect、deps=[])から常に最新の`openFile`(最新のcolorMode/

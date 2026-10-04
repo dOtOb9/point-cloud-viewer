@@ -216,11 +216,16 @@ export async function openHandlePool<H>(
   poolSize: number,
   createOne: (index: number) => Promise<H>,
   closeOne: (handle: H) => void,
+  // M4-11: 準備段階の進捗(何個中何個目か)を画面に出すためのコールバック。
+  // `copc.worker.ts`が「一時ファイルを開いています(i/poolSize)」を
+  // postMessageするのに使う(省略可能。テストでは通常省略する)。
+  onProgress?: (opened: number, total: number) => void,
 ): Promise<H[]> {
   const handles: H[] = [];
   try {
     for (let i = 0; i < poolSize; i++) {
       handles.push(await createOne(i));
+      onProgress?.(i + 1, poolSize);
     }
   } catch (err) {
     for (const handle of handles) {
@@ -257,6 +262,9 @@ function randomJobId(): string {
  */
 export async function createScratchPool(
   poolSize: number,
+  // M4-11: 「一時ファイルを開いています(i/poolSize)」を画面に出すための
+  // 進捗コールバック(省略可能)。
+  onProgress?: (opened: number, total: number) => void,
 ): Promise<{ dirName: string; handles: FileSystemSyncAccessHandle[] }> {
   const root = await navigator.storage.getDirectory();
   const dirName = `${SCRATCH_DIR_PREFIX}${randomJobId()}`;
@@ -269,6 +277,7 @@ export async function createScratchPool(
         return await fileHandle.createSyncAccessHandle();
       },
       (handle) => handle.close(),
+      onProgress,
     );
     return { dirName, handles };
   } catch (err) {

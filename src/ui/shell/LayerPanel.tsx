@@ -1,9 +1,36 @@
 import { useState } from "react";
+import type { PreparingStep } from "../../datasource/conversion-dto";
 import type { BackgroundMode, ColorMode, CopcViewerState } from "../../state/useCopcViewer";
 // 規約2: `@tauri-apps/plugin-dialog`を直接importしない。DataSource側の関数
 // (`pickLocalFile`)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
 import { pickLocalFile } from "../../datasource/tauri";
 import { glassSurfaceClass } from "./glass";
+
+/**
+ * M4-11(`TaskSheets/M4-import-and-conversion.md`): Web版の「準備」段階
+ * (ロック取得・古い一時ファイルの掃除・一時ファイルを開く・出力ファイルを
+ * 開く・ヘッダー読み込み・展開用Workerの起動)の各ステップを文言にする。
+ * 「変換を準備しています…」という固定文言の代わりに表示することで、
+ * 所有者の実機で次に「準備中のまま止まってタブが落ちる」ことが起きたとき、
+ * どのステップで止まったかを報告してもらえるようにする(目的。
+ * `src/datasource/copc.worker.ts`の`reportPreparing`が送る)。
+ */
+function preparingStepLabel(preparing: PreparingStep): string {
+  switch (preparing.step) {
+    case "acquiringLock":
+      return "変換のロックを取得しています…";
+    case "cleaningStaleScratch":
+      return "古い一時ファイルを掃除しています…";
+    case "openingScratchFiles":
+      return `一時ファイルを開いています(${preparing.opened}/${preparing.total})…`;
+    case "openingOutputFile":
+      return "出力ファイルを開いています…";
+    case "readingHeader":
+      return "ヘッダーを読み込んでいます…";
+    case "startingDecompressWorkers":
+      return `展開用のWorkerを起動しています(${preparing.started}/${preparing.total})…`;
+  }
+}
 
 const BACKGROUND_MODE_LABELS: Record<BackgroundMode, string> = {
   "solid-dark": "単色(暗)",
@@ -148,6 +175,8 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
               <div className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10">
                 {viewer.conversionProgress === null ? (
                   <p className="opacity-70">変換を準備しています…</p>
+                ) : viewer.conversionProgress.phase === "preparing" ? (
+                  <p className="opacity-70">{preparingStepLabel(viewer.conversionProgress.preparing)}</p>
                 ) : viewer.conversionProgress.phase === "reading" ? (
                   <>
                     <p className="opacity-70">

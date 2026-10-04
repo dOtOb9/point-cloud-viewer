@@ -123,6 +123,23 @@ describe("openHandlePool", () => {
     expect(closed).toEqual([0, 1]);
   });
 
+  it("M4-11: onProgressを渡すと、ハンドルを開くたびに(開いた数/総数)で呼ばれる", async () => {
+    const progress: Array<[number, number]> = [];
+    await openHandlePool(
+      3,
+      async (i) => ({ id: i }),
+      () => {
+        throw new Error("成功経路ではcloseOneは呼ばれないはず");
+      },
+      (opened, total) => progress.push([opened, total]),
+    );
+    expect(progress).toEqual([
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ]);
+  });
+
   it("後始末(closeOne)自体が失敗しても、残りのハンドルを閉じ続ける", async () => {
     const closed: number[] = [];
     const failure = new Error("作成失敗");

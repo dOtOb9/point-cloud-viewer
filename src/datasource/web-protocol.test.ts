@@ -66,19 +66,26 @@ describe("buildOpenFileRequest / buildOpenUrlRequest / buildReadNodeRequest", ()
 describe("buildConvertStartRequest / buildConvertCancelRequest", () => {
   it("既定のmaxPointsPerNodeでconvertStartリクエストを組み立てる", () => {
     const file = new File([new Uint8Array([1, 2, 3])], "raw.laz");
-    const req = buildConvertStartRequest(10, file);
+    const req = buildConvertStartRequest(10, file, false);
     expect(req).toEqual({
       type: "convertStart",
       id: 10,
       file,
       maxPointsPerNode: DEFAULT_MAX_POINTS_PER_NODE,
+      isMobile: false,
     });
   });
 
   it("maxPointsPerNodeを明示的に指定できる", () => {
     const file = new File([new Uint8Array([1])], "raw.las");
-    const req = buildConvertStartRequest(11, file, 5_000);
+    const req = buildConvertStartRequest(11, file, false, 5_000);
     expect(req.maxPointsPerNode).toBe(5_000);
+  });
+
+  it("isMobileをそのまま伝える(M4-11: モバイルでは展開用Workerの数を抑える)", () => {
+    const file = new File([new Uint8Array([1])], "raw.las");
+    const req = buildConvertStartRequest(13, file, true);
+    expect(req.isMobile).toBe(true);
   });
 
   it("convertCancelリクエストを組み立てる", () => {

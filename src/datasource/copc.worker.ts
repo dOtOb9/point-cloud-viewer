@@ -33,6 +33,7 @@ import init, {
   WasmCopcFile,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
+import type { PreparingStepDto } from "./conversion-dto";
 import { decompressWorkerCountFor, pointRangesFor } from "./decompress-partition";
 import type { DecompressRequest, DecompressResponse } from "./laz-decompress.worker";
 import * as opfs from "./opfs";
@@ -137,7 +138,7 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         handleReadNode(request.id, request.key, request.generation);
         return;
       case "convertStart":
-        await handleConvertStart(request.id, request.file, request.maxPointsPerNode);
+        await handleConvertStart(request.id, request.file, request.maxPointsPerNode, request.isMobile);
         return;
     }
   } catch (err) {
@@ -261,10 +262,14 @@ async function runParallelReadPhase(
   totalPoints: number,
   workerCount: number,
   onProgress: (pointsRead: number) => void,
+  // M4-11: 準備段階の「展開用Workerを起動しています(i/N)」を画面に出すための
+  // コールバック(省略可能。呼ばれるたびに起動済みのWorker数を渡す)。
+  onWorkerStarting?: (started: number) => void,
 ): Promise<"done" | "cancelled"> {
   const ranges = pointRangesFor(totalPoints, workerCount);
   const entries = ranges.map((range, index) => {
     const worker = spawnDecompressWorker();
+    onWorkerStarting?.(index + 1);
     const promise = new Promise<ArrayBuffer>((resolve, reject) => {
       activeDecompressWorkers.push({ worker, reject });
       worker.onmessage = (event: MessageEvent<DecompressResponse>) => {
@@ -319,6 +324,19 @@ function suggestedFileNameFor(sourceFileName: string): string {
   return `${withoutExtension}.copc.laz`;
 }
 
+/** 準備段階(M4-11)の進捗を1つ送る。`src/ui/shell/LayerPanel.tsx`が
+ *  「変換を準備しています…」の代わりにステップ名を表示する(所有者の実機で
+ *  「準備中のまま止まってタブが落ちる」不具合の調査のため。次に落ちたとき、
+ *  どのステップで止まったか所有者が報告できるようにするのが目的。
+ *  `TaskSheets/M4-import-and-conversion.md`のM4-11参照)。 */
+function reportPreparing(id: number, preparing: PreparingStepDto): void {
+  scope.postMessage({
+    type: "convert-progress",
+    id,
+    progress: { phase: "preparing", preparing },
+  });
+}
+
 /**
  * 変換を1つに限る。Web Locks(`opfs.withConversionLock`)が取れなければ、
  * 実際の変換(`runConversion`)は一切始めず「別のタブで変換中です」と知らせる
@@ -326,9 +344,15 @@ function suggestedFileNameFor(sourceFileName: string): string {
  * `createSyncAccessHandle`が「Access Handles cannot be created if there is
  * another open Access Handle...」で失敗していた)。
  */
-async function handleConvertStart(id: number, file: File, maxPointsPerNode: number): Promise<void> {
+async function handleConvertStart(
+  id: number,
+  file: File,
+  maxPointsPerNode: number,
+  isMobile: boolean,
+): Promise<void> {
+  reportPreparing(id, { step: "acquiring_lock" });
   const outcome = await opfs.withConversionLock(navigator.locks, () =>
-    runConversion(id, file, maxPointsPerNode),
+    runConversion(id, file, maxPointsPerNode, isMobile),
   );
   if (outcome.kind === "busy") {
     scope.postMessage({
@@ -340,7 +364,12 @@ async function handleConvertStart(id: number, file: File, maxPointsPerNode: numb
   }
 }
 
-async function runConversion(id: number, file: File, maxPointsPerNode: number): Promise<void> {
+async function runConversion(
+  id: number,
+  file: File,
+  maxPointsPerNode: number,
+  isMobile: boolean,
+): Promise<void> {
   activeConvertId = id;
   convertCancelRequested = false;
 
@@ -361,6 +390,7 @@ async function runConversion(id: number, file: File, maxPointsPerNode: number): 
     // ディレクトリを作り始めている途中を誤って消す心配がない
     // (`opfs.cleanupStaleScratchDirs`のドキュメント参照)。掃除自体が
     // 失敗しても変換は試みる。
+    reportPreparing(id, { step: "cleaning_stale_scratch" });
     try {
       await opfs.cleanupStaleScratchDirs();
     } catch {
@@ -368,21 +398,31 @@ async function runConversion(id: number, file: File, maxPointsPerNode: number): 
     }
 
     const poolSize = opfsScratchPoolSize();
-    const pool = await opfs.createScratchPool(poolSize);
+    const pool = await opfs.createScratchPool(poolSize, (opened, total) => {
+      reportPreparing(id, { step: "opening_scratch_files", opened, total });
+    });
     scratchDirName = pool.dirName;
     scratchHandles = pool.handles;
+    reportPreparing(id, { step: "opening_output_file" });
     outputHandle = await opfs.createOutputHandle(outputName);
 
+    reportPreparing(id, { step: "reading_header" });
     converter = new WasmConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
 
     // 読み込み段階: 入力が大きく、コアが複数あれば展開Workerに分担させる
     // (M4-7)。それ以外は今までどおり`feed`の逐次バッチループ
     // (小さい入力・単一コア環境ではWorker起動のオーバーヘッドの方が
     // 大きいため。`decompressWorkerCountFor`のドキュメント参照)。
+    // M4-11: モバイルでは展開用Workerの数を抑える
+    // (`decompressWorkerCountFor`の`isMobile`引数、`decompress-partition.ts`の
+    // ドキュメント参照。各展開Workerは独立したwasmモジュール+ヒープ+
+    // 担当範囲ぶんのシリアライズ済みバッファを保持するため、モバイルでは
+    // 追加のWorkerを増やさない方へ倒す)。
     const totalPoints = converter.totalPoints();
     const workerCount = decompressWorkerCountFor(totalPoints, {
       hardwareConcurrency:
         typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined,
+      isMobile,
     });
     const reportReadingProgress = (pointsRead: number) => {
       scope.postMessage({
@@ -393,7 +433,17 @@ async function runConversion(id: number, file: File, maxPointsPerNode: number): 
     };
 
     if (workerCount > 1) {
-      const outcome = await runParallelReadPhase(converter, file, totalPoints, workerCount, reportReadingProgress);
+      const reportWorkerStarting = (started: number) => {
+        reportPreparing(id, { step: "starting_decompress_workers", started, total: workerCount });
+      };
+      const outcome = await runParallelReadPhase(
+        converter,
+        file,
+        totalPoints,
+        workerCount,
+        reportReadingProgress,
+        reportWorkerStarting,
+      );
       if (outcome === "cancelled") {
         scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
         return;

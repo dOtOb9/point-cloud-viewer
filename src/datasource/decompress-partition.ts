@@ -35,6 +35,12 @@ export function pointRangesFor(totalPoints: number, workerCount: number): PointR
 export interface DecompressWorkerCountOptions {
   /** `navigator.hardwareConcurrency`相当。取得できない環境では`undefined`。 */
   hardwareConcurrency: number | undefined;
+  /** `src/renderer/device-profile.ts`の`isMobileDevice`が返す判定(M4-11)。
+   *  メインスレッドで求めた値を渡す想定(`decompressWorkerCountFor`の
+   *  呼び出し元である`copc.worker.ts`のドキュメント参照。Worker内では
+   *  `matchMedia`が使えずタッチUIの判定ができないため、ここでは
+   *  再判定しない)。 */
+  isMobile: boolean;
 }
 
 /**
@@ -63,8 +69,45 @@ export const PARALLEL_MIN_POINTS = 500_000;
 export const MAX_DECOMPRESS_WORKERS = 8;
 
 /**
+ * モバイルで立てる展開Workerの数の上限(M4-11、`TaskSheets/
+ * M4-import-and-conversion.md`)。**1にした(=追加の展開Workerを1つも
+ * 立てず、既存の`feed`逐次バッチループにフォールバックする)。**
+ *
+ * 根拠(所有者の実機で「準備中のまま止まってタブが落ちる」不具合の調査):
+ *
+ * - 展開Worker1個につき**独立したwasmモジュールのインスタンス化+ヒープ**
+ *   が必要になる(コーディネーターの見立てどおり)。デスクトップ(開発機
+ *   20論理コア、RAM 31.8GB)で正しかった判断がモバイル(所有者の実機は
+ *   RAM 4GB、`device-profile.ts`の`MOBILE_FALLBACK_DEVICE_MEMORY_GIB`参照)
+ *   でも正しいとは限らない
+ * - **さらに重要な点(このタスクで`crates/pcv-wasm/src/convert.rs`の
+ *   `decompress_point_range`を読んで判明): 各展開Workerは、担当する点
+ *   範囲**全体**のシリアライズ済みレコードを`Vec<u8>`として
+ *   メモリに貯めてから`postMessage`で返す(`out.with_capacity(to_read *
+ *   record_width)`)。** 1点あたり約43〜57バイト(`vendor/copc-writer/
+ *   tests/scratch_read_is_bounded.rs`参照)なので、例えば数千万点の
+ *   入力を2分割しただけでも1Workerあたり数百MB〜1GB超のバッファになりうる。
+ *   これは「Workerの数だけ固定コストがかかる」話ではなく、**Workerの数が
+ *   増えるほど1個あたりの負担は減るが、合計のピークは点数にほぼ比例して
+ *   残る**ため、モバイルでは追加のWorkerを増やすメリットよりメモリ不足の
+ *   リスクの方が大きいと判断した
+ * - 「展開用のWorkerを1つも追加で立てない(変換用のWorkerだけで逐次に
+ *   展開する)」という選択肢も検討したが、`decompressWorkerCountFor`が
+ *   1を返すと呼び出し側(`copc.worker.ts`)は既にその経路(`feed`の
+ *   逐次バッチループ、追加Workerを一切起動しない)にフォールバックする
+ *   設計になっていたため、値を1にするだけでちょうどその選択肢を選んだ
+ *   ことになる(新しい分岐を増やさずに済んだ)
+ *
+ * **未検証の初期値。** 実機で確かめてもらい、クラッシュしなくなったことを
+ * 確認できたら2以上に緩める余地を残す値として、ここにコメントごと置いてある。
+ */
+export const MAX_DECOMPRESS_WORKERS_MOBILE = 1;
+
+/**
  * 立てる展開Workerの数を決める。`totalPoints`が`PARALLEL_MIN_POINTS`未満、
- * または`hardwareConcurrency`が不明・1以下なら1(直列)を返す。
+ * または`hardwareConcurrency`が不明・1以下なら1(直列)を返す。モバイルでは
+ * `MAX_DECOMPRESS_WORKERS_MOBILE`(=1)で頭打ちになる(上記ドキュメント参照。
+ * 実質的に追加の展開Workerを一切立てない)。
  */
 export function decompressWorkerCountFor(
   totalPoints: number,
@@ -75,5 +118,6 @@ export function decompressWorkerCountFor(
     options.hardwareConcurrency !== undefined && options.hardwareConcurrency > 0
       ? options.hardwareConcurrency
       : 1;
-  return Math.max(1, Math.min(available, MAX_DECOMPRESS_WORKERS));
+  const cap = options.isMobile ? MAX_DECOMPRESS_WORKERS_MOBILE : MAX_DECOMPRESS_WORKERS;
+  return Math.max(1, Math.min(available, cap));
 }

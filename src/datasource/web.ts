@@ -175,8 +175,13 @@ export class WebSource implements DataSource {
    * デスクトップ版(`src-tauri/src/conversion.rs`)と同じ4分岐
    * (`alreadyCopc`はWeb側では呼び出し前に済んでいるため出さない)に加え、
    * Web版だけの`opfsUnavailable`(OPFSが使えないブラウザ)を返しうる。
+   *
+   * `isMobile`はM4-11(`TaskSheets/M4-import-and-conversion.md`)で追加した
+   * 引数。呼び出し側(`src/state/useCopcViewer.ts`、`defaultRenderSettings`
+   * から既に求めてある値)がメインスレッドで判定した結果をそのまま渡す
+   * (Worker内では`matchMedia`が使えずタッチUIの判定ができないため)。
    */
-  async startConversion(file: File): Promise<ConversionOutcome> {
+  async startConversion(file: File, isMobile: boolean): Promise<ConversionOutcome> {
     const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
 
     const cached = await opfs.findCachedOutput(fingerprint);
@@ -200,7 +205,7 @@ export class WebSource implements DataSource {
 
     const id = this.nextRequestId++;
     this.activeConvertId = id;
-    this.worker.postMessage(buildConvertStartRequest(id, file));
+    this.worker.postMessage(buildConvertStartRequest(id, file, isMobile));
     return { kind: "converting" };
   }
 

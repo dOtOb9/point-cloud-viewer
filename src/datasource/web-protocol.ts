@@ -44,6 +44,12 @@ export interface ConvertStartRequest {
   id: number;
   file: File;
   maxPointsPerNode: number;
+  /** M4-11(`TaskSheets/M4-import-and-conversion.md`): モバイルでは展開用
+   *  Workerの数を抑える(`decompress-partition.ts`の`decompressWorkerCountFor`
+   *  参照)。メインスレッド(`matchMedia`が使える)で判定した値をそのまま
+   *  渡す(WorkerにはタッチUIの判定手段=`matchMedia`が無いため、Worker内で
+   *  再判定できない)。 */
+  isMobile: boolean;
 }
 
 /**
@@ -175,9 +181,10 @@ export const DEFAULT_MAX_POINTS_PER_NODE = 100_000;
 export function buildConvertStartRequest(
   id: number,
   file: File,
+  isMobile: boolean,
   maxPointsPerNode: number = DEFAULT_MAX_POINTS_PER_NODE,
 ): ConvertStartRequest {
-  return { type: "convertStart", id, file, maxPointsPerNode };
+  return { type: "convertStart", id, file, maxPointsPerNode, isMobile };
 }
 
 export function buildConvertCancelRequest(id: number): ConvertCancelRequest {

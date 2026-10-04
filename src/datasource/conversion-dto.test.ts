@@ -59,4 +59,51 @@ describe("toConversionProgress", () => {
     const dto: ConversionProgressDto = { phase: "post_processing", elapsed_secs: 42.0 };
     expect(toConversionProgress(dto)).toEqual({ phase: "postProcessing", elapsedSecs: 42.0 });
   });
+
+  // M4-11(TaskSheets/M4-import-and-conversion.md): Web版だけが送る「準備」
+  // 段階の各ステップ。`src/datasource/copc.worker.ts`が送るDTOの形を
+  // そのまま確認する。
+  describe("preparing(Web版だけの拡張)", () => {
+    it("acquiring_lockをacquiringLockへ変換する", () => {
+      const dto: ConversionProgressDto = { phase: "preparing", preparing: { step: "acquiring_lock" } };
+      expect(toConversionProgress(dto)).toEqual({
+        phase: "preparing",
+        preparing: { step: "acquiringLock" },
+      });
+    });
+
+    it("opening_scratch_filesのopened/totalをそのまま伝える", () => {
+      const dto: ConversionProgressDto = {
+        phase: "preparing",
+        preparing: { step: "opening_scratch_files", opened: 12, total: 256 },
+      };
+      expect(toConversionProgress(dto)).toEqual({
+        phase: "preparing",
+        preparing: { step: "openingScratchFiles", opened: 12, total: 256 },
+      });
+    });
+
+    it("starting_decompress_workersのstarted/totalをそのまま伝える", () => {
+      const dto: ConversionProgressDto = {
+        phase: "preparing",
+        preparing: { step: "starting_decompress_workers", started: 2, total: 4 },
+      };
+      expect(toConversionProgress(dto)).toEqual({
+        phase: "preparing",
+        preparing: { step: "startingDecompressWorkers", started: 2, total: 4 },
+      });
+    });
+
+    it("cleaning_stale_scratch・opening_output_file・reading_headerをそれぞれ変換する", () => {
+      expect(
+        toConversionProgress({ phase: "preparing", preparing: { step: "cleaning_stale_scratch" } }),
+      ).toEqual({ phase: "preparing", preparing: { step: "cleaningStaleScratch" } });
+      expect(
+        toConversionProgress({ phase: "preparing", preparing: { step: "opening_output_file" } }),
+      ).toEqual({ phase: "preparing", preparing: { step: "openingOutputFile" } });
+      expect(
+        toConversionProgress({ phase: "preparing", preparing: { step: "reading_header" } }),
+      ).toEqual({ phase: "preparing", preparing: { step: "readingHeader" } });
+    });
+  });
 });

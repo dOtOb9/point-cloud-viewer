@@ -38,16 +38,64 @@ export function toConversionOutcome(dto: ConversionOutcomeDto): ConversionOutcom
   }
 }
 
-/** `ConversionProgressEvent`(Rust)のJSON表現。 */
+/**
+ * M4-11(`TaskSheets/M4-import-and-conversion.md`): Web版の「準備」段階の
+ * 各ステップ。所有者の実機(スマホ)で変換が「準備しています…」のまま止まり
+ * タブが落ちる不具合の調査のため、準備の各ステップを画面に出せるようにする
+ * (次に落ちたとき、どこで止まったか所有者が報告できるようにするのが目的)。
+ * デスクトップ・Android(Rust側`src-tauri/src/conversion.rs`)はこの段階を
+ * 送らない(準備が軽いため)。Web版(`src/datasource/copc.worker.ts`)だけが
+ * 送る、Web版だけの拡張。
+ */
+export type PreparingStepDto =
+  | { step: "acquiring_lock" }
+  | { step: "cleaning_stale_scratch" }
+  | { step: "opening_scratch_files"; opened: number; total: number }
+  | { step: "opening_output_file" }
+  | { step: "reading_header" }
+  | { step: "starting_decompress_workers"; started: number; total: number };
+
+export type PreparingStep =
+  | { step: "acquiringLock" }
+  | { step: "cleaningStaleScratch" }
+  | { step: "openingScratchFiles"; opened: number; total: number }
+  | { step: "openingOutputFile" }
+  | { step: "readingHeader" }
+  | { step: "startingDecompressWorkers"; started: number; total: number };
+
+function toPreparingStep(dto: PreparingStepDto): PreparingStep {
+  switch (dto.step) {
+    case "acquiring_lock":
+      return { step: "acquiringLock" };
+    case "cleaning_stale_scratch":
+      return { step: "cleaningStaleScratch" };
+    case "opening_scratch_files":
+      return { step: "openingScratchFiles", opened: dto.opened, total: dto.total };
+    case "opening_output_file":
+      return { step: "openingOutputFile" };
+    case "reading_header":
+      return { step: "readingHeader" };
+    case "starting_decompress_workers":
+      return { step: "startingDecompressWorkers", started: dto.started, total: dto.total };
+  }
+}
+
+/** `ConversionProgressEvent`(Rust)のJSON表現。`preparing`はWeb版だけが送る
+ *  (上記`PreparingStepDto`参照)。 */
 export type ConversionProgressDto =
+  | { phase: "preparing"; preparing: PreparingStepDto }
   | { phase: "reading"; points_read: number; total_points: number; elapsed_secs: number }
   | { phase: "post_processing"; elapsed_secs: number };
 
 export type ConversionProgress =
+  | { phase: "preparing"; preparing: PreparingStep }
   | { phase: "reading"; pointsRead: number; totalPoints: number; elapsedSecs: number }
   | { phase: "postProcessing"; elapsedSecs: number };
 
 export function toConversionProgress(dto: ConversionProgressDto): ConversionProgress {
+  if (dto.phase === "preparing") {
+    return { phase: "preparing", preparing: toPreparingStep(dto.preparing) };
+  }
   if (dto.phase === "reading") {
     return {
       phase: "reading",
