@@ -40,7 +40,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.1",
-    "ui-forge": "github:dOtOb9/ui-forge#19f02462ef7af49e7d07dbe268fd6d3fb986bdc2",
+    "ui-forge": "github:dOtOb9/ui-forge#v0.1.0",
     "vite": "^8.0.16",
     "vitest": "^5.0.1"
   }
