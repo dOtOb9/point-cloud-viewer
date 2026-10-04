@@ -1,0 +1,7 @@
+# ADR-0014: ui-forge の .ui は「同じ内容なら必ず同じテキスト（LF）」に正規化される
+# （ui-forge ADR-0001「書き出しは正規化する」）。この PC は core.autocrlf=true のため、
+# 指定しないと checkout / rebase のたびに CRLF に変換され、`npm run ui:check` が
+# 「正規化されていません」で落ちる（CI の Linux では起きないので気づきにくい）。
+# 生成物も ui-forge が LF で書き出すので、同じ理由で揃える。
+*.ui text eol=lf
+*.generated.tsx text eol=lf
