@@ -38,19 +38,25 @@ thiserror = "2"
 # この分割は「ルート直下のオクタントごとに独立」という構造なので、
 # `parallel-lod`フィーチャ(rayon使用。デスクトップ・Androidのみ)で並列化した。
 #
-# `parallel-compress`(ノードごとのLAZ圧縮。copc-writerにupstreamから元々あった
-# 実装)は有効にしていない。実測したところネイティブの出力がバイト単位で
-# 変わってしまう(ファイルサイズ自体が数バイト違う。連続した1本の圧縮器で
-# チャンク境界ごとに`finish_current_chunk()`する場合と、ノードごとに新しい
-# 圧縮器を作って独立に圧縮する場合とで、LAZの圧縮バイト列そのものが異なる。
-# `laz`クレート内部の挙動差が原因と見られるが、このタスクでは深追いしていない)。
-# 「バイト単位の一致を保てない場合は期待値を書き換えずに止まる」という約束に
-# 従い、このフィーチャは使わないことにした。詳細はタスクシートのM4-8参照。
+# M4-10(TaskSheets/M4-import-and-conversion.md): M4-8では`parallel-compress`
+# (ノードごとのLAZ圧縮。copc-writerにupstreamから元々あった実装)を有効にしていなかった。
+# 実測したところネイティブの出力がバイト単位で変わる(ファイルサイズ自体が数バイト違う。
+# 連続した1本の圧縮器でチャンク境界ごとに`finish_current_chunk()`する場合と、
+# ノードごとに新しい圧縮器を作って独立に圧縮する場合とで、LAZの圧縮バイト列そのものが
+# 異なる。`laz`クレート内部の挙動差が原因と見られる)ため、当時の「バイト単位の一致を
+# 保てない場合は期待値を書き換えずに止まる」という約束に従って見送っていた。
+#
+# M4-10で、所有者がこの条件を「点の集合が一致すること」へ緩めることを承認した
+# (2026-10-03)。バイト列の差分は並べ替え・チャンク区切り・圧縮の詳細だけで、
+# 点の内容(座標・強度・分類・色の多重集合、ノード構成)は変わらないことを確認した
+# (`vendor/copc-writer/PATCH.md`のM4-10追記、`crates/pcv-convert/tests/
+# streaming_conversion.rs`の`parallel_compress_point_set_matches_sequential`参照)ため、
+# デスクトップ・Androidで`parallel-compress`を有効にした。
 #
 # `crates/pcv-wasm`は別のワークスペース(このCargo.tomlとは独立したビルドグラフ)で
 # `default-features = false`のまま`copc-writer`に依存しており、このフィーチャの
 # 影響を一切受けない(wasm32向けビルドに`rayon`が入り込むことはない)。
-copc-writer = { version = "0.9.0", features = ["parallel-lod"] }
+copc-writer = { version = "0.9.0", features = ["parallel-lod", "parallel-compress"] }
 
 # M4-4: E57/PLY/PCD → LAS のインポータ(src/import/)。選定理由はADR-0008に追記。
 e57 = "0.11.13"

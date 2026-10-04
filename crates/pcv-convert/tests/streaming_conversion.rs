@@ -321,6 +321,15 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// M4-10(`TaskSheets/M4-import-and-conversion.md`)追記: `pcv-convert`の既定が
+/// `parallel-compress`を有効にしたため(`Cargo.toml`参照)、このテストは
+/// `CopcWriterParams::with_parallel_node_compression(false)`で**逐次の圧縮経路を
+/// 明示的に強制して**実行する。これにより、`cargo test --workspace --release`を
+/// 1回実行するだけで、逐次経路のバイト一致(このテスト)と並列経路の点集合一致
+/// (`parallel_compress_point_set_matches_sequential`)の両方を検証できる
+/// (`vendor/copc-writer`を異なるフィーチャで複数回ビルドし直す必要が無い)。
+/// 期待ハッシュ自体は、`parallel_node_compression`を導入する前(M4-8時点)と
+/// 同じ値のまま変わっていない(逐次のアルゴリズムは変更していないため)。
 #[test]
 fn native_output_hash_matches_recorded_value() {
     let dir = tempfile::tempdir().unwrap();
@@ -335,7 +344,7 @@ fn native_output_hash_matches_recorded_value() {
         &source,
         &output,
         &spill_dir,
-        &CopcWriterParams::new(50),
+        &CopcWriterParams::new(50).with_parallel_node_compression(false),
         &not_cancelled(),
         no_progress_reporting,
     )
@@ -357,5 +366,154 @@ fn native_output_hash_matches_recorded_value() {
         "出力のFNV-1aハッシュが記録値と食い違う(バイト長={}) \
          (NativeScratchFsかcopc-writer本体の出力が変わった可能性がある)",
         bytes.len()
+    );
+}
+
+/// `pcv-core`の`NodeBuffer`(ヘッダ32B+点20B、`pcv_core::node_format`の形式)を
+/// デコードした1点。座標はノード原点(ヘッダのf32。`encode_node`のドキュメント
+/// 参照)からの相対座標を世界座標へ復元し、丸め誤差ではなく値そのものを
+/// 比較できるようビット列として持つ(f64はEq/Ordを実装しないため)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct DecodedPoint {
+    x_bits: u64,
+    y_bits: u64,
+    z_bits: u64,
+    color: [u8; 4],
+    intensity: u16,
+    classification: u8,
+}
+
+/// `pcv_core::node_format`のバイナリ形式(`crates/pcv-core/src/node_format.rs`の
+/// モジュールドキュメント参照)をそのまま読み、1ノード分の点を全てデコードする。
+fn decode_node_points(buf: &pcv_core::NodeBuffer) -> Vec<DecodedPoint> {
+    let bytes = &buf.bytes;
+    let origin_x = f32::from_le_bytes(bytes[16..20].try_into().unwrap());
+    let origin_y = f32::from_le_bytes(bytes[20..24].try_into().unwrap());
+    let origin_z = f32::from_le_bytes(bytes[24..28].try_into().unwrap());
+
+    let mut points = Vec::with_capacity(buf.point_count as usize);
+    for i in 0..buf.point_count as usize {
+        let base = pcv_core::HEADER_BYTES + i * pcv_core::POINT_STRIDE;
+        let rel_x = f32::from_le_bytes(bytes[base..base + 4].try_into().unwrap());
+        let rel_y = f32::from_le_bytes(bytes[base + 4..base + 8].try_into().unwrap());
+        let rel_z = f32::from_le_bytes(bytes[base + 8..base + 12].try_into().unwrap());
+        let color = [
+            bytes[base + 12],
+            bytes[base + 13],
+            bytes[base + 14],
+            bytes[base + 15],
+        ];
+        let intensity = u16::from_le_bytes(bytes[base + 16..base + 18].try_into().unwrap());
+        let classification = bytes[base + 18];
+
+        let x = f64::from(origin_x) + f64::from(rel_x);
+        let y = f64::from(origin_y) + f64::from(rel_y);
+        let z = f64::from(origin_z) + f64::from(rel_z);
+        points.push(DecodedPoint {
+            x_bits: x.to_bits(),
+            y_bits: y.to_bits(),
+            z_bits: z.to_bits(),
+            color,
+            intensity,
+            classification,
+        });
+    }
+    points
+}
+
+/// 変換済みのCOPCファイルを`pcv-core`で開き、hierarchyの全ノードをキーごとに
+/// デコードして返す。
+fn read_all_points_by_key(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<pcv_core::NodeKey, Vec<DecodedPoint>> {
+    let mut file = pcv_core::CopcFile::open(path).expect("pcv-coreで開けなかった");
+    let keys: Vec<pcv_core::NodeKey> = file.hierarchy().nodes().map(|node| node.key).collect();
+    let mut by_key = std::collections::BTreeMap::new();
+    for key in keys {
+        let buf = file.read_node(key).expect("ノード読み出しに失敗した");
+        by_key.insert(key, decode_node_points(&buf));
+    }
+    by_key
+}
+
+/// M4-10(`TaskSheets/M4-import-and-conversion.md`): ノードごとのLAZ圧縮の
+/// 並列実装(`parallel-compress`)を有効にすると、出力はバイト単位では
+/// `native_output_hash_matches_recorded_value`と一致しなくなる(チャンクの
+/// 並び・圧縮の区切り・hierarchyのオフセットが変わるため。
+/// `vendor/copc-writer/PATCH.md`のM4-10追記参照)。
+///
+/// 所有者が「バイト単位の一致」という受け入れ条件を「点の集合が一致すること」へ
+/// 緩めることを承認した(2026-10-03)。このテストはその条件を確かめる:
+/// 同じ合成入力を逐次(`parallel_node_compression(false)`)・並列
+/// (`parallel_node_compression(true)`。`pcv-convert`の既定と同じ)それぞれで
+/// 変換し、`pcv-core`で両方を開いて、(1)ノード構成(キーごとの点数)が一致する
+/// こと、(2)全ノードを合わせた点の多重集合(座標・強度・分類・色)が一致する
+/// ことを確認する。
+#[test]
+fn parallel_compress_point_set_matches_sequential() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("synthetic_3d.las");
+    // 並列圧縮のバッチ(既定で`2 * rayon::current_num_threads()`ノードずつ)が
+    // 複数回まわる規模にするため、ハッシュ一致テスト(1,000点)より多くする。
+    write_synthetic_las_scattered_in_3d(&source, 50_000);
+
+    let sequential_output = dir.path().join("sequential.copc.laz");
+    let parallel_output = dir.path().join("parallel.copc.laz");
+    let spill_dir = dir.path().join("spill");
+    std::fs::create_dir_all(&spill_dir).unwrap();
+
+    convert_path(
+        &source,
+        &sequential_output,
+        &spill_dir,
+        &CopcWriterParams::new(50).with_parallel_node_compression(false),
+        &not_cancelled(),
+        no_progress_reporting,
+    )
+    .expect("逐次経路の変換に失敗した");
+
+    // spill_dirの一時ファイルは変換のたびに後片付けされるので使い回せる。
+    convert_path(
+        &source,
+        &parallel_output,
+        &spill_dir,
+        &CopcWriterParams::new(50).with_parallel_node_compression(true),
+        &not_cancelled(),
+        no_progress_reporting,
+    )
+    .expect("並列経路の変換に失敗した");
+
+    let sequential_by_key = read_all_points_by_key(&sequential_output);
+    let parallel_by_key = read_all_points_by_key(&parallel_output);
+
+    let sequential_counts: std::collections::BTreeMap<pcv_core::NodeKey, usize> = sequential_by_key
+        .iter()
+        .map(|(key, points)| (*key, points.len()))
+        .collect();
+    let parallel_counts: std::collections::BTreeMap<pcv_core::NodeKey, usize> = parallel_by_key
+        .iter()
+        .map(|(key, points)| (*key, points.len()))
+        .collect();
+    assert_eq!(
+        sequential_counts, parallel_counts,
+        "ノード構成(キーごとの点数)が逐次・並列で食い違う"
+    );
+    assert!(
+        sequential_counts.len() > 1,
+        "テスト不備: 1ノードしかできていない(複数ノードに分かれる規模にしたはず)"
+    );
+
+    let mut sequential_all: Vec<DecodedPoint> = sequential_by_key.into_values().flatten().collect();
+    let mut parallel_all: Vec<DecodedPoint> = parallel_by_key.into_values().flatten().collect();
+    assert_eq!(
+        sequential_all.len(),
+        parallel_all.len(),
+        "総点数が逐次・並列で食い違う"
+    );
+    sequential_all.sort();
+    parallel_all.sort();
+    assert_eq!(
+        sequential_all, parallel_all,
+        "点の多重集合(座標・強度・分類・色)が逐次・並列で食い違う"
     );
 }
