@@ -203,3 +203,12 @@ ROADMAP.md は変更していない（機能の変更ではないため、タス
    更新され、`npm run tauri dev`（または `npm run dev`）で見ているドックのラベルが
    変わることを確認する。確認後はラベルを元に戻し、`npm run ui:gen` を再実行して
    `Dock.generated.tsx` を元の内容に戻す。
+
+### 追記（Opus、2026-10-04）: タグへの切り替えと改行コード
+
+- ui-forge の `v0.1.0` が出たので、依存を `github:dOtOb9/ui-forge#v0.1.0` に切り替えた。
+  `v0.1.0` には F2（エディタ）も入っている。生成物は変わらない（`ui:check` で確認）
+- origin/main の M4-8 などの上に rebase したところ、`core.autocrlf=true` のせいで `Dock.ui` が
+  CRLF で書き直され、`npm run ui:check` が「正規化されていません」で落ちた
+  （ui-forge の正規化は LF。CI の Linux では起きない）。`.gitattributes` で `*.ui` と
+  `*.generated.tsx` を常に LF にして解決した
