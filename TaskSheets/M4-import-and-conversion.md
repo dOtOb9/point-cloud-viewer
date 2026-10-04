@@ -2022,6 +2022,235 @@ alloc_guard.rs`(新規)・`crates/pcv-wasm/src/lib.rs`(panic hookのドキュメ
 
 ---
 
+## M4-6 追記4: 実機不具合「準備中のまま落ちる」の調査と対応(社内ではM4-11と呼んだ、2026-10-04、Sonnet)
+
+### 症状(所有者の実機、Android(Chrome)・iPhone 17e(Safari)の両方)
+
+LAS/LAZの変換を始めると「変換を準備しています…」で止まり、**そのあと
+落ちる**(タブが落ちる・再読み込みされる類いと見られるが、どこで何が
+起きているか所有者にも分からない状態だった)。
+
+### コーディネーターの見立て(3つの候補)
+
+「準備」の段階(最初の進捗が出る前)にやっていることのうち、スマホで
+重いもの:
+
+1. OPFSの一時ファイルのハンドルを約600個まとめて開く
+   (`opfsScratchPoolSize()`と`createScratchPool`)
+2. 展開用のWorkerを複数起動する(M4-7)。Workerごとにwasmモジュールを
+   読み込みインスタンス化する
+3. その他(Web Locksの取得、古い一時ディレクトリの掃除、`WasmConverter::new`)
+
+**実機で確認できないため、「直った」とは断言しない。** 以下は上記3点
+すべてに対処した内容と、その根拠(調査結果)である。
+
+### 1. 準備の各ステップを画面に出す(対応済み)
+
+`src/datasource/copc.worker.ts`の`reportPreparing`が、准備の各ステップ
+(ロックの取得・古い一時ディレクトリの掃除・一時ファイルを開く(何個中
+何個目か)・出力ファイルを開く・ヘッダーの読み込み・展開用Workerの起動
+(何個中何個目か))を`ConversionProgressDto`の新しい`preparing`フェーズ
+として送る(デスクトップ・Android側のRust実装はこのフェーズを送らない。
+Web版だけの拡張)。`src/ui/shell/LayerPanel.tsx`の`preparingStepLabel`が
+「変換を準備しています…」の代わりにステップ名を表示する。
+
+**目的は「直すこと」単独ではなく、次に落ちたときにどこで止まったかを
+所有者が報告できるようにすること。** 下記「所有者が確かめる手順」参照。
+
+### 2. OPFS一時ファイルプールの大きさを実測に基づいて減らす
+
+#### 調査: 同時に開く一時ファイルの最大数
+
+Web版は`copc-writer`を`parallel-lod`フィーチャ無し(逐次)でビルドしている
+(`crates/pcv-wasm/Cargo.toml`の`copc-writer`依存は`default-features =
+false`。`rayon`はwasm32で使えないため)。`vendor/copc-writer/src/lod.rs`の
+逐次版`assign`(読むだけで変更はしていない。`vendor/copc-writer/`は並行
+作業中の別エージェントの担当のため)を読むと、ある時点で開いている一時
+ファイルは次の3種類に限られる:
+
+1. 現在処理中のノードに至る**祖先**それぞれの`run.reader`(Rustの所有権
+   どおり、`assign`が値として受け取った`run`はその呼び出しがreturnする
+   まで保持され続ける)
+2. 祖先の各レベルで`partition_index_run`が返した最大8個の子のうち、
+   **まだ再帰していない兄弟**(そのレベルの`assign`が終わるまで保持)
+3. 現在のレベルで`partition_index_run`が新しく開いている**最大8個の
+   書き込み中パーティション**(1回の線形スキャンの間、データ次第で
+   8オクタント全部が同時に書き込み中になりうる)
+
+これに全体を通して開いたままの`order`書き込み用一時ファイル1個を加えると、
+深さ`D`まで降りた時点のピークの**理論上の上限は`8*(D+1)+1`**になる。
+`copc-writer`の深さの上限は30(`lod.rs`の`MAX_OCTREE_DEPTH`。そこまで
+深くなるのは同一座標の点が大量に重なるような病的なデータだけ)なので、
+`D=30`を代入すると**249**。
+
+この理論値を、8分木がちょうど指定した深さまでフル分岐する人工データ
+(`crates/pcv-wasm/tests/sequential_lod_open_files_bounded.rs`、新設。
+`vendor/copc-writer`には触れず、公開API`MemoryScratchFs`経由で測る)で
+実測して裏付けた:
+
+| 深さ | 0 | 1 | 2 | 3 | 5 | 8 | 12 | 16 |
+|---|---|---|---|---|---|---|---|---|
+| 実測ピーク | 5 | 11 | 19 | 26 | 40 | 61 | 89 | 117 |
+| 理論上限(`8*(D+1)+1`) | 9 | 17 | 25 | 33 | 49 | 73 | 105 | 137 |
+
+実測はおおよそ`7*深さ+5`で、理論上限を常に下回る(余裕がある側に外れている
+ことを実測で確認した。旧実装の「深さ上限30×8+予備」という見積もりは、
+この調査の理論値(249)と桁は同じだが根拠(なぜ×8なのか)を明記していな
+かったため、本タスクで再導出した)。
+
+#### 決定: プールの大きさを600→256へ
+
+`crates/pcv-wasm/src/opfs.rs`の`OPFS_SCRATCH_POOL_SIZE`を、理論値249に
+約3割の余裕を見て**256**にした(旧実装は600。約2.3倍の削減)。所有者の
+実機で「準備中」に時間がかかっていた一因(600個のOPFSハンドルを`await`
+しながら順番に開く)を減らすのがねらい。
+
+**プールを使い切った場合は、黙って壊れたファイルを作るのではなく分かる
+エラーを返す**(受け入れ条件)。既存の`create_temp`のエラーメッセージ
+(`OPFS一時ファイルの枠(N個)を使い切りました...`)を`take_free_pool_slot`
+という、`FileSystemSyncAccessHandle`に一切触れない純粋な関数として切り出し、
+ネイティブの`cargo test`で「空のプールから借りようとしたらエラーになり、
+プールサイズと要求元のラベルがメッセージに含まれること」を確認した
+(`crates/pcv-wasm/src/opfs.rs`の`#[cfg(test)]`)。
+
+### 3. 展開用Workerの数をモバイルで抑える
+
+#### 調査で分かったこと(当初の見立てより大きいコストだった)
+
+コーディネーターの見立ては「Workerごとにwasmモジュールを読み込み
+インスタンス化する」という固定コストだったが、`crates/pcv-wasm/src/
+convert.rs`の`decompress_point_range`を読むと、**各展開Workerは担当する
+点範囲「全体」のシリアライズ済みレコードを`Vec<u8>`としてメモリに
+貯めてから`postMessage`で返す**設計だった
+(`out = Vec::with_capacity(to_read * record_width)`)。1点あたり約
+43〜57バイト(`vendor/copc-writer/tests/scratch_read_is_bounded.rs`の
+実測値を参照。`copc_core::serialize_le`の幅は`spill`のレコード幅と同じ)。
+
+つまり、数千万点の入力を例えば2分割しただけでも、1Workerあたり数百MB〜
+1GB超のバッファになりうる。これは「Workerの数だけ固定コストがかかる」
+話ではなく、**Workerの数を増やすほど1個あたりの負担は減るが、合計の
+ピークは点数にほぼ比例して残る**という点で、M4-1が一度退けた「メモリが
+点数に比例する」問題がまた別の場所(展開Workerの出力バッファ)で形を
+変えて出ていたことになる。
+
+#### 決定: モバイルでは追加のWorkerを立てない(MAX_DECOMPRESS_WORKERS_MOBILE=1)
+
+`src/datasource/decompress-partition.ts`の`decompressWorkerCountFor`に
+`isMobile`を追加し、モバイルでは`MAX_DECOMPRESS_WORKERS_MOBILE`(=**1**)
+で頭打ちにした。`decompressWorkerCountFor`が1を返すと、呼び出し側
+(`copc.worker.ts`)は既存の「追加Workerを一切立てず、変換用Worker自身の
+`feed`で逐次に展開する」経路にそのままフォールバックする設計になっていた
+ため、**値を1にするだけで「Workerを1つも追加で立てない」という選択肢を
+選んだことになる**(新しい分岐を増やさずに済んだ)。
+
+1〜2の間で迷ったが、上記の調査(展開Workerのメモリコストが点数に比例し、
+固定コストより大きい)を踏まえ、**最も保守的な1を選んだ**。実機で
+クラッシュしなくなったことを確認できれば、2以上へ緩める余地を残す値として
+コメントに理由を書いてある(`decompress-partition.ts`参照)。
+
+`isMobile`は`device-profile.ts`の`isMobileDevice`(タッチ主体の判定=
+`matchMedia("(pointer: coarse)")`、または`navigator.deviceMemory`が
+4GiB以下)をメインスレッド(`useCopcViewer.ts`が既に持つ
+`deviceProfileDefaults.isMobile`)で求め、`ConvertStartRequest`で
+Workerへ渡す(Worker内には`matchMedia`が無くタッチUIの判定ができない
+ため、Worker内で再判定できない。`navigator.deviceMemory`が無いSafariでは
+`isMobileDevice`がタッチ主体の判定だけでモバイル扱いになる。
+`device-profile.ts`の既存のフォールバック設計どおり)。
+
+### 4. メモリの使い方の目安(推定、一部は静的に測定)
+
+実機のブラウザでの計測はできないため、以下は**推定、または静的な
+測定**であり、実行時のヒープ使用量の実測ではない。
+
+- **wasmモジュールの初期メモリ**: `src/wasm/pcv-wasm/pcv_wasm_bg.wasm`の
+  バイナリを直接パースして確認した(Node.jsで、`WebAssembly.instantiate`
+  せずにメモリセクション(section id 5)を読んだ)。**初期17ページ=
+  1,114,112バイト(1.06 MiB)、上限指定なし**(`flags=0`。成長は
+  wasm32の実務上の上限である約4GiBまで可能)。これは「Workerを1個
+  起動した直後、まだ何も変換していない時点」のベースラインであり、
+  実際の使用量はここから各種バッファ(下記)ぶん増える
+- **変換用Worker1個あたりの固定バッファ**: `READ_BUFFER_BYTES`(4MiB、
+  `BufReader`)+OPFSの`ReadCache`(4MiB固定、後処理段階でのみ使う)
+  ≈ 8MiB程度(ベースライン1.06MiBに加えて)
+- **展開用Worker1個あたりのバッファ**: 固定分(`READ_BUFFER_BYTES`
+  4MiB)に加え、上記3節で判明した**担当点数に比例する出力バッファ**
+  (1点あたり約43〜57バイト)。モバイルでは本タスクの対応により
+  このWorker自体を追加で立てない設定にした
+
+### 確認したコマンドと結果
+
+```
+$ cargo test --manifest-path crates/pcv-wasm/Cargo.toml
+19 passed(opfs::testsの新規2件を含む。unittests)
+2 passed(sequential_lod_open_files_bounded、新規)
+1 passed(memory_scratch_conversion)
+1 passed(buffered_file_reader_reduces_read_calls)
+2 passed(convert::tests、既存)
+
+$ cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check
+(差分無し)
+
+$ cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --all-targets -- -D warnings
+(pcv-wasm自身は警告0件。vendor/copc-writerの既知の警告のみ)
+
+$ cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+Finished(成功)
+
+$ cargo fmt --all -- --check
+$ cargo clippy --workspace --all-targets -- -D warnings
+$ cargo test --workspace --release
+いずれも差分無し・警告0件・成功(vendor/copc-writer・crates/pcv-convertは
+無変更)
+
+$ npm run build:wasm
+成功(pcv_wasm_bg.wasmを再生成しコミット。808,094→808,186バイト。
+.js/.d.tsに差分無し=API面の変更無し)
+
+$ npx tsc --noEmit / npx eslint . / npx vitest run / npm run build
+すべて成功(testは29ファイル256件)
+```
+
+CI・Pagesのrun idは所有者への最終報告に記載する。
+
+### 並行作業との分担
+
+`vendor/copc-writer/`・`crates/pcv-convert/`には触れていない(並行作業中の
+別エージェントが後処理の圧縮の並列化・PCDテストデータ作りを担当している
+ため。調べるために読んだだけ)。所有者の別セッションのui-forge
+(`src/ui/shell/Dock*`)にも触れていない。
+
+### 正直に: 確認できていないこと
+
+**ブラウザでの実際の動作確認はできない環境のため、「直った」とは断言
+しない。** 特に以下は理屈のうえでの裏付けはあるが、実機では確かめていない。
+
+- 今回の3つの対応(プール256個への削減・モバイルでの展開Worker抑制・
+  準備段階の進捗表示)で、実際にクラッシュが解消するか
+- `preparing`フェーズの各ステップが、実際のAndroid(Chrome)・iPhone
+  (Safari)で意図どおりの頻度・タイミングで表示されるか
+- wasmモジュールの初期メモリ(1.06MiB)以外の、実行時の実際のヒープ
+  使用量(mallocされた総量。今回は静的な測定・推定のみ)
+
+### 所有者が確かめる手順
+
+1. **準備段階の表示**: スマホ(Android/Chrome、iPhone 17e/Safari)で生の
+   LAS/LAZを選び、「変換を準備しています…」の代わりに、ステップ名
+   (「変換のロックを取得しています…」→「古い一時ファイルを掃除して
+   います…」→「一時ファイルを開いています(i/256)…」→「出力ファイルを
+   開いています…」→「ヘッダーを読み込んでいます…」→(大きい入力かつ
+   複数コアのデスクトップ相当でなければ出ないはず)→「読み込み中:
+   x/y点」)が順に表示されることを確認する
+2. **再発時の報告のお願い**: もし依然として落ちる場合、**最後に画面に
+   表示されていたステップ名(上記のどれか)を教えてほしい。** どの
+   ステップで止まったかが分かれば、残り2つの候補(OPFS・展開Worker)の
+   どちらが原因か、あるいは全く別の原因かを絞り込める
+3. **基本の変換が今までどおり動くこと**: 生のLAS/LAZを選び、変換が完了し
+   結果が表示されることを確認する(今までの手順と同じ)
+4. **デスクトップ・Android(回帰確認)**: 変わっていないはずだが、念のため
+   生のLAS/LAZを開いて変換が今までどおり動くことを確認する
+
+---
+
 ## M4-7: 入力の読み込み(LAZの展開)を並列化する(2026-10-02、Sonnet)
 
 ### 背景・所有者の要望
