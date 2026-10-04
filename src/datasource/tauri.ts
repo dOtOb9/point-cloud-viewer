@@ -22,6 +22,7 @@ import {
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
 import { StaleNodeRequestError } from "./stale-node-error";
+import { buildNodeRequestPath } from "./tauri-protocol";
 
 // `open_copc` (src-tauri/src/copc_state.rs) がJSONで返す形。DTOの中身とcamelCaseへの
 // 変換自体は`copc-dto.ts`にある（Web版の`pcv-wasm`も同じ形のJSONを返すため共有する）。
@@ -230,11 +231,16 @@ export class TauriSource implements DataSource {
   }
 
   async readNode(key: string): Promise<ArrayBuffer> {
-    // セグメント形式: "<generation>:<level>-<x>-<y>-<z>"（M0で判明した制約:
-    // convertFileSrcは引数全体を1セグメントとしてencodeURIComponentするため、
-    // "/"を含むパスは使えない。generationの意味は`currentGeneration`フィールドの
-    // コメント、Rust側は`src-tauri/src/lib.rs`の`handle_pcv_protocol`参照）。
-    const segment = `${this.currentGeneration}:${key}`;
+    // パス形式: "<generation>/<level>-<x>-<y>-<z>"（`buildNodeRequestPath`、
+    // `tauri-protocol.ts`参照）。generationの意味は`currentGeneration`フィールドの
+    // コメント、Rust側は`src-tauri/src/lib.rs`の`parse_pcv_path`参照。
+    //
+    // 緊急修正（v0.1.3でノード読み出しが全滅した不具合）: convertFileSrcは
+    // 渡した文字列全体を1回のencodeURIComponentでエンコードしてから1セグメント
+    // としてURLに埋め込むため、ここに含めた"/"も"%2F"になって届く。以前は
+    // 区切りに":"を使っていたが、Rust側がパーセントデコードせずに解析していた
+    // ため常に失敗していた（詳細はTaskSheets/M1-point-rendering.md）。
+    const segment = buildNodeRequestPath(this.currentGeneration, key);
     const url = convertFileSrc(segment, "pcv");
     const res = await fetch(url);
     if (res.status === STALE_GENERATION_HTTP_STATUS) {
