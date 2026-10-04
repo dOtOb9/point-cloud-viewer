@@ -1,8 +1,15 @@
 //! 変換の「後処理」段階(octree構築・ノードごとのLAZ圧縮・書き出し)の内訳を測る。
 //!
 //! ```text
-//! cargo run -p pcv-convert --release --example post_process_stage_bench -- <file.las|.laz>
+//! cargo run -p pcv-convert --release --example post_process_stage_bench -- <file.las|.laz> [--sequential-compress]
 //! ```
+//!
+//! M4-10(`TaskSheets/M4-import-and-conversion.md`)追記: `--sequential-compress`を
+//! 付けると、ノードごとのLAZ圧縮を`CopcWriterParams::
+//! with_parallel_node_compression(false)`で強制的に逐次にする(`pcv-convert`の
+//! 既定は`parallel-compress`フィーチャが有効なため並列)。同じビルドのまま
+//! 逐次・並列を切り替えて測れるようにするための追加で、本番の変換経路の挙動は
+//! 変えない。
 //!
 //! # 背景
 //!
@@ -54,10 +61,11 @@ const READ_BATCH_SIZE: u64 = 1024 * 1024;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(path) = args.first() else {
-        eprintln!("usage: post_process_stage_bench <file.las|.laz>");
+    let Some(path) = args.iter().find(|a| !a.starts_with("--")) else {
+        eprintln!("usage: post_process_stage_bench <file.las|.laz> [--sequential-compress]");
         std::process::exit(2);
     };
+    let force_sequential_compress = args.iter().any(|a| a == "--sequential-compress");
     let path = Path::new(path);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
 
@@ -142,7 +150,16 @@ fn main() {
     println!();
 
     // --- 1〜3. 後処理の内訳(vendor/copc-writerの計測専用API) ---
-    let params = CopcWriterParams::new(100_000);
+    let params = CopcWriterParams::new(100_000)
+        .with_parallel_node_compression(!force_sequential_compress);
+    println!(
+        "ノードごとのLAZ圧縮: {}",
+        if force_sequential_compress {
+            "逐次(--sequential-compress指定)"
+        } else {
+            "並列(parallel-compress、既定)"
+        }
+    );
     let output_path = bench_dir.join("bench-output.copc.laz");
 
     let total_start = Instant::now();
