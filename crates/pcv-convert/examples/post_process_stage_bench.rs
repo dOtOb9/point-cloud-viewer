@@ -150,8 +150,8 @@ fn main() {
     println!();
 
     // --- 1〜3. 後処理の内訳(vendor/copc-writerの計測専用API) ---
-    let params = CopcWriterParams::new(100_000)
-        .with_parallel_node_compression(!force_sequential_compress);
+    let params =
+        CopcWriterParams::new(100_000).with_parallel_node_compression(!force_sequential_compress);
     println!(
         "ノードごとのLAZ圧縮: {}",
         if force_sequential_compress {
