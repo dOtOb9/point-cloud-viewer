@@ -23,18 +23,45 @@
 //! `create_temp`を実装する。借りたハンドルは使い回す(`truncate`で0バイトに
 //! 戻してから使う)。
 //!
-//! ## プールの個数について
+//! ## プールの個数について(M4-11で見直し)
 //!
-//! `lod.rs`の`assign`(再帰関数)を読むと、ある時点で「まだ使い終わっていない
-//! (dropされていない)」一時ファイルの数は、**再帰の深さ×8(1ノードが最大8個の
-//! 子に分かれるため)+ `partition_index_run`が新しい8個を作っている間の
-//! 一時的な重なり**にとどまる(兄弟ノードは深さ優先で1つずつ順番に処理され、
-//! 全部同時に開いたままにはならない)。`copc-writer`の深さの上限は30
-//! (`lod.rs`の`MAX_OCTREE_DEPTH`)だが、そこまで深くなるのは同一座標の点が
-//! 大量に重なるような病的なデータだけで、実用的なデータでは遥かに浅い
-//! (`max_points_per_node`が既定10万点なら、数億点でも深さ5〜10程度)。
-//! 安全側に倒し、`OPFS_SCRATCH_POOL_SIZE`は深さ上限30×8+予備を見込んだ値にする。
-//! 使い切った場合は(黙って壊れたファイルを作るのではなく)エラーを返す。
+//! **Web版は`copc-writer`を`parallel-lod`フィーチャ無し(逐次)でビルドしている**
+//! (`crates/pcv-wasm/Cargo.toml`の`copc-writer`依存は`default-features = false`で、
+//! `parallel-lod`を有効化していない。`rayon`はwasm32では使えないため)。
+//! `vendor/copc-writer`の`lod.rs`の逐次版`assign`(`#[cfg(not(feature =
+//! "parallel-lod"))]`)を読むと、ある時点で開いている一時ファイルは次の3種類に
+//! 限られる:
+//!
+//! 1. 現在処理中のノードに至る**祖先**それぞれの`run.reader`(1個ずつ。Rustの
+//!    所有権どおり、`assign`が値として受け取った`run`はその呼び出しがreturnする
+//!    まで保持され続ける)
+//! 2. 祖先の各レベルで`partition_index_run`が返した最大8個の子
+//!    (`children`配列)のうち、**まだ再帰していない兄弟**(そのレベルの
+//!    `assign`が終わるまで配列に残ったまま)
+//! 3. 現在のレベルで`partition_index_run`が新しく開いている**最大8個の
+//!    書き込み中パーティション**(1回の線形スキャンの間、データ次第で8オクタント
+//!    全部が同時に書き込み中になりうる)
+//!
+//! これに全体を通して開いたままの`order`書き込み用一時ファイル1個を加えると、
+//! 深さ`D`まで降りた時点のピークの**理論上の上限は `8 * (D + 1) + 1`**
+//! になる。`copc-writer`の深さの上限は30(`lod.rs`の`MAX_OCTREE_DEPTH`。
+//! そこまで深くなるのは同一座標の点が大量に重なるような病的なデータだけで、
+//! `max_points_per_node`が既定10万点なら実用的なデータでは深さ5〜10程度)なので、
+//! `D=30`を代入すると`8*31+1=249`。
+//!
+//! この理論値は、8分木がちょうど指定した深さまでフル分岐する人工データを使った
+//! 回帰テスト(`crates/pcv-wasm/tests/sequential_lod_open_files_bounded.rs`。
+//! `vendor/copc-writer`には触れず、その公開API=`MemoryScratchFs`経由で測る)で
+//! 実測し、裏付けた: 深さ0,1,2,3,5,8,12,16でそれぞれピーク5,11,19,26,40,61,89,117
+//! (おおよそ`7*深さ+5`で、常に理論上限`8*(深さ+1)+1`以内)。
+//!
+//! `OPFS_SCRATCH_POOL_SIZE`は`8*(30+1)+1=249`に約3割の余裕を見て**256**とした
+//! (旧実装は深さ上限×8だけから算出して`600`。約2.3倍の削減になる。モバイルの
+//! 実機で「変換の準備」が600個分のOPFSハンドルを順に`await`しながら開くことに
+//! かかっていた時間・リソースを減らすのがねらい。`TaskSheets/
+//! M4-import-and-conversion.md`のM4-11参照)。**プールを使い切った場合は
+//! (黙って壊れたファイルを作るのではなく)分かるエラーを返す**
+//! (`take_free_pool_slot`、下記`#[cfg(test)]`で裏付け済み)。
 //!
 //! ## 範囲読み(`read_at`)について
 //!
@@ -80,9 +107,9 @@ use copc_writer::{ScratchFs, ScratchReader, ScratchWriter};
 use wasm_bindgen::JsValue;
 use web_sys::{FileSystemReadWriteOptions, FileSystemSyncAccessHandle};
 
-/// プールの既定サイズ。モジュールのドキュメント参照
-/// (再帰の深さ上限30×8+予備、安全側に倒した値)。
-pub const OPFS_SCRATCH_POOL_SIZE: usize = 600;
+/// プールの既定サイズ。モジュールのドキュメント「プールの個数について」参照
+/// (理論上限`8*(MAX_OCTREE_DEPTH+1)+1=249`に約3割の余裕を見た値)。
+pub const OPFS_SCRATCH_POOL_SIZE: usize = 256;
 
 /// 範囲読みキャッシュの1ブロックのサイズ。モジュールドキュメント
 /// 「小さな読みの集積を抑えるブロックキャッシュ」参照。
@@ -113,6 +140,23 @@ struct Pool {
     /// 空いている添字。`Vec`を後入れ先出しのスタックとして使う(どの順で
     /// 再利用されるかはアルゴリズムの正しさに影響しない。ただの空き管理)。
     free: Vec<usize>,
+}
+
+/// プールから1枠借りる。`free`が空(使い切った)なら、**黙って壊れた
+/// ファイルを作るのではなく**分かるエラーを返す(受け入れ条件)。
+///
+/// `FileSystemSyncAccessHandle`(ブラウザのWorker専用API)に一切触れない
+/// 純粋なロジックとして切り出してあるので、ネイティブの`cargo test`で
+/// 「尽きたら分かるエラーになること」を検証できる(`OpfsScratchFs`自体は
+/// 実際のハンドルを要求するコンストラクタを持つため、ネイティブからは
+/// 構築できない。モジュール末尾の既存コメント参照)。
+fn take_free_pool_slot(free: &mut Vec<usize>, pool_len: usize, label: &str) -> Result<usize> {
+    free.pop().ok_or_else(|| {
+        Error::InvalidInput(format!(
+            "OPFS一時ファイルの枠({pool_len}個)を使い切りました(要求元: {label})。\
+             max_points_per_nodeを増やすか、点密度の偏りが極端なデータでないか確認してください"
+        ))
+    })
 }
 
 /// OPFS上で動く`ScratchFs`。詳細はモジュールドキュメント参照。
@@ -167,13 +211,8 @@ impl ScratchFs for OpfsScratchFs {
     fn create_temp(&self, label: &str) -> Result<Box<dyn ScratchWriter>> {
         let index = {
             let mut pool = self.pool.borrow_mut();
-            pool.free.pop().ok_or_else(|| {
-                Error::InvalidInput(format!(
-                    "OPFS一時ファイルの枠({}個)を使い切りました(要求元: {label})。\
-                     max_points_per_nodeを増やすか、点密度の偏りが極端なデータでないか確認してください",
-                    pool.handles.len()
-                ))
-            })?
+            let pool_len = pool.handles.len();
+            take_free_pool_slot(&mut pool.free, pool_len, label)?
         };
         {
             let pool = self.pool.borrow();
@@ -534,9 +573,10 @@ fn resolve_seek(
 // ネイティブターゲットのcargo testでは実体を作れない(このクレート自体、
 // pcv-wasmはwasm32-unknown-unknown専用。`crates/pcv-wasm/Cargo.toml`の
 // ドキュメント参照)。そのため`OpfsScratchFs`自体の単体テストはここには
-// 書けない。プール貸し出し・添字再利用のロジックは`OpfsScratchFs`自体に
-// 埋め込まれた`Vec<usize>`の`push`/`pop`だけで完結する自明な操作であり、
-// 独立してテストするほどの複雑さは無いと判断した。
+// 書けない。ただし「プールを使い切ったら分かるエラーになること」(M4-11の
+// 受け入れ条件)は、`FileSystemSyncAccessHandle`に一切触れない部分
+// (`take_free_pool_slot`)として切り出してあるので、下記`#[cfg(test)]
+// mod tests`でネイティブに検証できる。
 //
 // `ReadCache`(範囲読みのブロックキャッシュ)はOPFS自体に触れない純粋な
 // Rustのロジック(LRUの追い出し)なので、ネイティブで単体テストできる
@@ -554,6 +594,34 @@ fn resolve_seek(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M4-11の受け入れ条件: プールを使い切ったら、黙って壊れたファイルを
+    /// 作るのではなく分かるエラーを返す。
+    #[test]
+    fn take_free_pool_slot_returns_clear_error_when_exhausted() {
+        let mut free: Vec<usize> = Vec::new();
+        let err = take_free_pool_slot(&mut free, 256, "order")
+            .expect_err("空のプールから借りようとしたらエラーになるはず");
+        let message = err.to_string();
+        assert!(
+            message.contains("256"),
+            "プールのサイズがエラーメッセージに含まれるはず: {message}"
+        );
+        assert!(
+            message.contains("order"),
+            "要求元のラベルがエラーメッセージに含まれるはず: {message}"
+        );
+    }
+
+    /// 空いている間は借りられ、返すたびにまた借りられる(通常経路の回帰)。
+    #[test]
+    fn take_free_pool_slot_succeeds_while_slots_remain() {
+        let mut free: Vec<usize> = vec![0, 1, 2];
+        assert_eq!(take_free_pool_slot(&mut free, 3, "partition").unwrap(), 2);
+        assert_eq!(take_free_pool_slot(&mut free, 3, "partition").unwrap(), 1);
+        assert_eq!(take_free_pool_slot(&mut free, 3, "partition").unwrap(), 0);
+        assert!(take_free_pool_slot(&mut free, 3, "partition").is_err());
+    }
 
     #[test]
     fn read_cache_returns_cached_block_on_hit() {
