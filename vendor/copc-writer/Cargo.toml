@@ -130,3 +130,19 @@ required-features = ["parallel-lod"]
 name = "parallel_lod_cancel"
 path = "tests/parallel_lod_cancel.rs"
 required-features = ["parallel-lod"]
+
+# M4-10(TaskSheets/M4-import-and-conversion.md): ノードごとのLAZ圧縮の並列化
+# (`parallel-compress`)で、同時に圧縮するノード数(バッチサイズ)が
+# ノード数(≒点数)に比例しないことの回帰テスト。
+# `tests/parallel_compress_batch_bounded.rs`参照。
+[[test]]
+name = "parallel_compress_batch_bounded"
+path = "tests/parallel_compress_batch_bounded.rs"
+required-features = ["parallel-compress"]
+
+# M4-10: ノードごとのLAZ圧縮の並列化後もキャンセルが働くことの回帰テスト。
+# `tests/parallel_compress_cancel.rs`参照。
+[[test]]
+name = "parallel_compress_cancel"
+path = "tests/parallel_compress_cancel.rs"
+required-features = ["parallel-compress"]
