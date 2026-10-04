@@ -2604,6 +2604,243 @@ run idは、push後にコーディネーターが確認すること(「所有者
 `crates/pcv-convert/src/import/`配下と`src-tauri/src/conversion.rs`・
 `src/datasource/tauri.ts`)。
 
+### 追記: 数億点規模のPCDテストデータを作る(2026-10-04、Sonnet)
+
+所有者が「数億点規模のPCDで試したい」が、手元に大きなPCDが無い。既存のCOPC
+(`data/sofi.copc.laz`、364,384,576点、RGB無し・強度あり)をPCDへ書き出せば、
+同じ点を使ってPCD→COPCの経路(このM4-9の`convert_to_copc`)を大規模データで
+試せる。**本番の変換経路には含めず、examplesとして追加した**(所有者の指示どおり)。
+
+#### 作ったもの
+
+- `crates/pcv-convert/examples/copc_to_pcd.rs`: COPC → PCD(binary、非圧縮)の
+  書き出しツール。COPCのhierarchyをノード単位(`pcv_core::CopcFile::read_node`)で
+  読み、読んだその場でPCDへ書く。全点を一度にメモリへ載せない(下記「メモリが
+  点数に比例しないこと」参照)
+- `crates/pcv-convert/examples/import_bench.rs`: 作ったPCDを本番の経路
+  (`pcv_convert::import::convert_path_to_copc`、M4-9の`convert_to_copc`)で
+  COPCへ変換し直すための薄いラッパー(`examples/convert_streaming.rs`と同じ
+  考え方)。計測(所要時間・ピークメモリ)はプロセスの外(PowerShell)から行う
+
+#### 座標の型: double(f64)を選んだ理由
+
+sofiはUTM規模の大きな座標(X・Yが50万〜400万のオーダー)を持つ。検討した
+3案とその判断:
+
+1. **f32でそのまま書く**: 仮数部が足りずmm〜cm単位の精度が失われる(M1-2の
+   `node_format.rs`が同じ理由でノードローカル相対座標を導入しているのと
+   同根の問題)。却下
+2. **全点から共通のオフセットを引いてf32で書く**: 精度は保てるが、
+   オフセットをどこかに記録し、変換後に正しく足し戻す仕組みが別途要る。
+   さらに**PCDのヘッダー`VIEWPOINT`はこの用途に使えない**ことを
+   `crates/pcv-convert/src/import/pcd.rs`のソースで確認した——読み込み側
+   (`PcdSource::for_each_point`)はx/y/zフィールドの値をそのままCOPCへ渡す
+   だけで、`VIEWPOINT`を足し戻す処理が無い(`pcd-rs`の`DynReader`自体も
+   `VIEWPOINT`をメタデータとして保持するだけで、座標変換には使わない)。
+   つまり「`VIEWPOINT`にオフセットを書いて読み込み側で足し戻す」という
+   設計は実際には機能しない。オフセットをファイル名や別ファイルで運ぶ案も
+   検討したが、実装・検証の手間が増える割に得るものが(桁を減らす以外)無い。却下
+3. **double(f64)でそのまま書く**: 何も考えずに済む。採用
+
+`pcd.rs`の`field_to_f64`(44行目〜)は`Field::F64`を含む全数値型を素直に
+f64へ変換しており、doubleで書いても読み込み側に問題が無いことをソースで
+確認済み(`match field { ... Field::F64(v) => v.first().copied().unwrap_or(0.0), ... }`)。
+コストはf32に対して1点あたり12バイト増えるだけ(xyzで24B対12B)で、
+3.64億点でも増加分は高々4.4GB程度に収まり、実行前に確認したディスク空き容量
+(278〜299GB)に対して無視できる。**よってx/y/zはdoubleで書くことにした。**
+
+intensityは元のLAS/COPCの型(u16)のまま`TYPE U, SIZE 2`で書いた(値の変換・
+丸めが不要)。rgb(色を持つ入力の場合)は`0x00RRGGBB`のpacked `u32`
+(`TYPE U, SIZE 4`)で書いた(読み込み側`decode_packed_rgb`の`Field::U32`
+分岐がビット演算だけで復元でき、浮動小数点のビット再解釈のような変換が
+不要なため)。sofiはRGBを持たないため、`data/sofi.pcd`のFIELDSは
+`x y z intensity`の4つのみ。
+
+#### メモリが点数に比例しないこと
+
+COPCのhierarchyをノード単位で読み、都度PCDへ書き出す設計にした。1ノードの
+点数はCOPCの`max_points_per_node`(既定10万点)が上限なので、オンメモリに
+載るのは常に高々その1ノード分(数MB)だけであり、全体の点数が3.64億点でも
+1,000万点でも、ピークメモリは変わらない。ノードキー自体は先に全て
+(`Vec<NodeKey>`)メモリへ集めるが、ノード数は点数ではなくoctreeの分割数に
+比例するだけで、sofi規模でも8,588個(下記「出力の検証」参照)程度にとどまる。
+
+PCDの`POINTS`ヘッダーは、COPCのヘッダーが申告する総点数
+(`CopcFile::info().point_count`)から、1点も読まずに先に分かる値として書いた。
+
+#### 実行環境とディスク空き容量の事前確認
+
+`TaskSheets/M4-1b`と同じ機体(Core i5-14600K、RAM 31.8GB、Windows 11)。
+実行前に`Get-PSDrive C`でCドライブの空き容量を確認した: **278〜299GB**
+(作業中の増減込み)。sofi.pcd(9.47GB)・変換時の一時ファイル(スパイル等、
+M4-1bの実測(sofi入力2.03GB→一時ファイルピーク21.864GB)を参考にしても
+最大20GB程度と見積もれる)・出力COPC(2.4GB)を合計しても30〜40GB程度で、
+空き容量に対して十分な余裕があることを確認した上で実行した。
+
+#### 作ったファイル
+
+| ファイル | 元データ | 点数 | サイズ |
+|---|---|---|---|
+| `data/sofi.pcd` | `data/sofi.copc.laz`(364,384,576点、RGB無し) | 364,384,576 | 9,473,999,172 バイト(9474.00 MB) |
+| `data/autzen.pcd`(所有者が手早く試せる小さいもの) | `data/autzen-classified.copc.laz`(10,653,336点、RGBあり) | 10,653,336 | 319,600,284 バイト(319.60 MB) |
+
+どちらも**コミットしていない**(`data/`はgitignore済み。`git status`で
+未追跡のままであることを確認済み)。
+
+#### 実測: COPC → PCD(`copc_to_pcd`、このタスクで新設したツール自体)
+
+```
+$ ./target/release/examples/copc_to_pcd.exe data/autzen-classified.copc.laz data/autzen.pcd
+点数(ヘッダー): 10653336
+色を持つか    : true
+書き出した点数: 10653336
+出力サイズ    : 319.60 MB
+所要時間      : 4.78 秒
+
+$ ./target/release/examples/copc_to_pcd.exe data/sofi.copc.laz data/sofi.pcd
+点数(ヘッダー): 364384576
+色を持つか    : false
+書き出した点数: 364384576
+出力サイズ    : 9474.00 MB
+所要時間      : 162.07 秒
+```
+
+所要時間はプロセス内部(`Instant`)の計測のみで、プロセス外(壁時計)では
+測っていない(正直に書く)。点数比(364,384,576 / 10,653,336 ≈ 34.2倍)に
+対し時間比(162.07 / 4.78 ≈ 33.9倍)がほぼ一致しており、この2点の範囲では
+処理時間が点数にほぼ比例していることが分かる。
+
+#### 実測: PCD → COPC(本番の経路、`import_bench`経由)
+
+**計測した時点のmainのコミット**: `e7f8258e8cc2c73fd62ade2169cfc75eb4da6090`
+(M4-10「ノード圧縮の並列化(parallel-compress採用)」を含む。並行して進んでいた
+変換の後処理の並列化が、この計測の直前にmainへ入った)。`cargo build -p
+pcv-convert --release --examples -v`で`copc-writer`に`parallel-lod`・
+`parallel-compress`の両フィーチャが実際に有効化されていることを確認した上で
+計測した(`cargo clean -p copc-writer --release`で強制再ビルドし、
+`feature="parallel-lod"`・`feature="parallel-compress"`の両方がコンパイラ
+呼び出しに現れることを確認)。
+
+ピークプライベートメモリの測り方はM4-1bのコーディネーターによる再計測と同じ
+(`System.Diagnostics.Process.PrivateMemorySize64`を500msごとにポーリングして
+最大値を取る。ワーキングセットではなくプライベートメモリを使う理由も
+M4-1bと同じ: `copc-writer`の一時ファイルはmmapされるため、ワーキングセットは
+メモリ不足の指標にならない)。
+
+```
+$ cargo run -p pcv-convert --release --example import_bench -- data/sofi.pcd <出力> <spill_dir>
+入力      : data/sofi.pcd
+出力サイズ(入力): 9474.00 MB
+  読み込み中: 320000000/364384576
+変換完了(内部計測): 170.80 秒
+点数            : 364384576
+出力サイズ      : 2393.07 MB
+
+=== PowerShellでの外部測定 ===
+ElapsedSeconds        : 171.19
+PeakPrivateMemoryBytes: 243,486,720
+PeakPrivateMemoryGiB  : 0.227
+```
+
+**出力の検証**(`examples/verify.rs`、`CopcFile::open`→hierarchy点数合計→
+`read_node`):
+
+```
+入力の申告点数  : 364384576
+CloudInfo点数   : 364384576
+hierarchyノード : 8588 個, 点数の合計 = 364384576
+read_nodeで確認したノード数: 5(いずれも申告点数と一致)
+OK: pcv-core で開け、点数が一致し、ノードを読めた
+```
+
+同じ経路でautzen.pcd→COPCの往復も確認した(内部計測6.27秒、hierarchyノード
+222個、点数10,653,336が一致、`read_node`5個確認)。
+
+**点数の一致(このタスクの核心の受け入れ条件)**: 元の`sofi.copc.laz`
+(364,384,576点)→`sofi.pcd`(364,384,576点)→本番経路で変換した
+`sofi_from_pcd.copc.laz`(364,384,576点、hierarchy合計も一致)。**3箇所とも
+一致した。**
+
+**参考: M4-1bのsofi(LAS経由)の実測との比較(単純比較はできないことに注意)**。
+M4-1bはsofiを**LASとして**(`sofi.copc.laz`を生LAZとして)`copc-writer`の
+高水準APIへ流し込んだ計測で、時間553.81秒(エージェント)〜1,079.3秒
+(コーディネーター再計測)、プライベートメモリピーク0.053GiBだった。
+今回はPCDとして(中間LASを経ない、M4-9の`convert_to_copc`経路で)流し込み、
+時間170.80〜171.19秒、プライベートメモリピーク0.227GiBだった。**mainの
+コミットが異なる**(今回はM4-10のoctree分割並列化・ノード圧縮並列化の両方が
+入った後、M4-1bはどちらも入っていない)ため、速くなった分がどちらに
+起因するか(並列化によるものか、入力形式の違いによるものか)はこの計測
+だけでは切り分けられない。**プライベートメモリが0.053→0.227GiBに増えている
+点は、並列化で同時に扱う一時ファイル・バッファの数が増えたことが一因と
+推測されるが、実測で確認したわけではない**(M4-8のタスクシートに記録済みの
+`parallel_lod_open_files_bounded`テストが「点数に比例しない」ことは保証して
+いるが、絶対値がどの程度増えるかは別の話)。いずれにせよ0.227GiBは
+8GBの基準に対して無視できるほど小さく、判断に影響しない。
+
+#### 範囲外にしたこと(正直に)
+
+- **PCDからのCRSの引き継ぎ**: 今回作った`sofi.pcd`・`autzen.pcd`はCRS情報を
+  持たない(PCD形式自体がCRSの概念を持たないADR-0008の既存の制約どおり)。
+  本番経路で変換すると、他のPCD入力と同じく「CRS不明」のCOPCになる
+  (M4-9「CRSが不明でも`pcv-core`で開けること」の既存動作そのまま)。
+  これは意図した挙動であり、不具合ではない
+- **座標の往復精度の検証**: `copc_to_pcd`は`pcv_core::CopcFile::read_node`が
+  返す`NodeBuffer`(M1-2のノードローカル相対座標形式、原点をf32に丸める)を
+  経由して世界座標を復元している。これはビューアが実際に描画で使っている
+  のと同じ経路・同じ精度であり、ノードのバウンディングボックスが大きい
+  (特にルート付近の)ノードではcm〜m単位の丸め誤差が入りうる。本タスクは
+  「点数の一致」を受け入れ条件として実行したため、座標値そのものの
+  往復精度(mm単位で元に戻るか)は検証していない。より高精度が要るなら、
+  `copc_reader::CopcReader`を直接使って(`pcv_core`を経由せず)f64のまま
+  読み出す実装に変える余地がある
+- **一時ディスク使用量のピーク**: M4-1bが記録したような一時ファイルサイズの
+  ポーリングは行っていない(このタスクの受け入れ条件に無いため)
+
+#### 確認したコマンドと結果
+
+```
+$ cargo build -p pcv-convert --release --examples
+Finished(警告無し)
+
+$ cargo fmt --all -- --check
+(差分無し)
+
+$ cargo clippy -p pcv-convert --example copc_to_pcd --all-targets -- -D warnings
+(警告・エラー無し)
+
+$ cargo clippy --workspace --all-targets -- -D warnings
+(警告・エラー無し)
+
+$ cargo test --workspace
+pcv-convert(ユニットテスト): 41 passed
+pcv-convert(統合テスト): 26 passed
+pcv-core: 39 passed
+pcv-tauri: 7 passed
+失敗 0(M4-9時点から変わっていない。examplesはテスト対象に含まれないため、
+既存のテスト件数に影響しない)
+```
+
+CI(`ci.yml`)の最新runは、push後に所有者または次のエージェントが
+`gh run list --branch main --limit 5`で確認すること(本セッションでは
+`gh`を使った確認を行っていない)。
+
+#### 所有者が確かめる手順
+
+1. **大きいPCDを開く**: アプリ(デスクトップ)の「ファイルを選ぶ…」から
+   `data/sofi.pcd`(約9.47GB)を選ぶ。進捗(%・プログレスバー・経過時間)が
+   出て、変換完了後に自動的に点群が表示されることを確認する(所要時間は
+   このセッションの計測で約171秒だったが、実機では空き容量・ディスク速度に
+   よって変わりうる)
+2. **小さいPCDですぐ試す**: 同様に`data/autzen.pcd`(約320MB、10,653,336点、
+   色あり)を選ぶ。こちらは数秒〜十数秒で変換が終わるはず
+3. **点数の確認**: どちらも、変換後に表示される点数(左パネルの点数表示、
+   または開発者ツールのログ)が、元のCOPC(sofi: 364,384,576、autzen:
+   10,653,336)と一致することを確認する
+4. **色**: `sofi.pcd`は色を持たない(強度のみ)ため単色・強度ベースの
+   着色になるはず。`autzen.pcd`は色を持つため、元の`autzen-classified.copc.laz`
+   を開いたときと近い見た目になるはず(座標の丸め誤差程度の差はありうる、
+   上記「範囲外にしたこと」参照)
+
 ---
 
 ## M4-8: 後処理(octree構築・ノードごとのLAZ圧縮・書き出し)を速くする(2026-10-03、Opus計画・Sonnet実装)
