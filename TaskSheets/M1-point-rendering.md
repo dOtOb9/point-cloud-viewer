@@ -1021,3 +1021,162 @@ COPC を開いたあとに LAS を開くと（LAS は変換されて COPC とし
   触れていない
 - 作業中、`origin/main` の進捗（M4-8 の並列化、M4-9 のE57/PLY/PCD対応）を
   都度 `git fetch && git rebase` して取り込んだ
+
+## v0.1.3緊急修正: デスクトップ・Android実機でノードが1つも読めない → 修正した（2026-10-04、Sonnet）
+
+上記のファイル切り替えバグ修正（8eb97ba/fb45fd6）を含めて公開した v0.1.3 で、
+デスクトップ・Android実機のノード読み出しが**全滅する**不具合が見つかった。
+公開済みReleaseが壊れている緊急の修正としてここに記録する。
+
+### 症状（所有者の報告、Windows版v0.1.3。Android版も同様）
+
+```
+ノード読み出しエラー
+ノード1-1-1-1の読み出しに失敗した: unknown pcv:// path (expected /<size> or /<generation>:<level>-<x>-<y>-<z>): 0%3A1-1-1-1
+```
+
+Web版（PC）は無事だった。Web版は`pcv://`を使わず、Workerへの`postMessage`で
+ノードを読むため、この不具合の影響を受けない。
+
+### 原因: `convertFileSrc`のエンコードをRust側が一度もデコードしていなかった
+
+ファイル切り替えバグの修正で、ノード要求を`pcv://`の`/<generation>:<key>`という
+形にした（`generation`で古い世代の要求を区別して捨てるため。上の節参照）。この
+`segment`文字列はフロント（`src/datasource/tauri.ts`）が`convertFileSrc(segment,
+"pcv")`でURLに変換してから`fetch()`する。
+
+`convertFileSrc`の実体（`@tauri-apps/api/core.js`が呼ぶ
+`window.__TAURI_INTERNALS__.convertFileSrc`。注入元は`tauri`クレートの
+`scripts/core.js`。`~/.cargo/registry/src/*/tauri-2.11.6/scripts/core.js`で
+ソースを確認した）は次の通り:
+
+```js
+value: function (filePath, protocol = 'asset') {
+  const path = encodeURIComponent(filePath)
+  return osName === 'windows' || osName === 'android'
+    ? `${protocolScheme}://${protocol}.localhost/${path}`
+    : `${protocol}://localhost/${path}`
+}
+```
+
+**`filePath`全体（区切り文字を含む）が1回の`encodeURIComponent`でエンコードされ、
+1個のURLセグメントとして埋め込まれる。** このため、区切りに使った`":"`は
+`"%3A"`になって届く（Windows/Androidは`http://pcv.localhost/<encodeURIComponent済み
+の文字列>`、macOS/Linuxは`pcv://localhost/<同上>`で、どちらも区切り文字の扱いは
+同じ）。
+
+Rust側（`src-tauri/src/lib.rs`の`handle_pcv_protocol`、当時はパース処理が関数に
+切り出されていなかった）は`request.uri().path()`で得た文字列を**デコードせずに**
+`segment.split_once(':')`していたため、`generation_str`は常に`"0%3A1-1-1-1"`の
+ような文字列全体になり、`:`が見つからず、全てのノード要求が
+「unknown pcv:// path」で失敗していた（報告のエラーメッセージに`%3A`がそのまま
+出ていたこと自体が、デコードされていない直接の証拠）。
+
+**なぜRustのテストで検出できなかったか**: `copc_state.rs`のテスト
+（`read_node_bytes_matches_m1_2_wire_format`等）は`copc_state::read_node_bytes`を
+直接呼んでおり、`generation: u64`と`key: NodeKey`をRustの値としてそのまま渡す。
+URLパース（`handle_pcv_protocol`内の文字列分解ロジック）自体は当時テストされて
+おらず、**フロントが実際に送ってくる形（パーセントエンコード済みの1文字列）を
+一度も解析関数に通していなかった**。これが今回の核心的な反省点であり、再発防止の
+主眼にした。
+
+### 直したこと
+
+1. **Rust側でパス解析を`parse_pcv_path(path: &str) -> Result<PcvRequest, String>`に
+   切り出し、解析前に必ず一度`percent_encoding::percent_decode_str`でデコード
+   するようにした**（`src-tauri/src/lib.rs`）。`handle_pcv_protocol`からは
+   このテスト可能な純粋関数を呼ぶだけにした。
+   - `percent-encoding`クレートは新規に見えるが、`tauri`が内部で使う`url`クレート
+     経由で既に`Cargo.lock`に`percent-encoding 2.3.2`としてビルドグラフに
+     含まれていたため、直接依存に1行加えてもビルドに新しいクレートが増える
+     わけではない（`src-tauri/Cargo.toml`のコメント参照）。
+2. **区切りを`:`から`/`に変更した**: `/<generation>/<level>-<x>-<y>-<z>`。
+   ベンチ用の`/<size>`（数字のみ）と見た目で区別しやすくなる。ただし**動作上の
+   正しさ自体は1のデコードが担っている**ことは明記しておく
+   （`encodeURIComponent`は`/`も`:`と同じく`%2F`にエンコードするため、
+   区切り文字をどちらにしてもデコードしなければ直らない。最初の依頼文の
+   「`/`はパスの区切りとしてそのまま通り、エンコードの影響を受けない」という
+   想定は、`convertFileSrc`の実装（引数全体を1セグメントとしてまとめて
+   エンコードする）を踏まえると正確ではなかった。これは上記ソース確認で
+   判明した）。
+3. **旧形式（`:`区切り、`%3A`）は受け付けないことにした**。v0.1.3はノード読み出し
+   が100%失敗していたため、この形式で動いていたクライアントは存在しない
+   （デスクトップ・Androidともにフロントとバックエンドは同じビルドで配布される
+   ため、新旧混在も起きない）。互換コードを足す理由がないと判断した。
+4. **フロント側もパス（`convertFileSrc`に渡す前の文字列）の組み立てを
+   `buildNodeRequestPath(generation, key)`という純粋関数に切り出した**
+   （新規`src/datasource/tauri-protocol.ts`）。`TauriSource.readNode()`
+   （`tauri.ts`）はこれを呼ぶだけにした。`web-protocol.ts`の
+   `buildReadNodeRequest`と同じ考え方（`convertFileSrc`自体はvitest環境に
+   存在しないため、「送る文字列の形」だけを切り出してテストする）。
+5. 世代の仕組み（ファイル切り替え後に届いた古い世代の要求を区別して捨てる、
+   上の節参照）自体は変更していない。`copc_state::read_node_bytes`や
+   `ReadNodeError::Stale`はそのまま。
+
+### 新規テスト
+
+- `src-tauri/src/lib.rs`の`tests`モジュール（新規）: `parse_pcv_path`に対する
+  単体テスト。**再発防止の核心**は
+  `parses_node_path_as_sent_by_convert_file_src_on_windows_and_android`で、
+  `encodeURIComponent("0/1-1-1-1")`が実際に生成する`"0%2F1-1-1-1"`という文字列
+  （`-`はエンコード対象外なので変化しない）をそのまま`parse_pcv_path`に通し、
+  成功することを確認する。根拠にした`convertFileSrc`の実装はテストのコメントに
+  `tauri`クレートのソースの該当箇所をそのまま引用した。ほかに、デコード不要な形、
+  ベンチ用`/<size>`形式、旧`:`区切り形式（パーセントエンコード済み・生の両方）を
+  拒否すること、不正な世代番号・不正なノードキーでエラーになることを確認した。
+- `src/datasource/tauri-protocol.test.ts`（新規）: `buildNodeRequestPath`が
+  `"<generation>/<key>"`の形を返すこと、ベンチ用`/<size>`形式と区別できる形で
+  あることを確認した。
+
+### 確認したコマンドと結果
+
+- `cargo fmt --check`: 差分なし
+- `cargo clippy --workspace --all-targets -- -D warnings`: 警告0件
+- `cargo test --workspace`: 全クレート成功（`pcv-tauri`が15件、`pcv-core`が39件、
+  ほか既存分すべて含め失敗0。新規の`tests::parses_*`/`tests::rejects_*`も成功）
+- `npm run typecheck`: エラー0件
+- `npm run lint`: エラー0件
+- `npm run test`（vitest）: 33ファイル・285件すべて成功（新規
+  `tauri-protocol.test.ts`の3件を含む）
+- `npm run build`: 成功
+- GitHub Actions: Rust修正のコミット（`e2aa60d`）・フロント修正のコミット
+  （`2c74f30`）それぞれのpushで`CI`・`Pages`ワークフローが走った。結果は
+  所有者への報告（コミット後のメッセージ）に run id を添えて記載する
+
+### 正直に: 確認できていないこと
+
+- **Windows・Android実機での動作確認はできない**（このエージェントはGUIを
+  操作できず、実機も持たない）。所有者が確かめる手順は次の節の通り
+- Android向けのビルド（`gh workflow run release.yml --ref main`の手動実行）は
+  依頼に従って実行し、所有者への報告に run id を記載するが、**実機にインストール
+  して動作確認することまではできない**
+- macOS/Linux版のデスクトップビルドは所有者がビルドしていないため確認手段が
+  ない。ただし`convertFileSrc`の該当コード（`osName === 'windows' ||
+  osName === 'android'`の分岐の有無に関わらず、`encodeURIComponent(filePath)`
+  の部分は共通）を踏まえると、同じ原因・同じ修正で直るはずである
+- 「`generation`の仕組み自体が壊れていないこと」は`copc_state.rs`の既存テスト
+  （`read_node_bytes_rejects_stale_generation_after_reopen`等、変更していない）
+  が担保しているとみなした。このテストはURLパースを経由しないため、今回の
+  修正がそちら側に影響していないことは確認したが、「実際のURL経由で世代の
+  不一致が正しく検出されること」を統合的に確認するテストは追加していない
+  （`parse_pcv_path`が正しい`generation`/`key`を取り出せることと、
+  `read_node_bytes`が世代を比較することを、それぞれ単体で確認したのみ）
+
+### 所有者が確かめる手順
+
+1. Windows版: `gh workflow run release.yml --ref main`で作ったビルド（または
+   `npm run tauri build`でローカルビルドしたもの）をインストールし、COPCファイル
+   （`.copc.laz`）を開く。点群が表示され、「ノード読み出しエラー」のバナーが
+   **出ないこと**を確認する
+2. 同じビルドで、生のLAS/LAZファイルを開く（変換後に自動的に開かれる）。同様に
+   点群が表示されることを確認する
+3. Android版: 同じワークフローが作ったAPKを実機にインストールし、1・2と同様に
+   COPC・LAS/LAZを開いて点群が表示されることを確認する
+4. 余裕があれば、ファイルを連続して切り替え、前のファイルの点が混ざらないこと
+   （ファイル切り替えバグの修正が今回も壊れていないこと）も合わせて確認する
+
+### 並行作業との調整
+
+- タグ・Releaseの作成はコーディネーター側で行う（このエージェントは作らない。
+  次のバージョンはv0.1.4になる想定）
+- 緊急修正のため、スコープ外の改修（リファクタリング等）は行っていない
