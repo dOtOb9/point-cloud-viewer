@@ -1,11 +1,14 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_lazrangedecompressor_free: (a: number, b: number) => void;
 export const __wbg_wasmconverter_free: (a: number, b: number) => void;
 export const __wbg_wasmcopcfile_free: (a: number, b: number) => void;
 export const __wbg_wasmpcdconverter_free: (a: number, b: number) => void;
-export const decompressLazRange: (a: any, b: number, c: number) => [number, number, number, number];
 export const init_panic_hook: () => void;
+export const lastAllocationFailureMessage: () => [number, number];
+export const lazrangedecompressor_feed: (a: number, b: number) => [number, number, number, number];
+export const lazrangedecompressor_new: (a: any, b: number, c: number) => [number, number, number];
 export const opfsScratchPoolSize: () => number;
 export const wasmconverter_feed: (a: number, b: number) => [number, number, number];
 export const wasmconverter_finish: (a: number) => [number, number, number];
@@ -29,6 +32,6 @@ export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) =>
 export const __wbindgen_exn_store: (a: number) => void;
 export const __externref_table_alloc: () => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
-export const __externref_table_dealloc: (a: number) => void;
 export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
 export const __wbindgen_start: () => void;

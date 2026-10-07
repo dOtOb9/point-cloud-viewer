@@ -1,5 +1,93 @@
 /* @ts-self-types="./pcv_wasm.d.ts" */
 
+/**
+ * M4-7追記(2026-10-07、緊急修正): 展開専用Worker
+ * (`src/datasource/laz-decompress.worker.ts`)から呼ぶ。`file`の点インデックス
+ * `[start_index, start_index + count)`の範囲を、**小さなバッチ単位で**展開する。
+ *
+ * # なぜ「全部まとめて返す」設計をやめたか
+ *
+ * 旧設計(`decompress_laz_range`、1回の呼び出しで担当範囲**全体**の
+ * `Vec<u8>`を作って返す)は、展開Worker1つあたりのメモリ使用量が担当範囲の
+ * 点数に**比例**してしまう。1点あたり約43〜57バイト
+ * (`vendor/copc-writer/tests/scratch_read_is_bounded.rs`参照)なので、
+ * 例えば数千万点の入力を数個のWorkerに分けても、1Workerあたり数百MB〜
+ * 1GB超のバッファになりうる。これがwasm32の4GiBアドレス空間を圧迫し、
+ * 所有者の実機で確認された「変換に失敗しました: unreachable」(メモリ確保
+ * 失敗によるトラップ)の一因になっていた
+ * (`decompress-partition.ts`の`MAX_DECOMPRESS_WORKERS_MOBILE`のドキュメント、
+ * `TaskSheets/M4-import-and-conversion.md`のM4-7追記参照)。
+ *
+ * `WasmConverter::feed`(変換用Worker側)が既に採用している「呼び出し側が
+ * 小さなバッチ単位で何度も呼ぶ」設計を、展開側にも同じ考え方で導入する。
+ * `LazRangeDecompressor`は自分専用の`las::Reader`を1回だけ開いて担当範囲の
+ * 先頭まで`seek`し、以降は`feed(batch_size)`を呼ばれるたびに**その
+ * バッチ分だけ**メモリを確保して返す。呼び出し側(`laz-decompress.worker.ts`)
+ * は1バッチ返すたびに`postMessage`で変換用Workerへ渡し、変換用Workerが
+ * `pushSerializedRecords`で消費し終えてから次のバッチを要求する
+ * (pull型・背圧。`src/datasource/copc.worker.ts`の`runParallelReadPhase`、
+ * `src/datasource/decompress-partition.ts`の`BoundedBatchFlow`参照)。これにより
+ * 同時にメモリ上に存在するのは「バッチサイズ×Worker数」程度に収まり、
+ * **点数に比例しない。**
+ *
+ * `WasmConverter`とは完全に独立したインスタンス(自分専用の`las::Reader`)を
+ * 開く。Web Workerはメモリを共有しないグローバルなので、これは「1つの
+ * `File`を複数のWorkerがそれぞれ自分のReaderで読む」ことになるが、
+ * `File`は不変なスナップショットであり、読み出しは`FileRangeReader`経由の
+ * 範囲読み(`File.slice`)なので競合しない。
+ */
+export class LazRangeDecompressor {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        LazRangeDecompressorFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_lazrangedecompressor_free(ptr, 0);
+    }
+    /**
+     * 最大`batch_size`点を読み、`copc_core::serialize_le`形式(`recordWidth()`
+     * ちょうどの幅)の固定長レコードを連結したバイト列を返す。戻り値の長さは
+     * 常に`(読めた点数) * recordWidth()`で、`batch_size * recordWidth()`を
+     * 超えない(=メモリ使用量が担当範囲全体の点数に比例しない、という
+     * このAPIの目的そのもの)。空の`Vec`を返したら、担当範囲を読み終えた
+     * (呼び出し側はこれ以上`feed`を呼ばない)。
+     * @param {number} batch_size
+     * @returns {Uint8Array}
+     */
+    feed(batch_size) {
+        const ret = wasm.lazrangedecompressor_feed(this.__wbg_ptr, batch_size);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * `start_index`が`total_points`以上、または末尾付近で`count`点に
+     * 満たない場合は、実際に読める点数だけを担当範囲として扱う(エラーに
+     * しない。呼び出し側がファイル全体を`hardwareConcurrency`等分するときに、
+     * 割り切れない端数が出てもそのまま渡せるようにするため。旧
+     * `decompress_laz_range`と同じ方針)。
+     * @param {File} file
+     * @param {number} start_index
+     * @param {number} count
+     */
+    constructor(file, start_index, count) {
+        const ret = wasm.lazrangedecompressor_new(file, start_index, count);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        LazRangeDecompressorFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) LazRangeDecompressor.prototype[Symbol.dispose] = LazRangeDecompressor.prototype.free;
+
 export class WasmConverter {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -296,38 +384,6 @@ export class WasmPcdConverter {
 if (Symbol.dispose) WasmPcdConverter.prototype[Symbol.dispose] = WasmPcdConverter.prototype.free;
 
 /**
- * M4-7: 展開専用Worker(`src/datasource/laz-decompress.worker.ts`)から呼ぶ。
- * `file`の点インデックス`[start_index, start_index + count)`の範囲を展開し、
- * `copc_core::serialize_le`形式(`WasmConverter::recordWidth()`ちょうどの
- * 幅)の固定長レコードを連結したバイト列を返す。
- *
- * `WasmConverter`とは完全に独立したインスタンス(自分専用の`las::Reader`)を
- * 開く。Web Workerはメモリを共有しないグローバルなので、これは「1つの
- * `File`を複数のWorkerがそれぞれ自分のReaderで読む」ことになるが、
- * `File`は不変なスナップショットであり、読み出しは`FileRangeReader`経由の
- * 範囲読み(`File.slice`)なので競合しない。
- *
- * `start_index`が`total_points`以上、または末尾付近で`count`点に
- * 満たない場合は、実際に読めた点数ぶんだけの(`recordWidth()`の倍数の)
- * バイト列を返す(エラーにしない。呼び出し側がファイル全体を
- * `hardwareConcurrency`等分するときに、割り切れない端数が出ても
- * そのまま渡せるようにするため)。
- * @param {File} file
- * @param {number} start_index
- * @param {number} count
- * @returns {Uint8Array}
- */
-export function decompressLazRange(file, start_index, count) {
-    const ret = wasm.decompressLazRange(file, start_index, count);
-    if (ret[3]) {
-        throw takeFromExternrefTable0(ret[2]);
-    }
-    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-    return v1;
-}
-
-/**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
  * 追えるようにするため。標準の`std::panic`フックをそのまま`console.error`に
@@ -344,6 +400,23 @@ export function decompressLazRange(file, start_index, count) {
  */
 export function init_panic_hook() {
     wasm.init_panic_hook();
+}
+
+/**
+ * 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば
+ * そのメッセージを返す。`src/datasource/copc.worker.ts`が変換失敗の
+ * catchブロックで呼び、`unreachable`トラップしか伝わらないエラーメッセージに
+ * この詳細を足して画面にも出す(`alloc_guard.rs`のドキュメント参照)。
+ * @returns {string | undefined}
+ */
+export function lastAllocationFailureMessage() {
+    const ret = wasm.lastAllocationFailureMessage();
+    let v1;
+    if (ret[0] !== 0) {
+        v1 = getStringFromWasm0(ret[0], ret[1]);
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    }
+    return v1;
 }
 
 /**
@@ -574,6 +647,9 @@ function __wbg_get_imports() {
 }
 
 const __wbindgen_enum_XmlHttpRequestResponseType = ["", "arraybuffer", "blob", "document", "json", "text"];
+const LazRangeDecompressorFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_lazrangedecompressor_free(ptr, 1));
 const WasmConverterFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmconverter_free(ptr, 1));
