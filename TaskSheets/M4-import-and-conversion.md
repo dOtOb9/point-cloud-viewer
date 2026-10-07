@@ -2710,10 +2710,12 @@ dist/assets/copc.worker-*.js             15.08 kB
    octree構築の結果は変わらない」、`validate_spill_record`・`PointStats`が
    1点ごとに閉じた計算であることをソースで確認済み)で検証した。
    以前は「展開Workerは並行して動くが、結果を取り出す順序は範囲の昇順に
-   決め打ち」だったが、pull型でWorkerごとに非同期に進める新しい設計では、
-   順序を決め打ちにするとパイプライン化(背圧の`MAX_IN_FLIGHT_BATCHES_PER_WORKER`
-   による先読み)の効果が薄れるため、**Worker間の順序は到着順に変えた**
-   (各Workerの担当範囲内の順序は保たれる)。この変更が安全であることを、
+   決め打ち」だったが、この設計ではそれをやめた。順序を決め打ちにするなら、
+   「次に取り出す番のWorker」以外から届いたバッチは、取り出されるまで
+   どこかに貯めておくしかなく、これは「バッチを受け取ったら即座にpushして
+   捨てる」という本修正の前提(同時に抱える量を点数に比例させない)を崩す。
+   そのため**Worker間の順序は到着順に変えた**(各Workerの担当範囲内の
+   順序は保たれる)。この変更が安全であることを、
    **新規の統合テスト**(`crates/pcv-wasm/tests/parallel_push_order_point_set.rs`、
    `reordered_push_matches_sequential_push_point_set`)で直接確認した:
    同じ点の集合を(a)元の順序、(b)複数Workerのラウンドロビンを模した
