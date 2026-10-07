@@ -92,12 +92,11 @@
 //! - 各展開Workerは、変換対象の`File`(構造化クローンで複製。`File`は不変な
 //!   スナップショットなので複数Workerで同時に読んでも競合しない)と、
 //!   自分が担当する点インデックスの範囲`[start_index, start_index+count)`を
-//!   受け取る
+//!   受け取る(`init`メッセージ)
 //! - 展開Workerは**この変換専用の`WasmConverter`とは別の、独立した
-//!   `las::Reader`**を自分の`File`に対して開く(`decompress_laz_range`)。
+//!   `las::Reader`**を自分の`File`に対して開く(`LazRangeDecompressor`)。
 //!   `las::Reader::seek`でチャンクテーブルを辿って`start_index`近くまで
-//!   直接ジャンプしてから(全点を先頭から読み直さない)、`count`点を
-//!   読み進める
+//!   直接ジャンプしてから(全点を先頭から読み直さない)、担当範囲を読み進める
 //! - 読んだ点は`copc_core::serialize_le`で、spillと同じ固定長バイト列に
 //!   シリアライズしてから返す。**`copc_core`は`vendor/copc-writer`とは別の
 //!   公開クレートで、どちらの担当エージェントも自由に使ってよい共通の
@@ -109,28 +108,52 @@
 //!   `WasmConverter`だけが行う**(`SpillWriter`はWorkerをまたいで共有できない
 //!   ため、これ以外の設計は無い)
 //!
-//! ## 点の順序について
+//! ## M4-7追記(2026-10-07、緊急修正): バッチ単位・pull型・背圧
 //!
-//! `src/datasource/copc.worker.ts`の`runParallelReadPhase`は、担当範囲
-//! (点インデックスの昇順)の順で結果を取り出して`pushSerializedRecords`に
-//! 渡す(到着順ではない。全Workerは`postMessage`直後に並行して動き始める
-//! ため、取り出す順序を決め打ちにしても並列度は落ちない)。そのため
-//! 実際にはWeb版でも点の順序は保たれるが、**順序の保存は本質的な要件では
-//! ない**: `SpillWriter::push`に渡す順序が変わっても、`copc-writer`の検証
-//! (`validate_spill_record`)・統計(`PointStats`)はどちらも1点ごとに閉じた
-//! 計算(範囲チェック・min/max・ヒストグラム)で、順序に依存しないことを
-//! ソースで確認済み(vendor/copc-writerは読むだけで変更していない)。
-//! そのためoctree構築の結果(最終的な点の集合・空間分割)にも影響しない。
+//! 当初の設計は、展開Worker1個が担当範囲**全体**を1回の`postMessage`で返す
+//! ものだった(旧`decompress_laz_range`)。1点あたり約43〜57バイト
+//! (`vendor/copc-writer/tests/scratch_read_is_bounded.rs`)なので、担当範囲が
+//! 数千万点規模になると、1Workerあたり数百MB〜1GB超のバッファになりうる
+//! (M4-6で直した「メモリが点数に比例する」問題と同じ種類の不具合が、この
+//! 並列化で再び入っていた)。
+//!
+//! 代わりに、展開Workerは`LazRangeDecompressor::new`で担当範囲を受け取り、
+//! `feed(batch_size)`を呼ばれるたびに**そのバッチ分だけ**メモリを確保して
+//! 返す(呼び出し側がTypeScript側から小さなバッチ単位(`requestBatch`)で
+//! 駆動するpull型プロトコル、`src/datasource/laz-decompress.worker.ts`
+//! 参照)。変換用Workerは届いたバッチを`push_serialized_records`に渡して
+//! 即座に捨て、「要求済みでまだ消費していないバッチ」の数・バイト数を
+//! `src/datasource/decompress-partition.ts`の`BoundedBatchFlow`で数え、
+//! 上限に達したら次の`requestBatch`を送らずに待つ(背圧)。
+//!
+//! ## 点の順序について(変更あり)
+//!
+//! 以前は、変換用Workerが担当範囲(点インデックスの昇順)の順で結果を
+//! 取り出して`pushSerializedRecords`に渡していた(到着順ではない)。
+//! pull型・バッチ単位に変えた現在は、**Worker間の順序は到着順になる**
+//! (各Workerの担当範囲内での順序は保たれる)。順序を決め打ちにし直すには
+//! 「次に取り出す番のWorker」以外から届いたバッチをどこかに貯めておく
+//! 必要があり、これは「バッチを受け取ったら即座にpushして捨てる」という
+//! 上記の修正の前提を崩すため、到着順のままにした
+//! (`src/datasource/copc.worker.ts`の`runParallelReadPhase`参照)。
+//!
+//! いずれの順序でも正しい理由は変わらない: `SpillWriter::push`に渡す順序が
+//! 変わっても、`copc-writer`の検証(`validate_spill_record`)・統計
+//! (`PointStats`)はどちらも1点ごとに閉じた計算(範囲チェック・min/max・
+//! ヒストグラム)で、順序に依存しないことをソースで確認済み(vendor/
+//! copc-writerは読むだけで変更していない)。そのためoctree構築の結果
+//! (最終的な点の集合・空間分割)にも影響しない。この結論は
+//! `crates/pcv-wasm/tests/parallel_push_order_point_set.rs`で、実際に
+//! 順序を変えてpushした結果が点の集合として一致することを直接確認した。
 //!
 //! ## キャンセルと進捗
 //!
 //! キャンセルは、変換用Workerが展開Worker全員に対して`Worker.terminate()`を
 //! 呼ぶ(TypeScript側、`src/datasource/copc.worker.ts`参照)。`terminate()`は
 //! Workerの実行位置に関わらず即座に止まるため、従来の「バッチの合間に
-//! `postMessage`を処理させる」方式より反応は悪くならない。進捗は、各展開
-//! Workerが一定点数ごとに進捗を`postMessage`し、変換用Workerが全Worker分を
-//! 合算してからUIへ転送する(`src/datasource/copc.worker.ts`の
-//! `handleConvertStartParallel`参照)。
+//! `postMessage`を処理させる」方式より反応は悪くならない。進捗は、バッチが
+//! 1つ届くたび(=`decompress-partition.ts`の`DECOMPRESS_BATCH_POINTS`点
+//! ごと)に変換用Worker側で更新する。
 
 use std::io::BufReader;
 use std::path::Path;
