@@ -2658,6 +2658,153 @@ dist/assets/copc.worker-*.js             15.08 kB
 6. コア数の少ない端末(スマートフォン等)でも、変換が壊れずに完了する
    ことを確認する(並列化されないだけで、動作自体は保証されるはず)
 
+## M4-7 追記: 展開Workerのメモリが点数に比例していた不具合の修正(2026-10-07、Opus調査・Sonnet実装)
+
+### 何が問題だったか
+
+本節(M4-7)で導入した並列展開は、**各展開Workerが担当範囲の点を全部
+シリアライズして`Vec<u8>`にメモリに貯めてから、1回の`postMessage`で返す**
+設計だった(旧`decompress_laz_range`、`crates/pcv-wasm/src/convert.rs`)。
+1点あたり約43〜57バイト(`vendor/copc-writer/tests/scratch_read_is_bounded.rs`)
+なので、Worker1個の担当範囲が数千万点規模になると、1Workerあたり数百MB〜
+1GB超のバッファになりうる。これは**M4-6で直した「メモリが点数に比例する」
+問題と同じ種類の不具合**で、本節(M4-7)の並列化で再び入り込んでいた
+(`decompress-partition.ts`の`MAX_DECOMPRESS_WORKERS_MOBILE`のドキュメントが
+既にこの問題を指摘していたが、直すのはM4-11の時点では見送られていた)。
+
+さらに、変換用Worker(`copc.worker.ts`)側も、展開Workerから届いたバイト列を
+`pushSerializedRecords`で消費するまでの間は参照を持ち続けるが、消費自体は
+即座に行われていたため、**変換用Worker側に長期間のため込みは無かった**
+(=問題は展開Worker側の「全部まとめて作る」設計そのものにあった)。
+
+(所有者の実機で実際に踏んだ「変換に失敗しました: unreachable」は、調査の
+結果これとは**別の原因**(`Instant::now()`がwasm32でpanicする、M4-8追記参照)
+だったと判明したが、この「メモリが点数に比例する」設計上の欠陥自体は独立に
+実在する不具合であり、コーディネーターの指示どおりM4-8追記の後に引き続き
+修正した)。
+
+### 直し方
+
+1. **展開Workerをバッチ単位で駆動する(pull型)。** `crates/pcv-wasm/src/
+   convert.rs`に`LazRangeDecompressor`(`new`で担当範囲を受け取り、`feed
+   (batch_size)`を呼ばれるたびに**そのバッチ分だけ**メモリを確保して返す)
+   を追加し、旧`decompress_laz_range`(担当範囲全体を1回で返す)を置き換えた。
+   `laz-decompress.worker.ts`は`init`→(`requestBatch`→`decompress-batch`/
+   `decompress-done`を繰り返す)という新しいプロトコルになった。
+   - **バッチサイズの値と根拠**: `DECOMPRESS_BATCH_POINTS = 64 * 1024`点
+     (`decompress-partition.ts`)。既存の`CONVERT_BATCH_SIZE`(変換用Workerの
+     逐次バッチループ)と同じ桁に揃え、1点最大約57バイトで見積もると
+     1バッチ最大約3.65MiB(点数に関係なく一定)になる。
+2. **変換用Workerは届いたバッチを順に`pushSerializedRecords`へ渡し、渡し
+   終えたバッチは即座に捨てる(参照を残さない)。同時に抱えるバッチの数・
+   バイト数に上限を設け、上限に達したら展開Workerへの次の`requestBatch`を
+   送らずに待つ(背圧)。** この判定を`BoundedBatchFlow`(`decompress-
+   partition.ts`、ブラウザ・wasmに依存しない小さなクラス)に切り出した。
+   上限は`workerCount * MAX_IN_FLIGHT_BATCHES_PER_WORKER`
+   (`MAX_IN_FLIGHT_BATCHES_PER_WORKER = 2`、値の根拠はコード内コメント参照)。
+   展開Worker側は「次のリクエストが来るまで何もしない」ので、これが
+   そのまま背圧として働く(新しいメッセージ型や「待って」の往復は増やさず、
+   pull型プロトコル自体が背圧の実装になっている)。
+3. **`copc-writer`に渡す点の順序が変わってよいか**: 本節(M4-7)のデスクトップ
+   並列化の確認と同じ考え方(「点の集合が同じなら、順序が変わっても
+   octree構築の結果は変わらない」、`validate_spill_record`・`PointStats`が
+   1点ごとに閉じた計算であることをソースで確認済み)で検証した。
+   以前は「展開Workerは並行して動くが、結果を取り出す順序は範囲の昇順に
+   決め打ち」だったが、pull型でWorkerごとに非同期に進める新しい設計では、
+   順序を決め打ちにするとパイプライン化(背圧の`MAX_IN_FLIGHT_BATCHES_PER_WORKER`
+   による先読み)の効果が薄れるため、**Worker間の順序は到着順に変えた**
+   (各Workerの担当範囲内の順序は保たれる)。この変更が安全であることを、
+   **新規の統合テスト**(`crates/pcv-wasm/tests/parallel_push_order_point_set.rs`、
+   `reordered_push_matches_sequential_push_point_set`)で直接確認した:
+   同じ点の集合を(a)元の順序、(b)複数Workerのラウンドロビンを模した
+   入れ替え順序でそれぞれ`SpillWriter`へpushし、`write_copc_from_spill_with_fs`
+   で別々のCOPCへ書き出した上で、両方を`las::Reader`で開き直して座標+
+   intensityの集合が一致することを確認する。
+4. **PCDの経路(`pcd_import.rs`)の確認結果**: `WasmPcdConverter::feed`は
+   `pcd_rs::DynReader`の`next()`イテレータを1点ずつ呼ぶ逐次バッチループ
+   (`SpillWriter::push`も1点ずつ)で、担当範囲全体を`Vec`にため込む処理は
+   どこにも無い。全点を一括でメモリに載せるのは`binary_compressed`形式の
+   LZF展開(モジュールドキュメントに記載済みの512MiB上限チェックが既にある)
+   だけで、ASCII/binary(非圧縮)形式は点数に比例しない。**この確認は
+   `feed`メソッドのループ構造を読んで行ったもので、`pcd-rs`自身の内部実装
+   (LZF展開の詳細)までは読み直していない**(既存のモジュールドキュメントが
+   `pcd-rs` 0.9.0のソースを根拠にしていると記録している。本タスクでは
+   その記述を信頼し、`feed`側に新たな全件バッファ処理が無いことだけを
+   新たに確認した)。コード変更は無し。
+5. **`alloc_guard`のメッセージを画面のエラー表示にも出す。** メモリ確保の
+   失敗は`unreachable`命令のトラップにしかならず、JSの例外メッセージは
+   単に`"unreachable"`で、画面にはその文字列しか出せなかった。
+   `crates/pcv-wasm/src/alloc_guard.rs`に、確保失敗時のメッセージを
+   `thread_local`へ残す仕組みを足し、`lastAllocationFailureMessage()`
+   (`lib.rs`)でJS側から読めるようにした。`copc.worker.ts`の
+   `describeConversionFailure`が、変換失敗のメッセージが`unreachable`/
+   `RuntimeError`らしきものなら、この詳細(読めればそれを、読めなければ
+   「Consoleを確認してください」という案内文)を画面のエラーに足す。
+   トラップ後も別のexport関数からこの`thread_local`を読めることは、
+   wasmの仕組み上(トラップは呼び出した特定の処理だけを異常終了させ、
+   インスタンス自体やメモリ上の値を破壊しない)正しいはずだが、**実際の
+   ブラウザでトラップ後にこの関数を呼べることまでは確認できていない**
+   (ブラウザが無い環境のため)。所有者の実機確認で、うまく働かなかった
+   場合は報告してほしい。
+
+### 新規テスト
+
+- **最重要の受け入れ条件**: `crates/pcv-wasm/src/convert.rs`の
+  `feed_batch_size_stays_bounded_regardless_of_total_point_count`。
+  `LazRangeDecompressor`(内部は`RangeDecompressorCore`)の`feed`1回あたりの
+  戻り値の大きさが`batch_size * recordWidth()`を超えないことを、点数
+  10,000点・100,000点(10倍)の両方で確認する。**点数を10倍にしても、
+  1回のfeedが確保する最大バイト数は変わらない**ことを直接アサートする。
+- `src/datasource/decompress-partition.test.ts`の`BoundedBatchFlow`
+  (6件のテスト)。ブラウザ・wasmに依存しない純粋なクラスとして背圧の
+  制御を切り出し、上限に達したら`canAcquire()`がfalseを返すこと、
+  `release`で解放すると再びtrueに戻ること、**総リクエスト数を10倍にしても
+  同時に抱える量(`inFlightBatches`/`inFlightBytes`)の山は上限を超えず、
+  10倍にする前と同じ値になる**ことを、乱数シミュレーションで確認する。
+- `crates/pcv-wasm/tests/parallel_push_order_point_set.rs`の
+  `reordered_push_matches_sequential_push_point_set`(上記3参照)。
+- 既存の`concatenated_ranges_match_a_single_full_range_read`は、新しい
+  バッチ駆動APIに合わせて書き直した上で維持した(範囲の分割・バッチの分割
+  どちらも結果に影響しないことを確認する形に強化した)。
+
+### 確認したこと(コマンドと結果)
+
+- `cargo test --manifest-path crates/pcv-wasm/Cargo.toml`: 31件成功
+  (ユニットテスト25件+結合テスト5ファイル分6件)
+- `cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check` /
+  `cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target
+  wasm32-unknown-unknown --all-targets -- -D warnings`: 成功
+- `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets --
+  -D warnings` / `cargo test --workspace`(122件): 成功
+- `cargo clippy --manifest-path vendor/copc-writer/Cargo.toml
+  --no-default-features --target wasm32-unknown-unknown --lib --
+  -D clippy::disallowed_methods`: 成功(disallowed_methodsは引き続き通る。
+  このタスクでは`convert.rs`・`alloc_guard.rs`・`lib.rs`に変更を加えたが
+  `Instant::now`/`SystemTime::now`の直接呼び出しは増やしていない)
+- `npx vitest run src/datasource/decompress-partition.test.ts`: 16件成功
+- `npm run build:wasm`: 成功。生成物を今回のコミットに含めた
+- `npm run typecheck` / `npm run lint` / `npm run test`(289件) /
+  `npm run build`: 成功
+- `grep -rl "@tauri-apps/api" src/`: `src/datasource/tauri.ts`のみ(規約2)
+
+### 確認していないこと(所有者に見てもらう必要がある)
+
+- **実機での動作確認はできない。** 所有者に、数千万点規模のLAZ(以前
+  メモリ不足が疑われたファイル)をWeb版で変換してもらい、
+  1. 変換が完了すること。
+  2. devtoolsのタスクマネージャ(`chrome://inspect` or `Shift+Esc`)で、
+     変換中のメモリ使用量が、以前(このタスク前)より明らかに低い
+     ピークで安定していること(上限が点数に比例しないことの実感的な確認。
+     厳密な測定ではなく「増え続けない」ことの確認で十分)。
+  3. キャンセルが今までどおり即座に効くこと(pull型に変えても、
+     `Worker.terminate()`で止める仕組み自体は変えていない)。
+  4. 複数Workerでの変換結果が、従来どおり正しく表示されること(点数・
+     見た目がこのタスクの前と変わらないこと)。
+  の4点を確認してほしい。
+- `alloc_guard`のメッセージが実際に画面のエラー表示に出ることも、わざと
+  メモリ不足を起こせる環境でないと確認できない(上記「新しいテスト」の
+  とおり、仕組みの正しさはコードレベルでしか確認していない)。
+
 ---
 
 ## M4-9: E57/PLY/PCDを中間LASを経ずに直接COPCへ変換する(2026-10-03、Sonnet)
