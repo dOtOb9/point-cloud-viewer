@@ -345,6 +345,12 @@ async function runParallelReadPhase(
   function runWorkerLoop(worker: Worker, range: PointRange, index: number) {
     return new Promise<void>((resolve, reject) => {
       let nextRequestId = 0;
+      // 直前に送ったrequestBatchに対して、まだ応答(batch/done/failedの
+      // いずれか)を受け取っていないか。`init`が失敗した場合の
+      // `decompress-failed`はrequestBatchを送る前に届くため、その場合は
+      // falseのまま(=flow.acquireしていないので、応答時にflow.releaseしては
+      // いけない)。
+      let batchRequestPending = false;
       activeDecompressWorkers.push({ worker, reject });
 
       worker.onerror = (event) => {
@@ -367,6 +373,7 @@ async function runParallelReadPhase(
           }
         }
         flow.acquire(estimatedBatchBytes);
+        batchRequestPending = true;
         const request: DecompressRequest = {
           type: "requestBatch",
           id: nextRequestId++,
@@ -382,6 +389,7 @@ async function runParallelReadPhase(
             void requestNextBatch();
             return;
           case "decompress-batch": {
+            batchRequestPending = false;
             const actualBytes = response.bytes.byteLength;
             flow.adjustBytes(estimatedBatchBytes, actualBytes);
             converter.pushSerializedRecords(new Uint8Array(response.bytes));
@@ -397,9 +405,23 @@ async function runParallelReadPhase(
             return;
           }
           case "decompress-done":
+            // 直前のrequestBatchでacquireした分を解放する(バッチが届かなかった
+            // だけで、要求自体には応答が返ってきたため)。これを忘れると、
+            // このWorkerが最後に抱えた分がflowの集計に残り続けてしまい、
+            // 他のWorkerがcanAcquire()で見かけ上余裕が無いと誤判定する。
+            if (batchRequestPending) {
+              flow.release(estimatedBatchBytes);
+              batchRequestPending = false;
+            }
             resolve();
             return;
           case "decompress-failed":
+            // initの失敗(requestBatchをまだ送っていない)ならacquireして
+            // いないので、releaseしない。
+            if (batchRequestPending) {
+              flow.release(estimatedBatchBytes);
+              batchRequestPending = false;
+            }
             reject(new Error(response.message));
             return;
         }
