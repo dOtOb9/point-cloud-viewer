@@ -28,6 +28,7 @@
 
 import init, {
   init_panic_hook as initPanicHook,
+  lastAllocationFailureMessage,
   opfsScratchPoolSize,
   WasmConverter,
   WasmCopcFile,
@@ -35,7 +36,14 @@ import init, {
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { PreparingStepDto } from "./conversion-dto";
-import { decompressWorkerCountFor, pointRangesFor } from "./decompress-partition";
+import {
+  BoundedBatchFlow,
+  decompressWorkerCountFor,
+  pointRangesFor,
+  DECOMPRESS_BATCH_POINTS,
+  MAX_IN_FLIGHT_BATCHES_PER_WORKER,
+} from "./decompress-partition";
+import type { PointRange } from "./decompress-partition";
 import type { DecompressRequest, DecompressResponse } from "./laz-decompress.worker";
 import * as opfs from "./opfs";
 import type { OpenSource, PcdConvertStartRequest, WorkerRequest, WorkerResponse } from "./web-protocol";
@@ -150,7 +158,7 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       type: "error",
       id: request.id,
       ok: false,
-      message: err instanceof Error ? err.message : String(err),
+      message: describeConversionFailure(err),
     });
   }
 }
@@ -234,31 +242,82 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * 2026-10-07追記: 変換失敗のエラーメッセージを、wasmのメモリ確保失敗の詳細で
+ * 補う。
+ *
+ * メモリ確保の失敗は`unreachable`命令でのトラップにしかならず、JSが受け取る
+ * 例外のメッセージは単に`"unreachable"`(`WebAssembly.RuntimeError`)で、
+ * 画面にはそれしか出せなかった(所有者がdevtoolsのconsoleを開かないと
+ * `crates/pcv-wasm/src/alloc_guard.rs`が出す詳しい理由が見えない)。
+ * `lastAllocationFailureMessage()`(同ファイル参照)で、直前に確保失敗が
+ * 記録されていればその文言を画面のエラーにも足す。記録が無い場合(=
+ * メモリ確保の失敗以外が原因の`unreachable`、または何らかの理由で
+ * 記録を読めなかった場合)は、代わりにconsoleを見るよう案内する一般的な
+ * 文言を足す(「確かめていないことを確認したと書かない」という方針により、
+ * 読めるかどうかが不確かな経路を前提にしないため)。
+ */
+function describeConversionFailure(err: unknown): string {
+  const baseMessage = err instanceof Error ? err.message : String(err);
+  const looksLikeWasmTrap = /unreachable/i.test(baseMessage) || /RuntimeError/i.test(baseMessage);
+  if (!looksLikeWasmTrap) return baseMessage;
+
+  let allocationFailureMessage: string | null | undefined;
+  try {
+    allocationFailureMessage = lastAllocationFailureMessage();
+  } catch {
+    allocationFailureMessage = undefined;
+  }
+  if (allocationFailureMessage) {
+    return `${baseMessage}(${allocationFailureMessage})`;
+  }
+  return `${baseMessage}(メモリ不足の可能性があります。詳しい情報がブラウザの開発者ツールのConsoleに出ている場合があるので確認してください)`;
+}
+
 /** `laz-decompress.worker.ts`のインスタンスを1つ立てる。 */
 function spawnDecompressWorker(): Worker {
   return new Worker(new URL("./laz-decompress.worker.ts", import.meta.url), { type: "module" });
 }
 
 /**
- * M4-7: 読み込み段階を`workerCount`個の展開Workerに分担させる。
- * `pointRangesFor`で点インデックスを均等に分け、各Workerへ`File`
+ * M4-7追記(2026-10-07、緊急修正): 読み込み段階を`workerCount`個の展開Workerに
+ * 分担させる。`pointRangesFor`で点インデックスを均等に分け、各Workerへ`File`
  * (構造化クローン。`File`は不変なスナップショットなので複数Workerで
  * 同時に読んでも競合しない)と担当範囲を渡す。
  *
- * 進捗はWorker単位の粗い粒度になる(1つのWorkerが担当範囲を丸ごと展開
- * し終えるたびに更新)。デスクトップ版(`feed`を4096点ごとに刻む)より
- * 粒度は粗いが、キャンセルの即時性は`Worker.terminate()`により損なわれ
- * ない(`handleRequest`の`convertCancel`ハンドラ参照)。
+ * ## バッチ単位・pull型・背圧(メモリが点数に比例する不具合の修正)
  *
- * 展開し終えたバイト列は、担当範囲の順(`entries`の並び、=点インデックスの
- * 昇順)に`converter`へpushする(到着順ではない)。全Workerは`postMessage`
- * 直後に並行して動き始めるため、これは並列度を落とさない
- * (後続の範囲が先に終わっていても、そのWorker自身は待たされず計算を
- * 続けられる。単に「結果を取り出す順序」を決めているだけ)。順序を
- * 決め打ちにしたのは、spillへ書く点の並びを実行のたびに変えないため
- * (`crates/pcv-wasm/src/convert.rs`のモジュールドキュメント「M4-7」の
- * とおり、そもそも順序が変わってもoctree構築の結果には影響しないので
- * 必須ではないが、デバッグ時の再現性のために揃えた)。
+ * 以前は各Workerが担当範囲**全体**を1回で返す設計で、Worker1個のメモリ
+ * 使用量が担当範囲の点数に比例していた(`decompress-partition.ts`の
+ * モジュールドキュメント参照)。今は各Workerに対して、この関数が
+ * `requestBatch`を1つずつ送り、届いた分(最大`DECOMPRESS_BATCH_POINTS`点)を
+ * `pushSerializedRecords`に渡して**即座に捨てる**(参照を残さない)。
+ *
+ * 同時に「要求済みでまだ消費していない」バッチの数・バイト数を
+ * `BoundedBatchFlow`で数え、上限(`workerCount * MAX_IN_FLIGHT_BATCHES_PER_WORKER`
+ * 件)に達していたら、そのWorkerへの次の`requestBatch`を**送らずに待つ**
+ * (展開Worker側は次のリクエストが来るまで何もしないので、これが背圧になる)。
+ * 上限は点数に依存しない固定値なので、担当範囲が10倍になっても同時に抱える
+ * 量は変わらない(`decompress-partition.test.ts`で確認)。
+ *
+ * ## 点の順序について(変更あり)
+ *
+ * 各Workerの担当範囲内での順序は保たれるが、**Worker間の順序は到着順になる**
+ * (以前は「範囲の昇順で取り出す」決め打ちだったが、pull型でWorkerごとに
+ * 非同期に進めるこの設計では、順序を決め打ちにすると「次に取り出す番の
+ * Workerがまだ終わっていなければ、他のWorkerが終わっていても待つ」ことになり、
+ * パイプライン化(背圧の`MAX_IN_FLIGHT_BATCHES_PER_WORKER`)の効果が薄れる
+ * ため、順序の決め打ちはやめた)。`crates/pcv-wasm/src/convert.rs`の
+ * モジュールドキュメント「M4-7」が示すとおり、`SpillWriter::push`の順序は
+ * 最終的なoctree構築の結果(点の集合)に影響しない。これは
+ * `crates/pcv-wasm/tests/parallel_push_order_point_set.rs`で、順序を変えて
+ * pushした結果が点の集合として一致することを直接確認済み。
+ *
+ * ## キャンセルと進捗
+ *
+ * 進捗は、バッチが1つ届くたび(=`DECOMPRESS_BATCH_POINTS`点ごと)に更新する
+ * (以前のWorker単位の粗い粒度より細かくなった)。キャンセルは変わらず
+ * `Worker.terminate()`。
  */
 async function runParallelReadPhase(
   converter: WasmConverter,
@@ -271,53 +330,103 @@ async function runParallelReadPhase(
   onWorkerStarting?: (started: number) => void,
 ): Promise<"done" | "cancelled"> {
   const ranges = pointRangesFor(totalPoints, workerCount);
-  const entries = ranges.map((range, index) => {
-    const worker = spawnDecompressWorker();
-    onWorkerStarting?.(index + 1);
-    const promise = new Promise<ArrayBuffer>((resolve, reject) => {
+  const recordWidth = converter.recordWidth();
+  const estimatedBatchBytes = DECOMPRESS_BATCH_POINTS * recordWidth;
+  const flow = new BoundedBatchFlow({
+    maxInFlightBatches: workerCount * MAX_IN_FLIGHT_BATCHES_PER_WORKER,
+    maxInFlightBytes: workerCount * MAX_IN_FLIGHT_BATCHES_PER_WORKER * estimatedBatchBytes,
+  });
+
+  const workers = ranges.map(() => spawnDecompressWorker());
+  let pointsCompleted = 0;
+  let cancelled = false;
+
+  /** 1Worker分の「init→done/failedまでrequestBatchし続ける」ループ。 */
+  function runWorkerLoop(worker: Worker, range: PointRange, index: number) {
+    return new Promise<void>((resolve, reject) => {
+      let nextRequestId = 0;
       activeDecompressWorkers.push({ worker, reject });
-      worker.onmessage = (event: MessageEvent<DecompressResponse>) => {
-        const response = event.data;
-        if (response.type === "decompress-done") {
-          resolve(response.bytes);
-        } else {
-          reject(new Error(response.message));
-        }
-      };
+
       worker.onerror = (event) => {
         reject(new Error(event.message || "展開Workerでエラーが発生しました"));
       };
-      const request: DecompressRequest = {
+
+      async function requestNextBatch(): Promise<void> {
+        if (cancelled || convertCancelRequested) {
+          resolve();
+          return;
+        }
+        // 背圧: 上限に達していたら、他のWorkerのバッチが消費される(release
+        // される)まで送らずに待つ。ポーリングだが、1バッチの処理時間
+        // (数万点のpush)に対して十分短い間隔なので実用上問題ない。
+        while (!flow.canAcquire()) {
+          await yieldToEventLoop();
+          if (cancelled || convertCancelRequested) {
+            resolve();
+            return;
+          }
+        }
+        flow.acquire(estimatedBatchBytes);
+        const request: DecompressRequest = {
+          type: "requestBatch",
+          id: nextRequestId++,
+          batchSize: DECOMPRESS_BATCH_POINTS,
+        };
+        worker.postMessage(request);
+      }
+
+      worker.onmessage = (event: MessageEvent<DecompressResponse>) => {
+        const response = event.data;
+        switch (response.type) {
+          case "decompress-ready":
+            void requestNextBatch();
+            return;
+          case "decompress-batch": {
+            const actualBytes = response.bytes.byteLength;
+            flow.adjustBytes(estimatedBatchBytes, actualBytes);
+            converter.pushSerializedRecords(new Uint8Array(response.bytes));
+            flow.release(actualBytes);
+            pointsCompleted += actualBytes / recordWidth;
+            onProgress(pointsCompleted);
+            if (convertCancelRequested) {
+              cancelled = true;
+              resolve();
+              return;
+            }
+            void requestNextBatch();
+            return;
+          }
+          case "decompress-done":
+            resolve();
+            return;
+          case "decompress-failed":
+            reject(new Error(response.message));
+            return;
+        }
+      };
+
+      const initRequest: DecompressRequest = {
+        type: "init",
         id: index,
         file,
         startIndex: range.startIndex,
         count: range.count,
       };
-      worker.postMessage(request);
+      worker.postMessage(initRequest);
     });
-    return { worker, range, promise };
-  });
+  }
 
-  let pointsCompleted = 0;
   try {
-    for (const entry of entries) {
-      const bytes = await entry.promise;
-      pointsCompleted += entry.range.count;
-      onProgress(pointsCompleted);
-      if (bytes.byteLength > 0) {
-        converter.pushSerializedRecords(new Uint8Array(bytes));
-      }
-      // 大きいバイト列をpushし終えるたびに、キャンセル要求を反映できる
-      // 機会を与える(読み込み段階のキャンセルという既存の性質を保つ)。
-      await yieldToEventLoop();
-      if (convertCancelRequested) return "cancelled";
-    }
-    return "done";
+    await Promise.all(workers.map((worker, index) => {
+      onWorkerStarting?.(index + 1);
+      return runWorkerLoop(worker, ranges[index], index);
+    }));
+    return cancelled ? "cancelled" : "done";
   } catch (err) {
     if (err instanceof ParallelReadCancelledError) return "cancelled";
     throw err;
   } finally {
-    for (const entry of entries) entry.worker.terminate();
+    for (const worker of workers) worker.terminate();
     activeDecompressWorkers = [];
   }
 }
@@ -513,7 +622,7 @@ async function runConversion(
     scope.postMessage({
       type: "convert-failed",
       id,
-      message: err instanceof Error ? err.message : String(err),
+      message: describeConversionFailure(err),
       cancelled: false,
     });
   } finally {
@@ -660,7 +769,7 @@ async function runPcdConversion(id: number, file: File, maxPointsPerNode: number
     scope.postMessage({
       type: "convert-failed",
       id,
-      message: err instanceof Error ? err.message : String(err),
+      message: describeConversionFailure(err),
       cancelled: false,
     });
   } finally {

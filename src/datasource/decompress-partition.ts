@@ -100,6 +100,14 @@ export const MAX_DECOMPRESS_WORKERS = 8;
  *
  * **未検証の初期値。** 実機で確かめてもらい、クラッシュしなくなったことを
  * 確認できたら2以上に緩める余地を残す値として、ここにコメントごと置いてある。
+ *
+ * 2026-10-07追記: 上記の根拠(「各展開Workerが担当範囲**全体**をメモリに
+ * 貯めてから返す」こと)自体は、同日の緊急修正でバッチ単位に直した
+ * (`DECOMPRESS_BATCH_POINTS`・`BoundedBatchFlow`のドキュメント参照)。
+ * そのためこの値を1にする直接の根拠は弱まったが、モバイルでWorkerを増やす
+ * ことの妥当性自体を実機で確かめたわけではない(Worker起動のオーバーヘッド・
+ * 複数wasmヒープの固定コストなど、点数に比例しない理由は他にも残る)ため、
+ * この値は変更していない。緩めるかどうかは、やはり実機確認の後に判断する。
  */
 export const MAX_DECOMPRESS_WORKERS_MOBILE = 1;
 
@@ -120,4 +128,114 @@ export function decompressWorkerCountFor(
       : 1;
   const cap = options.isMobile ? MAX_DECOMPRESS_WORKERS_MOBILE : MAX_DECOMPRESS_WORKERS;
   return Math.max(1, Math.min(available, cap));
+}
+
+// --- 2026-10-07の緊急修正: 展開Workerをバッチ単位で駆動する(メモリが点数に比例する不具合の修正) ---
+//
+// 以前は展開Worker1個が「担当範囲の点を全部シリアライズしてメモリに貯めてから」
+// 1回のpostMessageで返す設計だった(`crates/pcv-wasm/src/convert.rs`の旧
+// `decompress_laz_range`)。1点あたり約43〜57バイト
+// (`vendor/copc-writer/tests/scratch_read_is_bounded.rs`)なので、数千万点の
+// 入力を数個のWorkerに分けても、1Workerあたり数百MB〜1GB超のバッファになり
+// うる(`MAX_DECOMPRESS_WORKERS_MOBILE`のドキュメント参照)。
+//
+// 代わりに、展開Workerは`crates/pcv-wasm/src/convert.rs`の
+// `LazRangeDecompressor::feed(batchSize)`を使い、小さなバッチ単位で結果を
+// 返す(`laz-decompress.worker.ts`)。変換用Worker(`copc.worker.ts`)は
+// バッチを受け取るたびに`pushSerializedRecords`へ渡して即座に捨て、
+// 「次のバッチをまだ要求してよいか」を`BoundedBatchFlow`で判定する
+// (pull型のプロトコル。展開Workerは次のリクエストが来るまで何もしない=
+// 待たされる、という形で背圧がかかる)。
+
+/**
+ * 1回の`feed`で読む点数。`src/datasource/copc.worker.ts`の
+ * `CONVERT_BATCH_SIZE`(変換用Workerの逐次バッチループ、デスクトップ版の
+ * `READ_BATCH_SIZE`と同じ桁)と同じ値を使う。この値を選んだ根拠:
+ *
+ * - 1点あたりの最大バイト数(約57バイト、color+GPS+extra bytesを含む
+ *   フォーマット。`vendor/copc-writer/tests/scratch_read_is_bounded.rs`参照)
+ *   で見積もると、64Ki点 × 57バイト ≈ 3.65MiBが1バッチの最大サイズになる。
+ *   これは点数に関係なく一定(=このタスクの目的そのもの)。
+ * - 既存の`CONVERT_BATCH_SIZE`と揃えることで、進捗報告・キャンセルの反応
+ *   粒度が今までと同じ桁になる(新しい値を増やさない)。
+ */
+export const DECOMPRESS_BATCH_POINTS = 64 * 1024;
+
+/**
+ * 展開Worker1個につき、変換用Workerが同時に要求してよい(=まだ
+ * `pushSerializedRecords`に渡していない)バッチ数の上限。2にしてあるのは、
+ * 「現在のバッチをpushしている間に、展開Workerが次のバッチを先に計算し
+ * 始められる」という1段分のパイプライン化を許すため(0だと展開Workerは
+ * pushが終わるまで完全に遊ぶことになり、並列化の意味が薄れる)。
+ * 3以上にしない理由: 上限を増やすほど同時に抱えるバッチのバイト数が増える
+ * (`DECOMPRESS_BATCH_POINTS`×この値、Worker数倍)ため、「点数に比例しない」
+ * というこの修正の目的を弱める。
+ */
+export const MAX_IN_FLIGHT_BATCHES_PER_WORKER = 2;
+
+/** `BoundedBatchFlow`の上限設定。 */
+export interface BatchFlowLimits {
+  /** 同時に抱えてよいバッチ数の上限(要求済みでまだ消費していない件数)。 */
+  maxInFlightBatches: number;
+  /** 同時に抱えてよい概算バイト数の上限。 */
+  maxInFlightBytes: number;
+}
+
+/**
+ * 展開Workerへの「次のバッチを要求してよいか」を判定する、ブラウザのAPIに
+ * 依存しない小さなクラス。`copc.worker.ts`の`runParallelReadPhase`が、
+ * 複数の展開Worker(ひいては合計の点数)をまとめて1つのインスタンスで
+ * 監視するのに使う。
+ *
+ * **このクラスが保証すること**: `acquire`で記録した件数・バイト数が
+ * `release`で解放されるまで`limits`を超えて増え続けることはない。
+ * `canAcquire()`がこれを守るための唯一のゲートで、呼び出し側(本番コードも
+ * テストも)は必ず`canAcquire()`を確認してから`acquire()`を呼ぶ規約にする
+ * (このクラス自身は`acquire()`を呼ばれたら無条件に加算する。呼び出し側の
+ * 誤りを検出するためではなく、単純さを優先した設計)。
+ *
+ * 総リクエスト数(点数に比例して増える)をいくら増やしても、同時に
+ * 抱える量自体は`limits`で頭打ちになることをテストで確認する
+ * (`decompress-partition.test.ts`)。
+ */
+export class BoundedBatchFlow {
+  private batches = 0;
+  private bytes = 0;
+
+  constructor(private readonly limits: BatchFlowLimits) {}
+
+  /** 次のバッチを要求してよいか(上限に余裕があるか)。 */
+  canAcquire(): boolean {
+    return this.batches < this.limits.maxInFlightBatches && this.bytes < this.limits.maxInFlightBytes;
+  }
+
+  /** バッチを1つ要求した(まだ届いていない)ことを記録する。 */
+  acquire(estimatedBytes: number): void {
+    this.batches += 1;
+    this.bytes += estimatedBytes;
+  }
+
+  /**
+   * バッチが届いた時点で、要求時の見積もりと実際のバイト数の差を補正する
+   * (`estimatedBytes`は`acquire`に渡した値と同じものを渡すこと)。
+   */
+  adjustBytes(estimatedBytes: number, actualBytes: number): void {
+    this.bytes += actualBytes - estimatedBytes;
+  }
+
+  /** バッチを使い切って捨てた(`pushSerializedRecords`に渡し終えた)ことを記録する。 */
+  release(bytes: number): void {
+    this.batches -= 1;
+    this.bytes -= bytes;
+  }
+
+  /** テスト・デバッグ用: 現在抱えているバッチ数。 */
+  get inFlightBatches(): number {
+    return this.batches;
+  }
+
+  /** テスト・デバッグ用: 現在抱えている概算バイト数。 */
+  get inFlightBytes(): number {
+    return this.bytes;
+  }
 }
