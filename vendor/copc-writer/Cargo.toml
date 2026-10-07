@@ -103,6 +103,16 @@ version = "3"
 default-features = false
 optional = true
 
+# 2026-10-07の緊急修正: `std::time::Instant::now`/`SystemTime::now`は
+# wasm32-unknown-unknownでpanicする(`src/writer.rs`・`src/metadata.rs`の
+# コメント参照)。`web-time`はnon-wasmターゲットでは`std::time`への単純な
+# 再エクスポートになり、wasm32では`Date`/`performance.now()`を使う実装に
+# 自動的に切り替わる(クレート自身の売りがこれ)。両ターゲットで同じAPIを
+# 使い続けられるので、呼び出し側(`write_copc_inner`・`current_utc_date`)の
+# ロジックを変えずに済む。
+[dependencies.web-time]
+version = "1"
+
 [dev-dependencies.criterion]
 version = "0.8"
 

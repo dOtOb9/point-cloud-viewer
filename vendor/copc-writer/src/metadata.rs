@@ -8,6 +8,18 @@ use std::path::Path;
 use byteorder::{LittleEndian, ReadBytesExt};
 use copc_core::{Error, Result, MAX_EVLR_COUNT};
 use las::raw;
+// 2026-10-07の緊急修正(所有者の実機でWeb版の変換が必ず`unreachable`で落ちる
+// 不具合): `std::time::SystemTime::now()`はwasm32-unknown-unknownでは
+// panicする(`std::sys::time::unsupported`、時刻の概念がOSに無いため)。
+// `web-time`はnon-wasmターゲットでは`std::time`への単純な再エクスポートに
+// なり、wasm32ではブラウザの`Date`/`performance.now()`を使う実装に自動的に
+// 切り替わる「差し替えるだけで両対応になる」クレートなので、新しい依存を
+// 足す理由としてこれを選んだ(手でJSのDateをpcv-wasm経由で渡す案も検討したが、
+// 呼び出し元が2つ(LAS/LAZ版・PCD版)あり、両方に配線する手間と比べて
+// web-timeへの置き換えの方が小さく安全と判断した)。`clippy.toml`の
+// `disallowed-methods`で`std::time::{Instant,SystemTime}::now`の直接呼び出しを
+// 禁止し、`web_time`の同名メソッドへの置き換えを強制する(再発防止)。
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::las_out::LAS_VLR_HEADER_BYTES;
 
@@ -427,8 +439,8 @@ fn null_terminated_wkt_bytes(crs_wkt: &str) -> Vec<u8> {
 
 /// Current UTC date as LAS `(day_of_year, year)`.
 fn current_utc_date() -> (u16, u16) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
     utc_date_from_unix_days((secs / 86_400) as i64)

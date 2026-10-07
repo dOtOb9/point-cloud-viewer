@@ -11,7 +11,7 @@
 
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use copc_core::{
@@ -20,6 +20,17 @@ use copc_core::{
 };
 use las::point::Format as LasFormat;
 use laz::{LasZipCompressor, LazVlrBuilder};
+// 2026-10-07の緊急修正: `std::time::Instant::now()`はwasm32-unknown-unknownでは
+// panicする(`metadata.rs`冒頭のコメント参照)。`write_copc_from_spill_with_fs`
+// (pcv-wasmが呼ぶ本番の変換経路)は`stage_timings`に常に`None`を渡すので
+// 計測自体は要らないはずだったが、このファイルの`Instant::now()`呼び出しは
+// 元々`stage_timings`の有無にかかわらず**無条件に**実行されていた
+// (「`None`のときは呼び出しさえ発生しない」という104行目付近のコメントは
+// 誤りだった。実際に計測を使うかどうかは`elapsed()`を呼ぶかどうかでしか
+// 分岐していなかった)。`web_time::Instant`に替えることで、計測の有無に
+// 関わらずwasm32でも安全に呼べるようにする(`metadata.rs`のコメント・
+// `TaskSheets/M4-import-and-conversion.md`のM4-8追記参照)。
+use web_time::Instant;
 
 use crate::hierarchy_pages::{
     assign_hierarchy_page_offsets, plan_hierarchy_pages, write_hierarchy_page_tree,
@@ -101,10 +112,20 @@ impl Default for CopcWriterParams {
 /// 計測専用: 後処理(octree構築・ノード圧縮・書き出し)の内訳。
 ///
 /// 本番の変換経路(`write_copc_from_spill_with_fs`・`write_streaming_with_cancel`等)は
-/// これを使わない(常に`None`を渡す。計測コストはInstant::now()呼び出し数回分のみで、
-/// `None`のときはその呼び出しさえ発生しない)。M4-8(`TaskSheets/M4-import-and-conversion.md`)の
+/// これを使わない(常に`None`を渡す)。M4-8(`TaskSheets/M4-import-and-conversion.md`)の
 /// 計測ハーネス(`crates/pcv-convert/examples/post_process_stage_bench.rs`)専用に、
 /// `write_copc_from_spill_with_fs_and_timings`経由で使う。
+///
+/// **2026-10-07追記(M4-8追記、緊急修正): 以前このコメントは「`None`のときは
+/// `Instant::now()`の呼び出しさえ発生しない」と書いていたが、これは誤りだった。**
+/// `write_copc_inner`の4箇所の`Instant::now()`は`stage_timings`の有無に関わらず
+/// **無条件に**呼ばれており、`None`かどうかで分岐していたのは`.elapsed()`を
+/// 呼んで加算するかどうかだけだった。`std::time::Instant::now()`は
+/// wasm32-unknown-unknownでは`time not implemented on this platform`で
+/// panicするため、**Web版の変換は(ファイルサイズに関係なく)M4-8以降、
+/// 常にこの箇所で失敗していた。** 詳細・修正は`TaskSheets/M4-import-and-conversion.md`
+/// のM4-8追記、`Instant`の実体は`web_time::Instant`(このファイル冒頭のuse文の
+/// コメント参照)。
 ///
 /// 3つのフィールドの合計は、後処理全体(`write_copc_from_spill_with_fs`1回の呼び出し)の
 /// 所要時間とほぼ一致する(計測区間に漏れが無いように、関数の実行区間を過不足なく
