@@ -30,5 +30,6 @@ pub mod copc_detect;
 pub mod crs_override;
 pub mod disk_space;
 pub mod output_path;
+pub mod stage_timings;
 pub mod streaming;
 pub mod write_metadata;

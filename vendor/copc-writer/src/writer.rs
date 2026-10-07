@@ -130,6 +130,21 @@ impl Default for CopcWriterParams {
 /// 3つのフィールドの合計は、後処理全体(`write_copc_from_spill_with_fs`1回の呼び出し)の
 /// 所要時間とほぼ一致する(計測区間に漏れが無いように、関数の実行区間を過不足なく
 /// 3つに割っている)。
+/// 計測専用: 変換のうち「スパイルまで」(入力の読み込み+一時ファイルへの
+/// 書き込み)の内訳。M4-12(`TaskSheets/M4-import-and-conversion.md`)で、
+/// `PostProcessStageTimings`と対になる形で追加した。
+/// `write_streaming_with_cancel_and_timings`参照。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IngestStageTimings {
+    /// 入力イテレータから1点を取り出すのにかかった時間の合計
+    /// (ディスクI/O+LAZ展開。呼び出し側のイテレータ実装がこの区間を
+    /// 丸ごと占有する)。
+    pub source_read_and_decode: Duration,
+    /// 取り出した点を一時ファイル(spill)へ書き込むのにかかった時間の合計
+    /// (`SpillWriter::push`)。
+    pub spill_write: Duration,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PostProcessStageTimings {
     /// octreeの分割(LODの索引作り、点のノードへの振り分け。`build_lod_index`)。
@@ -208,6 +223,44 @@ pub fn write_streaming_with_cancel<I>(
 where
     I: IntoIterator<Item = Result<LasPointRecord>>,
 {
+    write_streaming_with_cancel_and_timings(
+        path, layout, points, params, metadata, spill_dir, cancel, None, None,
+    )
+}
+
+/// M4-12(`TaskSheets/M4-import-and-conversion.md`): `write_streaming_with_cancel`と
+/// 同じ処理を行い、あわせて「読み込み(ディスクI/O+LAZ展開)」「一時ファイル
+/// (spill)への書き込み」の内訳(`ingest_timings`)と、後処理の内訳
+/// (`stage_timings`、既存の[`PostProcessStageTimings`])を取れる。
+///
+/// **本番の変換経路(デスクトップ・Android)がこの計測を使う**(以前の
+/// `PostProcessStageTimings`はベンチ専用だったが、M4-12で所有者向けの
+/// 「変換のどこが遅いか」の内訳表示に使うようになった)。
+///
+/// `ingest_timings`の2つのフィールドは、`points`イテレータから1点を取り出す
+/// 区間(`source_read_and_decode`。`pcv_convert::streaming`の
+/// `BatchedLasPoints::next`実装が1バッチぶんの`fill_points`+デコードを行う
+/// 区間を含む)と、取り出した点を`SpillWriter::push`する区間
+/// (`spill_write`)を、ループの中で`Instant`で区切って直接測るだけで、
+/// アルゴリズム自体は変えていない。1点ごとに`Instant::now()`を2回余分に
+/// 呼ぶ(ネイティブでは数十ns程度、`examples/read_stage_bench.rs`が
+/// 同じ粒度で測っている実測と同じ桁)。
+#[cfg(feature = "native-fs")]
+#[allow(clippy::too_many_arguments)]
+pub fn write_streaming_with_cancel_and_timings<I>(
+    path: &Path,
+    layout: StreamingLayout,
+    points: I,
+    params: &CopcWriterParams,
+    metadata: &CopcWriteMetadata,
+    spill_dir: &Path,
+    cancel: &(dyn CancelCheck + Sync),
+    mut ingest_timings: Option<&mut IngestStageTimings>,
+    stage_timings: Option<&mut PostProcessStageTimings>,
+) -> Result<()>
+where
+    I: IntoIterator<Item = Result<LasPointRecord>>,
+{
     cancel.check()?;
     validate_streaming_layout_supported(&layout)?;
     // spillファイルは呼び出し側が指定した`spill_dir`に置く(今までと同じ)。
@@ -216,11 +269,25 @@ where
     // M4-import-and-conversion.md`のM4-1bが記録した既知の仕様)。
     let spill_fs = NativeScratchFs::new(spill_dir);
     let mut spill = SpillWriter::create(&spill_fs, layout)?;
-    for (index, item) in points.into_iter().enumerate() {
+    let mut iter = points.into_iter();
+    let mut index = 0usize;
+    loop {
+        let fetch_start = Instant::now();
+        let next = iter.next();
+        if let Some(timings) = ingest_timings.as_mut() {
+            timings.source_read_and_decode += fetch_start.elapsed();
+        }
+        let Some(item) = next else { break };
         if index.is_multiple_of(CANCEL_POLL_STRIDE) {
             cancel.check()?;
         }
-        spill.push(&item?)?;
+        let record = item?;
+        let push_start = Instant::now();
+        spill.push(&record)?;
+        if let Some(timings) = ingest_timings.as_mut() {
+            timings.spill_write += push_start.elapsed();
+        }
+        index += 1;
     }
     cancel.check()?;
     let reader = spill.finalize()?;
@@ -232,7 +299,7 @@ where
         cancel,
         &metadata.to_output(),
         &lod_fs,
-        None,
+        stage_timings,
         None,
     )
 }
@@ -1233,5 +1300,73 @@ mod tests {
                 "format {format_id} with {extra_bytes} extra byte(s)"
             );
         }
+    }
+
+    /// M4-12(`TaskSheets/M4-import-and-conversion.md`):
+    /// `write_streaming_with_cancel_and_timings`が実際に`ingest_timings`・
+    /// `stage_timings`の両方を埋めること(0のまま=計測が素通りしていないこと)
+    /// を確認する。値そのものの大小は環境依存なので検証しない
+    /// (ゼロでないことだけを確認する決定的なテスト)。
+    #[test]
+    fn write_streaming_with_cancel_and_timings_fills_both_breakdowns() {
+        fn record(seed: u32) -> LasPointRecord {
+            let f = f64::from(seed);
+            LasPointRecord {
+                x: (f * 1.5) % 10_000.0,
+                y: (f * 2.25) % 10_000.0,
+                z: (f * 0.75) % 10_000.0,
+                return_number: 1,
+                number_of_returns: 1,
+                ..LasPointRecord::default()
+            }
+        }
+
+        let layout = StreamingLayout {
+            point_format: 0,
+            has_gps: false,
+            has_color: false,
+            has_nir: false,
+            has_waveform: false,
+            extra_bytes: 0,
+            extra_bytes_descriptors: Vec::new(),
+        };
+        let points: Vec<Result<LasPointRecord>> = (0..5_000u32).map(|i| Ok(record(i))).collect();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("out.copc.laz");
+        let spill_dir = dir.path().join("spill");
+        std::fs::create_dir_all(&spill_dir).expect("create spill dir");
+
+        let mut ingest = IngestStageTimings::default();
+        let mut post = PostProcessStageTimings::default();
+        write_streaming_with_cancel_and_timings(
+            &output,
+            layout,
+            points,
+            &CopcWriterParams::new(500),
+            &CopcWriteMetadata::default(),
+            &spill_dir,
+            &copc_core::NeverCancel,
+            Some(&mut ingest),
+            Some(&mut post),
+        )
+        .expect("write_streaming_with_cancel_and_timings");
+
+        assert!(
+            ingest.source_read_and_decode > Duration::ZERO,
+            "入力イテレータから読んだ時間が0のまま: {ingest:?}"
+        );
+        assert!(
+            ingest.spill_write > Duration::ZERO,
+            "spillへの書き込み時間が0のまま: {ingest:?}"
+        );
+        assert!(
+            post.lod_index_build > Duration::ZERO,
+            "octree分割の時間が0のまま: {post:?}"
+        );
+        assert!(
+            post.node_compression > Duration::ZERO,
+            "ノード圧縮の時間が0のまま: {post:?}"
+        );
     }
 }

@@ -37,6 +37,7 @@ use std::path::Path;
 use copc_core::CancelCheck;
 use copc_writer::CopcWriterParams;
 
+use crate::stage_timings::ConversionStageTimings;
 use crate::streaming::ReadProgress;
 
 /// 拡張子から取り込み元の形式を判定する。大文字小文字は区別しない。
@@ -128,6 +129,39 @@ pub fn convert_to_copc<R>(
 where
     R: Read + Seek + Send + Sync + 'static,
 {
+    let mut discarded = ConversionStageTimings::default();
+    convert_to_copc_and_timings(
+        source,
+        format,
+        output,
+        spill_dir,
+        params,
+        cancel,
+        crs_wkt,
+        on_progress,
+        &mut discarded,
+    )
+}
+
+/// M4-12(`TaskSheets/M4-import-and-conversion.md`): `convert_to_copc`と同じ処理を
+/// 行い、あわせて段階ごとの所要時間(`timings`)を埋める
+/// (`crate::streaming::convert_and_timings`と同じ理由。`src-tauri/src/
+/// conversion.rs`が本番の変換経路として呼ぶ)。
+#[allow(clippy::too_many_arguments)]
+pub fn convert_to_copc_and_timings<R>(
+    source: R,
+    format: SourceFormat,
+    output: &Path,
+    spill_dir: &Path,
+    params: &CopcWriterParams,
+    cancel: &(dyn CancelCheck + Sync),
+    crs_wkt: Option<String>,
+    on_progress: impl FnMut(ReadProgress),
+    timings: &mut ConversionStageTimings,
+) -> Result<ImportSummary, ImportError>
+where
+    R: Read + Seek + Send + Sync + 'static,
+{
     // 3形式とも`BufRead`(PLY/PCD)または`Read + Seek`(E57)で足りるため、
     // 1箇所で`BufReader`に包んでおけば全形式で使い回せる。
     let buffered = std::io::BufReader::new(source);
@@ -140,6 +174,7 @@ where
             cancel,
             crs_wkt,
             on_progress,
+            timings,
         ),
         SourceFormat::Ply => convert::run_import(
             ply::PlySource::open(buffered)?,
@@ -149,6 +184,7 @@ where
             cancel,
             crs_wkt,
             on_progress,
+            timings,
         ),
         SourceFormat::Pcd => convert::run_import(
             pcd::PcdSource::open(buffered)?,
@@ -158,6 +194,7 @@ where
             cancel,
             crs_wkt,
             on_progress,
+            timings,
         ),
     }
 }
@@ -175,6 +212,31 @@ pub fn convert_path_to_copc(
     crs_wkt: Option<String>,
     on_progress: impl FnMut(ReadProgress),
 ) -> Result<ImportSummary, ImportError> {
+    let mut discarded = ConversionStageTimings::default();
+    convert_path_to_copc_and_timings(
+        input,
+        output,
+        spill_dir,
+        params,
+        cancel,
+        crs_wkt,
+        on_progress,
+        &mut discarded,
+    )
+}
+
+/// `convert_path_to_copc`の内訳付き版(`convert_to_copc_and_timings`と同じ理由)。
+#[allow(clippy::too_many_arguments)]
+pub fn convert_path_to_copc_and_timings(
+    input: &Path,
+    output: &Path,
+    spill_dir: &Path,
+    params: &CopcWriterParams,
+    cancel: &(dyn CancelCheck + Sync),
+    crs_wkt: Option<String>,
+    on_progress: impl FnMut(ReadProgress),
+    timings: &mut ConversionStageTimings,
+) -> Result<ImportSummary, ImportError> {
     let format = detect_format(input).ok_or_else(|| {
         ImportError::UnknownFormat(
             input
@@ -186,7 +248,7 @@ pub fn convert_path_to_copc(
     })?;
     let file = std::fs::File::open(input)
         .map_err(|e| ImportError::Copc(copc_core::Error::io("open source E57/PLY/PCD", e)))?;
-    convert_to_copc(
+    convert_to_copc_and_timings(
         file,
         format,
         output,
@@ -195,6 +257,7 @@ pub fn convert_path_to_copc(
         cancel,
         crs_wkt,
         on_progress,
+        timings,
     )
 }
 

@@ -112,8 +112,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use copc_core::{CancelCheck, LasPointRecord, StreamingLayout};
-use copc_writer::{write_streaming_with_cancel, CopcWriterParams};
+use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriterParams};
 
+use crate::stage_timings::ConversionStageTimings;
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
 /// 進捗の報告間隔(点数)。`copc-writer`内部のキャンセル確認間隔
@@ -243,6 +244,41 @@ where
     R: Read + Seek + Send + Sync + 'static,
     F: FnMut(ReadProgress),
 {
+    let mut discarded = ConversionStageTimings::default();
+    convert_and_timings(
+        source,
+        output,
+        spill_dir,
+        params,
+        cancel,
+        on_progress,
+        &mut discarded,
+    )
+}
+
+/// M4-12(`TaskSheets/M4-import-and-conversion.md`): `convert`と同じ処理を行い、
+/// あわせて段階ごとの所要時間(`timings`)を埋める。`src-tauri/src/
+/// conversion.rs`が本番の変換経路として呼ぶ(所有者が「変換のどこが遅いか」を
+/// 画面で確認し、そのまま報告できるようにするため)。
+///
+/// 内訳の実体は`vendor/copc-writer`の
+/// `write_streaming_with_cancel_and_timings`(`IngestStageTimings`・
+/// `PostProcessStageTimings`)がそのまま計測する。このクレート側は
+/// 2つの構造体を1つの`ConversionStageTimings`にまとめるだけで、追加の計測は
+/// 行っていない。
+pub fn convert_and_timings<R, F>(
+    source: R,
+    output: &Path,
+    spill_dir: &Path,
+    params: &CopcWriterParams,
+    cancel: &(dyn CancelCheck + Sync),
+    on_progress: F,
+    timings: &mut ConversionStageTimings,
+) -> copc_core::Result<()>
+where
+    R: Read + Seek + Send + Sync + 'static,
+    F: FnMut(ReadProgress),
+{
     let las_reader = las::Reader::new(source).map_err(|e| copc_core::Error::Las(e.to_string()))?;
     // `fill_points`は`&mut self`を要求するため、ヘッダーから要る情報は先に取り出す
     // (借用が重ならないようにする)。
@@ -263,7 +299,21 @@ where
         exhausted: false,
     };
 
-    write_streaming_with_cancel(output, layout, points, params, &metadata, spill_dir, cancel)
+    let mut ingest = copc_writer::IngestStageTimings::default();
+    let mut post = copc_writer::PostProcessStageTimings::default();
+    write_streaming_with_cancel_and_timings(
+        output,
+        layout,
+        points,
+        params,
+        &metadata,
+        spill_dir,
+        cancel,
+        Some(&mut ingest),
+        Some(&mut post),
+    )?;
+    *timings = ConversionStageTimings::from_parts(ingest, post);
+    Ok(())
 }
 
 /// パスから開く便利関数(デスクトップの通常経路。テストからも使う)。
@@ -280,15 +330,42 @@ pub fn convert_path<F>(
 where
     F: FnMut(ReadProgress),
 {
+    let mut discarded = ConversionStageTimings::default();
+    convert_path_and_timings(
+        source,
+        output,
+        spill_dir,
+        params,
+        cancel,
+        on_progress,
+        &mut discarded,
+    )
+}
+
+/// `convert_path`の内訳付き版(`convert_and_timings`と同じ理由)。
+#[allow(clippy::too_many_arguments)]
+pub fn convert_path_and_timings<F>(
+    source: &Path,
+    output: &Path,
+    spill_dir: &Path,
+    params: &CopcWriterParams,
+    cancel: &(dyn CancelCheck + Sync),
+    on_progress: F,
+    timings: &mut ConversionStageTimings,
+) -> copc_core::Result<()>
+where
+    F: FnMut(ReadProgress),
+{
     let file =
         std::fs::File::open(source).map_err(|e| copc_core::Error::io("open source LAS/LAZ", e))?;
-    convert(
+    convert_and_timings(
         std::io::BufReader::new(file),
         output,
         spill_dir,
         params,
         cancel,
         on_progress,
+        timings,
     )
 }
 

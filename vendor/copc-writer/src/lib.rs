@@ -36,8 +36,12 @@ pub use writer::{
     convert_las_to_copc_streaming, convert_las_to_copc_streaming_with_crs_wkt_override,
     write_source, write_source_with_cancel, write_streaming_with_cancel,
 };
-// M4-8: 後処理の内訳を計測するための計測専用API
-// (`crates/pcv-convert/examples/post_process_stage_bench.rs`からのみ使う)。
+// M4-12: `write_streaming_with_cancel_and_timings`は本番の変換経路
+// (`pcv_convert::streaming`)が使う、読み込み+spill書き込みの内訳付き版。
+#[cfg(feature = "native-fs")]
+pub use writer::{write_streaming_with_cancel_and_timings, IngestStageTimings};
+// M4-8: 後処理の内訳を計測するための計測専用API。M4-12で本番の変換経路
+// (`pcv_convert::streaming`・`pcv_convert::import::convert`)も使うようになった。
 // M4-10: `write_copc_from_spill_with_fs_and_batch_sizes`はノードごとのLAZ圧縮
 // (`parallel-compress`)の並列バッチ構成を確かめる回帰テスト専用API
 // (`vendor/copc-writer/tests/parallel_compress_batch_bounded.rs`からのみ使う)。
