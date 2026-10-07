@@ -353,95 +353,160 @@ impl WasmConverter {
     }
 }
 
-/// M4-7: 展開専用Worker(`src/datasource/laz-decompress.worker.ts`)から呼ぶ。
-/// `file`の点インデックス`[start_index, start_index + count)`の範囲を展開し、
-/// `copc_core::serialize_le`形式(`WasmConverter::recordWidth()`ちょうどの
-/// 幅)の固定長レコードを連結したバイト列を返す。
+/// M4-7追記(2026-10-07、緊急修正): 展開専用Worker
+/// (`src/datasource/laz-decompress.worker.ts`)から呼ぶ。`file`の点インデックス
+/// `[start_index, start_index + count)`の範囲を、**小さなバッチ単位で**展開する。
+///
+/// # なぜ「全部まとめて返す」設計をやめたか
+///
+/// 旧設計(`decompress_laz_range`、1回の呼び出しで担当範囲**全体**の
+/// `Vec<u8>`を作って返す)は、展開Worker1つあたりのメモリ使用量が担当範囲の
+/// 点数に**比例**してしまう。1点あたり約43〜57バイト
+/// (`vendor/copc-writer/tests/scratch_read_is_bounded.rs`参照)なので、
+/// 例えば数千万点の入力を数個のWorkerに分けても、1Workerあたり数百MB〜
+/// 1GB超のバッファになりうる。これがwasm32の4GiBアドレス空間を圧迫し、
+/// 所有者の実機で確認された「変換に失敗しました: unreachable」(メモリ確保
+/// 失敗によるトラップ)の一因になっていた
+/// (`decompress-partition.ts`の`MAX_DECOMPRESS_WORKERS_MOBILE`のドキュメント、
+/// `TaskSheets/M4-import-and-conversion.md`のM4-7追記参照)。
+///
+/// `WasmConverter::feed`(変換用Worker側)が既に採用している「呼び出し側が
+/// 小さなバッチ単位で何度も呼ぶ」設計を、展開側にも同じ考え方で導入する。
+/// `LazRangeDecompressor`は自分専用の`las::Reader`を1回だけ開いて担当範囲の
+/// 先頭まで`seek`し、以降は`feed(batch_size)`を呼ばれるたびに**その
+/// バッチ分だけ**メモリを確保して返す。呼び出し側(`laz-decompress.worker.ts`)
+/// は1バッチ返すたびに`postMessage`で変換用Workerへ渡し、変換用Workerが
+/// `pushSerializedRecords`で消費し終えてから次のバッチを要求する
+/// (pull型・背圧。`src/datasource/copc.worker.ts`の`runParallelReadPhase`、
+/// `src/datasource/decompress-partition.ts`の`BoundedBatchFlow`参照)。これにより
+/// 同時にメモリ上に存在するのは「バッチサイズ×Worker数」程度に収まり、
+/// **点数に比例しない。**
 ///
 /// `WasmConverter`とは完全に独立したインスタンス(自分専用の`las::Reader`)を
 /// 開く。Web Workerはメモリを共有しないグローバルなので、これは「1つの
 /// `File`を複数のWorkerがそれぞれ自分のReaderで読む」ことになるが、
 /// `File`は不変なスナップショットであり、読み出しは`FileRangeReader`経由の
 /// 範囲読み(`File.slice`)なので競合しない。
-///
-/// `start_index`が`total_points`以上、または末尾付近で`count`点に
-/// 満たない場合は、実際に読めた点数ぶんだけの(`recordWidth()`の倍数の)
-/// バイト列を返す(エラーにしない。呼び出し側がファイル全体を
-/// `hardwareConcurrency`等分するときに、割り切れない端数が出ても
-/// そのまま渡せるようにするため)。
-#[wasm_bindgen(js_name = decompressLazRange)]
-pub fn decompress_laz_range(file: File, start_index: f64, count: f64) -> Result<Vec<u8>, JsValue> {
-    let stats = Stats::new();
-    let source = FileRangeReader::new(file, stats);
-    let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
-    decompress_point_range(buffered, start_index as u64, count as u64).map_err(to_js_error)
+#[wasm_bindgen]
+pub struct LazRangeDecompressor {
+    core: RangeDecompressorCore,
 }
 
-/// `decompress_laz_range`の中身(wasm-bindgen/`web_sys::File`に依存しない
-/// 部分)。`R`を一般化してあるのは、ネイティブの`cargo test`から
-/// `Cursor<Vec<u8>>`や`std::fs::File`を渡してロジックを検証できるように
-/// するため(`web_sys::File`はネイティブのテストでは作れない。
-/// `range_math.rs`と同じ考え方)。
-fn decompress_point_range<R>(source: R, start_index: u64, count: u64) -> Result<Vec<u8>, String>
-where
-    R: std::io::Read + std::io::Seek + Send + Sync + 'static,
-{
-    let mut reader = las::Reader::new(source).map_err(|e| e.to_string())?;
-
-    // `StreamingLayout`はヘッダーだけから決まる値なので、`WasmConverter::new`が
-    // 同じファイルに対して計算するものと一致する(モジュールドキュメント
-    // 「M4-7」参照)。
-    let layout = StreamingLayout::from_las_header(reader.header());
-    let total_points = reader.header().number_of_points();
-    let mut point_data = las::PointDataBuilder::new()
-        .for_header(reader.header())
-        .build();
-
-    if start_index >= total_points {
-        return Ok(Vec::new());
+#[wasm_bindgen]
+impl LazRangeDecompressor {
+    /// `start_index`が`total_points`以上、または末尾付近で`count`点に
+    /// 満たない場合は、実際に読める点数だけを担当範囲として扱う(エラーに
+    /// しない。呼び出し側がファイル全体を`hardwareConcurrency`等分するときに、
+    /// 割り切れない端数が出てもそのまま渡せるようにするため。旧
+    /// `decompress_laz_range`と同じ方針)。
+    #[wasm_bindgen(constructor)]
+    pub fn new(file: File, start_index: f64, count: f64) -> Result<LazRangeDecompressor, JsValue> {
+        let stats = Stats::new();
+        let source = FileRangeReader::new(file, stats);
+        let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
+        let core = RangeDecompressorCore::open(buffered, start_index as u64, count as u64)
+            .map_err(|e| JsValue::from_str(&e))?;
+        Ok(Self { core })
     }
-    reader.seek(start_index).map_err(|e| e.to_string())?;
 
-    let remaining = total_points - start_index;
-    let to_read = remaining.min(count);
-    let record_width = layout.record_width();
-    let mut out = Vec::with_capacity(
-        usize::try_from(to_read)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(record_width),
-    );
-    let mut scratch = vec![0u8; record_width];
+    /// 最大`batch_size`点を読み、`copc_core::serialize_le`形式(`recordWidth()`
+    /// ちょうどの幅)の固定長レコードを連結したバイト列を返す。戻り値の長さは
+    /// 常に`(読めた点数) * recordWidth()`で、`batch_size * recordWidth()`を
+    /// 超えない(=メモリ使用量が担当範囲全体の点数に比例しない、という
+    /// このAPIの目的そのもの)。空の`Vec`を返したら、担当範囲を読み終えた
+    /// (呼び出し側はこれ以上`feed`を呼ばない)。
+    #[wasm_bindgen(js_name = feed)]
+    pub fn feed(&mut self, batch_size: u32) -> Result<Vec<u8>, JsValue> {
+        self.core
+            .feed(batch_size)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+}
 
-    let mut remaining_to_read = to_read;
-    while remaining_to_read > 0 {
-        let batch = remaining_to_read.min(READ_BATCH_SIZE);
-        let n = reader
-            .fill_points(batch, &mut point_data)
+/// `LazRangeDecompressor`の中身(wasm-bindgen/`web_sys::File`に依存しない
+/// 部分)。`open`の`R`を一般化してあるのは、ネイティブの`cargo test`から
+/// `Cursor<Vec<u8>>`を渡してロジックを検証できるようにするため
+/// (`web_sys::File`はネイティブのテストでは作れない。`range_math.rs`と
+/// 同じ考え方)。`las::Reader`自体がレコード幅の違いを内部で型消去している
+/// (`las`クレート0.10のReaderは`Read + Seek`を直接保持せず、コンストラクタの
+/// 時点でBoxして型を一旦固定する)ため、この構造体自身は`R`をフィールドに
+/// 持たない(=`LazRangeDecompressor`も`open()`が返した時点でジェネリックが
+/// 消えており、wasm-bindgenの型(ジェネリック不可)にそのまま載せられる)。
+struct RangeDecompressorCore {
+    reader: las::Reader,
+    point_data: las::PointData,
+    layout: StreamingLayout,
+    /// 担当範囲のうち、まだ`feed`で読んでいない点数。0になったら
+    /// `feed`は空の`Vec`を返す(呼び出し側はそれ以上`feed`を呼ばない)。
+    remaining: u64,
+}
+
+impl RangeDecompressorCore {
+    fn open<R>(source: R, start_index: u64, count: u64) -> Result<Self, String>
+    where
+        R: std::io::Read + std::io::Seek + Send + Sync + 'static,
+    {
+        let mut reader = las::Reader::new(source).map_err(|e| e.to_string())?;
+
+        // `StreamingLayout`はヘッダーだけから決まる値なので、`WasmConverter::new`が
+        // 同じファイルに対して計算するものと一致する(モジュールドキュメント
+        // 「M4-7」参照)。
+        let layout = StreamingLayout::from_las_header(reader.header());
+        let total_points = reader.header().number_of_points();
+        let point_data = las::PointDataBuilder::new()
+            .for_header(reader.header())
+            .build();
+
+        let remaining = if start_index >= total_points {
+            0
+        } else {
+            reader.seek(start_index).map_err(|e| e.to_string())?;
+            (total_points - start_index).min(count)
+        };
+
+        Ok(Self {
+            reader,
+            point_data,
+            layout,
+            remaining,
+        })
+    }
+
+    fn feed(&mut self, batch_size: u32) -> Result<Vec<u8>, String> {
+        if self.remaining == 0 {
+            return Ok(Vec::new());
+        }
+        let to_read = self.remaining.min(u64::from(batch_size));
+        let n = self
+            .reader
+            .fill_points(to_read, &mut self.point_data)
             .map_err(|e| e.to_string())?;
         if n == 0 {
-            break; // ヘッダーの申告点数より実データが少なかった(壊れたファイル)。
+            // ヘッダーの申告点数より実データが少なかった(壊れたファイル)。
+            self.remaining = 0;
+            return Ok(Vec::new());
         }
-        for result in point_data.points() {
+
+        let width = self.layout.record_width();
+        let mut out = vec![
+            0u8;
+            usize::try_from(n)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(width)
+        ];
+        let mut scratch = vec![0u8; width];
+        let mut offset = 0usize;
+        for result in self.point_data.points() {
             let point = result.map_err(|e| e.to_string())?;
             let record = LasPointRecord::from_las_point(&point);
-            serialize_le(&record, &layout, &mut scratch).map_err(|e| e.to_string())?;
-            out.extend_from_slice(&scratch);
+            serialize_le(&record, &self.layout, &mut scratch).map_err(|e| e.to_string())?;
+            out[offset..offset + width].copy_from_slice(&scratch);
+            offset += width;
         }
-        remaining_to_read -= n;
+        self.remaining -= n;
+        Ok(out)
     }
-
-    Ok(out)
 }
-
-/// `decompress_laz_range`が1回の`fill_points`で読むバッチサイズ。
-/// `WasmConverter::feed`とは別の経路(展開Worker)なので独自に持つが、
-/// 値自体はデスクトップ版(`crates/pcv-convert/src/streaming.rs`の
-/// `READ_BATCH_SIZE`)と揃えてある(進捗確認の頻度を同程度にするため)。
-/// Web版はこのバッチをまたいだ並列展開はしない(1つの展開Worker=1スレッド
-/// なので`rayon`のような1呼び出し内の並列化は無く、並列化は複数Worker
-/// そのものが担う。モジュールドキュメント「M4-7」参照)ため、デスクトップ版の
-/// ようにバッチサイズを大きくしてチャンクをまたがせる必要が無い。
-const READ_BATCH_SIZE: u64 = 64 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -475,30 +540,62 @@ mod tests {
         std::fs::read(&path).expect("書いたLAZを読み戻せなかった")
     }
 
-    /// `decompress_point_range`を複数の範囲に分けて呼び、結果を連結したものが、
-    /// 1回で全点を読んだ結果と**バイト単位で一致する**ことを確認する
-    /// (M4-7の受け入れ条件: 並列展開Workerが担当範囲を分担しても、
-    /// 各範囲を順番どおりに連結すれば逐次読みと同じ結果になること)。
-    /// `crates/pcv-convert/tests/parallel_laz_decompression.rs`(ネイティブの
-    /// `laz-parallel`、点の集合が一致することを確認)とは別の並列化経路
-    /// (Web、複数Worker)に対する、こちらは「連結結果がバイト単位で一致する」
-    /// というより強い確認になっている(範囲が重ならず連結順も決まっているため)。
+    /// `RangeDecompressorCore::feed`を`batch_size`点ずつ空になるまで呼び、
+    /// 結果を連結して返す(テスト用ヘルパー)。
+    fn decompress_range_in_batches<R>(
+        source: R,
+        start_index: u64,
+        count: u64,
+        batch_size: u32,
+    ) -> Result<Vec<u8>, String>
+    where
+        R: std::io::Read + std::io::Seek + Send + Sync + 'static,
+    {
+        let mut core = RangeDecompressorCore::open(source, start_index, count)?;
+        let mut out = Vec::new();
+        loop {
+            let batch = core.feed(batch_size)?;
+            if batch.is_empty() {
+                break;
+            }
+            out.extend_from_slice(&batch);
+        }
+        Ok(out)
+    }
+
+    /// 範囲を複数のバッチに分けて`feed`した結果を連結したものが、1回で
+    /// 全点を読んだ結果と**バイト単位で一致する**ことを確認する(M4-7の
+    /// 受け入れ条件: 並列展開Workerが担当範囲を分担しても、各範囲を順番どおりに
+    /// 連結すれば逐次読みと同じ結果になること)。`crates/pcv-convert/tests/
+    /// parallel_laz_decompression.rs`(ネイティブの`laz-parallel`、点の集合が
+    /// 一致することを確認)とは別の並列化経路(Web、複数Worker)に対する、
+    /// こちらは「連結結果がバイト単位で一致する」というより強い確認になっている
+    /// (範囲が重ならず連結順も決まっているため)。
     #[test]
     fn concatenated_ranges_match_a_single_full_range_read() {
         const POINT_COUNT: u32 = 300_000; // 約6チャンク分
+
         let bytes = synthetic_multi_chunk_laz_bytes(POINT_COUNT);
 
-        let full = decompress_point_range(Cursor::new(bytes.clone()), 0, u64::from(POINT_COUNT))
-            .expect("全体の展開に失敗した");
+        // 全体を1バッチ(= 全点)で読んだ結果。
+        let full = decompress_range_in_batches(
+            Cursor::new(bytes.clone()),
+            0,
+            u64::from(POINT_COUNT),
+            POINT_COUNT,
+        )
+        .expect("全体の展開に失敗した");
 
-        // 3つの範囲に分ける(チャンク境界と揃っていなくてよいことを確かめるため、
-        // わざと均等でない区切りにする)。
+        // 3つの範囲(Worker)に分け、さらに各Workerも複数バッチ(batch_size=1,000点、
+        // チャンク境界をまたぐ値)に分けて読む。「範囲の分割」と「バッチの分割」
+        // どちらも結果に影響しないことを同時に確認する。
         let boundaries = [0u64, 70_000, 180_000, u64::from(POINT_COUNT)];
         let mut concatenated = Vec::new();
         for window in boundaries.windows(2) {
             let (start, end) = (window[0], window[1]);
-            let part = decompress_point_range(Cursor::new(bytes.clone()), start, end - start)
-                .unwrap_or_else(|e| panic!("範囲[{start}, {end})の展開に失敗した: {e}"));
+            let part =
+                decompress_range_in_batches(Cursor::new(bytes.clone()), start, end - start, 1_000)
+                    .unwrap_or_else(|e| panic!("範囲[{start}, {end})の展開に失敗した: {e}"));
             concatenated.extend_from_slice(&part);
         }
 
@@ -509,7 +606,7 @@ mod tests {
         );
         assert_eq!(
             full, concatenated,
-            "全体読みと、範囲に分けて連結した結果がバイト単位で一致しない"
+            "全体読みと、範囲・バッチに分けて連結した結果がバイト単位で一致しない"
         );
     }
 
@@ -518,8 +615,60 @@ mod tests {
         const POINT_COUNT: u32 = 1_000;
         let bytes = synthetic_multi_chunk_laz_bytes(POINT_COUNT);
 
-        let out = decompress_point_range(Cursor::new(bytes), 10_000, 100)
+        let out = decompress_range_in_batches(Cursor::new(bytes), 10_000, 100, 64)
             .expect("範囲外の開始でもエラーにしない設計のはず");
         assert!(out.is_empty());
+    }
+
+    /// 2026-10-07の緊急修正(最重要の受け入れ条件): `feed`1回あたりの戻り値の
+    /// 大きさが`batch_size * recordWidth()`を超えないこと、かつ**担当範囲の
+    /// 点数をどれだけ増やしても**(ここでは10倍にして比較)、1回の`feed`が
+    /// 一度に確保するバイト数(=`feed`の戻り値の最大長)が増えないことを
+    /// 確認する。旧設計(`decompress_laz_range`、担当範囲全体を1回で返す)は
+    /// この値が点数に比例してしまっていた。
+    #[test]
+    fn feed_batch_size_stays_bounded_regardless_of_total_point_count() {
+        const BATCH_SIZE: u32 = 1_000;
+        // `synthetic_multi_chunk_laz_bytes`と同じpoint format(6、GPS時刻あり・
+        // 色無し)でヘッダーを作り、レコード幅を計算する(formatが違うと
+        // `record_width()`が変わるため、実際に使うformatと揃える必要がある)。
+        let record_width = {
+            let mut builder = las::Builder::from((1, 4));
+            builder.point_format = las::point::Format::new(6).expect("format 6");
+            let header = builder.into_header().expect("valid header");
+            StreamingLayout::from_las_header(&header).record_width()
+        };
+        let max_batch_bytes = usize::try_from(BATCH_SIZE).unwrap() * record_width;
+
+        for &point_count in &[10_000u32, 100_000u32] {
+            let bytes = synthetic_multi_chunk_laz_bytes(point_count);
+            let mut core =
+                RangeDecompressorCore::open(Cursor::new(bytes), 0, u64::from(point_count))
+                    .expect("展開器を開けなかった");
+
+            let mut max_seen = 0usize;
+            let mut total_points_read = 0u64;
+            loop {
+                let batch = core.feed(BATCH_SIZE).expect("feedに失敗した");
+                if batch.is_empty() {
+                    break;
+                }
+                assert!(
+                    batch.len() <= max_batch_bytes,
+                    "point_count={point_count}: feedが1回で返したバイト数({})が上限({max_batch_bytes})を超えた",
+                    batch.len()
+                );
+                max_seen = max_seen.max(batch.len());
+                total_points_read += (batch.len() / record_width) as u64;
+            }
+            assert_eq!(
+                total_points_read,
+                u64::from(point_count),
+                "point_count={point_count}: feedの合計が担当範囲の点数と一致しない"
+            );
+            // 10倍の点数でも、1回のfeedが確保する最大バイト数(max_seen)は
+            // batch_sizeで決まる上限と同じ(=点数に比例しない)。
+            assert!(max_seen <= max_batch_bytes);
+        }
     }
 }
