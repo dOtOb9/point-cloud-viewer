@@ -65,6 +65,21 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # 2026-10-07の緊急修正(M4-8追記): vendor/copc-writerはルートworkspaceの
+      # exclude対象(Cargo.tomlのコメント参照)で、ここまでの`--workspace`では
+      # 一切リントもテストもされない(`[patch.crates-io]`経由の依存先として
+      # コンパイルされるだけ)。実際、この不具合(本番の変換経路が無条件に
+      # `Instant::now()`を呼び、wasm32で`unreachable`で落ちる)はCIが素通りの
+      # ままM4-8から入っていた。fmt/testはここ(ネイティブ)で見る。
+      # disallowed_methodsの検査(再発防止)は、このクレートに`web_time`を
+      # 導入したことに伴い、ネイティブ向けの検査からは意図的に外してある
+      # (`vendor/copc-writer/clippy.toml`のコメント、`.github/workflows/pages.yml`
+      # 参照: ネイティブでは`web_time::Instant`が`std::time::Instant`への単純な
+      # 再エクスポートになるため、正しく`web_time`経由で呼んでいるコードも
+      # `std::time::Instant::now`として解決されてしまい、ネイティブでこのlintを
+      # 有効にすると正しいコードまで誤って弾いてしまうことを実際に確認した)。
+      - run: cargo fmt --manifest-path vendor/copc-writer/Cargo.toml -- --check
+      - run: cargo test --manifest-path vendor/copc-writer/Cargo.toml
 
   # 13秒で終わる frontend だけを前提にする。
   # rust ジョブ (5分超) を待つと build と直列になり、CI 全体が倍近く遅くなるため待たない。

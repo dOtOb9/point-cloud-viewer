@@ -59,6 +59,32 @@ jobs:
           cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check
           cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
 
+      # 2026-10-07の緊急修正(M4-8追記)の再発防止。
+      #
+      # `vendor/copc-writer`はrootワークスペースのexclude対象で、上のpcv-wasm
+      # 自身のclippyは「依存先(path/patch経由のcopc-writer含む)」までは
+      # `-D warnings`で厳格化しない(pcv-wasm自身の警告だけが対象。実際に
+      # 確認済み: copc-writerのdead-code警告がこの直前のステップでも出るが、
+      # ビルドは失敗しない)。そのためcopc-writer自身をmanifest-pathで直接
+      # 指定し、`std::time::Instant::now`/`SystemTime::now`の直接呼び出しが
+      # 無いことを単独で検査する(`vendor/copc-writer/clippy.toml`の
+      # `disallowed-methods`)。
+      #
+      # - `--lib`のみ(`--all-targets`にすると、dev-dependencyの`criterion`が
+      #   rayon前提でwasm32と非互換のためビルド自体が失敗する。実機で確認済み)
+      # - `-D clippy::disallowed_methods`だけを指定し、`-D warnings`はあえて
+      #   使わない(`--no-default-features`(native-fsを切った状態、pcv-wasmの
+      #   依存指定と同じ)だとこのクレートに元から多数のdead-code警告があり、
+      #   このタスクの対象外の既存debtを一緒にブロッカーにしてしまうため)
+      # - ネイティブ側では検査しない(`ci.yml`の`rust`ジョブのコメント参照:
+      #   ネイティブだと`web_time::Instant::now`が`std::time::Instant::now`への
+      #   単純な再エクスポートに解決されるため、正しいコードまで誤検知する)
+      - name: vendor/copc-writerのInstant::now直接呼び出しを禁止(wasm32)
+        run: |
+          cargo clippy --manifest-path vendor/copc-writer/Cargo.toml \
+            --no-default-features --target wasm32-unknown-unknown --lib \
+            -- -D clippy::disallowed_methods
+
       # wasm-bindgen CLIはCargo.lockの`wasm-bindgen`クレートと**完全に同じ
       # バージョン**でないと動かない。ハードコードすると更新時に食い違って
       # 気づかないまま壊れるので、Cargo.lockから実際のバージョンを読む。
