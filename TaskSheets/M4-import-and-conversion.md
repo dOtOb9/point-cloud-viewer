@@ -3627,6 +3627,156 @@ rebase後に受け入れ条件を再確認した:
 コミット: `perf(M4-8)`・`feat(M4-8)`・`chore(M4-8)`・`docs(M4-8)`(今回の実装)に続けて、
 `fix(M4-8): M4-9のimportモジュールのCancelCheck型をSync対応に揃える`を追加した。
 
+## M4-8 追記: 実機不具合「変換に失敗しました: unreachable」の調査と修正(2026-10-07、Opus調査・Sonnet実装)
+
+### 症状
+
+所有者の実機(Web版、PCのChrome)で、LAZ・PCDの変換が失敗していた。画面には
+「変換に失敗しました: unreachable」。当初コーディネーターは「数千万点規模の
+入力でメモリ不足(wasm32の4GiB上限)」と見立てていたが、所有者のブラウザ
+console出力で真因が判明した。
+
+```
+panicked at /rustc/.../library/std/sys/time/unsupported.rs:35:9:
+time not implemented on this platform
+```
+
+### 原因(コーディネーターがコードで確認、本タスクで追認)
+
+`wasm32-unknown-unknown`には時刻の概念が無く、`std::time::Instant::now()`・
+`std::time::SystemTime::now()`はこのターゲットでは**必ずpanicする**(コンパイルは
+通る。呼ばれた瞬間にのみ落ちる)。本番の変換経路(`write_copc_from_spill_with_fs`、
+pcv-wasmが呼ぶ)は、2箇所でこれを無条件に呼んでいた。
+
+1. **`vendor/copc-writer/src/writer.rs`の`write_copc_inner`**。後処理
+   (octree構築・ノード圧縮・ヘッダー/hierarchy書き出し)の4箇所で
+   `Instant::now()`を呼んでいた(497・504・630・648行目、M4-8でこの計測が
+   入った際のもの)。この関数のドキュメントコメントには「`stage_timings`が
+   `None`(本番の経路)のときはInstant::now()の呼び出しさえ発生しない」と
+   書かれていたが、**これは誤りだった。** 実際に`None`で分岐していたのは
+   `.elapsed()`を呼んで加算するかどうかだけで、`Instant::now()`自体は常に
+   呼ばれていた。
+2. **`vendor/copc-writer/src/metadata.rs`の`current_utc_date()`**
+   (LASヘッダーの作成日のデフォルト、`SystemTime::now()`を呼ぶ)。
+   入力のLAS/LAZヘッダーに作成日が無い場合、またPCD入力(座標系と同じく
+   作成日の概念を持たない。`crates/pcv-wasm/src/pcd_import.rs`の
+   `WasmPcdConverter::finish`は`CopcWriteMetadata::default()`をそのまま使う
+   ため常に該当)に必ず経由する。
+
+結果として、**M4-8(2026-10-03、後処理の計測を入れた回)以降、Web版の変換は
+ファイルサイズに関係なく、1番目(`Instant::now()`)で確実に失敗していた。**
+`vendor/copc-writer`はルートワークスペースのexclude対象で(`Cargo.toml`の
+コメント参照)、`cargo clippy --workspace`・`cargo test --workspace`は
+`[patch.crates-io]`経由でコンパイルするだけで、lintもテストも実行しない。
+`crates/pcv-wasm`向けのCI(`pages.yml`)もpcv-wasm自身のコードしか厳格に
+lintしておらず、依存先であるcopc-writerの中身までは見ていない。さらに
+`cargo build --target wasm32-unknown-unknown`は(呼ばれなければpanicしない
+ため)成功する。つまり**ビルドが通ってCIが緑でも気づけず、実際に実行して
+初めて踏む不具合**だった。
+
+(メモリに比例する設計上の問題(M4-7の並列展開Workerが担当範囲全体を
+メモリに貯める件)自体は実在するが、「変換に失敗しました: unreachable」の
+直接の原因ではなかった。この件は本タスクシートの別の節で引き続き扱う。)
+
+### 直し方
+
+- **`web-time`クレート**(`web-time = "1"`、`vendor/copc-writer/Cargo.toml`)を
+  依存に足し、`writer.rs`・`metadata.rs`の`use`を`web_time::{Instant,
+  SystemTime, UNIX_EPOCH}`に替えた。呼び出し側のロジック(計測区間の測り方・
+  日付の計算)は一切変えていない。`web-time`はネイティブターゲットでは
+  `std::time::{Instant, SystemTime}`への単純な再エクスポートになり、
+  wasm32では`Date`/`performance.now()`を使う実装に自動的に切り替わる
+  (クレート自身の売りがこれ)。
+  - **検討した別案**: pcv-wasm側(JSの`Date`)から作成日・計測の有無を
+    呼び出し元から渡す案。LAS/LAZ版(`convert.rs`)・PCD版(`pcd_import.rs`)の
+    2つの呼び出し元それぞれに新しい引数を配線する必要があり、`web-time`への
+    置き換え(importを変えるだけ)の方が変更が小さく、かつ両方の経路を
+    一度に直せると判断した。
+- **再発防止**: `vendor/copc-writer/clippy.toml`・`crates/pcv-core/clippy.toml`・
+  `crates/pcv-wasm/clippy.toml`を新設し、`disallowed-methods`で
+  `std::time::Instant::now`/`std::time::SystemTime::now`の直接呼び出しを
+  禁止した。
+  - `crates/pcv-core/examples/open_bench.rs`・`parallel_bench.rs`は
+    ネイティブ専用の計測ツールとして正当に`Instant::now()`を使っている
+    (wasm32ビルド`cargo build -p pcv-core --target wasm32-unknown-unknown`
+    には`--examples`を渡しておらず含まれない)ため、ファイル単位で
+    `#![allow(clippy::disallowed_methods)]`を付けて除外した。
+  - **重要な制約(実機で確認): ネイティブターゲットではこのlintを有効に
+    していない。** `web_time::Instant`はネイティブでは`std::time::Instant`
+    への単純な型の再エクスポートなので、`web_time::Instant::now()`と書いても
+    clippyのdisallowed_methodsは解決後の実体のパス(`std::time::Instant::now`)
+    で一致を取るため、**正しくweb_time経由で呼んでいるコードまで誤って
+    弾いてしまう**。`vendor/copc-writer/src/writer.rs`の呼び出しを一時的に
+    `std::time::Instant::now()`へ書き換えてから戻すテストで、ネイティブの
+    `cargo clippy -- -D clippy::disallowed_methods`がこの行だけでなく
+    **他の(web_time経由で正しく書かれた)呼び出しまで全部エラーにする**
+    ことを確認した。そのため、この検査はwasm32ターゲット限定にした
+    (ネイティブでは元々panicしないため実害は無い)。
+- **CI**:
+  - `.github/workflows/ci.yml`の`rust`ジョブに、`vendor/copc-writer`の
+    `cargo fmt --check`・`cargo test`を追加した(今までCIの対象外だった)。
+    disallowed_methodsの検査はネイティブでは入れていない(上記の理由)。
+  - `.github/workflows/pages.yml`に、`vendor/copc-writer`を対象にした
+    `cargo clippy --no-default-features --target wasm32-unknown-unknown --lib
+    -- -D clippy::disallowed_methods`を追加した。`--all-targets`にすると
+    dev-dependencyの`criterion`がrayon前提でwasm32と非互換のためビルド自体が
+    失敗する(実機で確認)ので`--lib`のみにした。`-D warnings`ではなく
+    `-D clippy::disallowed_methods`だけを厳格化したのは、
+    `--no-default-features`ビルドに元からある(この修正とは無関係な)
+    dead-code警告群を今回のタスクのブロッカーにしないため。
+  - `crates/pcv-wasm`・`crates/pcv-core`の既存のclippyステップ(`-D warnings`、
+    それぞれ`pages.yml`・`ci.yml`に既にある)は変更していないが、新設した
+    `clippy.toml`がそれぞれの対象クレート自身のコードにも効くようになった
+    (二重の再発防止)。
+
+### 確認したこと(コマンドと結果)
+
+- `cargo fmt --all -- --check` / `cargo fmt --manifest-path
+  vendor/copc-writer/Cargo.toml -- --check` / `cargo fmt --manifest-path
+  crates/pcv-wasm/Cargo.toml -- --check`: 成功
+- `cargo clippy --workspace --all-targets -- -D warnings`: 成功
+- `cargo clippy --manifest-path vendor/copc-writer/Cargo.toml
+  --no-default-features --target wasm32-unknown-unknown --lib --
+  -D clippy::disallowed_methods`: 成功
+- `cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target
+  wasm32-unknown-unknown --all-targets -- -D warnings`: 成功
+- **disallowed_methodsが実際に落ちることを確認**(「確かめていないことを
+  確認したと書かない」の実践): `writer.rs`の`Instant::now()`を一時的に
+  `std::time::Instant::now()`に書き換え、上記wasm32のclippyコマンドを
+  再実行して`error: use of a disallowed method`で落ちることを確認してから
+  元に戻した。`crates/pcv-core`にも一時的にダミーの`Instant::now()`呼び出しを
+  追加し、`cargo clippy -p pcv-core -- -D clippy::disallowed_methods`で
+  同様に落ちることを確認してから削除した。
+- `cargo test --workspace`: 122件成功、0件失敗(pcv-convertのユニットテスト
+  41件+統合テスト8ファイル分27件、pcv-core 39件、pcv-tauri 15件。
+  内訳はコマンド出力参照)
+- `cargo test --manifest-path vendor/copc-writer/Cargo.toml`: 20件成功
+  (ユニットテスト19件+`scratch_read_is_bounded`)。`metadata::tests::
+  write_metadata_defaults_are_wkt_conformant`(creation_yearが現在年以上に
+  なることを確認するテスト)が`web_time`経由でも変わらず成功することを
+  確認した
+- `cargo test --manifest-path crates/pcv-wasm/Cargo.toml`: 29件成功
+  (ユニットテスト24件+結合テスト4ファイル分5件)
+- `npm run build:wasm`: 成功。生成物(`src/wasm/pcv-wasm/pcv_wasm.js`・
+  `pcv_wasm_bg.wasm`等)を今回のコミットに含めた
+- `npm run typecheck` / `npm run lint` / `npm run test`(285件成功) /
+  `npm run build`: 成功
+- `grep -rl "@tauri-apps/api" src/`: `src/datasource/tauri.ts`のみ(規約2)
+
+### 確認していないこと(所有者に見てもらう必要がある)
+
+- **実機での動作確認はできない(ブラウザが無い環境での作業のため)。**
+  所有者に、以前失敗したファイル(LAZまたはPCD)をWeb版で変換してもらい、
+  1. 変換が完了すること(「変換に失敗しました」が出ないこと)。
+  2. 仮に別の原因でまだ失敗する場合は、ブラウザのconsoleに
+     `time not implemented`のpanicが**出ないこと**(出なければ今回の修正は
+     効いている。別のエラーが出た場合は新しい不具合として報告してほしい)。
+  の2点を確認してほしい。
+- `post_process_stage_bench`(実データでの後処理計測ハーネス)は、ビルドが
+  通ることと既存のユニットテストの通過は確認したが、実データでの実行
+  (秒数の実測)は行っていない。M4-8時点の計測ロジック自体は変えていないため
+  動作(測る値)は変わらないはずだが、「実行して確認した」とは書かない。
+
 ## M4-10: ノードごとのLAZ圧縮を並列化する(2026-10-03〜04、Opus計画・Sonnet実装)
 
 ### 背景・所有者の決定
