@@ -84,6 +84,27 @@ unsafe impl GlobalAlloc for ReportingAllocator {
 #[global_allocator]
 static ALLOCATOR: ReportingAllocator = ReportingAllocator;
 
+// 2026-10-07追記: `report_allocation_failure`が確保失敗を検知したメッセージを
+// consoleに出すのと同時にここへ残す。
+//
+// なぜ必要か: メモリ確保の失敗は直後に`handle_alloc_error`→`unreachable`で
+// wasm命令レベルのトラップに落ち、JS側には`WebAssembly.RuntimeError`
+// (メッセージは単に`"unreachable"`)としてしか伝わらない。画面のエラー表示
+// (`src/datasource/copc.worker.ts`の`convert-failed`)はこの`unreachable`しか
+// 受け取れず、所有者はdevtoolsのconsoleを開かないと詳細が見えなかった。
+// `unreachable`のトラップ自体はこの関数(まだ正常に実行できている時点)の
+// **後**で起きるため、ここに残した値は、呼び出し元の変換用Workerがcatch
+// ブロックで`last_allocation_failure_message()`(このファイル下部)を呼んで
+// 読み出せる(トラップはこの関数を呼び出した特定の処理を異常終了させるだけで、
+// wasmインスタンス自体やこの`thread_local`の値を破壊しない。
+// wasm32-unknown-unknownはatomics無効のシングルスレッドなので`thread_local`で
+// 十分)。
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static LAST_FAILURE_MESSAGE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[cfg(target_arch = "wasm32")]
 fn report_allocation_failure() {
     use std::cell::Cell;
@@ -97,10 +118,10 @@ fn report_allocation_failure() {
     if already_reporting {
         return;
     }
-    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(
-        "pcv-wasm: メモリの確保に失敗しました。入力が大きすぎて、ブラウザの \
-         メモリ上限(wasm32は最大4GiB)を超えた可能性があります。",
-    ));
+    const MESSAGE: &str = "pcv-wasm: メモリの確保に失敗しました。入力が大きすぎて、ブラウザの \
+         メモリ上限(wasm32は最大4GiB)を超えた可能性があります。";
+    LAST_FAILURE_MESSAGE.with(|cell| *cell.borrow_mut() = Some(MESSAGE.to_string()));
+    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(MESSAGE));
     REPORTING.with(|flag| flag.set(false));
 }
 
@@ -108,3 +129,17 @@ fn report_allocation_failure() {
 /// 「ネイティブターゲットでの扱い」参照。
 #[cfg(not(target_arch = "wasm32"))]
 fn report_allocation_failure() {}
+
+/// 直前にメモリ確保の失敗が起きていれば、そのメッセージを返す
+/// (`lib.rs`の`last_allocation_failure_message`経由でJS側に公開する)。
+/// 2回目以降呼んでも同じ値を返す(`unreachable`トラップの直後は
+/// どうせWorkerを終了させる前提なので、一度読んだら消す必要はない)。
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn last_allocation_failure_message() -> Option<String> {
+    LAST_FAILURE_MESSAGE.with(|cell| cell.borrow().clone())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn last_allocation_failure_message() -> Option<String> {
+    None
+}

@@ -39,6 +39,15 @@ pub use convert::WasmConverter;
 // M4-6/M4-9追記: Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`が使う。
 pub use pcd_import::WasmPcdConverter;
 
+/// 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば
+/// そのメッセージを返す。`src/datasource/copc.worker.ts`が変換失敗の
+/// catchブロックで呼び、`unreachable`トラップしか伝わらないエラーメッセージに
+/// この詳細を足して画面にも出す(`alloc_guard.rs`のドキュメント参照)。
+#[wasm_bindgen(js_name = lastAllocationFailureMessage)]
+pub fn last_allocation_failure_message() -> Option<String> {
+    alloc_guard::last_allocation_failure_message()
+}
+
 /// `opfs.rs`の`OPFS_SCRATCH_POOL_SIZE`をJS側にも公開する。TypeScript側
 /// (`src/datasource/opfs.ts`)が事前に開くOPFS一時ファイルの個数を、この値と
 /// 二重管理せずに揃えるため(値がずれると「Rustは600個用意されている前提で
