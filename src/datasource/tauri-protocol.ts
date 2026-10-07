@@ -1,8 +1,9 @@
 // TauriSource(`tauri.ts`)が`convertFileSrc`に渡す前の文字列を組み立てる純粋関数。
-// `convertFileSrc`自体（`@tauri-apps/api`、実体はTauriのwebview初期化スクリプトが
-// 注入する`window.__TAURI_INTERNALS__.convertFileSrc`）はテスト環境（vitest）には
-// 存在しないため、ここを切り出すことで「送る文字列の形が正しいか」をTauriを
-// 起動せずにテストできる（`web-protocol.ts`の`buildReadNodeRequest`等と同じ考え方）。
+// `convertFileSrc`自体（TauriのAPIパッケージが提供する関数。実体はTauriの
+// webview初期化スクリプトが注入する`window.__TAURI_INTERNALS__.convertFileSrc`）は
+// テスト環境（vitest）には存在しないため、ここを切り出すことで「送る文字列の形が
+// 正しいか」をTauriを起動せずにテストできる（`web-protocol.ts`の
+// `buildReadNodeRequest`等と同じ考え方）。
 //
 // 緊急修正の経緯（v0.1.3でノード読み出しが全滅した不具合）:
 // `convertFileSrc(filePath, protocol)`は`filePath`全体を1回の`encodeURIComponent`で
