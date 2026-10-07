@@ -1,0 +1,16 @@
+# 2026-10-07の緊急修正の再発防止(vendor/copc-writer/clippy.tomlと同じ理由)。
+#
+# pcv-coreはcrates/pcv-wasm経由でwasm32-unknown-unknownにもビルドされる
+# (ARCHITECTURE.mdの規約1、ci.ymlの「規約1」ステップ)ため、
+# `std::time::Instant::now`/`SystemTime::now`の直接呼び出しを禁止する。
+# 現時点でpcv-coreはどちらも使っていない(使う必要が生じたら
+# `web_time::{Instant, SystemTime}`に置き換える。vendor/copc-writerの
+# 同種の修正参照)。
+#
+# このファイルはcrates/pcv-core配下にだけ効く(ルートワークスペースの他
+# メンバーであるcrates/pcv-convert・src-tauriはネイティブ専用でこの制約の
+# 対象外。vendor/copc-writer/clippy.tomlのコメント参照)。
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "wasm32-unknown-unknownではpanicする。必要なら web_time::Instant::now を使う" },
+    { path = "std::time::SystemTime::now", reason = "wasm32-unknown-unknownではpanicする。必要なら web_time::SystemTime::now を使う" },
+]

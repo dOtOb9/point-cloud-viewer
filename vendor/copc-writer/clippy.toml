@@ -1,0 +1,25 @@
+# 2026-10-07の緊急修正の再発防止。
+#
+# `std::time::Instant::now()`/`std::time::SystemTime::now()`は
+# wasm32-unknown-unknownでは`time not implemented on this platform`で
+# panicする(OSの時刻機能が無いターゲットのため)。このクレートは
+# `crates/pcv-wasm`からwasm32向けにもビルドされる(`[patch.crates-io]`、
+# ルート/crates/pcv-wasmのCargo.toml参照)ため、直接の呼び出しを禁止し、
+# 両ターゲットで安全な`web_time::{Instant, SystemTime}`(`src/writer.rs`・
+# `src/metadata.rs`のuse文のコメント参照)への置き換えを強制する。
+#
+# このファイルはこのクレート(vendor/copc-writer、自身が独立した
+# ワークスペースの根)にだけ効く。ルートワークスペースの他メンバー
+# (crates/pcv-convert・src-tauri)はネイティブ専用で、ベンチマーク等で
+# 素朴に`Instant::now()`を使ってよいため、ここには置かない
+# (`crates/pcv-core/clippy.toml`・`crates/pcv-wasm/clippy.toml`も同じ考え方)。
+#
+# CIでの検査は`.github/workflows/ci.yml`の`rust`ジョブ、
+# `cargo clippy --manifest-path vendor/copc-writer/Cargo.toml --all-targets
+# -- -D clippy::disallowed_methods`(クレート全体の`-D warnings`は、この修正とは
+# 無関係な既存のlint債務(例: `clippy::len_without_is_empty`)まで同時に
+# ブロッカーにしてしまうため、この1つのlintだけを厳格化する選択をした)。
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "wasm32-unknown-unknownではpanicする。web_time::Instant::now を使う(src/writer.rsのuse文のコメント参照)" },
+    { path = "std::time::SystemTime::now", reason = "wasm32-unknown-unknownではpanicする。web_time::SystemTime::now を使う(src/metadata.rsのuse文のコメント参照)" },
+]

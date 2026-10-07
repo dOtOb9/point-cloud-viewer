@@ -1,0 +1,17 @@
+# 2026-10-07の緊急修正の再発防止(vendor/copc-writer/clippy.tomlと同じ理由)。
+#
+# pcv-wasmはwasm32-unknown-unknown専用にビルドされる(このクレート自体が
+# Web版の変換・読み込みを行う層)。`std::time::Instant::now`/
+# `SystemTime::now`はこのターゲットでpanicするため、直接呼び出しを禁止する。
+# 現時点でpcv-wasmはどちらも使っていない(使う必要が生じたら
+# `web_time::{Instant, SystemTime}`に置き換える。vendor/copc-writerの
+# 同種の修正参照)。
+#
+# CIでの検査は`.github/workflows/pages.yml`の既存の
+# `cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target
+# wasm32-unknown-unknown --all-targets -- -D warnings`にこのファイルが
+# 自動的に効く(クレート独自のワークスペース根にあるため、追加のCI変更は不要)。
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "wasm32-unknown-unknownではpanicする。必要なら web_time::Instant::now を使う" },
+    { path = "std::time::SystemTime::now", reason = "wasm32-unknown-unknownではpanicする。必要なら web_time::SystemTime::now を使う" },
+]

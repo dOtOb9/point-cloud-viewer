@@ -21,6 +21,10 @@
 //! - ここでも 100 nodes/s 程度で頭打ちなら、**ボトルネックはディスクか LAZ 伸長**であり、
 //!   並列度をこれ以上上げても無駄ということになる
 
+// 2026-10-07: `open_bench.rs`と同じ理由(`crates/pcv-core/clippy.toml`の
+// `disallowed-methods`、wasm32ビルドに含まれないネイティブ専用の計測ツール)。
+#![allow(clippy::disallowed_methods)]
+
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

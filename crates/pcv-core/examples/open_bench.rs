@@ -17,6 +17,16 @@
 //!    ここで出る「毎秒何ノード」が、`pcv://` ハンドラを同期のままにした場合の
 //!    構造的な上限になる（同期ハンドラは Rust のメインスレッドで直列に走るため）。
 
+// 2026-10-07: `crates/pcv-core/clippy.toml`の`disallowed-methods`は
+// `std::time::Instant::now`を禁止している(pcv-coreはwasm32にもビルドされ、
+// `Instant::now()`はwasm32-unknown-unknownでpanicするため。vendor/copc-writerの
+// 同種の修正参照)。この例は`cargo run --example`でネイティブ専用に実行する
+// 計測ツールで、wasm32ビルド(`cargo build -p pcv-core --target
+// wasm32-unknown-unknown`、ci.ymlの「規約1」)には`--examples`を渡しておらず
+// 含まれない。そのためここでの`Instant::now()`は安全であり、ファイル単位で
+// 明示的に許可する。
+#![allow(clippy::disallowed_methods)]
+
 use std::path::Path;
 use std::time::Instant;
 
