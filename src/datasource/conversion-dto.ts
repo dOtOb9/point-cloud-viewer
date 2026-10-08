@@ -103,6 +103,56 @@ export type ConversionProgressDto =
   | { phase: "reading"; points_read: number; total_points: number; elapsed_secs: number }
   | { phase: "post_processing"; elapsed_secs: number };
 
+/**
+ * M4-12(`TaskSheets/M4-import-and-conversion.md`): 変換完了後に画面へ出す、
+ * 段階ごとの所要時間(秒)。デスクトップ(`src-tauri/src/conversion.rs`の
+ * `ConversionStageBreakdownDto`)・Web版(`crates/pcv-wasm/src/dto.rs`の
+ * 同名のDTO、`FinishResultDto.stage_timings`)の両方がこの形のJSONを作る。
+ *
+ * `opfs_io_secs`はWeb版だけが持つ値(OPFSへの実際の読み書きにかかった時間)。
+ * デスクトップには存在しないため`null`になる。
+ */
+export interface ConversionStageBreakdownDto {
+  source_read_and_decode_secs: number;
+  spill_write_secs: number;
+  lod_index_build_secs: number;
+  node_compression_secs: number;
+  header_and_hierarchy_write_secs: number;
+  total_secs: number;
+  opfs_io_secs: number | null;
+  point_count: number;
+  file_size_bytes: number;
+}
+
+/** `ConversionStageBreakdownDto`のcamelCase版。 */
+export interface ConversionStageBreakdown {
+  sourceReadAndDecodeSecs: number;
+  spillWriteSecs: number;
+  lodIndexBuildSecs: number;
+  nodeCompressionSecs: number;
+  headerAndHierarchyWriteSecs: number;
+  totalSecs: number;
+  opfsIoSecs: number | null;
+  pointCount: number;
+  fileSizeBytes: number;
+}
+
+export function toConversionStageBreakdown(
+  dto: ConversionStageBreakdownDto,
+): ConversionStageBreakdown {
+  return {
+    sourceReadAndDecodeSecs: dto.source_read_and_decode_secs,
+    spillWriteSecs: dto.spill_write_secs,
+    lodIndexBuildSecs: dto.lod_index_build_secs,
+    nodeCompressionSecs: dto.node_compression_secs,
+    headerAndHierarchyWriteSecs: dto.header_and_hierarchy_write_secs,
+    totalSecs: dto.total_secs,
+    opfsIoSecs: dto.opfs_io_secs,
+    pointCount: dto.point_count,
+    fileSizeBytes: dto.file_size_bytes,
+  };
+}
+
 export type ConversionProgress =
   | { phase: "preparing"; preparing: PreparingStep }
   | { phase: "reading"; pointsRead: number; totalPoints: number; elapsedSecs: number }

@@ -9,7 +9,7 @@
 // 送受信は`web.ts`が行う。
 
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
-import type { ConversionProgressDto } from "./conversion-dto";
+import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
 
 /** ローカルファイルかURLか。`WebSource.open(path)`の`path`から組み立てる。 */
 export type OpenSource = { kind: "file"; file: File } | { kind: "url"; url: string };
