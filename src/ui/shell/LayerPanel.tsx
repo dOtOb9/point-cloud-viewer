@@ -105,7 +105,12 @@ function ConversionBreakdownPanel({
   const [copied, setCopied] = useState(false);
 
   return (
-    <div className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10">
+    // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidで「変換の内訳」の
+    // 表示を待つ。削除・リネームするときはそちらも直すこと(`CLAUDE.md`参照)。
+    <div
+      data-testid="conversion-breakdown"
+      className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10"
+    >
       <div className="flex items-center justify-between">
         <span className="opacity-70">変換の内訳</span>
         <button
@@ -157,6 +162,10 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                   // 選べば依然として選択自体はできる。その場合は`openFile`が
                   // 「デスクトップ版で変換してください」という案内を出す)。
                   accept=".las,.laz,.pcd"
+                  // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidで
+                  // `setInputFiles`してファイル選択を駆動する。
+                  // 削除・リネームするときはそちらも直すこと(`CLAUDE.md`参照)。
+                  data-testid="file-input"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) void viewer.openFile(file);
@@ -211,7 +220,14 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                     : "ファイルを選ぶ…"}
               </button>
             )}
-            {viewer.error && <p className="text-xs text-red-600 dark:text-red-400">{viewer.error}</p>}
+            {viewer.error && (
+              // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidで
+              // エラー表示の有無を確かめる。削除・リネームするときはそちらも
+              // 直すこと(`CLAUDE.md`参照)。
+              <p data-testid="viewer-error" className="text-xs text-red-600 dark:text-red-400">
+                {viewer.error}
+              </p>
+            )}
 
             {/* M4-3: 変換中の進捗とキャンセル。読み込み段階は割合が出るが、
                 その後(octree構築・書き出し)は段階名だけになる
@@ -267,6 +283,10 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                 <a
                   href={viewer.downloadReady.url}
                   download={viewer.downloadReady.fileName}
+                  // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidで
+                  // ダウンロードリンクの表示を確かめる。削除・リネームするときは
+                  // そちらも直すこと(`CLAUDE.md`参照)。
+                  data-testid="download-link"
                   className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900"
                 >
                   ダウンロード
