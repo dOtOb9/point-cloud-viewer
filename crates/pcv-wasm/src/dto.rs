@@ -5,6 +5,9 @@
 //! `WebSource`が同じDTO変換関数(`src/datasource/copc-dto.ts`)を共有でき、
 //! 変換ロジックの二重管理を避けられる。
 
+use std::time::Duration;
+
+use copc_writer::PostProcessStageTimings;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -62,7 +65,60 @@ pub struct FeedResultDto {
 }
 
 /// M4-6b: `WasmConverter::finish`が返す、変換完了の要約。
+/// M4-12(`TaskSheets/M4-import-and-conversion.md`)で`stage_timings`を追加した。
 #[derive(Serialize)]
 pub struct FinishResultDto {
     pub point_count: u64,
+    pub stage_timings: ConversionStageBreakdownDto,
+}
+
+/// M4-12: 変換完了後、所有者に「どこで時間を使っているか」をそのまま
+/// 報告してもらえるようにするための段階別の内訳。デスクトップ・Android
+/// (`src-tauri/src/conversion.rs`の`ConversionStageBreakdownDto`)と同じ
+/// 形のJSONを作る(フィールド名を合わせ、`src/datasource/
+/// conversion-breakdown.ts`の1つの整形関数をどちらの経路でも使えるようにする)。
+///
+/// `opfs_io_secs`はWeb版だけが持つOPFSの読み書き時間
+/// (`crates/pcv-wasm/src/opfs.rs`の`OpfsIoTimer`)。計測できなかった場合
+/// (理論上は無いはずだが、将来`ScratchFs`実装を切り替える可能性に備えて)
+/// `None`(JSONでは`null`)を許す。
+#[derive(Serialize)]
+pub struct ConversionStageBreakdownDto {
+    pub source_read_and_decode_secs: f64,
+    pub spill_write_secs: f64,
+    pub lod_index_build_secs: f64,
+    pub node_compression_secs: f64,
+    pub header_and_hierarchy_write_secs: f64,
+    pub total_secs: f64,
+    pub opfs_io_secs: Option<f64>,
+    pub point_count: u64,
+    pub file_size_bytes: u64,
+}
+
+impl ConversionStageBreakdownDto {
+    pub fn new(
+        source_read_and_decode: Duration,
+        spill_write: Duration,
+        post: PostProcessStageTimings,
+        point_count: u64,
+        file_size_bytes: u64,
+        opfs_io: Option<Duration>,
+    ) -> Self {
+        let total = source_read_and_decode
+            + spill_write
+            + post.lod_index_build
+            + post.node_compression
+            + post.header_and_hierarchy_write;
+        Self {
+            source_read_and_decode_secs: source_read_and_decode.as_secs_f64(),
+            spill_write_secs: spill_write.as_secs_f64(),
+            lod_index_build_secs: post.lod_index_build.as_secs_f64(),
+            node_compression_secs: post.node_compression.as_secs_f64(),
+            header_and_hierarchy_write_secs: post.header_and_hierarchy_write.as_secs_f64(),
+            total_secs: total.as_secs_f64(),
+            opfs_io_secs: opfs_io.map(|d| d.as_secs_f64()),
+            point_count,
+            file_size_bytes,
+        }
+    }
 }

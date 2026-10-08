@@ -97,15 +97,50 @@
 //! 後ろに置き、あふれたら先頭=最も使われていないものから捨てる)の
 //! ごく単純な実装。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
 use copc_core::{Error, Result};
 use copc_writer::{ScratchFs, ScratchReader, ScratchWriter};
 use wasm_bindgen::JsValue;
 use web_sys::{FileSystemReadWriteOptions, FileSystemSyncAccessHandle};
+use web_time::Instant;
+
+/// M4-12(`TaskSheets/M4-import-and-conversion.md`): OPFSへの実際のJS呼び出し
+/// (read/write/flush/truncate/get_size)にかかった累積時間。所有者向けの
+/// 内訳表示で「OPFSの読み書きにまとまった時間がかかっているか」を
+/// ブラウザでしか出ない値として別枠で見せるために測る。
+///
+/// `vendor/copc-writer`の`SpillReader::xyz_at`/`record_into`は点ごとに
+/// `ScratchReader::read_at`を呼ぶ(=この実装では[`OpfsTempReader::read_at`]を
+/// 点ごとに呼ぶ)が、[`READ_CACHE_BLOCK_BYTES`]単位のブロックキャッシュに
+/// よって実際にJSへ`read`を発行するのはキャッシュミス時(64KiBごと)だけに
+/// 既に抑えられている(モジュールドキュメント「小さな読みの集積を抑える
+/// ブロックキャッシュ」参照)。このタイマーは、そのキャッシュミス時の
+/// 実際のJS呼び出しだけを計測するため、`post_process_stage_bench.rs`が
+/// 避けた「個々の呼び出しをInstantで包むことで生じる観測者効果」を
+/// 同様に避けている(点ごとではなく、ブロック・バッファ単位でしか
+/// `Instant::now()`を呼ばない)。
+///
+/// 1回の変換で1個の`OpfsScratchFs`しか作らないため、`Rc<Cell<Duration>>`で
+/// `OpfsScratchFs`が作る各構造体(`OpfsTempWriter`/`OpfsTempReader`/
+/// `OpfsOutputWriter`)の間で共有する(`Rc<RefCell<Pool>>`と同じ考え方)。
+#[derive(Clone, Default)]
+pub struct OpfsIoTimer(Rc<Cell<Duration>>);
+
+impl OpfsIoTimer {
+    fn record(&self, elapsed: Duration) {
+        self.0.set(self.0.get() + elapsed);
+    }
+
+    /// 累積時間を読む(`convert.rs`が`finish`の後に呼ぶ)。
+    pub fn total(&self) -> Duration {
+        self.0.get()
+    }
+}
 
 /// プールの既定サイズ。モジュールのドキュメント「プールの個数について」参照
 /// (理論上限`8*(MAX_OCTREE_DEPTH+1)+1=249`に約3割の余裕を見た値)。
@@ -166,6 +201,8 @@ pub struct OpfsScratchFs {
     /// 呼ばれない想定(`copc-writer`は1回の変換で1つの出力しか作らない)ため、
     /// `Option`で「まだ使われていない」を表す。
     output: Rc<RefCell<Option<FileSystemSyncAccessHandle>>>,
+    /// M4-12: OPFSへの実際のJS呼び出しにかかった累積時間。
+    timer: OpfsIoTimer,
 }
 
 // SAFETY: wasm32-unknown-unknownはatomics無効時はシングルスレッドで動く
@@ -203,7 +240,14 @@ impl OpfsScratchFs {
                 free: (0..count).collect(),
             })),
             output: Rc::new(RefCell::new(Some(output_handle))),
+            timer: OpfsIoTimer::default(),
         }
+    }
+
+    /// M4-12: OPFSへの実際のJS呼び出しにかかった累積時間
+    /// (`crates/pcv-wasm/src/convert.rs`が`finish`の後に読む)。
+    pub fn io_timings(&self) -> Duration {
+        self.timer.total()
     }
 }
 
@@ -215,15 +259,19 @@ impl ScratchFs for OpfsScratchFs {
             take_free_pool_slot(&mut pool.free, pool_len, label)?
         };
         {
+            let truncate_start = Instant::now();
             let pool = self.pool.borrow();
             pool.handles[index]
                 .truncate_with_u32(0)
                 .map_err(|e| js_copc_err("OPFS scratch truncate", e))?;
+            drop(pool);
+            self.timer.record(truncate_start.elapsed());
         }
         Ok(Box::new(OpfsTempWriter {
             pool: self.pool.clone(),
             index,
             pos: 0,
+            timer: self.timer.clone(),
         }))
     }
 
@@ -233,10 +281,16 @@ impl ScratchFs for OpfsScratchFs {
             .borrow_mut()
             .take()
             .ok_or_else(|| Error::InvalidInput("OPFS出力ハンドルは既に使用済みです".into()))?;
+        let truncate_start = Instant::now();
         handle
             .truncate_with_u32(0)
             .map_err(|e| js_copc_err("OPFS output truncate", e))?;
-        Ok(Box::new(OpfsOutputWriter { handle, pos: 0 }))
+        self.timer.record(truncate_start.elapsed());
+        Ok(Box::new(OpfsOutputWriter {
+            handle,
+            pos: 0,
+            timer: self.timer.clone(),
+        }))
     }
 }
 
@@ -252,16 +306,19 @@ struct OpfsTempWriter {
     pool: Rc<RefCell<Pool>>,
     index: usize,
     pos: u64,
+    timer: OpfsIoTimer,
 }
 
 impl Write for OpfsTempWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let write_start = Instant::now();
         let written = {
             let pool = self.pool.borrow();
             pool.handles[self.index]
                 .write_with_u8_array_and_options(buf, &at(self.pos))
                 .map_err(|e| js_io_err("OPFS scratch write", e))?
         };
+        self.timer.record(write_start.elapsed());
         let written = written as u64;
         self.pos += written;
         Ok(written as usize)
@@ -274,24 +331,27 @@ impl Write for OpfsTempWriter {
 
 impl Seek for OpfsTempWriter {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.pos = resolve_seek(&self.pool, self.index, self.pos, pos)?;
+        self.pos = resolve_seek(&self.pool, self.index, self.pos, pos, &self.timer)?;
         Ok(self.pos)
     }
 }
 
 impl ScratchWriter for OpfsTempWriter {
     fn finish_temp(self: Box<Self>) -> Result<Box<dyn ScratchReader>> {
+        let get_size_start = Instant::now();
         let len = {
             let pool = self.pool.borrow();
             pool.handles[self.index]
                 .get_size()
                 .map_err(|e| js_copc_err("OPFS scratch get_size", e))?
         };
+        self.timer.record(get_size_start.elapsed());
         Ok(Box::new(OpfsTempReader {
             pool: self.pool,
             index: self.index,
             len: len as u64,
             cache: RefCell::new(ReadCache::new()),
+            timer: self.timer,
         }))
     }
 
@@ -354,6 +414,7 @@ struct OpfsTempReader {
     /// 範囲読み(`read_at`)の小さいブロックキャッシュ。モジュールドキュメント
     /// 「小さな読みの集積を抑えるブロックキャッシュ」参照。
     cache: RefCell<ReadCache>,
+    timer: OpfsIoTimer,
 }
 
 impl Drop for OpfsTempReader {
@@ -365,8 +426,12 @@ impl Drop for OpfsTempReader {
 impl OpfsTempReader {
     /// OPFSから`[start, start + buf.len())`をちょうど読み切る
     /// (1回の`read()`で全バイトを読み切れる保証は仕様上無いため、
-    /// 読み切るまで繰り返す)。
+    /// 読み切るまで繰り返す)。呼ばれるのは`read_at`のキャッシュミス時
+    /// (`READ_CACHE_BLOCK_BYTES`=64KiBごと)だけなので、ここをまとめて
+    /// 計測すれば点ごとの観測者効果を避けられる(モジュールドキュメント
+    /// `OpfsIoTimer`参照)。
     fn read_opfs_exact(&self, start: u64, buf: &mut [u8]) -> Result<()> {
+        let read_start = Instant::now();
         let pool = self.pool.borrow();
         let handle = &pool.handles[self.index];
         let mut read_total = 0usize;
@@ -384,6 +449,8 @@ impl OpfsTempReader {
             }
             read_total += n as usize;
         }
+        drop(pool);
+        self.timer.record(read_start.elapsed());
         Ok(())
     }
 }
@@ -394,6 +461,7 @@ impl ScratchReader for OpfsTempReader {
             pool: self.pool.clone(),
             index: self.index,
             pos: offset,
+            timer: self.timer.clone(),
         }))
     }
 
@@ -456,16 +524,19 @@ struct OpfsSeqReader {
     pool: Rc<RefCell<Pool>>,
     index: usize,
     pos: u64,
+    timer: OpfsIoTimer,
 }
 
 impl Read for OpfsSeqReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read_start = Instant::now();
         let n = {
             let pool = self.pool.borrow();
             pool.handles[self.index]
                 .read_with_u8_array_and_options(buf, &at(self.pos))
                 .map_err(|e| js_io_err("OPFS scratch read", e))?
         };
+        self.timer.record(read_start.elapsed());
         self.pos += n as u64;
         Ok(n as usize)
     }
@@ -484,23 +555,30 @@ impl Read for OpfsSeqReader {
 struct OpfsOutputWriter {
     handle: FileSystemSyncAccessHandle,
     pos: u64,
+    timer: OpfsIoTimer,
 }
 
 impl Write for OpfsOutputWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let write_start = Instant::now();
         let written = self
             .handle
             .write_with_u8_array_and_options(buf, &at(self.pos))
             .map_err(|e| js_io_err("OPFS output write", e))?;
+        self.timer.record(write_start.elapsed());
         let written = written as u64;
         self.pos += written;
         Ok(written as usize)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.handle
+        let flush_start = Instant::now();
+        let result = self
+            .handle
             .flush()
-            .map_err(|e| js_io_err("OPFS output flush", e))
+            .map_err(|e| js_io_err("OPFS output flush", e));
+        self.timer.record(flush_start.elapsed());
+        result
     }
 }
 
@@ -509,10 +587,12 @@ impl Seek for OpfsOutputWriter {
         self.pos = match pos {
             SeekFrom::Start(p) => p,
             SeekFrom::End(offset) => {
+                let get_size_start = Instant::now();
                 let size = self
                     .handle
                     .get_size()
                     .map_err(|e| js_io_err("OPFS output get_size", e))?;
+                self.timer.record(get_size_start.elapsed());
                 apply_offset(size as u64, offset)?
             }
             SeekFrom::Current(offset) => apply_offset(self.pos, offset)?,
@@ -531,9 +611,13 @@ impl ScratchWriter for OpfsOutputWriter {
     }
 
     fn finish_output(self: Box<Self>) -> Result<()> {
-        self.handle
+        let flush_start = Instant::now();
+        let result = self
+            .handle
             .flush()
-            .map_err(|e| js_copc_err("OPFS output finish flush", e))
+            .map_err(|e| js_copc_err("OPFS output finish flush", e));
+        self.timer.record(flush_start.elapsed());
+        result
     }
 }
 
@@ -553,16 +637,19 @@ fn resolve_seek(
     index: usize,
     current: u64,
     pos: SeekFrom,
+    timer: &OpfsIoTimer,
 ) -> io::Result<u64> {
     match pos {
         SeekFrom::Start(p) => Ok(p),
         SeekFrom::End(offset) => {
+            let get_size_start = Instant::now();
             let size = {
                 let pool = pool.borrow();
                 pool.handles[index]
                     .get_size()
                     .map_err(|e| js_io_err("OPFS scratch get_size", e))?
             };
+            timer.record(get_size_start.elapsed());
             apply_offset(size as u64, offset)
         }
         SeekFrom::Current(offset) => apply_offset(current, offset),
@@ -594,6 +681,22 @@ fn resolve_seek(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M4-12: `OpfsIoTimer`は累積するだけ(クローンした先でも同じ合計を
+    /// 共有する)。`web_sys`に触れない純粋なロジックなので、`Instant`では
+    /// なく既知の`Duration`を直接`record`してネイティブで検証する。
+    #[test]
+    fn opfs_io_timer_accumulates_across_clones() {
+        let timer = OpfsIoTimer::default();
+        assert_eq!(timer.total(), Duration::ZERO);
+
+        timer.record(Duration::from_millis(10));
+        let cloned = timer.clone();
+        cloned.record(Duration::from_millis(5));
+
+        assert_eq!(timer.total(), Duration::from_millis(15));
+        assert_eq!(cloned.total(), Duration::from_millis(15));
+    }
 
     /// M4-11の受け入れ条件: プールを使い切ったら、黙って壊れたファイルを
     /// 作るのではなく分かるエラーを返す。

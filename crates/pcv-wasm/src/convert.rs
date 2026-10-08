@@ -157,12 +157,14 @@
 
 use std::io::BufReader;
 use std::path::Path;
+use std::time::Duration;
 
 use copc_core::{deserialize_le, serialize_le, LasPointRecord, NeverCancel, StreamingLayout};
-use copc_writer::{write_copc_from_spill_with_fs, CopcWriterParams, SpillWriter};
+use copc_writer::{write_copc_from_spill_with_fs_and_timings, CopcWriterParams, SpillWriter};
 use js_sys::Array;
 use wasm_bindgen::prelude::*;
 use web_sys::{File, FileSystemSyncAccessHandle};
+use web_time::Instant;
 
 use crate::file_reader::FileRangeReader;
 use crate::opfs::OpfsScratchFs;
@@ -210,6 +212,23 @@ pub struct WasmConverter {
     /// レイアウトと同一であること(=同じファイルの同じヘッダーから導いた
     /// 値であること)が前提(モジュールドキュメント「M4-7」参照)。
     layout: StreamingLayout,
+    /// M4-12(`TaskSheets/M4-import-and-conversion.md`): 入力の読み込み+展開に
+    /// かかった時間の累積(`feed`が`fill_points`を呼ぶ区間、
+    /// `push_serialized_records`が受け取ったバイト列を`deserialize_le`で
+    /// デコードする区間)。`Instant::now()`は`feed`/
+    /// `push_serialized_records`1呼び出しにつき2回(開始・終了)だけで、
+    /// いずれも**バッチ単位**の呼び出し(1点ごとではない。
+    /// `src/datasource/copc.worker.ts`の`CONVERT_BATCH_SIZE`・
+    /// `decompress-partition.ts`の`DECOMPRESS_BATCH_POINTS`単位)なので、
+    /// 通常の変換経路に計測自体が目に見えるコストを足さない
+    /// (`vendor/copc-writer`の`post_process_stage_bench.rs`が避けた
+    /// 「点ごとのInstant呼び出しによる観測者効果」と同じ考え方)。
+    source_read_and_decode: Duration,
+    /// 取り出した点を一時ファイル(spill)へ書き込むのにかかった時間の累積
+    /// (`SpillWriter::push`。同じくバッチ単位でしか`Instant::now()`を呼ばない)。
+    spill_write: Duration,
+    /// M4-12: 内訳のコピー用テキストに入れる、入力ファイルのバイト数。
+    file_size_bytes: u64,
 }
 
 #[wasm_bindgen]
@@ -227,6 +246,9 @@ impl WasmConverter {
         output_name: String,
         max_points_per_node: u32,
     ) -> Result<WasmConverter, JsValue> {
+        // M4-12: 内訳のコピー用テキストに入れるファイルサイズ。`file`は
+        // 直後に`FileRangeReader::new`へ所有権が渡るため、先に読んでおく。
+        let file_size_bytes = file.size() as u64;
         let stats = Stats::new();
         let source = FileRangeReader::new(file, stats);
         // 読み込みのバッファリング(モジュール冒頭のドキュメント参照):
@@ -258,6 +280,9 @@ impl WasmConverter {
             metadata,
             params: CopcWriterParams::new(max_points_per_node),
             layout,
+            source_read_and_decode: Duration::ZERO,
+            spill_write: Duration::ZERO,
+            file_size_bytes,
         })
     }
 
@@ -302,11 +327,31 @@ impl WasmConverter {
                 bytes.len()
             )));
         }
+        // M4-12: このバッチ(`bytes`全体、最大`DECOMPRESS_BATCH_POINTS`点
+        // 分。`src/datasource/decompress-partition.ts`参照)を「デコード」
+        // 「spill書き込み」の2段に分け、それぞれ1回だけ`Instant`で区切って
+        // 測る(モジュールドキュメント`source_read_and_decode`参照)。
+        // 1点ごとに`Instant::now()`を呼ぶと(=各点のdeserialize/push個別に
+        // 計測すると)、Web版の本来のボトルネックである「小さな処理を
+        // 点数ぶん繰り返すJS境界越えのコスト」を計測自体が再現してしまう
+        // (`crates/pcv-wasm/src/opfs.rs`の`OpfsIoTimer`のドキュメント、
+        // `vendor/copc-writer/examples/post_process_stage_bench.rs`が
+        // 避けた観測者効果と同じ理由)。そのため、いったんこのバッチの
+        // 全レコードをデコードしてから(`records`、バッチサイズ分だけの
+        // 一時バッファ。点数全体には比例しない)、まとめてpushする。
+        let decode_start = Instant::now();
+        let mut records = Vec::with_capacity(bytes.len() / width);
         for chunk in bytes.chunks_exact(width) {
-            let record = deserialize_le(chunk, &self.layout).map_err(to_js_error)?;
-            spill.push(&record).map_err(to_js_error)?;
+            records.push(deserialize_le(chunk, &self.layout).map_err(to_js_error)?);
+        }
+        self.source_read_and_decode += decode_start.elapsed();
+
+        let push_start = Instant::now();
+        for record in &records {
+            spill.push(record).map_err(to_js_error)?;
             self.points_fed += 1;
         }
+        self.spill_write += push_start.elapsed();
         Ok(())
     }
 
@@ -324,19 +369,32 @@ impl WasmConverter {
             .as_mut()
             .ok_or_else(|| JsValue::from_str("feedはfinishの後には呼べない"))?;
 
+        // M4-12: `push_serialized_records`と同じ理由で、「読み込み+展開
+        // (`fill_points`。ディスクI/O相当の`FileRangeReader`読み出し+LAZ展開を
+        // 含む)」と「spill書き込み」をバッチ単位(1回の`feed`呼び出し)で
+        // 区切って測る(点ごとに`Instant::now()`は呼ばない)。
+        let fetch_start = Instant::now();
         let count = self
             .reader
             .fill_points(u64::from(batch_size), &mut self.point_data)
             .map_err(to_js_error)?;
-        if count > 0 {
-            for result in self.point_data.points() {
-                let point = result.map_err(to_js_error)?;
-                spill
-                    .push(&LasPointRecord::from_las_point(&point))
-                    .map_err(to_js_error)?;
-                self.points_fed += 1;
-            }
+        let records = if count > 0 {
+            self.point_data
+                .points()
+                .map(|result| result.map(|point| LasPointRecord::from_las_point(&point)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(to_js_error)?
+        } else {
+            Vec::new()
+        };
+        self.source_read_and_decode += fetch_start.elapsed();
+
+        let push_start = Instant::now();
+        for record in &records {
+            spill.push(record).map_err(to_js_error)?;
+            self.points_fed += 1;
         }
+        self.spill_write += push_start.elapsed();
 
         let dto = crate::dto::FeedResultDto {
             points_read: self.points_fed,
@@ -359,7 +417,7 @@ impl WasmConverter {
             .take()
             .ok_or_else(|| JsValue::from_str("finishは既に呼ばれている"))?;
         let reader = spill.finalize().map_err(to_js_error)?;
-        write_copc_from_spill_with_fs(
+        let post_timings = write_copc_from_spill_with_fs_and_timings(
             &self.fs,
             Path::new(&self.output_name),
             reader,
@@ -371,6 +429,14 @@ impl WasmConverter {
 
         let dto = crate::dto::FinishResultDto {
             point_count: self.points_fed,
+            stage_timings: crate::dto::ConversionStageBreakdownDto::new(
+                self.source_read_and_decode,
+                self.spill_write,
+                post_timings,
+                self.points_fed,
+                self.file_size_bytes,
+                Some(self.fs.io_timings()),
+            ),
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }

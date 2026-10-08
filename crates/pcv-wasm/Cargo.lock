@@ -320,6 +320,7 @@ dependencies = [
  "tempfile",
  "wasm-bindgen",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]

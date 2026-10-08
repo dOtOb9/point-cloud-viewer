@@ -44,16 +44,18 @@
 
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
+use std::time::Duration;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use copc_core::{LasPointRecord, NeverCancel, StreamingLayout};
 use copc_writer::{
-    write_copc_from_spill_with_fs, CopcWriteMetadata, CopcWriterParams, SpillWriter,
+    write_copc_from_spill_with_fs_and_timings, CopcWriteMetadata, CopcWriterParams, SpillWriter,
 };
 use js_sys::Array;
 use pcd_rs::{DynReader, Field};
 use wasm_bindgen::prelude::*;
 use web_sys::{File, FileSystemSyncAccessHandle};
+use web_time::Instant;
 
 use crate::convert::handles_from_js_array;
 use crate::file_reader::FileRangeReader;
@@ -198,6 +200,12 @@ pub struct WasmPcdConverter {
     points_fed: u64,
     output_name: String,
     params: CopcWriterParams,
+    /// M4-12(`TaskSheets/M4-import-and-conversion.md`):
+    /// `crates/pcv-wasm/src/convert.rs`の`WasmConverter`と同じ理由・同じ
+    /// 考え方(バッチ単位でしか`Instant::now()`を呼ばない。`feed`参照)。
+    source_read_and_decode: Duration,
+    spill_write: Duration,
+    file_size_bytes: u64,
 }
 
 #[wasm_bindgen]
@@ -210,6 +218,9 @@ impl WasmPcdConverter {
         output_name: String,
         max_points_per_node: u32,
     ) -> Result<WasmPcdConverter, JsValue> {
+        // M4-12: `file`は直後に`FileRangeReader::new`へ所有権が渡るため、
+        // 先にサイズを読んでおく(`convert.rs`の`WasmConverter::new`と同じ)。
+        let file_size_bytes = file.size() as u64;
         let stats = Stats::new();
         let source = FileRangeReader::new(file, stats);
         let mut buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
@@ -263,6 +274,9 @@ impl WasmPcdConverter {
             points_fed: 0,
             output_name,
             params: CopcWriterParams::new(max_points_per_node),
+            source_read_and_decode: Duration::ZERO,
+            spill_write: Duration::ZERO,
+            file_size_bytes,
         })
     }
 
@@ -283,9 +297,15 @@ impl WasmPcdConverter {
             .as_mut()
             .ok_or_else(|| JsValue::from_str("feedはfinishの後には呼べない"))?;
 
-        let mut read_count = 0u32;
+        // M4-12: `convert.rs`の`WasmConverter::feed`と同じ理由で、「読み込み」
+        // 「spill書き込み」の2段に分け、このバッチ(最大`batch_size`点、
+        // 点数全体には比例しない一時バッファ)単位で区切って測る
+        // (1点ごとに`Instant::now()`を呼ばない。モジュールドキュメント・
+        // `source_read_and_decode`フィールドのコメント参照)。
+        let read_start = Instant::now();
+        let mut records = Vec::with_capacity(batch_size as usize);
         let mut done = false;
-        while read_count < batch_size {
+        while records.len() < batch_size as usize {
             match self.reader.next() {
                 Some(Ok(record)) => {
                     let x = field_to_f64(&record.0[self.ix]);
@@ -299,20 +319,16 @@ impl WasmPcdConverter {
                         .i_intensity
                         .map(|i| field_to_u16_clamped(&record.0[i]))
                         .unwrap_or(0);
-                    spill
-                        .push(&LasPointRecord {
-                            x,
-                            y,
-                            z,
-                            intensity,
-                            red: color[0],
-                            green: color[1],
-                            blue: color[2],
-                            ..LasPointRecord::default()
-                        })
-                        .map_err(to_js_error)?;
-                    self.points_fed += 1;
-                    read_count += 1;
+                    records.push(LasPointRecord {
+                        x,
+                        y,
+                        z,
+                        intensity,
+                        red: color[0],
+                        green: color[1],
+                        blue: color[2],
+                        ..LasPointRecord::default()
+                    });
                 }
                 Some(Err(e)) => return Err(to_js_error(e)),
                 None => {
@@ -321,6 +337,14 @@ impl WasmPcdConverter {
                 }
             }
         }
+        self.source_read_and_decode += read_start.elapsed();
+
+        let push_start = Instant::now();
+        for record in &records {
+            spill.push(record).map_err(to_js_error)?;
+            self.points_fed += 1;
+        }
+        self.spill_write += push_start.elapsed();
 
         let dto = crate::dto::FeedResultDto {
             points_read: self.points_fed,
@@ -348,7 +372,7 @@ impl WasmPcdConverter {
         // PCDはCRSの概念を持たない(ADR-0008)。`wkt_crs`はデフォルトの`None`のまま
         // (推測で補わない。crates/pcv-convert/src/import/mod.rsのドキュメント参照)。
 
-        write_copc_from_spill_with_fs(
+        let post_timings = write_copc_from_spill_with_fs_and_timings(
             &self.fs,
             Path::new(&self.output_name),
             reader,
@@ -360,6 +384,14 @@ impl WasmPcdConverter {
 
         let dto = crate::dto::FinishResultDto {
             point_count: self.points_fed,
+            stage_timings: crate::dto::ConversionStageBreakdownDto::new(
+                self.source_read_and_decode,
+                self.spill_write,
+                post_timings,
+                self.points_fed,
+                self.file_size_bytes,
+                Some(self.fs.io_timings()),
+            ),
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }
