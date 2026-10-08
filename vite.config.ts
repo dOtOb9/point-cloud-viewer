@@ -51,6 +51,12 @@ export default defineConfig(() => ({
     // 件数が実際より大きく出る)。vitestのconfigDefaults.excludeは指定すると
     // 丸ごと上書きされる仕様なので、既定値を展開した上で`.claude/**`を追加する
     // (既定の除外(node_modules等)を消さない)。
-    exclude: [...configDefaults.exclude, ".claude/**"],
+    //
+    // `e2e/**`: Playwright(`playwright.config.ts`)のE2Eテストは`*.spec.ts`という
+    // vitestの既定パターンにも一致してしまう。vitestとPlaywrightのテストランナーは
+    // 別物(E2Eは`npm run e2e`でPlaywrightから実行する)なので、vitestからは
+    // 除外する(除外しないと`npm test`が「test()はここで呼べない」エラーで
+    // 落ちる。実際に確認済み)。
+    exclude: [...configDefaults.exclude, ".claude/**", "e2e/**"],
   },
 }));
