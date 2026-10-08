@@ -50,3 +50,8 @@ vendor/*/Cargo.lock
 
 # mdBook のビルド出力。.github/workflows/pages.yml が毎回ビルドし直して配信する。
 docs/book/book/
+
+# Playwright(E2E、`playwright.config.ts`)の実行結果。
+/test-results/
+/playwright-report/
+/blob-report/
