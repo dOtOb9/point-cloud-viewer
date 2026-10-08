@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   cacheKeyFor,
   CONVERSION_LOCK_NAME,
+  describeInsufficientSpaceWeb,
+  ensurePersistentStorage,
   hasEnoughQuota,
   isScratchDirName,
   openHandlePool,
@@ -16,9 +18,11 @@ import {
   requiredScratchBytes,
   SCRATCH_BYTES_PER_POINT,
   SCRATCH_SIZE_FACTOR,
+  toGiBLabel,
   withConversionLock,
   type FileFingerprint,
   type LockManagerLike,
+  type PersistableStorageLike,
 } from "./opfs";
 
 describe("cacheKeyFor", () => {
@@ -225,5 +229,96 @@ describe("withConversionLock", () => {
         throw failure;
       }),
     ).rejects.toBe(failure);
+  });
+});
+
+// M4-6追記(「空き容量が足りません」の改善): 永続化の要求フロー。
+// `navigator.storage`を直接使わず、テストから差し替え可能な
+// `PersistableStorageLike`を注入する(`withConversionLock`と同じ方針)。
+describe("ensurePersistentStorage", () => {
+  function fakeStorage(persistedInitially: boolean, persistResult: boolean): PersistableStorageLike {
+    return {
+      persisted: vi.fn(async () => persistedInitially),
+      persist: vi.fn(async () => persistResult),
+    };
+  }
+
+  it("既に永続化済みなら、persist()を呼ばずにそう報告する", async () => {
+    const storage = fakeStorage(true, false);
+    const outcome = await ensurePersistentStorage(storage);
+    expect(outcome).toEqual({ alreadyPersisted: true, grantedNow: false, persisted: true });
+    expect(storage.persist).not.toHaveBeenCalled();
+  });
+
+  it("未許可でpersist()が許可を返したら、persisted=trueで報告する", async () => {
+    const storage = fakeStorage(false, true);
+    const outcome = await ensurePersistentStorage(storage);
+    expect(outcome).toEqual({ alreadyPersisted: false, grantedNow: true, persisted: true });
+    expect(storage.persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("未許可でpersist()が拒否を返したら、persisted=falseで報告する(例: Firefoxでユーザーが拒否)", async () => {
+    const storage = fakeStorage(false, false);
+    const outcome = await ensurePersistentStorage(storage);
+    expect(outcome).toEqual({ alreadyPersisted: false, grantedNow: false, persisted: false });
+  });
+});
+
+describe("toGiBLabel", () => {
+  it("バイトを小数1桁のGiBに変換する", () => {
+    expect(toGiBLabel(10 * 1024 ** 3)).toBe("約10.0GiB");
+    expect(toGiBLabel(0)).toBe("約0.0GiB");
+  });
+});
+
+// M4-6追記: 容量不足の表示の文言組み立て(純粋関数)。所有者の実機不具合
+// (「空き容量が足りません(10.0GiB)」が必要量か空きか分からなかった)の
+// 修正として、必要・空き・上限・使用中を分けて出し、空ける方法を示す。
+describe("describeInsufficientSpaceWeb", () => {
+  const base = {
+    requiredBytes: 20 * 1024 ** 3,
+    quotaBytes: 10 * 1024 ** 3,
+    usageBytes: 1 * 1024 ** 3,
+    persisted: false,
+    reclaimableBytes: 0,
+  };
+
+  it("必要・空き・上限・使用中を分けて出す", () => {
+    const message = describeInsufficientSpaceWeb(base);
+    expect(message).toContain("必要: 約20.0GiB");
+    expect(message).toContain("空き: 約9.0GiB"); // quota(10) - usage(1)
+    expect(message).toContain("上限 約10.0GiB");
+    expect(message).toContain("使用中 約1.0GiB");
+  });
+
+  it("消せる量(reclaimableBytes)が無ければ、キャッシュを消す提案を出さない", () => {
+    const message = describeInsufficientSpaceWeb(base);
+    expect(message).not.toContain("キャッシュ");
+  });
+
+  it("消せる量があれば、その量を含めてキャッシュ・一時ファイルを消す提案を出す", () => {
+    const message = describeInsufficientSpaceWeb({ ...base, reclaimableBytes: 2 * 1024 ** 3 });
+    expect(message).toContain("キャッシュ");
+    expect(message).toContain("約2.0GiB");
+  });
+
+  it("永続化されていなければ、許可する提案を出す", () => {
+    const message = describeInsufficientSpaceWeb({ ...base, persisted: false });
+    expect(message).toContain("永続的な保存を許可する");
+  });
+
+  it("既に永続化されていれば、許可する提案は出さない", () => {
+    const message = describeInsufficientSpaceWeb({ ...base, persisted: true });
+    expect(message).not.toContain("永続的な保存を許可する");
+  });
+
+  it("常にデスクトップ版での変換を案内する", () => {
+    const message = describeInsufficientSpaceWeb(base);
+    expect(message).toContain("デスクトップ版でCOPC(.copc.laz)に変換してから開く");
+  });
+
+  it("空きがusage>quotaで負になる異常値でも0未満にはならない(Math.maxで安全側に倒す)", () => {
+    const message = describeInsufficientSpaceWeb({ ...base, quotaBytes: 1, usageBytes: 2 });
+    expect(message).toContain("空き: 約0.0GiB");
   });
 });

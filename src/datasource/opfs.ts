@@ -87,6 +87,106 @@ export function hasEnoughQuota(estimate: QuotaEstimate, requiredBytes: number): 
   return available >= requiredBytes;
 }
 
+/** バイトを「約X.XGiB」の形にする(小数1桁)。容量不足の表示・設定画面の
+ *  使用量表示で共通して使う。 */
+export function toGiBLabel(bytes: number): string {
+  return `約${(bytes / 1024 ** 3).toFixed(1)}GiB`;
+}
+
+/**
+ * M4-6追記(「空き容量が足りません」の改善): `navigator.storage`の
+ * `persist`/`persisted`だけを切り出したインターフェース。テストで差し替え
+ * られるようにする(`LockManagerLike`と同じ方針。モジュール冒頭のドキュメント
+ * 参照。ここでは既定値を持たない。呼び出し側(`web.ts`)が`navigator.storage`を渡す)。
+ */
+export interface PersistableStorageLike {
+  persist(): Promise<boolean>;
+  persisted(): Promise<boolean>;
+}
+
+export interface PersistenceOutcome {
+  /** 呼んだ時点で既に永続化されていたか。 */
+  alreadyPersisted: boolean;
+  /** 今回`persist()`を呼んで許可されたか(既に永続化済みなら呼ばないのでfalse)。 */
+  grantedNow: boolean;
+  /** 最終的に永続化されているか(`alreadyPersisted || grantedNow`)。 */
+  persisted: boolean;
+}
+
+/**
+ * まだ永続化されていなければ`persist()`を求める(受け入れ条件「変換の前に
+ * 永続的な保存を求める」)。既に永続化済みなら`persist()`自体を呼ばない
+ * (Firefoxは毎回ユーザーへの確認ポップアップを出しうるため、既に許可済みの
+ * ときに重ねて尋ねる必要は無い)。
+ *
+ * ブラウザごとの挙動(出典、`TaskSheets/M4-import-and-conversion.md`のM4-6追記参照):
+ * - Firefoxはユーザーに確認のポップアップを出し、許可を求める
+ *   (MDN「Storage quotas and eviction criteria」の
+ *   “Does browser-stored data persist?”節: "the user is notified with a UI
+ *   popup that their permission is requested")
+ * - Chrome/Edge/Safariはサイトの利用履歴(エンゲージメント・インストール/
+ *   ブックマーク・通知許可など)から自動で判定し、確認は出さない
+ *   (同ページ: "automatically approve or deny the request based on the
+ *   user's history of interaction with the site and do not show any
+ *   prompts to the user"。具体的な判定条件はweb.dev「Persistent storage」:
+ *   "How high is the level of site engagement? Has the site been installed
+ *   or bookmarked? Has the site been granted permission to show
+ *   notifications?")
+ */
+export async function ensurePersistentStorage(storage: PersistableStorageLike): Promise<PersistenceOutcome> {
+  const already = await storage.persisted();
+  if (already) {
+    return { alreadyPersisted: true, grantedNow: false, persisted: true };
+  }
+  const granted = await storage.persist();
+  return { alreadyPersisted: false, grantedNow: granted, persisted: granted };
+}
+
+/**
+ * 容量不足のときに表示する文言の材料。`quotaBytes`/`usageBytes`は
+ * `estimateQuota()`の結果、`persisted`は`isPersisted()`(または
+ * `ensurePersistentStorage`の結果)、`reclaimableBytes`は
+ * `getOpfsUsageBreakdown()`の内訳(キャッシュ+一時ファイル)の合計。
+ */
+export interface InsufficientSpaceWebDetails {
+  requiredBytes: number;
+  quotaBytes: number;
+  usageBytes: number;
+  persisted: boolean;
+  reclaimableBytes: number;
+}
+
+/**
+ * M4-6追記: Web版の「空き容量が足りません」の文言を組み立てる(純粋関数、
+ * テスト可能)。
+ *
+ * 所有者の実機不具合(「空き容量が足りません(10.0GiB)」という表示だけでは、
+ * 10.0GiBが「必要な量」なのか「空き」なのか分からなかった)を受け、
+ * 必要・空き・上限・使用中を分けて出す。続けて「空けるには」何をすればよいかを
+ * 示す(キャッシュ等が消せるときだけ提案に含め、永続化がまだなら許可を促し、
+ * 常にデスクトップ版での変換を案内する)。
+ */
+export function describeInsufficientSpaceWeb(details: InsufficientSpaceWebDetails): string {
+  const availableBytes = Math.max(0, details.quotaBytes - details.usageBytes);
+  const summary =
+    `空き容量が足りません(必要: ${toGiBLabel(details.requiredBytes)}／空き: ${toGiBLabel(availableBytes)}` +
+    `(上限 ${toGiBLabel(details.quotaBytes)}、使用中 ${toGiBLabel(details.usageBytes)}))。`;
+
+  const actions: string[] = [];
+  if (details.reclaimableBytes > 0) {
+    actions.push(
+      `設定の「ブラウザの保存領域」から変換済みキャッシュ・残っている一時ファイル` +
+        `(${toGiBLabel(details.reclaimableBytes)})を消す`,
+    );
+  }
+  if (!details.persisted) {
+    actions.push("設定から永続的な保存を許可する");
+  }
+  actions.push("デスクトップ版でCOPC(.copc.laz)に変換してから開く");
+
+  return `${summary} 空けるには、${actions.join("、")}、のいずれかを試してください。`;
+}
+
 /**
  * ファイルの指紋から、OPFS上のファイル名として安全な(スラッシュ等を含まない)
  * キーを作る。暗号学的な強度は要らない(同じ入力から同じキーが決定的に
@@ -167,6 +267,12 @@ export async function estimateQuota(): Promise<QuotaEstimate> {
   return { quota: estimate.quota ?? 0, usage: estimate.usage ?? 0 };
 }
 
+/** `navigator.storage.persisted()`をラップする(永続化の現在の状態、
+ *  設定画面の表示用)。 */
+export async function isPersisted(): Promise<boolean> {
+  return navigator.storage.persisted();
+}
+
 async function getConvertedDir(): Promise<FileSystemDirectoryHandle> {
   const root = await navigator.storage.getDirectory();
   return root.getDirectoryHandle(CONVERTED_DIR_NAME, { create: true });
@@ -235,6 +341,133 @@ export async function removeOutputFile(outputName: string): Promise<void> {
     await dir.removeEntry(outputName);
   } catch {
     // 既に無い(作られる前に失敗した等)。実害なし。
+  }
+}
+
+/** 変換済みキャッシュ1件(設定画面の一覧表示・削除用)。 */
+export interface CachedConversionEntry {
+  /** OPFS上の出力ファイル名(`outputFileNameFor`が作ったもの、`<key>.copc.laz`)。 */
+  outputName: string;
+  /** OPFS上のサイドカー索引のファイル名(`<key>.meta.json`)。削除時に一緒に消す。 */
+  metaFileName: string;
+  /** 元の入力ファイル名(表示用)。 */
+  sourceName: string;
+  /** 出力ファイル+サイドカーの合計サイズ(バイト)。 */
+  sizeBytes: number;
+}
+
+/** 残っている一時ファイルのディレクトリ1件(設定画面の一覧表示・削除用)。 */
+export interface StaleScratchDirEntry {
+  /** OPFS上のディレクトリ名(`pcv-scratch-<id>`、または旧実装の固定名`pcv-scratch`)。 */
+  name: string;
+  /** 配下の一時ファイルの合計サイズ(バイト)。他のタブが使用中で読めなかった場合は0。 */
+  sizeBytes: number;
+}
+
+/** OPFSの使用量の内訳(受け入れ条件「キャッシュ・一時ディレクトリの内訳が見える」)。 */
+export interface OpfsUsageBreakdown {
+  cachedConversions: CachedConversionEntry[];
+  cachedConversionsTotalBytes: number;
+  staleScratchDirs: StaleScratchDirEntry[];
+  staleScratchTotalBytes: number;
+}
+
+/** ディレクトリ配下(再帰)の合計バイト数。`removeScratchDirByName`等と違い、
+ *  読み取りに失敗しても例外を外へ投げる(呼び出し側`getOpfsUsageBreakdown`が
+ *  1エントリ単位でcatchし、他のエントリの集計は続ける)。 */
+async function dirTotalBytes(dir: FileSystemDirectoryHandle): Promise<number> {
+  let total = 0;
+  for await (const [, handle] of dir.entries()) {
+    if (handle.kind === "file") {
+      total += (await handle.getFile()).size;
+    } else {
+      total += await dirTotalBytes(handle);
+    }
+  }
+  return total;
+}
+
+/**
+ * OPFSの使用量の内訳を集計する(変換済みキャッシュ・残っている一時ディレクトリ)。
+ * 受け入れ条件「OPFSの使用量の内訳が見える」の実体。所有者の実機不具合
+ * (「空き容量が足りません」が出ても、何が容量を使っているか・消せば空くのかが
+ * 画面から分からなかった)の修正として追加した。
+ *
+ * 1件ごとに失敗を握りつぶして集計を続ける(索引が壊れている・対応する出力が無い・
+ * 他のタブが使用中等。`findCachedOutput`と同じ「安全側に倒す」考え方)。
+ */
+export async function getOpfsUsageBreakdown(): Promise<OpfsUsageBreakdown> {
+  const root = await navigator.storage.getDirectory();
+
+  const cachedConversions: CachedConversionEntry[] = [];
+  try {
+    const dir = await getConvertedDir();
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind !== "file" || !name.endsWith(".meta.json")) continue;
+      try {
+        const metaFile = await handle.getFile();
+        const meta = JSON.parse(await metaFile.text()) as CacheMeta;
+        const outputFile = await (await dir.getFileHandle(meta.outputName)).getFile();
+        cachedConversions.push({
+          outputName: meta.outputName,
+          metaFileName: name,
+          sourceName: meta.sourceName,
+          sizeBytes: metaFile.size + outputFile.size,
+        });
+      } catch {
+        // 索引が壊れている・対応する出力が無い等。この1件はスキップする。
+      }
+    }
+  } catch {
+    // pcv-convertedディレクトリ自体が無い(まだ何も変換していない)。空のまま。
+  }
+
+  const staleScratchDirs: StaleScratchDirEntry[] = [];
+  for await (const [name, handle] of root.entries()) {
+    if (handle.kind !== "directory" || !isScratchDirName(name)) continue;
+    let sizeBytes = 0;
+    try {
+      sizeBytes = await dirTotalBytes(handle);
+    } catch {
+      // 他のタブが使用中等。サイズ不明として0のまま一覧には残す
+      // (一覧から消すと「個別に消す」操作の対象にできなくなるため)。
+    }
+    staleScratchDirs.push({ name, sizeBytes });
+  }
+
+  return {
+    cachedConversions,
+    cachedConversionsTotalBytes: cachedConversions.reduce((sum, e) => sum + e.sizeBytes, 0),
+    staleScratchDirs,
+    staleScratchTotalBytes: staleScratchDirs.reduce((sum, e) => sum + e.sizeBytes, 0),
+  };
+}
+
+/** 変換済みキャッシュを1件消す(設定画面の「消す」ボタン用)。 */
+export async function removeCachedConversionEntry(
+  entry: Pick<CachedConversionEntry, "metaFileName" | "outputName">,
+): Promise<void> {
+  const dir = await getConvertedDir();
+  for (const name of [entry.metaFileName, entry.outputName]) {
+    try {
+      await dir.removeEntry(name);
+    } catch {
+      // 既に無い等。実害なし(もう一方は消し続ける)。
+    }
+  }
+}
+
+/** 変換済みキャッシュを全て消す(設定画面の「すべて消す」ボタン用)。 */
+export async function clearAllCachedConversions(): Promise<void> {
+  const dir = await getConvertedDir();
+  const names: string[] = [];
+  for await (const name of dir.keys()) names.push(name);
+  for (const name of names) {
+    try {
+      await dir.removeEntry(name);
+    } catch {
+      // 実害なし(個別の失敗で全体を諦めない。他のtry/catchと同じ考え方)。
+    }
   }
 }
 
@@ -386,6 +619,19 @@ export function isScratchDirName(name: string): boolean {
  * すり抜けの窓を無くしている(ロックを取っている間は他のタブが
  * `createScratchPool`を同時に始められないため)。
  */
+/** 指定した一時ディレクトリを1件消す(設定画面の「消す」ボタン用)。
+ *  `isScratchDirName`に当たらない名前は消さない(呼び出し元のミスでOPFS内の
+ *  無関係なエントリを消してしまうことを防ぐ安全策)。 */
+export async function removeScratchDirByName(name: string): Promise<void> {
+  if (!isScratchDirName(name)) return;
+  const root = await navigator.storage.getDirectory();
+  try {
+    await root.removeEntry(name, { recursive: true });
+  } catch {
+    // 他のタブが使用中等。実害なし(`cleanupStaleScratchDirs`と同じ考え方)。
+  }
+}
+
 export async function cleanupStaleScratchDirs(): Promise<void> {
   const root = await navigator.storage.getDirectory();
   const staleNames: string[] = [];
