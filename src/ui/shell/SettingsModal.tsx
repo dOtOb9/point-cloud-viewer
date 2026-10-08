@@ -31,6 +31,11 @@ const THEME_LABELS: Record<ThemePreference, string> = {
  *  ことを避けるため)。 */
 const RENDER_SCALE_OPTIONS = [0.25, 0.5, 0.75, 1.0] as const;
 
+/** ADR-0010追記: 中央優先度の強さの選択肢。0(今までどおり)を必ず含め、
+ *  自由入力にしないのはRENDER_SCALE_OPTIONSと同じ理由
+ *  (極端な値を誤って入れて体感が崩れることを避ける)。 */
+const CENTER_PRIORITY_STRENGTH_OPTIONS = [0, 1, 2, 4] as const;
+
 const POINT_SHAPE_LABELS: Record<PointShape, string> = {
   round: "丸",
   square: "四角",
@@ -273,6 +278,39 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
               モバイルではnavigator.deviceMemoryから逆算する（未検証の初期値）。この上限自体を
               手動で切り替える手段は設けていない。点予算そのものはレイヤーパネルから手動変更・自動調整の
               on/offができる。
+            </p>
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
+          <h3 className="text-sm font-semibold opacity-70">LODの中央優先度 (ADR-0010追記)</h3>
+          <p className="text-xs opacity-60">
+            所有者の要望「画面中央のチャンクを優先して細かく表示しないと使いにくい」への対応。画面空間誤差
+            （点の間隔が画面上で何ピクセルに見えるか）だけで優先度を決めると、画面の端にある近いノードと
+            中央のノードが同じ扱いになることがあった。ここの強さを上げると、画面中央に近いノードほど
+            優先度が上乗せされる（式・下限で端のノードが飢餓しないようにしている理由は
+            TaskSheets/ADR-0010-lod-priority-and-point-budget.md参照）。
+          </p>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs opacity-70">中央優先の強さ（0 = 今までどおり画面空間誤差のみ）</label>
+            <div className="flex gap-2">
+              {CENTER_PRIORITY_STRENGTH_OPTIONS.map((strength) => (
+                <button
+                  key={strength}
+                  type="button"
+                  onClick={() => viewer.setCenterPriorityStrength(strength)}
+                  className={`rounded px-3 py-1.5 text-sm ${
+                    viewer.centerPriorityStrength === strength
+                      ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                      : "border border-slate-300 dark:border-slate-600"
+                  }`}
+                >
+                  {strength}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs opacity-60">
+              現在値: {viewer.centerPriorityStrength}（再起動なしで反映される。既定値は実機で検証していない）
             </p>
           </div>
         </section>

@@ -29,6 +29,7 @@ import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 import { formatNodeLoadErrorMessage } from "./node-load-error";
 import { selectNodesForFrame } from "./node-selection";
+import { DEFAULT_CENTER_PRIORITY_STRENGTH } from "./center-priority";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
@@ -118,6 +119,8 @@ export interface RenderStats {
   pointShape: PointShape;
   isMobile: boolean;
   pointBudgetMax: number;
+  /** ADR-0010追記: 中央優先度の強さ。0なら今までどおり（画面空間誤差のみ）。 */
+  centerPriorityStrength: number;
 }
 
 export class PointCloudRenderer {
@@ -197,6 +200,12 @@ export class PointCloudRenderer {
   private edlEnabled: boolean;
   private edlStrength = DEFAULT_EDL_STRENGTH;
   private edlRadiusPx = DEFAULT_EDL_RADIUS_PX;
+
+  /** ADR-0010追記: 中央優先度の強さ。`selectNodesForFrame`に渡し、画面中央からの
+   *  距離に応じた重みを画面空間誤差に掛ける（`center-priority.ts`参照）。
+   *  既定値は実機で検証していない（`DEFAULT_CENTER_PRIORITY_STRENGTH`のコメント
+   *  参照）。設定画面から0（今までどおり）に戻せる。 */
+  private centerPriorityStrength = DEFAULT_CENTER_PRIORITY_STRENGTH;
 
   /**
    * M3-8: レンダースケール(内部解像度 = 表示サイズ(CSS px) × この値)。
@@ -445,6 +454,16 @@ export class PointCloudRenderer {
     return this.edlRadiusPx;
   }
 
+  /** ADR-0010追記: 中央優先度の強さ。0にすると今までどおり画面空間誤差だけの
+   *  優先度になる（`center-priority.ts`の`centerPriorityWeight`参照）。 */
+  setCenterPriorityStrength(strength: number): void {
+    this.centerPriorityStrength = Math.max(0, strength);
+  }
+
+  getCenterPriorityStrength(): number {
+    return this.centerPriorityStrength;
+  }
+
   /**
    * M3-8: レンダースケール(内部解像度 = 表示サイズ(CSS px) × この値。
    * devicePixelRatioは含めない。理由は`renderScale`フィールドのコメント参照)
@@ -671,6 +690,7 @@ export class PointCloudRenderer {
       height,
       this.pointBudget,
       this.cache,
+      this.centerPriorityStrength,
     );
 
     if (this.loader) {
@@ -735,6 +755,7 @@ export class PointCloudRenderer {
       pointShape: this.pointShape,
       isMobile: this.isMobileProfile,
       pointBudgetMax: this.autoPointBudgetMax,
+      centerPriorityStrength: this.centerPriorityStrength,
     });
   }
 
