@@ -537,3 +537,153 @@ rAF間隔が一度発生した後も自動調整が壊れたままにならな�
 接続変更など）。もし所有者の環境で自動調整が「あるときから急に下限に
 張り付いたまま戻らなくなった」という挙動を見た場合は、この追記3が対処した
 不具合そのものの可能性が高いので報告してほしい。
+
+## 追記4（2026-10-08）: タスクA（優先度）に、画面中央を優先する重みを追加する
+
+### 所有者の要望
+
+「点群の octree 表示に関してなんだが、画面中央のチャンクを優先して細かく
+表示しないと、使いにくい」
+
+### 問題
+
+タスクAで直した画面空間誤差は「点の間隔が画面上で何ピクセルに見えるか」
+だけで優先度を決めており、画面の**どこに**ノードがあるかは見ていなかった。
+このため、画面の端にある近いノードと、画面中央にある同程度の誤差のノードが
+同じ扱いになり、所有者が実際に見ている中央が後回しになることがあった。
+
+### 決定: 優先度に中央優先度の重みを掛ける
+
+`priority = screenSpaceError(...) * centerPriorityWeight(...)`
+という形で、新設した`src/renderer/center-priority.ts`の
+`centerPriorityWeight()`（純粋関数）を`screenSpaceError`に掛ける。
+結線は`src/renderer/node-selection.ts`の`selectNodesForFrame`（新しい
+末尾の省略可能引数`centerPriorityStrength`、既定0）。
+
+```
+strength <= 0                        → 重み = 1（今までどおり）
+カメラがノードの範囲の中に入っている  → 重み = 1（最大）
+                                        （aabbClippedByNearPlane。下記参照）
+それ以外                              → 重み = minWeight + (1-minWeight) * exp(-strength * d^2)
+                                        （d = 正規化距離。下記参照）
+```
+
+- **d（正規化距離）**: ノードのAABBの**ワールド座標の中心点**を1点だけ投影し、
+  画面中央までの距離を、画面の**半対角線**（`hypot(canvasWidth,canvasHeight)/2`）
+  で正規化した値。中央で0、画面の四隅ちょうどで1になる（四隅までの距離が
+  横縦比に関わらず「1」で揃うので、`strength`を選ぶときにcanvasのサイズ・
+  縦横比を気にしなくて済む）。
+  所有者が許した2案（「投影した中心」「投影した範囲内で画面中央に最も
+  近い点」）のうち前者を選んだ。後者は最近点の計算がノードの形状次第で
+  複雑になり、ノードの中心という単純な量で「画面のどのあたりにあるか」は
+  十分近似できるため、所有者が追いやすいboring寄りの案を選んだ。
+- **ガウス型を選んだ理由**: 線形減衰だと画面中央付近での重みの差が小さく
+  「中央をはっきり優先する」効果が弱い。ガウス型(`exp(-strength*d^2)`)は
+  中央付近はほぼ平坦（中央のわずかなブレで優先度が暴れない）で、離れるほど
+  急に効いてくる。既存コードのEDL(`edl.ts`)等、画面空間の効果に距離の2乗を
+  使う考え方と揃える。
+- **下限（`minWeight`、既定`DEFAULT_MIN_CENTER_PRIORITY_WEIGHT=0.2`。
+  実測していない、未検証の初期値）**: 所有者の要望2「端のノードを永久に
+  読まないようにしない（飢餓を起こさない）」への対応。`weight`は
+  `minWeight + (1-minWeight)*gaussian`という形なので、`gaussian`がいくら
+  小さくなっても`weight`は`minWeight`を割らない（0にはならない）。
+  `priority = error * weight`なので、端のノードの画面空間誤差が
+  `1/minWeight`倍（既定なら5倍）以上大きければ、重みの不利を押し切って
+  中央の細かいノードより先に選ばれ得る（`node-selection.test.ts`の
+  「端のノードの画面空間誤差が十分大きければ…」テストで確認）。
+- **カメラがノードの範囲の中に入っている場合に重みを最大にする理由**:
+  「カメラがノードの中にいる」は、画面中央優先が解決しようとしている
+  「中央＝一番見たい場所」の極限（最も近い状態）であり、中央優先が
+  それを邪魔してはならないため。判定は新設の`aabbClippedByNearPlane()`
+  （`screen-space-error.ts`）で行う。カメラがAABBの中に入ると、カメラを
+  向いた側の頂点とその反対側の頂点でクリップ空間のwの符号が分かれる
+  （反対側はカメラの背後に回るため）。これは`projectedBoundsDiagonalPixels`
+  がニアプレーンを跨ぐ辺をクリップする条件と全く同じ頂点ごとのw判定
+  （`NEAR_W_EPSILON`）なので、独自の基準を追加せずそこから流用した
+  （`projectedBoundsDiagonalPixels`の実装自体は変更していない）。
+
+### 強さ（`centerPriorityStrength`）を設定画面から変更できるようにする
+
+- `PointCloudRenderer`に`private centerPriorityStrength`フィールドと
+  `setCenterPriorityStrength()`/`getCenterPriorityStrength()`を追加し、
+  `selectNodesForFrame`呼び出しに渡す。`RenderStats`にも含め、
+  `useCopcViewer.ts`のstdoutログ（`centerPriorityStrength=...`）で
+  GUIを見ずに確認できるようにした（既存の`edlStrength`等と同じ扱い）。
+- `useCopcViewer.ts`に`centerPriorityStrength`状態と`setCenterPriorityStrength`
+  を追加（`renderScale`と同じ配線パターン）。
+- `SettingsModal.tsx`に「LODの中央優先度 (ADR-0010追記)」節を追加。
+  自由入力ではなく選択肢ボタン（0, 1, 2, 4）にしたのは、既存の
+  `RENDER_SCALE_OPTIONS`と同じ理由（極端な値を誤って入れて体感が崩れることを
+  避ける）。
+- **既定値`DEFAULT_CENTER_PRIORITY_STRENGTH=2`は実測していない、未検証の
+  初期値。** strength=2のとき、画面端(d≈1)のガウス項は`exp(-2)≈0.135`、
+  下限との合成後の重みは約0.31。「中央をはっきり優先するが、強すぎて端が
+  常に下限に張り付くほどではない」という設計判断で選んだだけで、実機での
+  調整は所有者に委ねる（0にすればいつでも今までの挙動に戻せる）。
+
+### 却下した案
+
+| 案 | 却下理由 |
+|---|---|
+| 線形減衰（`weight = 1 - strength*d`など） | 画面中央付近での重みの差が小さく、「中央をはっきり優先する」効果が弱い。上記参照 |
+| 「投影した範囲内で画面中央に最も近い点」を使う | ノードの中心という単純な量で十分近似できるのに対し、最近点の計算はノードの形状次第で複雑になり、所有者が追いにくくなる |
+| 下限を設けない（`minWeight=0`） | 所有者の要望2「飢餓を起こさない」に反する。strengthを上げるほど端のノードが事実上一生読み込まれなくなる |
+| カメラがノードの中にいる判定を、カメラ位置とAABBの内外判定（点と直方体の包含判定）で素朴に書く | `selectNodesForFrame`/`screenSpaceError`はカメラの位置（eye）を直接受け取っておらず、`viewProj`行列だけで判断する既存の設計に合わせたほうが、新しい入力（カメラ位置）を増やさずに済む。`projectedBoundsDiagonalPixels`が既に同じ状況（カメラがAABBに極端に近い・中にある）をニアプレーンのクリップ処理で扱っており、そこで使っている頂点ごとのw判定を流用すれば、別の判定基準を増やさずに済む |
+
+### 触ったファイル
+
+- `src/renderer/center-priority.ts`（新規）: `centerPriorityWeight()`
+  （純粋関数）、`DEFAULT_MIN_CENTER_PRIORITY_WEIGHT`、
+  `DEFAULT_CENTER_PRIORITY_STRENGTH`
+- `src/renderer/center-priority.test.ts`（新規）: 4テスト
+  （strength<=0で常に1、中央ほど重みが大きい、下限を割らない、
+  カメラがノードの中にいるとき最大になる）
+- `src/renderer/screen-space-error.ts`: `aabbClippedByNearPlane()`を新設
+  （`center-priority.ts`から利用）。`clipToScreenPixels`を同ファイルから
+  使えるようexportに変更。**既存の`projectedBoundsDiagonalPixels`/
+  `screenSpaceError`の実装は変更していない**
+- `src/renderer/node-selection.ts`: `selectNodesForFrame`に末尾の省略可能
+  引数`centerPriorityStrength`（既定0）を追加し、
+  `priority = screenSpaceError(...) * centerPriorityWeight(...)`にした
+- `src/renderer/node-selection.test.ts`: 新規3テスト
+  （強さ0で既存の優先度と完全一致、画面空間誤差が同じなら中央側が優先、
+  端の誤差が十分大きければ下限のおかげで先に選ばれる）
+- `src/renderer/point-cloud-renderer.ts`: `centerPriorityStrength`フィールド・
+  `setCenterPriorityStrength()`/`getCenterPriorityStrength()`・
+  `selectNodesForFrame`呼び出しへの結線・`RenderStats`への追加
+- `src/state/useCopcViewer.ts`: `centerPriorityStrength`状態・
+  `setCenterPriorityStrength`・stdoutログへの追加
+- `src/ui/shell/SettingsModal.tsx`: 「LODの中央優先度」節（選択肢ボタン）
+
+### 検証
+
+```bash
+npm run typecheck   # 通ること（web-protocol.tsの1件は並行して進んでいる
+                     # M4-12(変換の段階別内訳)作業側の未使用importで、
+                     # このタスクの範囲外。center-priority.ts/
+                     # node-selection.ts/point-cloud-renderer.ts/
+                     # useCopcViewer.ts/SettingsModal.tsxは単体で
+                     # 型エラーが無いことを確認済み）
+npm run lint        # 同じ1件を除いて通ること
+npm test            # 313件すべてpass（center-priority.test.tsの4件・
+                     # node-selection.test.tsの新規3件を含む）
+npm run build
+```
+
+### 所有者が自分で確認する手順
+
+**GUIでの目視確認はこの環境ではできなかった。** 以下を確認してほしい:
+
+1. `npm run tauri dev`（またはWeb版）で点群を開き、視点をカメラに近い
+   ノードが画面の端に来るように動かす。設定画面「LODの中央優先度」で
+   強さを0→2→4と上げていくと、画面中央付近のノードがより早く・より細かく
+   表示され、端のノードは相対的に粗いままになる見た目の変化があるはずか確認する
+2. 強さを0に戻すと、今までどおりの挙動（画面空間誤差だけの優先度）に戻ることを
+   確認する
+3. 強さを上げたまま、カメラを大きく動かして点群から離れたり戻したりしても、
+   画面の端のノードが「永久に読み込まれない」ままにならないか確認する
+   （視点を止めて数秒待てば、端のノードも徐々に細かくなるはず）
+4. カメラをズームインしてノードの中に入り込んだとき、そのノードの表示が
+   中央優先度の影響で不自然に後回しにならないか確認する
+5. `centerPriorityStrength=...`が`npm run tauri dev`のRust側stdoutに出て、
+   設定画面の操作に合わせて値が変わることを確認する
