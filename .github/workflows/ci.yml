@@ -81,6 +81,54 @@ jobs:
       - run: cargo fmt --manifest-path vendor/copc-writer/Cargo.toml -- --check
       - run: cargo test --manifest-path vendor/copc-writer/Cargo.toml
 
+  # TaskSheets/ADR-0016-e2e-web-conversion.md参照。
+  #
+  # 「テスト・CIが緑のまま、実際のブラウザでは壊れている」という不具合
+  # (wasmでの時刻panic・FileReaderSyncの無バッファ・OPFSハンドルの衝突・
+  # 変換完了後に内訳とダウンロードが即座に消える、など)が繰り返し起きていた。
+  # いずれもWeb版の変換を実ブラウザで1回通せば見つかる不具合だったため、
+  # ヘッドレスChromiumで実際に変換を1回通すE2E(`playwright.config.ts`・
+  # `e2e/`)をここに追加する。他のジョブを待たず独立に走らせる(frontendの
+  # lint/typecheckとは別の懸念であり、並行させてCI全体の所要時間を増やさない)。
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # ブラウザ本体(200MB超)のダウンロードをキャッシュする(タスクの要求)。
+      # OS依存ライブラリの`apt-get install`(`--with-deps`)はキャッシュしない
+      # (ubuntu-latestのイメージに大半が既に入っており、ヒットしてもそれほど
+      # 速くならない一方、キャッシュの構築・検証コストだけが増えるため)。
+      - name: Playwrightブラウザのキャッシュ
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Playwright Chromium(フルバイナリ + ヘッドレスシェル)の導入
+        run: npx playwright install --with-deps chromium
+
+      # `playwright.config.ts`のwebServerが`npm run build && npm run preview`
+      # (本番=GitHub Pagesと同じサブパスでビルドしたもの)を自動で起動するので、
+      # ここでは`playwright test`を呼ぶだけでよい。
+      - run: npm run e2e
+
+      # 失敗したときに原因を追えるように、トレース・スクリーンショットを
+      # 保存する(CI実行のartifactとしてのみ残る。`test-results/`は
+      # .gitignore済みでリポジトリには入らない)。
+      - name: 失敗時にtest-results(トレース・スクリーンショット)を保存
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          retention-days: 7
+
   # 13秒で終わる frontend だけを前提にする。
   # rust ジョブ (5分超) を待つと build と直列になり、CI 全体が倍近く遅くなるため待たない。
   build:
