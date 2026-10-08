@@ -12,6 +12,7 @@ import type { HierarchyNodeInfo } from "../datasource/DataSource";
 import type { Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
+import { centerPriorityWeight } from "./center-priority";
 import type { CachedNode } from "./node-cache";
 
 /**
@@ -37,6 +38,10 @@ export interface NodeSelectionResult {
 /**
  * M1-4: 画面空間誤差でノードに優先度を付け、視錐台の外を除外し、
  * 点予算を超えたら優先度の低いノードから諦める。
+ *
+ * ADR-0010追記: `centerPriorityStrength`（既定0=今までどおり）が0より大きいとき、
+ * 画面中央からの距離に応じた重み（`centerPriorityWeight`、`center-priority.ts`）を
+ * 画面空間誤差に掛けてから優先度にする。式・理由はそちらのdocコメント参照。
  */
 export function selectNodesForFrame(
   hierarchy: readonly HierarchyNodeInfo[],
@@ -46,6 +51,7 @@ export function selectNodesForFrame(
   canvasHeight: number,
   pointBudget: number,
   cache: NodeSelectionCache,
+  centerPriorityStrength: number = 0,
 ): NodeSelectionResult {
   const candidates: {
     key: string;
@@ -55,7 +61,7 @@ export function selectNodesForFrame(
 
   for (const node of hierarchy) {
     if (!aabbIntersectsFrustum(planes, node.boundsMin, node.boundsMax)) continue;
-    const priority = screenSpaceError(
+    const error = screenSpaceError(
       viewProj,
       node.boundsMin,
       node.boundsMax,
@@ -63,9 +69,17 @@ export function selectNodesForFrame(
       canvasWidth,
       canvasHeight,
     );
+    const weight = centerPriorityWeight(
+      viewProj,
+      node.boundsMin,
+      node.boundsMax,
+      canvasWidth,
+      canvasHeight,
+      centerPriorityStrength,
+    );
     candidates.push({
       key: node.key,
-      priority,
+      priority: error * weight,
       pointCount: node.pointCount,
     });
   }
