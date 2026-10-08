@@ -31,10 +31,28 @@ const THEME_LABELS: Record<ThemePreference, string> = {
  *  ことを避けるため)。 */
 const RENDER_SCALE_OPTIONS = [0.25, 0.5, 0.75, 1.0] as const;
 
-/** ADR-0010追記: 中央優先度の強さの選択肢。0(今までどおり)を必ず含め、
- *  自由入力にしないのはRENDER_SCALE_OPTIONSと同じ理由
- *  (極端な値を誤って入れて体感が崩れることを避ける)。 */
-const CENTER_PRIORITY_STRENGTH_OPTIONS = [0, 1, 2, 4] as const;
+/**
+ * 2026-10-08追記: 中央優先度の強さ・下限はスライダーに変更した。
+ *
+ * 以前は選択肢ボタン(0, 1, 2, 4)だったが、所有者が実機で4(選択肢の最大)を
+ * 試した結果「これ以上だといいのかも」という感触だったため、4より上も
+ * 自由に試せるようにスライダーにした(RENDER_SCALE_OPTIONSのような
+ * 「極端な値を避ける」ボタン方式ではなく、範囲をスライダーのmin/maxで
+ * 区切ることで誤操作を防ぐ)。詳細はTaskSheets/ADR-0010-lod-priority-and-point-budget.md
+ * 追記4参照。
+ *
+ * - 強さ: 0〜16。4が所有者の実測済みの既定値。16は「4より上も試せる」
+ *   ための余裕で、根拠のある上限ではない(未検証)。
+ * - 下限: 0〜0.5。既定の0.2は変えていない。0.5より上にすると中央優先の
+ *   効果自体が薄くなりすぎる(下限が1に近いほどgaussianの影響が消える)ため、
+ *   そこで区切った。
+ */
+const CENTER_PRIORITY_STRENGTH_MIN = 0;
+const CENTER_PRIORITY_STRENGTH_MAX = 16;
+const CENTER_PRIORITY_STRENGTH_STEP = 0.5;
+const MIN_CENTER_PRIORITY_WEIGHT_MIN = 0;
+const MIN_CENTER_PRIORITY_WEIGHT_MAX = 0.5;
+const MIN_CENTER_PRIORITY_WEIGHT_STEP = 0.01;
 
 const POINT_SHAPE_LABELS: Record<PointShape, string> = {
   round: "丸",
@@ -292,25 +310,52 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
             TaskSheets/ADR-0010-lod-priority-and-point-budget.md参照）。
           </p>
           <div className="flex flex-col gap-1">
-            <label className="text-xs opacity-70">中央優先の強さ（0 = 今までどおり画面空間誤差のみ）</label>
-            <div className="flex gap-2">
-              {CENTER_PRIORITY_STRENGTH_OPTIONS.map((strength) => (
-                <button
-                  key={strength}
-                  type="button"
-                  onClick={() => viewer.setCenterPriorityStrength(strength)}
-                  className={`rounded px-3 py-1.5 text-sm ${
-                    viewer.centerPriorityStrength === strength
-                      ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                      : "border border-slate-300 dark:border-slate-600"
-                  }`}
-                >
-                  {strength}
-                </button>
-              ))}
-            </div>
+            <label className="text-xs opacity-70" htmlFor="center-priority-strength">
+              中央優先の強さ（0 = 今までどおり画面空間誤差のみ）
+            </label>
+            <input
+              id="center-priority-strength"
+              type="range"
+              min={CENTER_PRIORITY_STRENGTH_MIN}
+              max={CENTER_PRIORITY_STRENGTH_MAX}
+              step={CENTER_PRIORITY_STRENGTH_STEP}
+              value={viewer.centerPriorityStrength}
+              onChange={(e) => viewer.setCenterPriorityStrength(Number(e.target.value))}
+            />
             <p className="text-xs opacity-60">
-              現在値: {viewer.centerPriorityStrength}（再起動なしで反映される。既定値は実機で検証していない）
+              現在値: {viewer.centerPriorityStrength}（再起動なしで反映される）。
+              これが変えるのは「中央として優先される範囲の狭さ」:
+              大きくするほど、画面中央のごく近くだけが優先され、少し離れただけで
+              優先度が急に下がる。
+              <strong>所有者が実機で0/1/2/4を試した結果、4(今の既定値)が一番良かった
+              （「これ以上だといいのかも」とのこと）。</strong>
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-xs opacity-70" htmlFor="min-center-priority-weight">
+              中央優先の重みの下限（端のノードをどれだけ後回しにしてよいか）
+            </label>
+            <input
+              id="min-center-priority-weight"
+              type="range"
+              min={MIN_CENTER_PRIORITY_WEIGHT_MIN}
+              max={MIN_CENTER_PRIORITY_WEIGHT_MAX}
+              step={MIN_CENTER_PRIORITY_WEIGHT_STEP}
+              value={viewer.minCenterPriorityWeight}
+              onChange={(e) => viewer.setMinCenterPriorityWeight(Number(e.target.value))}
+            />
+            <p className="text-xs opacity-60">
+              現在値: {viewer.minCenterPriorityWeight.toFixed(2)}（既定0.2、再起動なしで反映される）。
+              これが変えるのは「端をどれだけ後回しにしてよいか」:
+              下げるほど、画面中央のノードが画面端のノードより優先されやすくなるが、
+              下げ過ぎると画面端のノードが点予算の厳しい間ずっと読み込まれない
+              （飢餓）おそれが大きくなる。
+              <strong>
+                {viewer.minCenterPriorityWeight === 0
+                  ? " 今は0: 下限が無いのと同じで、強さを上げた状態で点予算が厳しいと、画面端のノードが実質ずっと選ばれなくなることがある。"
+                  : ""}
+              </strong>
             </p>
           </div>
         </section>

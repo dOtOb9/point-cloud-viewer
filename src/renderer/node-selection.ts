@@ -12,7 +12,7 @@ import type { HierarchyNodeInfo } from "../datasource/DataSource";
 import type { Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, type Plane } from "./frustum";
 import { screenSpaceError } from "./screen-space-error";
-import { centerPriorityWeight } from "./center-priority";
+import { centerPriorityWeight, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "./center-priority";
 import type { CachedNode } from "./node-cache";
 
 /**
@@ -42,6 +42,15 @@ export interface NodeSelectionResult {
  * ADR-0010追記: `centerPriorityStrength`（既定0=今までどおり）が0より大きいとき、
  * 画面中央からの距離に応じた重み（`centerPriorityWeight`、`center-priority.ts`）を
  * 画面空間誤差に掛けてから優先度にする。式・理由はそちらのdocコメント参照。
+ *
+ * 2026-10-08追記: 重みの下限`minCenterPriorityWeight`も引数として受け取り、
+ * そのまま`centerPriorityWeight`に渡す。既定は`DEFAULT_MIN_CENTER_PRIORITY_WEIGHT`
+ * （今までコード内に固定していた値と同じ）で、設定画面のスライダーから
+ * 変更できるようにした。**0を渡すこともできるが、0にすると重みの下限による
+ * 飢餓防止が効かなくなる**（`centerPriorityStrength`が大きいとき、画面端の
+ * ノードの重みが実質0に近くなり、画面空間誤差がどれだけ大きくても点予算が
+ * 厳しい間は選ばれ続けないことがある。`node-selection.test.ts`の
+ * 「下限を0にすると」テスト参照）。
  */
 export function selectNodesForFrame(
   hierarchy: readonly HierarchyNodeInfo[],
@@ -52,6 +61,7 @@ export function selectNodesForFrame(
   pointBudget: number,
   cache: NodeSelectionCache,
   centerPriorityStrength: number = 0,
+  minCenterPriorityWeight: number = DEFAULT_MIN_CENTER_PRIORITY_WEIGHT,
 ): NodeSelectionResult {
   const candidates: {
     key: string;
@@ -76,6 +86,7 @@ export function selectNodesForFrame(
       canvasWidth,
       canvasHeight,
       centerPriorityStrength,
+      minCenterPriorityWeight,
     );
     candidates.push({
       key: node.key,

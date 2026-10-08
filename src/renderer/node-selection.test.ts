@@ -271,5 +271,74 @@ describe("selectNodesForFrame", () => {
       const selectedKeys = [...result.toDraw.map((n) => n.key), ...result.wanted.map((n) => n.key)];
       expect(selectedKeys).toEqual(["edgeCoarse"]);
     });
+
+    // 2026-10-08追記: 下限(minCenterPriorityWeight)もスライダーで変えられるように
+    // したので、「下限を下げる/上げる」ことで選ばれ方がどう変わるかを確認する。
+    describe("重みの下限(minCenterPriorityWeight)", () => {
+      // 上の「飢餓防止」テストと同じ中央/端のノードを使う。strengthは設定画面の
+      // スライダーの最大値(16)にする(所有者が実際にスライダーで選べる範囲の中で
+      // 飢餓のリスクを確認したいため、1000のような極端な値は使わない)。
+      const centerFine: HierarchyNodeInfo = {
+        key: "centerFine",
+        pointCount: 1000,
+        boundsMin: [-0.1, -0.1, -0.1],
+        boundsMax: [0.1, 0.1, 0.1],
+      };
+      const edgeCoarse: HierarchyNodeInfo = {
+        key: "edgeCoarse",
+        pointCount: 1000,
+        boundsMin: [2, -3, -3],
+        boundsMax: [8, 3, 3],
+      };
+      const STRENGTH_AT_SLIDER_MAX = 16;
+      const budgetForOne = 1500;
+
+      it("下限を省略すると既定値(DEFAULT_MIN_CENTER_PRIORITY_WEIGHT=0.2)が使われ、端の誤差が十分大きいと端が選ばれる", () => {
+        const viewProj = testViewProj();
+        const planes = frustumPlanes(viewProj);
+
+        const result = selectNodesForFrame(
+          [centerFine, edgeCoarse],
+          planes,
+          viewProj,
+          CANVAS_WIDTH,
+          CANVAS_HEIGHT,
+          budgetForOne,
+          EMPTY_CACHE,
+          STRENGTH_AT_SLIDER_MAX,
+          // 下限は省略 → DEFAULT_MIN_CENTER_PRIORITY_WEIGHT(0.2)
+        );
+
+        const selectedKeys = [...result.toDraw.map((n) => n.key), ...result.wanted.map((n) => n.key)];
+        expect(selectedKeys).toEqual(["edgeCoarse"]);
+      });
+
+      it("下限を0にすると、強さが大きい状況では画面空間誤差の大小が逆転し、端のノードが選ばれなくなることがある(飢餓のリスク)", () => {
+        const viewProj = testViewProj();
+        const planes = frustumPlanes(viewProj);
+
+        // 下限0.2(既定)ではedgeCoarseが選ばれる(上のテストで確認済み)のに対し、
+        // 下限0ではcenterFineが選ばれる === 「下限を外すと勝敗が逆転する」ことを
+        // 直接確認する。これは、minWeight=0のときweightがgaussian項そのものに
+        // なり、strengthが大きいほど端(d≈1)で急激に0へ近づくため、画面空間誤差が
+        // どれだけ大きくても下限という床が無いと優先度で負けてしまうことを示す。
+        // 実際にこの状況が点予算の厳しいフレームで毎回起きれば、edgeCoarseは
+        // 「永久に読み込まれない」飢餓状態になる。
+        const result = selectNodesForFrame(
+          [centerFine, edgeCoarse],
+          planes,
+          viewProj,
+          CANVAS_WIDTH,
+          CANVAS_HEIGHT,
+          budgetForOne,
+          EMPTY_CACHE,
+          STRENGTH_AT_SLIDER_MAX,
+          0, // 下限0 = 飢餓防止が効かない
+        );
+
+        const selectedKeys = [...result.toDraw.map((n) => n.key), ...result.wanted.map((n) => n.key)];
+        expect(selectedKeys).toEqual(["centerFine"]);
+      });
+    });
   });
 });

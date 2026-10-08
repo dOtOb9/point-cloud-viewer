@@ -37,7 +37,7 @@ import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
 import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
 import { DEFAULT_COLOR_MODE, resolveColorMode, type ColorMode } from "../renderer/colormap";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "../renderer/device-profile";
-import { DEFAULT_CENTER_PRIORITY_STRENGTH } from "../renderer/center-priority";
+import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "../renderer/center-priority";
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // PointShapeもここから再エクスポートする（M3-8）。
@@ -156,6 +156,12 @@ export interface CopcViewerState {
    *  `DEFAULT_CENTER_PRIORITY_STRENGTH`（未検証の初期値）。設定画面から
    *  変更でき、再起動なしでrendererへ反映される。 */
   centerPriorityStrength: number;
+  /** 2026-10-08追記: 中央優先度の重みの下限（0〜1）。既定は
+   *  `DEFAULT_MIN_CENTER_PRIORITY_WEIGHT`（0.2）。0に近いほど画面端の
+   *  ノードを後回しにしてよい度合いが大きくなる。設定画面のスライダーから
+   *  変更でき、再起動なしでrendererへ反映される
+   *  （`PointCloudRenderer.setMinCenterPriorityWeight()`参照）。 */
+  minCenterPriorityWeight: number;
   /** M2-2: 着色モード。既定は`DEFAULT_COLOR_MODE`("rgb")。ファイルを開いた結果
    *  RGBが無いと分かった場合は自動で`FALLBACK_COLOR_MODE_WITHOUT_RGB`("elevation")
    *  に落ちる（`openFile`参照）。手動で"rgb"を選んでも、開いているファイルが
@@ -249,6 +255,7 @@ export interface CopcViewerState {
   setRenderScale: (scale: number) => void;
   setPointShape: (shape: PointShape) => void;
   setCenterPriorityStrength: (strength: number) => void;
+  setMinCenterPriorityWeight: (minWeight: number) => void;
   setColorMode: (mode: ColorMode) => void;
   /** バナーの「閉じる」ボタンから呼ぶ。指定したエラーだけを消す。 */
   dismissGpuError: (id: number) => void;
@@ -293,6 +300,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [renderScale, setRenderScaleState] = useState(deviceProfileDefaults.renderScale);
   const [pointShape, setPointShapeState] = useState<PointShape>(deviceProfileDefaults.pointShape);
   const [centerPriorityStrength, setCenterPriorityStrengthState] = useState(DEFAULT_CENTER_PRIORITY_STRENGTH);
+  const [minCenterPriorityWeight, setMinCenterPriorityWeightState] = useState(DEFAULT_MIN_CENTER_PRIORITY_WEIGHT);
   const [colorMode, setColorModeState] = useState<ColorMode>(DEFAULT_COLOR_MODE);
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
   // M4-3: 変換中の進捗。変換していないときはnull。
@@ -538,6 +546,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         // ADR-0010追記: 中央優先度の強さがUIからrendererまで届いているかを、
         // 画面の目視確認の前にstdoutだけでも確認できるようにする。
         `centerPriorityStrength=${s.centerPriorityStrength.toFixed(2)} ` +
+        // 2026-10-08追記: 下限もスライダーで変えられるようにしたので、同様に
+        // stdoutで確認できるようにする。
+        `minCenterPriorityWeight=${s.minCenterPriorityWeight.toFixed(2)} ` +
         // M2-0b: GUIを目視できなくても、pitch=0が水平になっているか等をstdoutだけで
         // 機械的に確認できるようにカメラの向きも出す。
         `pitch=${s.cameraPitch.toFixed(3)} yaw=${s.cameraYaw.toFixed(3)} ` +
@@ -827,6 +838,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setCenterPriorityStrength(strength);
   }, []);
 
+  const setMinCenterPriorityWeight = useCallback((minWeight: number) => {
+    setMinCenterPriorityWeightState(minWeight);
+    rendererRef.current?.setMinCenterPriorityWeight(minWeight);
+  }, []);
+
   const setColorMode = useCallback(
     (mode: ColorMode) => {
       // 現在開いているファイルがRGBを持たない場合は、"rgb"を選ぼうとしても
@@ -900,6 +916,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     renderScale,
     pointShape,
     centerPriorityStrength,
+    minCenterPriorityWeight,
     colorMode,
     gpuErrors,
     openFile,
@@ -929,6 +946,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setRenderScale,
     setPointShape,
     setCenterPriorityStrength,
+    setMinCenterPriorityWeight,
     setColorMode,
     dismissGpuError,
   };

@@ -687,3 +687,127 @@ npm run build
    中央優先度の影響で不自然に後回しにならないか確認する
 5. `centerPriorityStrength=...`が`npm run tauri dev`のRust側stdoutに出て、
    設定画面の操作に合わせて値が変わることを確認する
+
+## 追記4続き（2026-10-08）: 所有者の実機確認（強さ4が一番良い）と、強さ・下限をスライダーに変更
+
+### 所有者の実機確認結果
+
+**所有者が実機で強さ0/1/2/4を試した結果、最大の選択肢だった4が一番良かった
+（「これ以上だといいのかも」とのコメント）。** これにより、既定値
+`DEFAULT_CENTER_PRIORITY_STRENGTH`を2から4に変更した。
+
+コーディネーターの補足分析: 下限（既定0.2）があるため、強さを4より上げても
+画面端の重みの下限付近への張り付きはほぼ変わらず（下限で底打ちしている）、
+効くのは「中央として優先される範囲の狭さ」（ガウス関数の幅）だけになる。
+中央をより強く優先したいなら、強さではなく下限を下げる方が効く（その分、
+端は後回しになりやすくなる）。この分析に基づき、強さだけでなく下限も
+設定画面から変更できるようにした。
+
+### 変更: 強さ・下限を選択肢ボタンからスライダーへ
+
+- 強さは「これ以上だといいのかも」という所有者のコメントを受け、4より上も
+  自由に試せるようにする必要があった。選択肢ボタン（0, 1, 2, 4のような
+  固定値）のままでは候補を増やすたびにコードを変える必要があるため、
+  スライダー（0〜16、刻み0.5）に変更した。
+- 下限（`minCenterPriorityWeight`）も同時にスライダー化した（0〜0.5、刻み0.01）。
+  今までは`center-priority.ts`内の定数`DEFAULT_MIN_CENTER_PRIORITY_WEIGHT`
+  （既定値のみ）が常に使われ、呼び出し側から変える手段が無かった。
+- 既定値はそれぞれ変えていない（強さ=4、下限=0.2）。スライダーのmin/maxで
+  範囲を区切ることで、選択肢ボタン方式の狙い（極端な値を誤って選んで体感が
+  崩れることを避ける）を保っている。
+- スライダーの横に、現在値と「それが何を変えるか」を短い説明文で出す
+  （強さ: 中央として優先される範囲の狭さ、下限: 端をどれだけ後回しにして
+  よいか）。所有者が実機確認した「4が一番良かった」ことも強さのスライダーの
+  説明文にそのまま残した。
+
+### 下限(`minCenterPriorityWeight`)を`PointCloudRenderer`→`selectNodesForFrame`まで結線
+
+- `selectNodesForFrame`（`node-selection.ts`）の末尾に省略可能引数
+  `minCenterPriorityWeight`（既定`DEFAULT_MIN_CENTER_PRIORITY_WEIGHT`）を追加し、
+  そのまま`centerPriorityWeight`の`minWeight`引数に渡す。
+- `PointCloudRenderer`に`private minCenterPriorityWeight`フィールドと
+  `setMinCenterPriorityWeight()`/`getMinCenterPriorityWeight()`を追加
+  （`centerPriorityStrength`と同じ配線パターン）。`selectNodesForFrame`呼び出しと
+  `RenderStats`（`minCenterPriorityWeight`追加）に結線した。
+- `useCopcViewer.ts`に`minCenterPriorityWeight`状態と`setMinCenterPriorityWeight`を
+  追加し、stdoutログにも`minCenterPriorityWeight=...`を追加した。
+
+### 下限を0にすると何が起きるか（飢餓のリスク）を判断し、許すことにした
+
+このADRの追記4は当初、「却下した案」として**下限を設けない（`minWeight=0`）**を
+挙げ、理由を「strengthを上げるほど端のノードが事実上一生読み込まれなくなる」と
+していた。今回、所有者から「下限もスライダーで0〜0.5の範囲で変えられるように」
+という明示の依頼があったため、この却下判断を次のように見直した。
+
+- **下限を0にする選択自体は許す。** スライダーの範囲の例として「0〜0.5」が
+  指定されており、所有者が意図的に下限を外して試せること自体に価値がある
+  （例えば画面中央だけをとにかく優先したい場面）。
+- ただし**リスクは消えていない。** `minWeight=0`のとき`weight`は
+  `exp(-strength * d^2)`そのものになり、`strength`が大きい・`d`（画面中央からの
+  正規化距離）が1に近いほど急激に0へ近づく。点予算が厳しい状況（見えている
+  全ノードの点数が予算を超える）が続くフレームでは、画面端のノードの
+  `priority = error * weight`が常に中央側より低くなり、**画面空間誤差が
+  どれだけ大きくても選ばれない（永久に読み込まれない）**ことがある。
+- そのため、**既定値は0.2のまま変えず**、0にする場合のリスクを設定画面の
+  説明文で明示した（`SettingsModal.tsx`: 下限が0のときだけ「下限が無いのと
+  同じで…実質ずっと選ばれなくなることがある」という文を追加で出す）。
+  「0を許すかどうかは判断し、許すならそう表示する」という依頼に対する判断は
+  「許す。ただし常にリスクを表示する」とした。
+
+### 新規テスト（`node-selection.test.ts`）
+
+「重みの下限(minCenterPriorityWeight)」describeブロックに2件追加した。
+
+1. 下限を省略すると既定値(0.2)が使われ、画面空間誤差が十分大きい端のノードが
+   選ばれること（既存の「飢餓防止」テストの構図を、省略時の既定値確認として
+   明示的に書き直したもの）。
+2. **下限を0にすると、同じ条件（強さ=16=スライダーの最大値）で選ばれる方が
+   逆転すること。** 下限0.2では端(`edgeCoarse`)が選ばれるのに、下限0では
+   中央(`centerFine`)が選ばれる。これは実際に`centerPriorityWeight`を計算して
+   確かめた数値に基づく（strength=16, minWeight=0のとき
+   `priority(centerFine)≈0.857 > priority(edgeCoarse)≈0.522`、minWeight=0.2のとき
+   `priority(edgeCoarse)≈8.27 > priority(centerFine)≈0.857`と逆転する。
+   実測値は一時的な調査用テストファイルで確認し、本体には残していない）。
+   これが毎フレーム続けば、`edgeCoarse`は飢餓状態になる、というのが
+   上の判断の根拠。
+
+### 触ったファイル（追記4続き分）
+
+- `src/renderer/center-priority.ts`: `DEFAULT_CENTER_PRIORITY_STRENGTH`を2→4に変更、
+  コメント更新
+- `src/renderer/node-selection.ts`: `selectNodesForFrame`に
+  `minCenterPriorityWeight`引数を追加
+- `src/renderer/node-selection.test.ts`: 「重みの下限」describeブロック新規2テスト
+- `src/renderer/point-cloud-renderer.ts`: `minCenterPriorityWeight`フィールド・
+  `setMinCenterPriorityWeight()`/`getMinCenterPriorityWeight()`・
+  `selectNodesForFrame`呼び出しへの結線・`RenderStats`への追加
+- `src/state/useCopcViewer.ts`: `minCenterPriorityWeight`状態・
+  `setMinCenterPriorityWeight`・stdoutログへの追加
+- `src/ui/shell/SettingsModal.tsx`: 選択肢ボタンをスライダー2本（強さ・下限）に変更、
+  現在値と効果の説明文を追加
+
+### 検証
+
+```bash
+npm run typecheck   # 通った
+npm run lint        # 通った
+npm test            # 315件すべてpass（既存313件 + 新規2件）
+npm run build       # 通った
+```
+
+### 所有者が自分で確認する手順（追記4続き分）
+
+**GUIでの目視確認はこの環境ではできなかった。** 以下を確認してほしい:
+
+1. 設定画面「LODの中央優先度」の強さスライダーの既定位置が4になっていることを
+   確認する
+2. 強さスライダーを4より上（8, 16など）に動かすと、画面中央のごく近くだけが
+   優先され、少し離れると急に粗くなる見た目になるか確認する
+   （「中央として優先される範囲が狭くなる」の確認）
+3. 下限スライダーを0.2から下げていくと、画面端のノードがより粗いまま
+   後回しにされるようになるか確認する。0まで下げて点予算が厳しい状況
+   （点数の多いファイルで予算を低めに設定する等）を作ったとき、画面端が
+   長時間粗いまま変化しないように見えるか確認する（飢餓の実例）
+4. 下限を0に下げたとき、設定画面にリスクの説明文が出ることを確認する
+5. `minCenterPriorityWeight=...`が`npm run tauri dev`のRust側stdoutに出て、
+   設定画面の操作に合わせて値が変わることを確認する

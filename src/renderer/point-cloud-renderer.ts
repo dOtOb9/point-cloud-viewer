@@ -29,7 +29,7 @@ import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 import { formatNodeLoadErrorMessage } from "./node-load-error";
 import { selectNodesForFrame } from "./node-selection";
-import { DEFAULT_CENTER_PRIORITY_STRENGTH } from "./center-priority";
+import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "./center-priority";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
@@ -121,6 +121,8 @@ export interface RenderStats {
   pointBudgetMax: number;
   /** ADR-0010追記: 中央優先度の強さ。0なら今までどおり（画面空間誤差のみ）。 */
   centerPriorityStrength: number;
+  /** 2026-10-08追記: 中央優先度の重みの下限。0なら下限無し（飢餓防止が効かない）。 */
+  minCenterPriorityWeight: number;
 }
 
 export class PointCloudRenderer {
@@ -206,6 +208,11 @@ export class PointCloudRenderer {
    *  既定値は実機で検証していない（`DEFAULT_CENTER_PRIORITY_STRENGTH`のコメント
    *  参照）。設定画面から0（今までどおり）に戻せる。 */
   private centerPriorityStrength = DEFAULT_CENTER_PRIORITY_STRENGTH;
+  /** 2026-10-08追記: 中央優先度の重みの下限。`setMinCenterPriorityWeight()`で
+   *  設定画面から変更できる（既定`DEFAULT_MIN_CENTER_PRIORITY_WEIGHT`=0.2のまま、
+   *  今まで`center-priority.ts`内の定数固定だったものを可変にした）。
+   *  0を許している理由・リスクは`setMinCenterPriorityWeight()`のコメント参照。 */
+  private minCenterPriorityWeight = DEFAULT_MIN_CENTER_PRIORITY_WEIGHT;
 
   /**
    * M3-8: レンダースケール(内部解像度 = 表示サイズ(CSS px) × この値)。
@@ -464,6 +471,25 @@ export class PointCloudRenderer {
     return this.centerPriorityStrength;
   }
 
+  /** 2026-10-08追記: 中央優先度の重みの下限（0〜1）。下げるほど、画面端の
+   *  ノードを後回しにしてよい度合いが大きくなる（`minWeight`が小さいほど
+   *  `priority = error * weight`の`weight`が小さくなり得るため）。
+   *
+   *  **0を渡すこと自体は許すが、`centerPriorityStrength`が大きいときに
+   *  画面端のノードが点予算の厳しい状況で事実上選ばれなくなる
+   *  （飢餓防止が効かなくなる）リスクがある。** 下限を設けない案は
+   *  当初（ADR-0010追記4）、この飢餓のリスクを理由に却下していたが、
+   *  所有者がスライダーで下限まで触れるようにしたいと明示したため、
+   *  既定値は0.2のまま変えず、0まで下げられる選択の自由だけを設定画面に渡す
+   *  （選んだ結果のリスクは設定画面の説明文で示す。SettingsModal.tsx参照）。 */
+  setMinCenterPriorityWeight(minWeight: number): void {
+    this.minCenterPriorityWeight = Math.min(1, Math.max(0, minWeight));
+  }
+
+  getMinCenterPriorityWeight(): number {
+    return this.minCenterPriorityWeight;
+  }
+
   /**
    * M3-8: レンダースケール(内部解像度 = 表示サイズ(CSS px) × この値。
    * devicePixelRatioは含めない。理由は`renderScale`フィールドのコメント参照)
@@ -691,6 +717,7 @@ export class PointCloudRenderer {
       this.pointBudget,
       this.cache,
       this.centerPriorityStrength,
+      this.minCenterPriorityWeight,
     );
 
     if (this.loader) {
@@ -756,6 +783,7 @@ export class PointCloudRenderer {
       isMobile: this.isMobileProfile,
       pointBudgetMax: this.autoPointBudgetMax,
       centerPriorityStrength: this.centerPriorityStrength,
+      minCenterPriorityWeight: this.minCenterPriorityWeight,
     });
   }
 
