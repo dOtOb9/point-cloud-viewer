@@ -78,6 +78,38 @@ function extensionOfFileName(fileName: string): string {
   return dotIndex === -1 ? "(不明)" : fileName.slice(dotIndex + 1).toLowerCase();
 }
 
+/**
+ * 不具合修正(2026-10-08、所有者の報告「変換の内訳が出てこない」):
+ * `openFile`の冒頭で「変換の内訳(`conversionBreakdownText`)・ダウンロードリンク
+ * (`downloadReady`)を消すかどうか」を判断する部分だけを、純粋関数として
+ * 切り出す。
+ *
+ * **直す前の問題**: 変換完了時のハンドラ(`onConvertDone`/`onConversionDone`)が
+ * `setConversionBreakdownText(...)`(Web版は`setDownloadReady(...)`も)で
+ * 内訳を設定した直後、変換結果を開くために続けて`openFileRef.current(...)`
+ * (`openFile`)を呼んでいた。`openFile`は冒頭で問答無用に
+ * `setConversionBreakdownText(null)`/`setDownloadReady(null)`を呼んでいたため、
+ * 設定した直後に消えてしまい、Web版・デスクトップ版の両方で「変換の内訳」が
+ * 画面に出ず、Web版の変換結果のダウンロードリンクも消えていた。
+ *
+ * **直し方**: 内訳・ダウンロードリンクを消すのは、利用者が自分で新しい
+ * ファイルを開いたときだけにする。`openFile`の第2引数
+ * `isConversionContinuation`(変換完了から続けて開く呼び出しかどうか。
+ * 既定false)がtrueのときは消さない。利用者が自分でファイルを開く経路
+ * (`LayerPanel.tsx`/`SettingsModal.tsx`)はこの引数を渡さないので、既定の
+ * false(=消す)のままになる。
+ *
+ * 消す判断を呼び出し側(UIの各ボタン)に分散させるより、「いつ消すか」を
+ * `openFile`一箇所に残したほうが所有者がこの関数を読むだけで全体の挙動を
+ * 追えるため、この形を選んだ。`openFile`自体は`PointCloudRenderer`/
+ * `DataSource`を触る大きな関数でテストしにくいため、判断部分だけを
+ * `useTheme.ts`の`resolveTheme`と同じやり方でここだけ切り出してテストする
+ * (`useCopcViewer.test.ts`参照)。
+ */
+export function shouldClearConversionResultOnOpen(isConversionContinuation: boolean): boolean {
+  return !isConversionContinuation;
+}
+
 /** M4-12: 内訳テキストに入れる端末情報。`navigator.deviceMemory`は
  *  Chrome系だけの実験的API(型定義に無いため`as`で読む)。取れなければ
  *  `undefined`のままにする(無いことを0などの値で埋めない)。 */
@@ -410,7 +442,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // マウント時に1度だけ張るイベント購読(下のuseEffect)から常に最新の
   // `openFile`を呼べるよう、refに常に最新の関数を入れておく
   // (「effectは一度だけ、でも中身は最新でありたい」という定番の対処)。
-  const openFileRef = useRef<(pathOrFile: string | File) => Promise<void>>(() => Promise.resolve());
+  const openFileRef = useRef<(pathOrFile: string | File, isConversionContinuation?: boolean) => Promise<void>>(
+    () => Promise.resolve(),
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -475,7 +509,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
           }
           setDownloadReady({ url: URL.createObjectURL(file), fileName: suggestedFileName });
           const key = source.registerFile(file);
-          void openFileRef.current(key);
+          // 不具合修正(2026-10-08): ここで設定した内訳(setConversionBreakdownText)・
+          // ダウンロードリンク(setDownloadReady)を、続けて呼ぶopenFileが冒頭で
+          // 消してしまっていた(利用者が新しいファイルを開いたときと見分けが
+          // 付かなかったため)。「変換結果を続けて開く」ことを示す第2引数
+          // trueを渡し、消さないようにする。
+          void openFileRef.current(key, true);
         })();
       });
       unlistenFailed = source.onConvertFailed(reportConversionFailure);
@@ -496,7 +535,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
             ...currentDeviceMeta(),
           }),
         );
-        void openFileRef.current(outputPath);
+        // 不具合修正(2026-10-08): Web版と同じ理由(上のコメント参照)で、
+        // 第2引数trueを渡して内訳を消さないようにする。
+        void openFileRef.current(outputPath, true);
       }).then((fn) => {
         unlistenDone = fn;
       });
@@ -613,7 +654,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     // 1度だけ」という性質は変わらない(react-hooks/exhaustive-deps対応)。
   }, [setDownloadReady]);
 
-  const openFile = useCallback(async (pathOrFile: string | File) => {
+  const openFile = useCallback(async (pathOrFile: string | File, isConversionContinuation = false) => {
     const renderer = rendererRef.current;
     const source = sourceRef.current;
     if (!renderer || !source) return;
@@ -621,8 +662,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setStatus("opening");
     setError(null);
     setConversionProgress(null);
-    setDownloadReady(null);
-    setConversionBreakdownText(null);
+    if (shouldClearConversionResultOnOpen(isConversionContinuation)) {
+      setDownloadReady(null);
+      setConversionBreakdownText(null);
+    }
     try {
       // Web版のローカルファイル選択は`File`を受け取る。`DataSource.open()`は
       // 文字列しか取らないので、先に`WebSource.registerFile()`でキーへ変換する

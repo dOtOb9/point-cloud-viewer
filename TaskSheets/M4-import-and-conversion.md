@@ -4314,3 +4314,127 @@ npm run build:wasm・typecheck・lint・test・buildのいずれも成功)。
 
 `vendor/copc-writer/PATCH.md`の「M4-10 追記」節に記載。
 
+## M4-12: 変換完了後の段階別内訳をWeb/デスクトップの両方の画面に出す(2026-10-08、Sonnet)
+
+**このTaskSheetへの記録がこの時点まで漏れていた。** 機能自体はコミット
+`606a37d`（Rust側の段階ごとの所要時間計測の基盤）・`3d5cda1`（デスクトップ版の
+変換完了イベントに乗せる）・`8cb0416`（Web版(pcv-wasm)の計測）・`f35d3a7`
+（`conversion-breakdown.ts`で整形テキストに組み立てる）・`7d8e111`
+（`useCopcViewer.ts`/`LayerPanel.tsx`への結線、「内訳をコピー」ボタン）で
+既に実装済みだった。概要:
+
+- `useCopcViewer.ts`がTauri/Web両方の変換完了イベント
+  （`onConversionDone`/`onConvertDone`）から`stageTimings`（段階ごとの
+  所要時間のDTO）を受け取り、`conversion-breakdown.ts`の
+  `formatConversionBreakdown()`で整形したテキストを`conversionBreakdownText`
+  として保持する。
+- `LayerPanel.tsx`が「内訳をコピー」ボタン付きの表示パネルとして出す
+  （変換の進捗パネルの続き）。
+- `web.ts`/`copc.worker.ts`/`web-protocol.ts`/`tauri.ts`は`stageTimings`を
+  DTOのまま橋渡しするだけで、整形は`conversion-breakdown.ts`側に閉じている。
+
+### 追記（2026-10-08）: 不具合「変換の内訳が出てこない」の調査と修正
+
+**所有者の報告**: 変換が終わっても「変換の内訳」が画面に出ない。Web版では
+変換結果のダウンロードのリンクも出ない（消えている）。
+
+#### 原因
+
+`useCopcViewer.ts`の中で、変換完了は次の順で処理していた。
+
+1. `onConvertDone`（Web、`WebSource`からのイベント）/ `onConversionDone`
+   （デスクトップ、Tauriのイベント）のハンドラが
+   `setConversionBreakdownText(...)`（Web版では`setDownloadReady(...)`も）を
+   呼び、内訳・ダウンロードリンクを状態にセットする。
+2. 続けて、変換結果（既にCOPC）を開くために
+   `void openFileRef.current(...)`（=`openFile`）を呼ぶ。
+3. **`openFile`は冒頭で問答無用に`setConversionBreakdownText(null)`・
+   `setDownloadReady(null)`を呼んでいた**（利用者が新しいファイルを開くときに
+   前回の内訳・ダウンロードリンクを消すための処理）。
+
+このため、1でセットした直後に3で消えてしまい、**変換完了から続けて開く限り、
+内訳・ダウンロードリンクは画面に一度も出なかった**（タイミング的に消える前に
+React のレンダーが挟まることは無いため、常にこの順で消える）。
+
+#### 直し方
+
+内訳・ダウンロードリンクを消すのは、**利用者が自分で新しいファイルを開いた
+ときだけ**にする。`openFile`に第2引数`isConversionContinuation`
+（変換完了から続けて開く呼び出しかどうか。既定`false`）を足し、`true`の
+ときだけ消さないようにした。
+
+```ts
+const openFile = useCallback(async (pathOrFile: string | File, isConversionContinuation = false) => {
+  ...
+  if (shouldClearConversionResultOnOpen(isConversionContinuation)) {
+    setDownloadReady(null);
+    setConversionBreakdownText(null);
+  }
+  ...
+```
+
+変換完了ハンドラ側の2箇所（Web版`onConvertDone`内・デスクトップ版
+`onConversionDone`内）の`openFileRef.current(...)`呼び出しに`true`を渡すように
+変更した。利用者が自分でファイルを開く経路（`LayerPanel.tsx`の4箇所・
+`SettingsModal.tsx`の1箇所）は`openFile`の第2引数を渡さないため、既定の
+`false`（=消す）のままになる。
+
+**消す判断の置き場所**: 呼び出し側（UIの各ボタン）に分散させる案と、
+`openFile`自身に判断を残す案の2つがあったが、後者を選んだ。「いつ消すか」が
+`openFile`一箇所にまとまっていれば、所有者がこの関数を読むだけで
+全体の挙動（いつ消え、いつ残るか）を追えるため（`CLAUDE.md`「所有者が実装を
+追えること」）。前者（呼び出し側で消す）だと、5箇所のUIコードそれぞれが
+「ここで消す/消さない」を知っている必要があり、見落としが起きやすい。
+
+#### 新規テスト
+
+`openFile`自体は`PointCloudRenderer`/`DataSource`を起動する大きな関数で
+（カスタムフックをReact Testing Library無しでテストする基盤がこのプロジェクトに
+無い）、フックごとテストするのは難しい。そのため、「消すかどうか」の判断
+部分だけを純粋関数`shouldClearConversionResultOnOpen(isConversionContinuation)`
+として切り出し（`useTheme.ts`の`resolveTheme`と同じ切り出し方）、
+`src/state/useCopcViewer.test.ts`（新規ファイル）で2件のテストを書いた。
+
+- `isConversionContinuation=true`（変換完了から続けて開く）→
+  `false`（消さない）を返す
+- `isConversionContinuation=false`（既定、利用者が自分で開く）→
+  `true`（消す）を返す
+
+この純粋関数のテストでは「変換完了から続けて開く呼び出しに実際に`true`が
+渡っているか」（`openFileRef.current(key, true)`/
+`openFileRef.current(outputPath, true)`の呼び出し自体）は検証できない。
+その結線が正しいことは、コード上で2箇所の呼び出しを目視確認した
+（下記「所有者が自分で確認する手順」で実機確認も依頼する）。
+
+#### 触ったファイル
+
+- `src/state/useCopcViewer.ts`: `shouldClearConversionResultOnOpen()`
+  （新規、純粋関数）の追加、`openFile`に`isConversionContinuation`引数を追加、
+  Web版・デスクトップ版の変換完了ハンドラ内の`openFileRef.current(...)`
+  呼び出しに`true`を追加、`openFileRef`の型を2引数に拡張
+- `src/state/useCopcViewer.test.ts`（新規）: `shouldClearConversionResultOnOpen`の
+  2テスト
+
+#### 検証
+
+```bash
+npm run typecheck   # 通った
+npm run lint        # 通った
+npm test            # 317件すべてpass(中央優先度のタスクと合わせて既存313件+4件)
+npm run build       # 通った
+```
+
+#### 所有者が自分で確認する手順
+
+**GUIでの目視確認はこの環境ではできなかった。** 以下を確認してほしい:
+
+1. デスクトップ版で生のLAS/LAZを開き、変換が終わった直後に「変換の内訳」が
+   LayerPanelに表示されることを確認する（今までは出なかったはず）
+2. Web版で同様に変換し、「変換の内訳」とダウンロードのリンクの両方が
+   表示されることを確認する
+3. 変換完了後に表示された内訳・ダウンロードリンクが、**そのあと別の
+   ファイルを開くと消える**ことを確認する（利用者が新しいファイルを開いた
+   ときだけ消える、という修正の意図どおりか）
+4. Web版でダウンロードリンクから実際にファイルをダウンロードし、開けることを
+   確認する（`clearDownload`/再変換などで壊れていないか）
+
