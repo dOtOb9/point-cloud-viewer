@@ -15,9 +15,11 @@
    その場で生成する(色・強度付き、2,000点)。
 3. 本番(GitHub Pages)と同じサブパス(`base: "/point-cloud-viewer/"`)で
    `vite build`→`vite preview`したものを対象にする(`GITHUB_PAGES_BUILD=true`)。
-4. ヘッドレスChromiumでWebGPUを使うため、Playwrightの`channel: "chromium"`を
-   指定する(理由は後述「WebGPUが使えるようになるまで」)。追加のコマンドライン
-   フラグは不要だった。
+4. ヘッドレスChromiumでWebGPUを使うため、Playwrightの`channel: "chromium"`に加え、
+   起動フラグ`--enable-unsafe-webgpu`を指定する(理由は後述「WebGPUが使える
+   ようになるまで」、および追記「Linuxでは`--enable-unsafe-webgpu`も必要
+   だった」)。このフラグはWindows・Linuxの両方で動作を確認済みのため、
+   プラットフォームで分岐せず常に渡している。
 5. `.github/workflows/ci.yml`に新しい独立ジョブ`e2e`(ubuntu-latest)を追加した。
    他のジョブを待たず並行実行する。Playwrightのブラウザ本体は
    `actions/cache`でキャッシュする。
@@ -80,12 +82,14 @@ WebGPUが使えるかを実際に試行錯誤して確かめた。
    Chromium同梱のSwiftShader(ソフトウェアのVulkan実装)が使われている
    (`GPU.BlocklistFeatureTestResults.Webgpu`のヒストグラムlog、
    ANGLEの`renderer`文字列に`SwiftShader`が含まれることで確認)。
-4. **追加のコマンドラインフラグは不要だった。** `--enable-unsafe-webgpu`・
+4. **Windowsでは追加のコマンドラインフラグが不要だった。** `--enable-unsafe-webgpu`・
    `--ignore-gpu-blocklist`・`--use-vulkan=swiftshader`等を色々試したが、
    `channel: "chromium"`だけで(フラグ無しで)`requestAdapter()`が成功した。
    むしろ`chrome-headless-shell`側ではこれらのフラグをいくら足しても
    `requestAdapter()`は`null`のままだった(バイナリそのものの制約のため、
-   フラグでは回避できない)。
+   フラグでは回避できない)。**この「フラグ不要」という結論はWindows限定
+   だった。実際のCI(Linux、ubuntu-latest)では`channel: "chromium"`だけでは
+   `requestAdapter()`が`null`を返し、E2Eが落ちた。詳細は下の「追記」節参照。**
 
 ### 検証に使ったスクリプト(再現用、リポジトリには残していない)
 
@@ -108,6 +112,74 @@ WebGPU判定(`src/state/useWebGpuSupport.ts`・`src/renderer/webgpu-probe.ts`)�
 なる(ADR-0002)。E2Eは「CI環境でもWebGPUの実アダプタが取れる」という
 Playwright側の起動設定を選んだだけで、アプリ側に「テスト環境では
 WebGPU判定を迂回する」ような分岐は一切加えていない。
+
+## 追記(2026-10-08、CI実行で判明): Linuxでは`--enable-unsafe-webgpu`も必要だった
+
+上の「WebGPUが使えるようになるまで」はこのエージェントのWindows環境だけで
+確かめた結果で、**実際のCI(Linux、ubuntu-latest)では再現しなかった。**
+最初にこのADRをpushしたCI run **37792380083**で、`e2e`ジョブが
+「この端末では点群を表示できません」の画面(`reason: requestAdapter() が
+nullを返した`)で落ちた(`error-context.md`のページスナップショットで確認。
+`navigator.gpu: あり`だが`requestAdapter()`が`null`)。コーディネーターが
+この失敗を検知し、修正を指示した。
+
+### 調査: CI上で直接フラグを試した
+
+Linuxで何が要るかを推測だけで直すとまた外れる可能性があるため、
+Windowsだけでなく**CI(Linux)上で直接**フラグの組み合わせを確かめる
+使い捨てではない診断スクリプト`scripts/diag-webgpu-headless.mjs`を書いた。
+`.github/workflows/ci.yml`の`e2e`ジョブに一時的な診断ステップを足し
+(CI run **37793228559**)、結果をログから読んだ。
+
+```
+baseline(no extra flags): {"hasGpu":true,"adapter":"null"}
+enable-unsafe-webgpu: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+vulkan+swiftshader-adapter: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+angle-swiftshader+vulkan-swiftshader: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+ignore-gpu-blocklist追加: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+```
+
+`baseline`(`channel: "chromium"`だけ、Windowsで通っていた設定)は、Linuxでは
+`requestAdapter()`が`null`のままだった。**`--enable-unsafe-webgpu`を足すだけで
+(単独で)**、アダプタ取得・デバイス取得・`<canvas>`への実際の描画
+(`beginRenderPass`→`submit`)まで通った。より多くのフラグを足した組み合わせ
+(`--enable-features=Vulkan`・`--use-webgpu-adapter=swiftshader`・
+`--use-angle=swiftshader`・`--ignore-gpu-blocklist`)も動いたが、
+`--enable-unsafe-webgpu`単独より良い結果にはならなかった(いずれも
+`rendered: true`で同じ)。**最小のフラグ(`--enable-unsafe-webgpu`のみ)を採用した。**
+
+### Windowsでも壊れないことを確認した
+
+同じ`scripts/diag-webgpu-headless.mjs`をWindowsでも走らせ、
+`--enable-unsafe-webgpu`単独では引き続き成功することを確認した
+(`enable-unsafe-webgpu: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}`)。
+一方、`--use-angle=swiftshader`や`--ignore-gpu-blocklist`を含む組み合わせは
+**Windowsでは逆に`requestAdapter()`が`null`に戻ってしまう**ことも確認した
+(`angle-swiftshader+vulkan-swiftshader`・`ignore-gpu-blocklist追加`の2つが
+Windows側では失敗)。これが「最小のフラグだけを採用する」判断を補強している:
+フラグを足すほどプラットフォーム間の非互換リスクが増える。
+
+この結果から、`playwright.config.ts`では**プラットフォームで分岐せず**、
+`--enable-unsafe-webgpu`をWindows・Linuxの両方に常に渡す設計にした
+(Windows・Linux両方で実際に動作確認できた最小構成であり、分岐自体が
+不要と判断した)。
+
+### 修正後の確認
+
+1. `playwright.config.ts`に`launchOptions: { args: ["--enable-unsafe-webgpu"] }`を追加、
+   診断用の一時的なCIステップ(`.github/workflows/ci.yml`)は削除した。
+2. Windowsでローカル実行し、通ることを確認した(下記「実行結果」)。
+3. mainへpushし、CI run **<!-- 修正後のrun idをここに追記 -->** で`e2e`ジョブが
+   通ることを確認した(下記「実行結果」)。
+
+### 使い捨てにしなかった理由(`scripts/diag-webgpu-headless.mjs`を残した)
+
+この種の「ヘッドレスブラウザでGPU機能が使えるか」はブラウザのバージョンアップや
+CIランナーのイメージ更新で再び壊れうる(事実、今回もWindowsでの結論が
+Linuxでは通用しなかった)。次に同じ症状が起きたとき、まず疑うべき場所
+(起動フラグの候補)とすぐ試せるスクリプトを残しておく方が、また最初から
+手探りするより安い。`scripts/diag-sky-ray.ts`と同じ「診断スクリプトは
+使い捨てにせず残す」慣習に倣った。
 
 ## テスト用LASをスクリプトでその場生成する理由
 
@@ -152,11 +224,12 @@ CI全体の所要時間を増やさないことを優先した)。
 
 ## 検証について(正直に)
 
-**確認済み(このマシン、Windows、実際にコマンドを実行して確認した):**
+**確認済み(Windows、実際にコマンドを実行して確認した):**
 
 - `npx playwright install chromium --with-deps`でブラウザを導入できること
-- ヘッドレスChromium(`channel: "chromium"`)で`navigator.gpu.requestAdapter()`
-  が成功し、`<canvas>`への実際の描画(`beginRenderPass`→`submit`)まで通ること
+- ヘッドレスChromium(`channel: "chromium"` + `--enable-unsafe-webgpu`)で
+  `navigator.gpu.requestAdapter()`が成功し、`<canvas>`への実際の描画
+  (`beginRenderPass`→`submit`)まで通ること
 - `npm run build`(`GITHUB_PAGES_BUILD=true`)→`npm run preview`で、本番と
   同じサブパス(`/point-cloud-viewer/`)で配信されること
 - このE2Eが、**M4-12の内訳パネルが変換直後に消える不具合(修正前のコミット、
@@ -165,24 +238,34 @@ CI全体の所要時間を増やさないことを優先した)。
   内訳パネルだけが無い状態だった)
 - 修正(`f98a32e`)がmainに入った後、`git rebase origin/main`してから
   同じE2Eが**通ること**を確認した(下記「実行結果」)
+- `--enable-unsafe-webgpu`を足した後も、引き続きWindowsでE2Eが通ることを
+  確認した(下記「実行結果」)
 - `npm run typecheck` / `npm run lint` / `npm run ui:check` / `npm test`
   (317件、既存+新規)がすべて成功することを確認した
 - `npm test`がPlaywrightの`e2e/*.spec.ts`を拾わないこと(vitestの既定
   includeパターンと重なり、`vite.config.ts`の`test.exclude`に`e2e/**`を
   追加して直した)
 
+**確認済み(CI、Linux、ubuntu-latest、実際のCI実行結果で確認した):**
+
+- `channel: "chromium"`だけでは`requestAdapter()`が`null`を返すこと
+  (CI run 37792380083、最初の失敗)
+- `scripts/diag-webgpu-headless.mjs`で`--enable-unsafe-webgpu`単独が
+  Linux上で実際に動くこと(CI run 37793228559、診断ステップのログ)
+- 修正(`--enable-unsafe-webgpu`追加)後、CI run
+  **<!-- ここに修正後のrun idを追記 -->** で`e2e`ジョブが**通ること**
+  (下記「実行結果」)
+
 **未確認:**
 
-- **CI(ubuntu-latest)上で実際にこのE2Eが通るか。** 上の確認はすべてこの
-  エージェントのWindows環境で行った。Linux上でのSwiftShader/Vulkan ICDの
-  挙動がWindowsと異なる可能性があり、CIで初めて失敗することもありうる。
-  下記「実行結果」にrun idを記す(完了を待たずに報告している場合はその旨)
 - デスクトップ(Tauri)版・Android版のE2E(対象外、このタスクの範囲は
   Web版の変換のみ)
 - 実GPU(ヘッドレスChromiumのSwiftShaderソフトウェアレンダラのみで確認)
 - Safari・Firefoxでの変換(ADR-0004が挙げた対象ブラウザはChromium系のみ)
 - `sofi.copc.laz`級(3.6億点)の規模でのE2E(このテストは2,000点の小さい
   合成データのみ。大規模データの検証は`TaskSheets/TEST-DATA.md`が別に担う)
+- macOS(`runner.os`で分岐していないが、macOS上での`--enable-unsafe-webgpu`の
+  要否は未確認。所有者の環境はWindows、CIはLinuxのみのため確認していない)
 
 ## 検討したが採らなかった案
 
@@ -191,6 +274,8 @@ CI全体の所要時間を増やさないことを優先した)。
 | ヘッドレスChromiumへのGPU関連フラグ(`--enable-unsafe-webgpu`等)を足して`chrome-headless-shell`のままWebGPUを使う | 実際に試したが`requestAdapter()`は`null`のままだった。`chrome-headless-shell`自体の制約でフラグでは回避できないと判断した |
 | テスト用LASをRust側(`crates/pcv-convert`やそのテストフィクスチャ)で生成する | E2E(frontend寄りのジョブ)にRustツールチェインの前提を持ち込みたくない。`ci.yml`の`frontend`ジョブと同じ思想(Rust不要)をE2Eにも適用した |
 | `e2e`ジョブを`frontend`の後に`needs`で直列化する | `build`ジョブが`frontend`だけを待つ既存の設計方針(`rust`ジョブの5分超を待たない)に合わせ、独立した懸念は並行させてCI全体の所要時間を増やさない方を選んだ |
+| `process.platform`でLinuxだけに`--enable-unsafe-webgpu`を渡す(Windowsには渡さない) | `scripts/diag-webgpu-headless.mjs`でWindows側でもこのフラグ単独が壊れないことを実際に確認できたため、分岐を増やす理由が無いと判断した。「Linux専用」と書くと、次にこのフラグを見た人が「Windowsでは要らない」という誤った前提を持ってしまう懸念もあった |
+| より多くのフラグ(`--enable-features=Vulkan`・`--use-webgpu-adapter=swiftshader`等)を組み合わせて使う | Linuxでの効果は`--enable-unsafe-webgpu`単独と同じ(`rendered: true`)で上積みが無く、Windowsでは逆に`requestAdapter()`が`null`に戻る組み合わせがあった。フラグを増やすほどプラットフォーム間の非互換リスクが増えるだけと判断し、最小構成を採った |
 
 ## 所有者が確認する手順
 
@@ -237,4 +322,39 @@ $ rm -rf dist && CI=true npx playwright test --config=<port 4199版>  # クリ�
   elapsed_seconds=9   # ビルド+preview起動+テストを含む合計
 ```
 
-CI(`ci.yml`、`e2e`ジョブ): <!-- push後に実行結果のrun idをここに追記する -->
+CI run **37792380083**(最初のpush、`channel: "chromium"`のみ): `e2e`ジョブ失敗。
+「この端末では点群を表示できません」画面、`reason: requestAdapter() が
+nullを返した`(`error-context.md`のページスナップショットで確認)。
+
+CI run **37793228559**(診断、`scripts/diag-webgpu-headless.mjs`を一時的なCI
+ステップとして実行): 診断ステップ自体は成功。ログ:
+
+```
+baseline(no extra flags): {"hasGpu":true,"adapter":"null"}
+enable-unsafe-webgpu: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+vulkan+swiftshader-adapter: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+angle-swiftshader+vulkan-swiftshader: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+ignore-gpu-blocklist追加: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+```
+
+（`npm run e2e`自体はこの回もまだ修正前の設定のままだったため失敗。
+診断結果を見てから`playwright.config.ts`を直した。）
+
+修正後、Windowsでのローカル再実行:
+
+```
+$ node scripts/diag-webgpu-headless.mjs
+baseline(no extra flags): {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+enable-unsafe-webgpu: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+vulkan+swiftshader-adapter: {"hasGpu":true,"adapter":"ok","device":true,"ctx":true,"rendered":true}
+angle-swiftshader+vulkan-swiftshader: {"hasGpu":true,"adapter":"null"}
+ignore-gpu-blocklist追加: {"hasGpu":true,"adapter":"null"}
+
+$ rm -rf dist test-results playwright-report && CI=true npx playwright test --config=<port 4199版>
+  1 passed (8.4s)
+
+$ npx tsc --noEmit && npx eslint . && npm run ui:check && npx vitest run
+(すべて成功。vitestは Test Files 36 passed / Tests 317 passed)
+```
+
+CI(`ci.yml`、`e2e`ジョブ、修正後): <!-- push後に実行結果のrun idをここに追記する -->
