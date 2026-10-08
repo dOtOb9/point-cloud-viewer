@@ -2259,6 +2259,276 @@ Web版の変換まわりの作業なので、記録はM4-9に置いた。詳細�
 
 ---
 
+## M4-6 追記5: 実機不具合「空き容量が足りません(10.0GiB)」の対処(2026-10-08、Sonnet)
+
+### 背景
+
+所有者から「Web版で大規模点群を読み込もうとすると『空き容量がありません
+(10.0GiB)』のように出て始められない」という報告があった。コーディネーターの
+最初の見立ては「10.0GiBがちょうどFirefoxのbest-effort上限と一致するので
+Firefoxではないか」だったが、後に**所有者のブラウザはVivaldi(Chromium系)**と
+判明し、この見立ては外れだった。Chromium系での見立て(容量不足の表示が
+「必要」か「空き」か文言だけでは分からない、過去の失敗分のキャッシュ・一時
+ファイルが溜まっている可能性、`navigator.storage.estimate()`のquotaが
+ディスクの実際の空き容量にも左右される可能性)に沿って対処した。
+
+### 調査(公式資料での確認、出典付き)
+
+**(1) `navigator.storage.persist()`/`persisted()`のブラウザごとの挙動**
+
+- [MDN: Storage quotas and eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria)の
+  “Does browser-stored data persist?”節:
+  > In Firefox, when a site chooses to use persistent storage, the user is
+  > notified with a UI popup that their permission is requested.
+  >
+  > Safari and most Chromium-based browsers, such as Chrome or Edge,
+  > automatically approve or deny the request based on the user's history of
+  > interaction with the site and do not show any prompts to the user.
+
+  **Firefoxは確認のポップアップを出す。Chrome/Edge/Safari(Vivaldiを含む
+  Chromium系も同じ)はユーザーへの確認を出さず、サイトの利用履歴から自動で
+  判定する。**
+- [web.dev: Persistent storage](https://web.dev/articles/persistent-storage)は
+  Chromeの自動判定の具体的な観点を示す:
+  > How high is the level of site engagement? Has the site been installed or
+  > bookmarked? Has the site been granted permission to show notifications?
+
+  （サイトエンゲージメントの高さ・インストール/ブックマーク済みか・通知の
+  許可があるか。具体的なスコアの閾値は非公開）。
+- `StorageManager.persist()`/`persisted()`はTypeScriptの`lib.dom.d.ts`
+  (`node_modules/typescript/lib/lib.dom.d.ts`、確認した版で行36023〜36048)に
+  既に型があり、`FileSystemSyncAccessHandle`(M4-6a節で追加したアンビエント宣言)
+  のような独自型定義は不要だった。
+
+**(2) Chromiumのquotaがディスクの実際の空き容量にも左右されること**
+
+M4-6a節(7節)は「quotaは総容量の60%で決まる」とだけ記録していたが、これは
+不完全だった。
+
+- [developer.chrome.com: Estimating Available Storage Space](https://developer.chrome.com/blog/estimating-available-storage-space):
+  > The quota value depends on constant factors like overall storage size,
+  > but also volatile factors including unused storage space, so as other
+  > applications write or delete data, the browser's quota allocation for an
+  > origin will likely change.
+
+  (quotaはストレージの総容量のような一定要因だけでなく、未使用のストレージ
+  容量という変動要因にも依存する。他のアプリがディスクに書き込む・消すたびに
+  quotaの割り当ては変わりうる)
+- 同ページの旧版の記述(Chrome 57以前〜58以降の変遷)によれば、歴史的にも
+  Chromeのpool sizeはディスクの空き容量を基準に計算されてきた
+  (「空き容量の1/3」→「ボリュームサイズの1/3、ただしドライブの10%は空けておく」
+  等)。**「総容量の60%」は固定の答えではなく、実際にはディスクの空き容量も
+  絡めて動的に決まる**、というコーディネーターの訂正は裏付けられる。
+- MDNの同じページ(Storage quotas and eviction criteria)も
+  “the amount of storage currently unused”をquotaの変動要因として明記して
+  おり、Chrome公式のブログと整合する。
+
+**結論**: 所有者が報告した「10.0GiB」は、Chromium系では**Firefoxの固定上限
+ではなく**、その時点のディスク空き容量・使用履歴から動的に決まったquotaの
+一部である可能性が高い。文言から「必要量」か「空き」かが分からないという
+問題と、実際にOPFS内に何が溜まっているか見えない問題の両方を、本追記で
+対処する。
+
+### 実装したこと
+
+1. **変換前に永続的な保存を求める** (`src/datasource/opfs.ts`の
+   `ensurePersistentStorage`): `navigator.storage.persisted()`で既に永続化
+   済みか確かめ、まだなら`persist()`を呼ぶ。`web.ts`の
+   `checkInsufficientSpace`が変換ごとに(ただし既に永続化済みなら`persist()`
+   自体は呼ばず)実行し、その後で`estimateQuota()`をやり直す
+   (`PersistableStorageLike`というテスト用の差し替え可能なインターフェースを
+   経由する。`LockManagerLike`と同じ方針)。
+2. **OPFSの使用量の内訳を見せて消せるようにする** (`opfs.ts`の
+   `getOpfsUsageBreakdown`/`removeCachedConversionEntry`/
+   `clearAllCachedConversions`/`removeScratchDirByName`):
+   変換済みキャッシュ(ファイルごとの名前・サイズ)と、残っている一時ディレクトリ
+   (タブを閉じる等で後始末できなかったもの)を列挙し、個別・まとめて消せる。
+   **置き場所は設定画面(`SettingsModal.tsx`)の新しい節「ブラウザの保存領域」**
+   にした(`viewer.isBrowser`で弾き、Tauri版には出さない)。理由:
+   一覧+削除ボタンという密なフォームはADR-0005が設定画面に求める「不透明で
+   安定したコントラスト」の対象そのもので、容量不足のエラーバナー
+   (`GpuErrorBanner.tsx`、1行のメッセージをflexで縦に積むだけの軽いUI)に
+   一覧・削除ボタンを持ち込むと設計が歪む。バナー側には「設定の『ブラウザの
+   保存領域』から消せる」という案内文だけを出す。
+3. **容量不足の表示を分かりやすくする** (`opfs.ts`の
+   `describeInsufficientSpaceWeb`、純粋関数): 「空き容量が足りません
+   (必要: 約XGiB／空き: 約YGiB(上限 約ZGiB、使用中 約WGiB))。空けるには、
+   …のいずれかを試してください。」という形にした。空ける方法の提案は
+   状況に応じて変える(消せるキャッシュ・一時ファイルがあるときだけ
+   「キャッシュ・一時ファイルを消す」を提案し、未永続化のときだけ
+   「永続的な保存を許可する」を提案する。常に「デスクトップ版で変換する」を
+   加える)。デスクトップ版の`insufficientSpace`(OSの実際の空きディスク)とは
+   中身が違うため、`ConversionOutcome`に`insufficientSpaceWeb`という
+   Web専用の値を追加した(`opfsUnavailable`と同じ扱い)。
+4. **見積もり(`requiredBytesForPointCount`)の根拠を見直した**: 下記「見つけた
+   不具合」参照。1点あたりのバイト数の根拠コメントに誤りを見つけて直したが、
+   定数の値(60/10)自体は変えていない。
+
+### 見つけた不具合: `OUTPUT_BYTES_PER_POINT`の根拠コメントが実装の異なる2値を混在させていた
+
+受け入れ条件4「見積もりが過大でないかを確かめる」の作業中に見つけた。
+
+旧コメントは「M4-1bの実測(出力サイズ÷点数): beer.laz 7.48 B/点、
+sofi.copc.laz 9.07 B/点」としていたが、出典を遡ると**2つの異なる実装の値を
+混在させていた**:
+
+- **7.48 B/点(beer.laz)**: M4-1節(46行目〜)の**素朴な実装**(全点メモリ、
+  M4-2で`copc-writer`採用により不採用)の出力(500.04MB/66,848,096点)から
+  来ていた
+- **9.07 B/点(sofi.copc.laz)**: M4-1b節の**`copc-writer`**の出力
+  (3,305.84MB/364,384,576点)から来ていた
+
+現在の実装(デスクトップ・Web版とも)は`copc-writer`系列のみを使うため、
+素朴な実装の値(7.48)を根拠に使う理由が無い。本セッションで、M4-1bのスパイクが
+残していた実際の出力ファイル(`data/beer.copc.laz`、2026-10-04時点でもworktree
+外の`C:\rust\point-cloud-viewer\data\`に残っていた)を使って、beer.lazも
+`copc-writer`側の値で再計算した。
+
+```
+$ node -e '
+const fs = require("fs");
+const path = "C:/rust/point-cloud-viewer/data/beer.laz";
+const fd = fs.openSync(path, "r");
+const head = Buffer.alloc(300);
+fs.readSync(fd, head, 0, 300, 0);
+fs.closeSync(fd);
+console.log("minorVersion", head[25], "headerSize", head.readUInt16LE(94), "legacyCount", head.readUInt32LE(107));
+console.log("beer.laz size", fs.statSync(path).size);
+console.log("beer.copc.laz size", fs.statSync("C:/rust/point-cloud-viewer/data/beer.copc.laz").size);
+'
+minorVersion 2 headerSize 227 legacyCount 66848096
+beer.laz size 470528077
+beer.copc.laz size 606308379
+```
+
+LASヘッダーから読んだ点数(66,848,096)はM4-1/M4-1b節の記載と一致し、
+`beer.copc.laz`のサイズ(606,308,379バイト)もM4-1bの表の「606.31MB」
+(10進MB、606,308,379÷10^6=606.31)と一致する。すなわちこのファイルは
+M4-1bのスパイクが実際に書き出した出力そのものである。
+
+```
+$ node -e '
+console.log("beer output B/点(copc-writer):", 606308379/66848096);
+console.log("sofi output B/点(copc-writer、M4-1b記載値からの再計算):", 3305.84e6/364384576);
+console.log("beer output B/点(M4-1素朴実装、参考・不使用):", 500.04e6/66848096);
+'
+beer output B/点(copc-writer): 9.069942381006634
+sofi output B/点(copc-writer、M4-1b記載値からの再計算): 9.072392789754087
+beer output B/点(M4-1素朴実装、参考・不使用): 7.480242967578314
+```
+
+**`copc-writer`ベースでは、beer(9.0699)とsofi(9.0724)は9.07前後に一致する。**
+旧コメントが示唆していた「7.48〜9.07の範囲がある」という形は誤りで、実際は
+1点に近い値に収束していた。`OUTPUT_BYTES_PER_POINT`の値(切り上げて10)自体は
+変えていない(根拠が誤っていても、切り上げ先の10という値は結果的に変わらない。
+むしろ2点が独立に9.07前後へ一致したことで、10という値への約10%の安全余裕は
+過大ではないという確信が強まった)。コメントだけを修正した
+(`src/datasource/opfs.ts`)。
+
+**未確認のまま残した点(正直に)**: M4-7/M4-8/M4-10(入力読み込みの並列化、
+後処理の高速化、ノードごとのLAZ圧縮の並列化)が、LAZの**圧縮率自体**
+(並列化・バッチ化ではなく出力バイト数)を変えていないことは検証していない。
+これらの変更は性能(速度・メモリ)が目的で圧縮アルゴリズム自体は変えていない
+はずだが、実際にbeer.laz等を現在のコードで再変換して出力バイト数を比較する
+再検証はしていない。`data/beer.copc.laz`がどのセッションでいつ生成されたか
+(M4-1bのスパイクか、その後の回帰確認か)もコミット履寚からは追えていない
+(ファイルはgitignore対象で、worktreeの外`C:\rust\point-cloud-viewer\data\`に
+置かれているため)。
+
+### `SCRATCH_BYTES_PER_POINT`(60)は見直して問題無しと判断した
+
+こちらはM4-1b節の表(「一時ディスク(バイト/点)」行、beer 59.06・sofi 60.00)が
+**どちらも`copc-writer`の同じ実測から来ており**、実装の混在は無かった。
+Web版(OPFS)の一時ファイルも、`vendor/copc-writer`の`ScratchFs`経由で同じ
+`spill.rs`/`lod.rs`のコードパスを通る(M4-6a/M4-6bで改修した箇所そのもの)ため、
+ネイティブで実測したこの値はそのまま転用できる(M4-6aが出力のバイト同一性を
+SHA-256で確認済み、7節参照)。値(60)は変えていない。
+
+### 判断: デスクトップ版の容量不足表示は変えなかった
+
+デスクトップ版の`insufficientSpace`(`src-tauri/src/conversion.rs`が返す、
+OSの実際の空きディスク容量)は今回変更していない。所有者からの報告・
+コーディネーターの指示がいずれもWeb版(OPFS)についてのものであり、デスクトップ版は
+`availableBytes`が既にOSの実際の空き容量そのもの(quota/usageという
+ブラウザ固有の中間層が無い)で、今回の「必要・空き・上限・使用中」を分ける
+改善の対象にはならないため。
+
+### 新規テスト
+
+`src/datasource/opfs.test.ts`に追加(31件→既存+16件。詳細は下記確認のvitest出力):
+
+- `ensurePersistentStorage`: 既に永続化済み/未永続化で許可/未永続化で拒否の3パターン
+- `toGiBLabel`: バイト→表示文字列の変換
+- `describeInsufficientSpaceWeb`: 必要・空き・上限・使用中が文言に含まれること、
+  消せる量が0のときキャッシュの提案を出さないこと、永続化済みのとき許可提案を
+  出さないこと、常にデスクトップ版の案内を出すこと、空きが負にならないこと
+
+OPFS実機I/O(`getOpfsUsageBreakdown`・`removeCachedConversionEntry`・
+`clearAllCachedConversions`・`removeScratchDirByName`)自体は、既存の
+`findCachedOutput`等と同じ理由(vitestのjsdom環境には実体が無い)で単体テスト
+対象にしていない。下記「所有者が確かめる手順」でブラウザ上での確認を依頼する。
+
+### 確認したこと(実行したコマンドと出力)
+
+```
+$ npx tsc --noEmit -p tsconfig.json
+(エラー無し)
+
+$ npx eslint .
+(警告・エラー無し)
+
+$ npx vitest run
+ Test Files  33 passed (33)
+      Tests  300 passed (300)
+
+$ npm run build
+✓ 83 modules transformed.
+✓ built in 208ms
+
+$ npm run ui:check
+(差分無し)
+```
+
+CI: https://github.com/dOtOb9/point-cloud-viewer/actions/runs/37712871719 (push後に実行)
+Pages: https://github.com/dOtOb9/point-cloud-viewer/actions/runs/37712871689
+
+### 確認していないこと(ブラウザでの実機確認、未確認)
+
+- **Vivaldi(Chromium系)実機での動作確認はしていない。** `navigator.storage.persist()`が
+  実際に何を返すか、`estimate()`のquotaが所有者の実機でどう変化するか、
+  設定画面の「ブラウザの保存領域」節が意図どおり表示・削除できるかは、
+  いずれも所有者の確認が必要
+- 永続化を許可した後に実際にquotaが増えるかどうか(Chromium系は表の通り
+  best-effortと永続化で同じ60%のはずなので、増えないのが期待される挙動。
+  増えなくても不具合ではない)
+- 大規模点群(所有者が実際に「空き容量が足りません」に遭遇したファイル)を
+  Vivaldiで実際に変換し、新しい表示(必要・空き・上限・使用中)が実際の状況を
+  正しく説明しているか
+
+### 所有者が確かめる手順(Vivaldiで)
+
+1. GitHub PagesのWeb版を開く(Pages run完了後のURL)
+2. 設定(⚙)を開き、「ブラウザの保存領域 (OPFS, M4-6)」節が表示されることを
+   確認する。「使用中」「上限」「永続的な保存: 許可済み/未許可」が出る
+3. 「許可を求める」ボタンを押す(未許可の場合)。Vivaldiは確認ポップアップを
+   出さずに自動判定するはず(本追記の調査(1)参照)なので、ボタンを押した
+   直後に「許可済み」に変わるかどうかを確認してほしい(変わらない場合、
+   自動判定がこの時点では「不許可」と判断したという意味で、不具合ではない)
+4. 変換済みキャッシュ・残っている一時ファイルの一覧に、過去に試した変換が
+   出るか確認する。「消す」「すべて消す」を押して一覧が更新されることを
+   確認する
+5. 以前「空き容量が足りません(10.0GiB)」が出たのと同じ(または近い規模の)
+   ファイルを開き直し、新しい表示(「必要: 約XGiB／空き: 約YGiB(上限
+   約ZGiB、使用中 約WGiB)。空けるには、…」)が出ることを確認する。
+   このとき「必要」「空き」「上限」「使用中」のどの数字が実際に報告された
+   「10.0GiB」に近いかを教えてほしい(この情報が、まだ残っている謎
+   ――10.0GiBがFirefoxの上限と一致していたのは単なる偶然だったのか――を
+   解く手がかりになる)
+6. キャッシュ・一時ファイルを消す、または永続化を許可した後、同じファイルで
+   再度変換を試し、表示される「空き」の数値が変わるか(増えるか)を確認する
+
+---
+
 ## M4-7: 入力の読み込み(LAZの展開)を並列化する(2026-10-02、Sonnet)
 
 ### 背景・所有者の要望
