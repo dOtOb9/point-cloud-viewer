@@ -30,8 +30,10 @@ function aabbCorner(
   ];
 }
 
-/** クリップ座標(cx, cy, cw)から画面ピクセル座標(px, py)へ変換する。 */
-function clipToScreenPixels(
+/** クリップ座標(cx, cy, cw)から画面ピクセル座標(px, py)へ変換する。
+ *  ADR-0010中央優先度（`center-priority.ts`）が、ノード中心を画面座標へ
+ *  変換するために再利用する。 */
+export function clipToScreenPixels(
   cx: number,
   cy: number,
   cw: number,
@@ -129,6 +131,29 @@ export function projectedBoundsDiagonalPixels(
   }
 
   return Math.hypot(maxX - minX, maxY - minY);
+}
+
+/**
+ * AABBの8頂点のうち1つ以上がニアプレーンの後ろ（`cw <= NEAR_W_EPSILON`）にあるか。
+ *
+ * ADR-0010（中央優先度、`center-priority.ts`）が「カメラがノードの範囲の中に
+ * 入っている」ことの判定に使う。ノードの中にカメラが入ると、カメラを向いた側の
+ * 頂点とその反対側の頂点でクリップ空間のwの符号が分かれる（反対側はカメラの
+ * 背後に回るため）。これは`projectedBoundsDiagonalPixels`がニアプレーンを
+ * 跨ぐ辺をクリップする条件と同じ頂点ごとのw判定なので、独自の基準を増やさず
+ * ここから流用する。
+ */
+export function aabbClippedByNearPlane(
+  viewProj: Mat4,
+  min: readonly [number, number, number],
+  max: readonly [number, number, number],
+): boolean {
+  for (let i = 0; i < 8; i++) {
+    const corner = aabbCorner(min, max, i);
+    const cw = transformPoint(viewProj, corner)[3];
+    if (cw <= NEAR_W_EPSILON) return true;
+  }
+  return false;
 }
 
 /**
