@@ -29,13 +29,14 @@
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use copc_writer::CopcWriterParams;
 use pcv_convert::import::{self, SourceFormat};
-use pcv_convert::streaming::{convert, AtomicCancel, ReadProgress};
+use pcv_convert::stage_timings::ConversionStageTimings;
+use pcv_convert::streaming::{convert_and_timings, AtomicCancel, ReadProgress};
 use pcv_convert::{cache, copc_detect, disk_space, output_path};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
@@ -66,9 +67,55 @@ pub enum ConversionProgressEvent {
     PostProcessing { elapsed_secs: f64 },
 }
 
+/// M4-12(`TaskSheets/M4-import-and-conversion.md`): 変換完了後、所有者に
+/// 「どこで時間を使っているか」をそのまま報告してもらえるようにするための
+/// 段階別の内訳。デスクトップ・Android(ここ)とWeb版
+/// (`crates/pcv-wasm/src/dto.rs`の同名のDTO)の両方が同じ形のJSONを作る
+/// (フィールド名を合わせ、`src/datasource/conversion-breakdown.ts`の
+/// 1つの整形関数をどちらの経路でも使えるようにする)。
+///
+/// `opfs_io_secs`はOPFS(Web版だけが使う一時ファイル機構)の読み書き時間。
+/// デスクトップには存在しないため常に`None`(JSONでは`null`)。
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct ConversionStageBreakdownDto {
+    pub source_read_and_decode_secs: f64,
+    pub spill_write_secs: f64,
+    pub lod_index_build_secs: f64,
+    pub node_compression_secs: f64,
+    pub header_and_hierarchy_write_secs: f64,
+    pub total_secs: f64,
+    pub opfs_io_secs: Option<f64>,
+    pub point_count: u64,
+    pub file_size_bytes: u64,
+}
+
+impl ConversionStageBreakdownDto {
+    fn new(timings: ConversionStageTimings, point_count: u64, file_size_bytes: u64) -> Self {
+        Self {
+            source_read_and_decode_secs: timings.source_read_and_decode.as_secs_f64(),
+            spill_write_secs: timings.spill_write.as_secs_f64(),
+            lod_index_build_secs: timings.lod_index_build.as_secs_f64(),
+            node_compression_secs: timings.node_compression.as_secs_f64(),
+            header_and_hierarchy_write_secs: timings.header_and_hierarchy_write.as_secs_f64(),
+            total_secs: timings.total().as_secs_f64(),
+            opfs_io_secs: None,
+            point_count,
+            file_size_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConversionDoneEvent {
     pub output_path: String,
+    /// M4-12: 形式(拡張子、小文字)は内訳のコピー用テキストに入れる
+    /// (`ConversionStageBreakdownDto`自体には持たせず、ここに別フィールドで
+    /// 置く。デスクトップは拡張子から機械的に決まるが、Web版は
+    /// `FinishResultDto`に形式を持たせていない=呼び出し元のTypeScriptが
+    /// 既に知っているため、DTOの対称性よりも「Rust側で決められる情報は
+    /// Rust側で埋める」を優先した)。
+    pub source_format: String,
+    pub stage_timings: ConversionStageBreakdownDto,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -286,6 +333,13 @@ fn decide_and_start(
     // 拡張子で判定する(`pcv_convert::import::detect_format`。LAS/LAZ自身は
     // `None`を返すので、この場合は今までどおりLAS/LAZ経路を使う)。
     let import_format = import::detect_format(path_for_naming);
+    // M4-12: 内訳のコピー用テキストに入れる「形式」表示(拡張子そのまま、
+    // 小文字化。無ければ"(不明)")。
+    let source_format_label = path_for_naming
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_else(|| "(不明)".to_string());
 
     let app_for_thread = app.clone();
     let output_for_thread = output_path.clone();
@@ -298,6 +352,7 @@ fn decide_and_start(
             source_fingerprint,
             cancel_flag,
             import_format,
+            source_format_label,
         );
     });
 
@@ -342,6 +397,7 @@ fn run_conversion_thread(
     source_fingerprint: cache::SourceFingerprint,
     cancel_flag: Arc<AtomicBool>,
     import_format: Option<SourceFormat>,
+    source_format_label: String,
 ) {
     let file = match open_for_convert() {
         Ok(file) => file,
@@ -350,10 +406,20 @@ fn run_conversion_thread(
             return;
         }
     };
+    let input_len = source_fingerprint.len;
 
     let started = Instant::now();
     let app_for_progress = app.clone();
+    // M4-12: LAS/LAZ経路は`convert_and_timings`が点数を返さない(戻り値は
+    // `Result<()>`のまま、`import::convert_to_copc_and_timings`の
+    // `ImportSummary::point_count`に相当するものが無い)ため、進捗コールバックが
+    // 最後に報告した`points_read`を内訳の点数として使う(`on_progress`は
+    // `points_read == total_points`の時点で必ず最後に呼ばれる。
+    // `pcv_convert::streaming`のドキュメント「進捗の粒度」参照)。
+    let points_read_for_breakdown = Arc::new(AtomicU64::new(0));
+    let points_read_for_breakdown_in_closure = points_read_for_breakdown.clone();
     let on_progress = move |progress: ReadProgress| {
+        points_read_for_breakdown_in_closure.store(progress.points_read, Ordering::Relaxed);
         let event = ConversionProgressEvent::Reading {
             points_read: progress.points_read,
             total_points: progress.total_points,
@@ -377,16 +443,22 @@ fn run_conversion_thread(
     };
 
     let cancel = AtomicCancel(cancel_flag);
+    // M4-12(`TaskSheets/M4-import-and-conversion.md`): 所有者向けの内訳表示の
+    // ため、計測専用でない本番の変換経路から段階ごとの所要時間を取る
+    // (`pcv_convert::stage_timings::ConversionStageTimings`)。
+    let mut timings = ConversionStageTimings::default();
+    let mut point_count: u64 = 0;
     let result: copc_core::Result<()> = match import_format {
-        None => convert(
+        None => convert_and_timings(
             BufReader::new(file),
             &output_path,
             &spill_dir,
             &CopcWriterParams::default(),
             &cancel,
             on_progress,
+            &mut timings,
         ),
-        Some(format) => import::convert_to_copc(
+        Some(format) => import::convert_to_copc_and_timings(
             BufReader::new(file),
             format,
             &output_path,
@@ -397,10 +469,17 @@ fn run_conversion_thread(
             // UIでの選択画面は作らないという指示どおり、常に「不明」のまま渡す。
             None,
             on_progress,
+            &mut timings,
         )
-        .map(|_summary| ())
+        .map(|summary| {
+            point_count = summary.point_count;
+        })
         .map_err(copc_core::Error::from),
     };
+
+    if import_format.is_none() {
+        point_count = points_read_for_breakdown.load(Ordering::Relaxed);
+    }
 
     match result {
         Ok(()) => {
@@ -413,6 +492,8 @@ fn run_conversion_thread(
             log::info!("[conversion] 変換完了: {}", output_path.display());
             let event = ConversionDoneEvent {
                 output_path: output_path.to_string_lossy().into_owned(),
+                source_format: source_format_label,
+                stage_timings: ConversionStageBreakdownDto::new(timings, point_count, input_len),
             };
             if let Err(e) = app.emit(EVENT_DONE, &event) {
                 log::warn!("[conversion] done イベントの送出に失敗した: {e}");

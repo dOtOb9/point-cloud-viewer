@@ -59,6 +59,11 @@ copc-writer = { version = "0.9.0", default-features = false }
 # `pcd_import.rs`に独立に書いた(意図した重複。コメントに理由を記録する)。
 pcd-rs = "0.13.0"
 byteorder = "1"
+# M4-12(TaskSheets/M4-import-and-conversion.md): 変換の段階ごとの所要時間を
+# 画面に出すための計測。`std::time::Instant`はwasm32-unknown-unknownでpanicする
+# ため(clippy.tomlのdisallowed-methods参照)、vendor/copc-writerと同じ
+# web_time::Instantを使う。
+web-time = "1"
 
 [dependencies.web-sys]
 version = "0.3"
