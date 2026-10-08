@@ -87,6 +87,48 @@ function formatElapsed(seconds: number): string {
   return m > 0 ? `${m}分${s}秒` : `${s}秒`;
 }
 
+/**
+ * M4-12(`TaskSheets/M4-import-and-conversion.md`): 変換完了後、段階ごとの
+ * 所要時間を所有者がそのまま報告できるようにする内訳パネル。
+ * `viewer.conversionBreakdownText`(整形済みテキスト、
+ * `src/datasource/conversion-breakdown.ts`)をそのまま`<pre>`で表示し、
+ * 「内訳をコピー」ボタンでクリップボードへコピーする。コピー直後は
+ * ボタンの文言を一時的に「コピーしました」に変える(2秒で元に戻す)。
+ */
+function ConversionBreakdownPanel({
+  text,
+  onCopy,
+}: {
+  text: string;
+  onCopy: () => Promise<boolean>;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10">
+      <div className="flex items-center justify-between">
+        <span className="opacity-70">変換の内訳</span>
+        <button
+          type="button"
+          onClick={() => {
+            void (async () => {
+              const ok = await onCopy();
+              if (ok) {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }
+            })();
+          }}
+          className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900"
+        >
+          {copied ? "コピーしました" : "内訳をコピー"}
+        </button>
+      </div>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] opacity-80">{text}</pre>
+    </div>
+  );
+}
+
 export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) {
   const [urlInput, setUrlInput] = useState("");
   const busy = viewer.status === "opening" || viewer.status === "converting";
@@ -230,6 +272,15 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                   ダウンロード
                 </a>
               </div>
+            )}
+
+            {/* M4-12: 変換完了後、段階ごとの所要時間を出す。変換していない間・
+                次にファイルを開くとクリア(`useCopcViewer.ts`の`openFile`参照)。 */}
+            {viewer.conversionBreakdownText && (
+              <ConversionBreakdownPanel
+                text={viewer.conversionBreakdownText}
+                onCopy={viewer.copyConversionBreakdownText}
+              />
             )}
           </div>
 

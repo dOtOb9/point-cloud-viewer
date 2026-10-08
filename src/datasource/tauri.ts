@@ -15,10 +15,13 @@ import {
 import {
   toConversionOutcome,
   toConversionProgress,
+  toConversionStageBreakdown,
   type ConversionOutcome,
   type ConversionOutcomeDto,
   type ConversionProgress,
   type ConversionProgressDto,
+  type ConversionStageBreakdown,
+  type ConversionStageBreakdownDto,
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
 import { StaleNodeRequestError } from "./stale-node-error";
@@ -170,13 +173,24 @@ export async function onConversionProgress(
   });
 }
 
-/** 変換完了イベントを購読する。ペイロードは出力(COPC)のパス。 */
+/** 変換完了イベントを購読する。ペイロードは出力(COPC)のパスと、
+ *  M4-12(`TaskSheets/M4-import-and-conversion.md`)で追加した段階ごとの
+ *  内訳(`sourceFormat`は元ファイルの拡張子、`stageTimings`は秒単位の内訳。
+ *  `src-tauri/src/conversion.rs`の`ConversionDoneEvent`参照)。 */
 export async function onConversionDone(
-  callback: (outputPath: string) => void,
+  callback: (outputPath: string, sourceFormat: string, stageTimings: ConversionStageBreakdown) => void,
 ): Promise<UnlistenFn> {
   if (!isTauriEnvironment()) return NOOP_UNLISTEN;
-  return await listen<{ output_path: string }>("conversion-done", (event) => {
-    callback(event.payload.output_path);
+  return await listen<{
+    output_path: string;
+    source_format: string;
+    stage_timings: ConversionStageBreakdownDto;
+  }>("conversion-done", (event) => {
+    callback(
+      event.payload.output_path,
+      event.payload.source_format,
+      toConversionStageBreakdown(event.payload.stage_timings),
+    );
   });
 }
 

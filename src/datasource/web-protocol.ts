@@ -140,13 +140,17 @@ export interface ConvertProgressResponse {
 /** M4-6b: 変換完了。`outputName`はOPFS上の出力ファイル名
  *  (`opfs.ts`の`outputFileNameFor`が決めたもの)、`suggestedFileName`は
  *  ダウンロード時に提案するファイル名(元のファイル名から組み立てる。
- *  `outputName`はハッシュ由来で人が読める名前ではないため)。 */
+ *  `outputName`はハッシュ由来で人が読める名前ではないため)。
+ *  `stageTimings`はM4-12(`TaskSheets/M4-import-and-conversion.md`)で追加した、
+ *  段階ごとの所要時間(`crates/pcv-wasm/src/dto.rs`の`FinishResultDto.
+ *  stage_timings`をそのまま運ぶ。Rust側のフィールド名のままsnake_case)。 */
 export interface ConvertDoneResponse {
   type: "convert-done";
   id: number;
   outputName: string;
   suggestedFileName: string;
   pointCount: number;
+  stageTimings: ConversionStageBreakdownDto;
 }
 
 /** M4-6b: 変換の失敗・キャンセル。デスクトップ版のonConversionFailedと

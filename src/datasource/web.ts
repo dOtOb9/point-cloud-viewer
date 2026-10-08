@@ -16,7 +16,13 @@
 
 import type { DataSource, OpenedCloud } from "./DataSource";
 import { toCloudInfo, toHierarchyNodeInfo } from "./copc-dto";
-import { toConversionProgress, type ConversionOutcome, type ConversionProgress } from "./conversion-dto";
+import {
+  toConversionProgress,
+  toConversionStageBreakdown,
+  type ConversionOutcome,
+  type ConversionProgress,
+  type ConversionStageBreakdown,
+} from "./conversion-dto";
 import * as opfs from "./opfs";
 import { estimatePointCountForLasFile, estimatePointCountForPcdFile } from "./point-count-estimate";
 import {
@@ -120,7 +126,12 @@ export class WebSource implements DataSource {
   // 別の仕組みにしてある(`handleResponse`参照)。
   private readonly convertProgressListeners = new Set<(progress: ConversionProgress) => void>();
   private readonly convertDoneListeners = new Set<
-    (outputName: string, suggestedFileName: string, pointCount: number) => void
+    (
+      outputName: string,
+      suggestedFileName: string,
+      pointCount: number,
+      stageTimings: ConversionStageBreakdown,
+    ) => void
   >();
   private readonly convertFailedListeners = new Set<(message: string, cancelled: boolean) => void>();
   /** 進行中の変換のリクエストid(無ければnull)。`cancelConversion`が
@@ -296,9 +307,16 @@ export class WebSource implements DataSource {
 
   /** 変換完了を購読する。`outputName`はOPFS内部の名前(`registerFile`済みの
    *  Fileを取得するのに使う場合は呼び出し側が`opfs.getConvertedFile`で
-   *  取得すること)、`suggestedFileName`はダウンロード用の分かりやすい名前。 */
+   *  取得すること)、`suggestedFileName`はダウンロード用の分かりやすい名前。
+   *  `stageTimings`はM4-12(`TaskSheets/M4-import-and-conversion.md`)で追加した、
+   *  段階ごとの所要時間(秒)。 */
   onConvertDone(
-    callback: (outputName: string, suggestedFileName: string, pointCount: number) => void,
+    callback: (
+      outputName: string,
+      suggestedFileName: string,
+      pointCount: number,
+      stageTimings: ConversionStageBreakdown,
+    ) => void,
   ): () => void {
     this.convertDoneListeners.add(callback);
     return () => this.convertDoneListeners.delete(callback);
@@ -325,8 +343,9 @@ export class WebSource implements DataSource {
     }
     if (response.type === "convert-done") {
       this.activeConvertId = null;
+      const stageTimings = toConversionStageBreakdown(response.stageTimings);
       this.convertDoneListeners.forEach((listener) =>
-        listener(response.outputName, response.suggestedFileName, response.pointCount),
+        listener(response.outputName, response.suggestedFileName, response.pointCount, stageTimings),
       );
       return;
     }

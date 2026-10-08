@@ -30,6 +30,7 @@ import { detectSourceFormatByName } from "../datasource/source-format";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { CloudInfo, DataSource } from "../datasource/DataSource";
 import type { ConversionProgress } from "../datasource/conversion-dto";
+import { formatConversionBreakdown, type ConversionBreakdownMeta } from "../datasource/conversion-breakdown";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
@@ -59,6 +60,34 @@ export type { ColorMode };
 export type { ConversionProgress };
 
 const TEMP_DIR_STORAGE_KEY = "pcv-conversion-temp-dir";
+
+/** M4-12(`TaskSheets/M4-import-and-conversion.md`): `path`(Tauri版の
+ *  `\`/`/`どちらも使える文字列パス)の最後の区切り以降をファイル名として
+ *  返す(拡張子の判定・内訳テキストの表示用。実在のパスである必要は無い、
+ *  `pcv_convert::output_path`と同じ割り切り)。 */
+function basenameOfPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const lastSlash = normalized.lastIndexOf("/");
+  return lastSlash === -1 ? normalized : normalized.slice(lastSlash + 1);
+}
+
+/** ファイル名の拡張子(小文字、無ければ"(不明)")。内訳テキストの「形式」欄に使う。 */
+function extensionOfFileName(fileName: string): string {
+  const dotIndex = fileName.lastIndexOf(".");
+  return dotIndex === -1 ? "(不明)" : fileName.slice(dotIndex + 1).toLowerCase();
+}
+
+/** M4-12: 内訳テキストに入れる端末情報。`navigator.deviceMemory`は
+ *  Chrome系だけの実験的API(型定義に無いため`as`で読む)。取れなければ
+ *  `undefined`のままにする(無いことを0などの値で埋めない)。 */
+function currentDeviceMeta(): Pick<ConversionBreakdownMeta, "browser" | "hardwareConcurrency" | "deviceMemoryGiB"> {
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  return {
+    browser: nav.userAgent,
+    hardwareConcurrency: nav.hardwareConcurrency,
+    deviceMemoryGiB: nav.deviceMemory,
+  };
+}
 
 /**
  * M4-6追記: Web版のOPFS使用量(内訳)と永続化の状態をまとめた、設定画面
@@ -165,6 +194,18 @@ export interface CopcViewerState {
   /** ダウンロードのURLを明示的に破棄する(`URL.revokeObjectURL`込み)。 */
   clearDownload: () => void;
   /**
+   * M4-12(`TaskSheets/M4-import-and-conversion.md`): 直前に完了した変換の、
+   * 段階ごとの所要時間を所有者がそのまま報告できる形に整形したテキスト
+   * (`src/datasource/conversion-breakdown.ts`の`formatConversionBreakdown`)。
+   * Web版・デスクトップ版どちらも変換完了時に入る。次にファイルを開くと
+   * (`openFile`が)`null`に戻す。
+   */
+  conversionBreakdownText: string | null;
+  /** 上記テキストをクリップボードへコピーする(`navigator.clipboard`)。
+   *  コピーに成功したら`true`を返す(失敗は握りつぶしてログだけ残す。
+   *  ボタンの一時的な「コピーしました」表示に使うことを想定)。 */
+  copyConversionBreakdownText: () => Promise<boolean>;
+  /**
    * M4-6追記: Web版のOPFS使用量(キャッシュ・一時ファイルの内訳)と永続化の
    * 状態。取得前・Tauri版では`null`(`viewer.isBrowser`で先に弾く想定。
    * `SettingsModal`参照)。`refreshOpfsStorageInfo`で更新する。
@@ -251,6 +292,16 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // M4-6b: Web版の変換完了後だけ入るダウンロード用URL。
   const [downloadReady, setDownloadReadyState] = useState<{ url: string; fileName: string } | null>(null);
   const downloadReadyRef = useRef<{ url: string; fileName: string } | null>(null);
+  // M4-12(`TaskSheets/M4-import-and-conversion.md`): 直前に完了した変換の、
+  // 所有者がそのまま報告できる内訳テキスト。変換していない・まだ完了していない
+  // ときは`null`。次に`openFile`を呼ぶとクリアする(`downloadReady`と同じ扱い)。
+  const [conversionBreakdownText, setConversionBreakdownText] = useState<string | null>(null);
+  // 変換を開始する直前に元ファイル名を覚えておく(`openFile`が設定し、
+  // マウント時に1度だけ張る`onConversionDone`/`onConvertDone`のハンドラが
+  // 変換完了時にこれを読む。両ハンドラはクロージャ生成時点のファイル名を
+  // 知らないため、refで渡す。「effectは一度だけ、でも中身は最新でありたい」
+  // という`openFileRef`と同じ理由)。
+  const convertingSourceNameRef = useRef<string | null>(null);
 
   // 直前のダウンロードURLを(あれば)revokeしてから、新しい状態を設定する。
   // `null`を渡すと「ダウンロードを破棄するだけ」になる。
@@ -263,6 +314,20 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   }, []);
 
   const clearDownload = useCallback(() => setDownloadReady(null), [setDownloadReady]);
+
+  // M4-12: `conversionBreakdownText`はstateそのもの(上で宣言済み)。ここでは
+  // クリップボードへコピーする関数だけを作る。`navigator.clipboard`が無い
+  // 環境(非HTTPS等)でも画面を壊さないよう、失敗はログに残すだけにする。
+  const copyConversionBreakdownText = useCallback(async (): Promise<boolean> => {
+    if (conversionBreakdownText === null) return false;
+    try {
+      await navigator.clipboard.writeText(conversionBreakdownText);
+      return true;
+    } catch (e: unknown) {
+      console.error("copyConversionBreakdownText failed", e);
+      return false;
+    }
+  }, [conversionBreakdownText]);
 
   // M4-6追記: Web版のOPFS使用量・永続化の状態(設定画面「ブラウザの保存領域」節)。
   const [opfsStorageInfo, setOpfsStorageInfo] = useState<OpfsStorageInfo | null>(null);
@@ -367,8 +432,20 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
 
     if (source instanceof WebSource) {
       unlistenProgress = source.onConvertProgress((progress) => setConversionProgress(progress));
-      unlistenDone = source.onConvertDone((outputName, suggestedFileName) => {
+      unlistenDone = source.onConvertDone((outputName, suggestedFileName, _pointCount, stageTimings) => {
         setConversionProgress(null);
+        // M4-12: 内訳テキストを組み立てる。元ファイル名は`openFile`が変換開始前に
+        // 覚えておいた値(`convertingSourceNameRef`)を使う(`suggestedFileName`は
+        // 既に".copc.laz"へ拡張子が変わっているため、元の形式が分からない)。
+        const sourceName = convertingSourceNameRef.current ?? suggestedFileName;
+        setConversionBreakdownText(
+          formatConversionBreakdown(stageTimings, {
+            platform: "web",
+            format: extensionOfFileName(sourceName),
+            fileName: sourceName,
+            ...currentDeviceMeta(),
+          }),
+        );
         void (async () => {
           // OPFSに書いた出力を`File`として取り出し、通常のローカルファイル選択と
           // 同じ経路(`registerFile`→`open`)で開く。ダウンロード用のURLも
@@ -390,11 +467,19 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       void onConversionProgress((progress) => setConversionProgress(progress)).then((fn) => {
         unlistenProgress = fn;
       });
-      void onConversionDone((outputPath) => {
+      void onConversionDone((outputPath, sourceFormat, stageTimings) => {
         // 変換が終わった出力(既にCOPC)をそのまま開き直す。もう一度
         // start_las_conversionを経由するが、既にCOPCと判定されて即座に開く
         // 経路に入るだけなので実害は無い(往復コストはヘッダー1回分)。
         setConversionProgress(null);
+        setConversionBreakdownText(
+          formatConversionBreakdown(stageTimings, {
+            platform: "desktop",
+            format: sourceFormat,
+            fileName: convertingSourceNameRef.current ?? basenameOfPath(outputPath),
+            ...currentDeviceMeta(),
+          }),
+        );
         void openFileRef.current(outputPath);
       }).then((fn) => {
         unlistenDone = fn;
@@ -515,6 +600,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setError(null);
     setConversionProgress(null);
     setDownloadReady(null);
+    setConversionBreakdownText(null);
     try {
       // Web版のローカルファイル選択は`File`を受け取る。`DataSource.open()`は
       // 文字列しか取らないので、先に`WebSource.registerFile()`でキーへ変換する
@@ -546,6 +632,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
             );
             return;
           }
+          // M4-12: 内訳テキストに入れる元ファイル名を、変換完了時のハンドラが
+          // 読めるように覚えておく(マウント時に1度だけ張る`onConvertDone`の
+          // クロージャはこの呼び出しのスコープを知らないため)。
+          convertingSourceNameRef.current = pathOrFile.name;
           const outcome =
             format === "pcd"
               ? await source.startPcdConversion(pathOrFile, deviceProfileDefaults.isMobile)
@@ -612,6 +702,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // (`converting`。この場合はここで一旦return し、実際に開く処理は
       // マウント時に張った`onConversionDone`が`openFileRef`経由で続きを行う)。
       if (source instanceof TauriSource) {
+        // M4-12: Web版と同じ理由(直前のコメント参照)。
+        convertingSourceNameRef.current = basenameOfPath(path);
         const outcome = await startLasConversion(path, tempDir);
         switch (outcome.kind) {
           case "alreadyCopc":
@@ -799,6 +891,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     cancelConversion,
     downloadReady,
     clearDownload,
+    conversionBreakdownText,
+    copyConversionBreakdownText,
     opfsStorageInfo,
     refreshOpfsStorageInfo,
     requestOpfsPersistentStorage,

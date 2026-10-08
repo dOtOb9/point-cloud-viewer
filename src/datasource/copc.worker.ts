@@ -35,7 +35,7 @@ import init, {
   WasmPcdConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
-import type { PreparingStepDto } from "./conversion-dto";
+import type { ConversionStageBreakdownDto, PreparingStepDto } from "./conversion-dto";
 import {
   BoundedBatchFlow,
   decompressWorkerCountFor,
@@ -223,9 +223,12 @@ interface FeedResultDto {
   done: boolean;
 }
 
-// `WasmConverter::finish`が返すDTO(同`FinishResultDto`)。
+// `WasmConverter::finish`が返すDTO(同`FinishResultDto`)。M4-12
+// (`TaskSheets/M4-import-and-conversion.md`)で`stage_timings`を追加した
+// (`crates/pcv-wasm/src/dto.rs`の`ConversionStageBreakdownDto`と同じ形)。
 interface FinishResultDto {
   point_count: number;
+  stage_timings: ConversionStageBreakdownDto;
 }
 
 /** 1回の`feed`呼び出しで読むバッチサイズ。デスクトップ版
@@ -641,6 +644,7 @@ async function runConversion(
       outputName,
       suggestedFileName: suggestedFileNameFor(file.name),
       pointCount: finishResult.point_count,
+      stageTimings: finishResult.stage_timings,
     });
   } catch (err) {
     scope.postMessage({
@@ -682,6 +686,7 @@ interface PcdFeedResultDto {
 /** `WasmPcdConverter::finish`が返すDTO(`FinishResultDto`と同じ形)。 */
 interface PcdFinishResultDto {
   point_count: number;
+  stage_timings: ConversionStageBreakdownDto;
 }
 
 async function handlePcdConvertStart(request: PcdConvertStartRequest): Promise<void> {
@@ -788,6 +793,7 @@ async function runPcdConversion(id: number, file: File, maxPointsPerNode: number
       outputName,
       suggestedFileName: suggestedFileNameFor(file.name),
       pointCount: finishResult.point_count,
+      stageTimings: finishResult.stage_timings,
     });
   } catch (err) {
     scope.postMessage({
