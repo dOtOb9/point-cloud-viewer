@@ -12,7 +12,20 @@ import {
 } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
 import { isCopcFile } from "../datasource/copc-header";
-import { getConvertedFile } from "../datasource/opfs";
+import {
+  cleanupStaleScratchDirs,
+  clearAllCachedConversions,
+  describeInsufficientSpaceWeb,
+  ensurePersistentStorage,
+  estimateQuota,
+  getConvertedFile,
+  getOpfsUsageBreakdown,
+  isPersisted,
+  removeCachedConversionEntry,
+  removeScratchDirByName,
+  type CachedConversionEntry,
+  type OpfsUsageBreakdown,
+} from "../datasource/opfs";
 import { detectSourceFormatByName } from "../datasource/source-format";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { CloudInfo, DataSource } from "../datasource/DataSource";
@@ -46,6 +59,20 @@ export type { ColorMode };
 export type { ConversionProgress };
 
 const TEMP_DIR_STORAGE_KEY = "pcv-conversion-temp-dir";
+
+/**
+ * M4-6追記: Web版のOPFS使用量(内訳)と永続化の状態をまとめた、設定画面
+ * (SettingsModal「ブラウザの保存領域」節)向けの表示用の値。`quotaBytes`/
+ * `usageBytes`は`estimateQuota()`、`persisted`は`isPersisted()`、
+ * `breakdown`は`getOpfsUsageBreakdown()`の結果をそのまま持つ
+ * (`refreshOpfsStorageInfo`がまとめて取得する)。
+ */
+export interface OpfsStorageInfo {
+  quotaBytes: number;
+  usageBytes: number;
+  persisted: boolean;
+  breakdown: OpfsUsageBreakdown;
+}
 
 function readStoredTempDir(): string | null {
   try {
@@ -137,6 +164,25 @@ export interface CopcViewerState {
   downloadReady: { url: string; fileName: string } | null;
   /** ダウンロードのURLを明示的に破棄する(`URL.revokeObjectURL`込み)。 */
   clearDownload: () => void;
+  /**
+   * M4-6追記: Web版のOPFS使用量(キャッシュ・一時ファイルの内訳)と永続化の
+   * 状態。取得前・Tauri版では`null`(`viewer.isBrowser`で先に弾く想定。
+   * `SettingsModal`参照)。`refreshOpfsStorageInfo`で更新する。
+   */
+  opfsStorageInfo: OpfsStorageInfo | null;
+  /** `opfsStorageInfo`を取得・再計算する(設定画面を開いたとき、消した後など)。 */
+  refreshOpfsStorageInfo: () => Promise<void>;
+  /** まだ永続化されていなければ`persist()`を求め、結果に関わらず
+   *  `opfsStorageInfo`を更新する(設定画面の「許可を求める」ボタン用)。 */
+  requestOpfsPersistentStorage: () => Promise<void>;
+  /** 変換済みキャッシュを1件消し、`opfsStorageInfo`を更新する。 */
+  removeOpfsCachedConversion: (entry: CachedConversionEntry) => Promise<void>;
+  /** 変換済みキャッシュを全て消し、`opfsStorageInfo`を更新する。 */
+  clearOpfsCachedConversions: () => Promise<void>;
+  /** 残っている一時ディレクトリを1件消し、`opfsStorageInfo`を更新する。 */
+  removeOpfsScratchDir: (name: string) => Promise<void>;
+  /** 残っている一時ディレクトリを全て消し、`opfsStorageInfo`を更新する。 */
+  clearOpfsScratchDirs: () => Promise<void>;
   /** 一時ファイルの置き場所の設定(未設定なら`null`=プラットフォームの既定)。
    *  Tauriのみ意味を持つ(Web版は変換自体をしない)。 */
   tempDir: string | null;
@@ -217,6 +263,62 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   }, []);
 
   const clearDownload = useCallback(() => setDownloadReady(null), [setDownloadReady]);
+
+  // M4-6追記: Web版のOPFS使用量・永続化の状態(設定画面「ブラウザの保存領域」節)。
+  const [opfsStorageInfo, setOpfsStorageInfo] = useState<OpfsStorageInfo | null>(null);
+
+  const refreshOpfsStorageInfo = useCallback(async () => {
+    if (isTauriEnvironment()) return;
+    try {
+      const [estimate, breakdown, persisted] = await Promise.all([
+        estimateQuota(),
+        getOpfsUsageBreakdown(),
+        isPersisted(),
+      ]);
+      setOpfsStorageInfo({ quotaBytes: estimate.quota, usageBytes: estimate.usage, persisted, breakdown });
+    } catch (e: unknown) {
+      // 取得できなくても画面が壊れないよう、ログに残す程度に留める
+      // (設定画面側は`opfsStorageInfo`が更新されず「読み込み中…」のままになるだけ)。
+      console.error("refreshOpfsStorageInfo failed", e);
+    }
+  }, []);
+
+  const requestOpfsPersistentStorage = useCallback(async () => {
+    if (!isTauriEnvironment()) {
+      try {
+        await ensurePersistentStorage(navigator.storage);
+      } catch (e: unknown) {
+        console.error("ensurePersistentStorage failed", e);
+      }
+    }
+    await refreshOpfsStorageInfo();
+  }, [refreshOpfsStorageInfo]);
+
+  const removeOpfsCachedConversion = useCallback(
+    async (entry: CachedConversionEntry) => {
+      await removeCachedConversionEntry(entry);
+      await refreshOpfsStorageInfo();
+    },
+    [refreshOpfsStorageInfo],
+  );
+
+  const clearOpfsCachedConversions = useCallback(async () => {
+    await clearAllCachedConversions();
+    await refreshOpfsStorageInfo();
+  }, [refreshOpfsStorageInfo]);
+
+  const removeOpfsScratchDir = useCallback(
+    async (name: string) => {
+      await removeScratchDirByName(name);
+      await refreshOpfsStorageInfo();
+    },
+    [refreshOpfsStorageInfo],
+  );
+
+  const clearOpfsScratchDirs = useCallback(async () => {
+    await cleanupStaleScratchDirs();
+    await refreshOpfsStorageInfo();
+  }, [refreshOpfsStorageInfo]);
   const [tempDir, setTempDirState] = useState<string | null>(() => readStoredTempDir());
   // Androidかどうかはフロントから直接判定できないため、起動時に一度だけ
   // Rust側へ問い合わせる(既定はtrue=デスクトップ相当。Web版はisBrowserが
@@ -463,16 +565,32 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
                 "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
               );
               return;
-            case "insufficientSpace": {
-              const toGiB = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
-              gpuErrorLogRef.current.report(
-                `空き容量が足りません(必要: 約${toGiB(outcome.requiredBytes)}GiB、空き: 約${toGiB(outcome.availableBytes)}GiB)。`,
-                undefined,
-                "conversion",
-              );
+            case "insufficientSpace":
+              // `ConversionOutcome`はTauri版と共有の型だが、`WebSource`の
+              // `startConversion`/`startPcdConversion`はこの形(デスクトップ版、
+              // `availableBytes`がOSの実際の空きディスク)を返さず、常に下の
+              // "insufficientSpaceWeb"を返す(`web.ts`の`checkInsufficientSpace`
+              // 参照)。型の網羅性のためだけに置く、到達しないはずの分岐。
+              setStatus("error");
+              setError("空き容量が足りません");
+              return;
+            // M4-6追記: Web版は(デスクトップ版と中身の違う)"insufficientSpaceWeb"を返す。
+            case "insufficientSpaceWeb": {
+              const message = describeInsufficientSpaceWeb({
+                requiredBytes: outcome.requiredBytes,
+                quotaBytes: outcome.quotaBytes,
+                usageBytes: outcome.usageBytes,
+                persisted: outcome.persisted,
+                reclaimableBytes: outcome.reclaimableBytes,
+              });
+              gpuErrorLogRef.current.report(message, undefined, "conversion");
               setGpuErrors(gpuErrorLogRef.current.list());
               setStatus("error");
               setError("空き容量が足りません");
+              // 消す・永続化を許可する等の導線(設定画面)を出す前に、現在の
+              // 使用量を反映しておく(受け入れ条件「消したあと見積もりが更新される」
+              // の前提として、まず現在値を持たせる)。
+              void refreshOpfsStorageInfo();
               return;
             }
             case "converting":
@@ -551,7 +669,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, [colorMode, tempDir, setDownloadReady, deviceProfileDefaults.isMobile]);
+  }, [colorMode, tempDir, setDownloadReady, deviceProfileDefaults.isMobile, refreshOpfsStorageInfo]);
 
   // `openFileRef`を毎レンダー最新化する。マウント時に一度だけ張るイベント
   // 購読(上のuseEffect、deps=[])から常に最新の`openFile`(最新のcolorMode/
@@ -681,6 +799,13 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     cancelConversion,
     downloadReady,
     clearDownload,
+    opfsStorageInfo,
+    refreshOpfsStorageInfo,
+    requestOpfsPersistentStorage,
+    removeOpfsCachedConversion,
+    clearOpfsCachedConversions,
+    removeOpfsScratchDir,
+    clearOpfsScratchDirs,
     tempDir,
     supportsCustomTempDir: supportsCustomTempDirState,
     pickAndSetTempDir,

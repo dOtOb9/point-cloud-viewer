@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CopcViewerState, PointShape } from "../../state/useCopcViewer";
 import type { ThemePreference, ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
@@ -36,6 +36,14 @@ const POINT_SHAPE_LABELS: Record<PointShape, string> = {
   square: "四角",
 };
 
+/** バイトを「約X.XGiB」の形にする(小数1桁)。`opfs.ts`の`describeInsufficientSpaceWeb`
+ *  内部にも同じ式があるが、UI(src/ui)はdatasourceを直接触らずstate経由にする
+ *  規約(`useCopcViewer.ts`冒頭のコメント群と同じ方針)のため、表示専用の
+ *  この小さな整形はここに閉じる(`LayerPanel.tsx`の`formatElapsed`と同じ扱い)。 */
+function toGiBLabel(bytes: number): string {
+  return `約${(bytes / 1024 ** 3).toFixed(1)}GiB`;
+}
+
 /**
  * M2-3 (ADR-0005): 設定モーダル。ADRの決定通り、他のパネルと違い
  * backdrop-blur/tintを使わず単色で完全に不透明にする(密なフォームは
@@ -47,6 +55,17 @@ const POINT_SHAPE_LABELS: Record<PointShape, string> = {
  */
 export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabled, onGlassEnabledChange }: Props) {
   const [devPathInput, setDevPathInput] = useState("");
+
+  // M4-6追記: 設定画面を開いたときにOPFSの使用量を取り直す(開いている間
+  // 消したあとも`refreshOpfsStorageInfo`を呼べば更新されるが、開いた直後の
+  // 初回表示はこの効果が担う)。Tauri版は`viewer.isBrowser`がfalseなので呼ばない
+  // (`refreshOpfsStorageInfo`自体もTauri版では何もしないが、呼ぶ意味が無いため
+  // ここでも弾く)。フック(`useEffect`)は早期returnの前に置く必要があるため、
+  // `if (!open) return null;`より先に書く。
+  const { refreshOpfsStorageInfo } = viewer;
+  useEffect(() => {
+    if (open && viewer.isBrowser) void refreshOpfsStorageInfo();
+  }, [open, viewer.isBrowser, refreshOpfsStorageInfo]);
 
   if (!open) return null;
 
@@ -257,6 +276,148 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
             </p>
           </div>
         </section>
+
+        {/* M4-6追記: Web版だけ(OPFSという概念がTauri版には無いため`viewer.isBrowser`
+            で弾く)。所有者の実機不具合「空き容量が足りません」の対処として、
+            OPFSの使用量の内訳(変換済みキャッシュ・残っている一時ファイル)を見せ、
+            個別に・まとめて消せるようにする。密なフォーム(一覧+削除ボタン)なので
+            設定画面に置く(ADR-0005: 設定画面はガラスにしない方針と同じ理由。
+            容量不足のエラーバナー側は一覧UIを持たない1行のメッセージなので、
+            そちらには「ここで消せる」という案内文だけを出す。
+            `useCopcViewer.ts`の`describeInsufficientSpaceWeb`参照)。 */}
+        {viewer.isBrowser && (
+          <section className="flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
+            <h3 className="text-sm font-semibold opacity-70">ブラウザの保存領域 (OPFS, M4-6)</h3>
+            <p className="text-xs opacity-60">
+              Web版の変換はブラウザのOPFS(オリジン専用ファイルシステム)に変換済みキャッシュと一時ファイルを置く。
+              上限(quota)はブラウザとディスクの空き容量で決まり、変換前に自動で変わることがある。
+              「空き容量が足りません」が出たときは、ここでキャッシュ・一時ファイルを消すか、
+              永続的な保存を許可すると空く場合がある。
+            </p>
+
+            {viewer.opfsStorageInfo === null ? (
+              <p className="text-xs opacity-60">読み込み中…</p>
+            ) : (
+              <>
+                <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
+                  <p>
+                    使用中: <span className="font-mono">{toGiBLabel(viewer.opfsStorageInfo.usageBytes)}</span>
+                    {" "}/ 上限: <span className="font-mono">{toGiBLabel(viewer.opfsStorageInfo.quotaBytes)}</span>
+                  </p>
+                  <p className="mt-1">
+                    永続的な保存:{" "}
+                    <span className="font-mono">{viewer.opfsStorageInfo.persisted ? "許可済み" : "未許可"}</span>
+                    {!viewer.opfsStorageInfo.persisted && (
+                      <button
+                        type="button"
+                        onClick={() => void viewer.requestOpfsPersistentStorage()}
+                        className="ml-2 rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-600"
+                      >
+                        許可を求める
+                      </button>
+                    )}
+                  </p>
+                  <p className="mt-1 opacity-60">
+                    Chrome/Edge/Safariはサイトの利用状況から自動で判定し、確認は出ない。Firefoxは確認の
+                    ポップアップが出る(出典: MDN「Storage quotas and eviction criteria」の
+                    “Does browser-stored data persist?”節。詳細は
+                    TaskSheets/M4-import-and-conversion.mdのM4-6追記を参照)。
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold opacity-70">
+                      変換済みキャッシュ({viewer.opfsStorageInfo.breakdown.cachedConversions.length}件、
+                      {toGiBLabel(viewer.opfsStorageInfo.breakdown.cachedConversionsTotalBytes)})
+                    </p>
+                    {viewer.opfsStorageInfo.breakdown.cachedConversions.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void viewer.clearOpfsCachedConversions()}
+                        className="rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-600"
+                      >
+                        すべて消す
+                      </button>
+                    )}
+                  </div>
+                  {viewer.opfsStorageInfo.breakdown.cachedConversions.length === 0 ? (
+                    <p className="mt-1 opacity-60">無し</p>
+                  ) : (
+                    <ul className="mt-1 flex flex-col gap-1">
+                      {viewer.opfsStorageInfo.breakdown.cachedConversions.map((entry) => (
+                        <li key={entry.outputName} className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 flex-1 truncate font-mono" title={entry.sourceName}>
+                            {entry.sourceName}
+                          </span>
+                          <span className="shrink-0 whitespace-nowrap opacity-70">{toGiBLabel(entry.sizeBytes)}</span>
+                          <button
+                            type="button"
+                            onClick={() => void viewer.removeOpfsCachedConversion(entry)}
+                            className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"
+                          >
+                            消す
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold opacity-70">
+                      残っている一時ファイル({viewer.opfsStorageInfo.breakdown.staleScratchDirs.length}件、
+                      {toGiBLabel(viewer.opfsStorageInfo.breakdown.staleScratchTotalBytes)})
+                    </p>
+                    {viewer.opfsStorageInfo.breakdown.staleScratchDirs.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void viewer.clearOpfsScratchDirs()}
+                        className="rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-600"
+                      >
+                        すべて消す
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-1 opacity-60">
+                    タブを閉じる・クラッシュする等で後始末できなかった変換の一時ファイル。使用中の変換のものは
+                    消せない(失敗しても実害は無い)。
+                  </p>
+                  {viewer.opfsStorageInfo.breakdown.staleScratchDirs.length === 0 ? (
+                    <p className="mt-1 opacity-60">無し</p>
+                  ) : (
+                    <ul className="mt-1 flex flex-col gap-1">
+                      {viewer.opfsStorageInfo.breakdown.staleScratchDirs.map((dir) => (
+                        <li key={dir.name} className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 flex-1 truncate font-mono" title={dir.name}>
+                            {dir.name}
+                          </span>
+                          <span className="shrink-0 whitespace-nowrap opacity-70">{toGiBLabel(dir.sizeBytes)}</span>
+                          <button
+                            type="button"
+                            onClick={() => void viewer.removeOpfsScratchDir(dir.name)}
+                            className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"
+                          >
+                            消す
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void viewer.refreshOpfsStorageInfo()}
+                  className="self-start rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
+                >
+                  更新
+                </button>
+              </>
+            )}
+          </section>
+        )}
 
         <details className="flex flex-col gap-3">
           <summary className="cursor-pointer text-sm font-semibold opacity-70">
