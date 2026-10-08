@@ -113,14 +113,6 @@ jobs:
       - name: Playwright Chromium(フルバイナリ + ヘッドレスシェル)の導入
         run: npx playwright install --with-deps chromium
 
-      # 診断用(一時的): Linux(ubuntu-latest)でヘッドレスChromiumの
-      # WebGPUがどの起動フラグなら動くかをここで確かめる
-      # (`scripts/diag-webgpu-headless.mjs`)。原因調査のための一時的な
-      # ステップで、結果が分かり次第`playwright.config.ts`に反映して
-      # このステップは外す(`TaskSheets/ADR-0016-e2e-web-conversion.md`参照)。
-      - name: "診断(一時的): Linux headless ChromiumでのWebGPU起動フラグ"
-        run: node scripts/diag-webgpu-headless.mjs
-
       # `playwright.config.ts`のwebServerが`npm run build && npm run preview`
       # (本番=GitHub Pagesと同じサブパスでビルドしたもの)を自動で起動するので、
       # ここでは`playwright test`を呼ぶだけでよい。

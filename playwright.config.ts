@@ -20,8 +20,23 @@ import { defineConfig, devices } from "@playwright/test";
 // headlessモードで使うようになり、こちらはSwiftShader(ソフトウェアの
 // Vulkan実装、Chromiumに同梱)で`requestAdapter`が実際にアダプタを返し、
 // `<canvas>`への描画まで通ることを確認済み(GPUの実機は不要)。
-// 追加のコマンドラインフラグ(`--enable-unsafe-webgpu`等)は不要だった
-// (`--ignore-gpu-blocklist`等も試したが、`channel: "chromium"`だけで十分)。
+//
+// なぜ`--enable-unsafe-webgpu`も要るか(Windows/Linuxの違い、2026-10-08追記):
+// 開発機(Windows)では`channel: "chromium"`だけで追加フラグ無しに動いたが、
+// 実際のCI(GitHub Actions、ubuntu-latest)ではそれだけでは
+// `requestAdapter()`が`null`を返した(CI run 37792380083で実際に落ちて確認)。
+// `scripts/diag-webgpu-headless.mjs`でLinux上のCIから直接複数の起動フラグを
+// 試したところ(CI run 37793228559のログ)、`--enable-unsafe-webgpu`**単独**で
+// `requestAdapter`→`requestDevice`→`<canvas>`への描画まで通った
+// (`--enable-features=Vulkan`・`--use-webgpu-adapter=swiftshader`・
+// `--use-angle=swiftshader`等を足した組み合わせも試したが、単独のフラグより
+// 構成が増えるだけで効果の差は無かった)。同じ診断スクリプトをWindowsでも
+// 走らせ、`--enable-unsafe-webgpu`を足しても結果は変わらない(動いたまま)
+// ことを確認済みのため、プラットフォームで分岐せずどちらにも同じ値を渡す
+// (`--ignore-gpu-blocklist`と`--use-angle=swiftshader`は、Windowsでは逆に
+// `requestAdapter()`が`null`になる組み合わせがあったため採用しなかった。
+// `--enable-unsafe-webgpu`単独はWindows・Linux両方で実際に動作を確認できた
+// 最小構成)。
 //
 // もう1つの罠: `navigator.gpu`はセキュアコンテキストでしか存在しない。
 // `http://127.0.0.1`(127.0.0.1はブラウザがセキュアコンテキスト扱いする特例)で
@@ -43,7 +58,11 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"], channel: "chromium" },
+      use: {
+        ...devices["Desktop Chrome"],
+        channel: "chromium",
+        launchOptions: { args: ["--enable-unsafe-webgpu"] },
+      },
     },
   ],
 
