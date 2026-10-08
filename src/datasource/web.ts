@@ -39,25 +39,41 @@ import { StaleNodeRequestError } from "./stale-node-error";
  * で点数が読めればそれを根拠に見積もり、読めなければファイルサイズからの
  * フォールバックに倒す(壊れたヘッダー等でも変換を試みる機会は残す。安全側に
  * 「大きめに見積もって弾く」方向のフォールバックなので、誤って変換を
- * 始めてしまう心配は無い)。`ConversionOutcome`の`insufficientSpace`、
- * 足りていれば`null`を返す。
+ * 始めてしまう心配は無い)。足りていれば`null`、足りなければ
+ * `ConversionOutcome`の`insufficientSpaceWeb`を返す。
+ *
+ * M4-6追記: 見積もりの前に、まだ永続化されていなければ`persist()`を求める
+ * (受け入れ条件「変換の前に永続的な保存を求める」)。ブラウザによっては
+ * 永続化すると割り当てられる上限自体が変わる(`opfs.ts`の
+ * `ensurePersistentStorage`のドキュメント参照)ため、`estimateQuota`は
+ * この後で(やり直す形で)呼ぶ。
  */
 async function checkInsufficientSpace(
   file: File,
   pointCountEstimator: (file: File) => Promise<number | null>,
 ): Promise<ConversionOutcome | null> {
+  await opfs.ensurePersistentStorage(navigator.storage);
+
   const pointCount = await pointCountEstimator(file);
   const requiredBytes =
     pointCount !== null ? opfs.requiredBytesForPointCount(pointCount) : opfs.requiredScratchBytes(file.size);
   const estimate = await opfs.estimateQuota();
-  if (!opfs.hasEnoughQuota(estimate, requiredBytes)) {
-    return {
-      kind: "insufficientSpace",
-      requiredBytes,
-      availableBytes: estimate.quota - estimate.usage,
-    };
-  }
-  return null;
+  if (opfs.hasEnoughQuota(estimate, requiredBytes)) return null;
+
+  // 空き容量が足りない。所有者が「空けるにはどうすればいいか」を画面で
+  // 判断できるよう、OPFSの使用量の内訳(消せるもの)と永続化の状態を
+  // 併せて返す(`useCopcViewer.ts`が`opfs.describeInsufficientSpaceWeb`で
+  // 文言化する。受け入れ条件「容量不足の表示が空ける方法を示す」)。
+  const breakdown = await opfs.getOpfsUsageBreakdown();
+  const persisted = await opfs.isPersisted();
+  return {
+    kind: "insufficientSpaceWeb",
+    requiredBytes,
+    quotaBytes: estimate.quota,
+    usageBytes: estimate.usage,
+    persisted,
+    reclaimableBytes: breakdown.cachedConversionsTotalBytes + breakdown.staleScratchTotalBytes,
+  };
 }
 
 /**

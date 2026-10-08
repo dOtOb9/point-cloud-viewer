@@ -14,12 +14,28 @@ export type ConversionOutcomeDto =
 // OPFSが使えないブラウザ(FileSystemSyncAccessHandle未対応の旧Safari等)で
 // 生LAS/LAZを開こうとしたときに返す。`WebSource.startConversion`だけが
 // この値を作る(`toConversionOutcome`のDTO変換は通らない、Web側で直接組み立てる値)。
+//
+// M4-6追記: "insufficientSpaceWeb"も同じくWeb版だけの追加。デスクトップ版の
+// "insufficientSpace"(`requiredBytes`/`availableBytes`のみ、`available`はOSの
+// 実際の空きディスク容量)とは中身が違う。Web版はOPFSの`quota`/`usage`
+// (ブラウザが割り当てた上限と、その中の使用中の量。ディスクの実際の空きとは別物)
+// を分けて持ち、さらに永続化の状態・OPFS内の消せる量(キャッシュ+一時ファイル)も
+// 持つ(受け入れ条件「必要・空き・上限・使用中を分けて出す」「空ける方法を示す」)。
+// `useCopcViewer.ts`が`opfs.describeInsufficientSpaceWeb`で文言化する。
 export type ConversionOutcome =
   | { kind: "alreadyCopc"; path: string }
   | { kind: "cached"; outputPath: string }
   | { kind: "insufficientSpace"; requiredBytes: number; availableBytes: number }
   | { kind: "converting" }
-  | { kind: "opfsUnavailable" };
+  | { kind: "opfsUnavailable" }
+  | {
+      kind: "insufficientSpaceWeb";
+      requiredBytes: number;
+      quotaBytes: number;
+      usageBytes: number;
+      persisted: boolean;
+      reclaimableBytes: number;
+    };
 
 export function toConversionOutcome(dto: ConversionOutcomeDto): ConversionOutcome {
   switch (dto.kind) {
