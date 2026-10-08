@@ -40,6 +40,20 @@
 - 変換・読み込みでは、**メモリが点数に比例しないこと**を守る（数億点を扱う。M4-1・M4-6・M4-7・M4-9 で同じ問題を何度も直している）
 - 新しく大きなデータを扱う処理を書いたら、抱える量に上限があることをテストで確かめる
 
+## E2E テストが使う ID は残すこと
+
+`playwright.config.ts`・`e2e/web-conversion.spec.ts`（[ADR-0016](./TaskSheets/ADR-0016-e2e-web-conversion.md)）が、
+Web版の変換の流れを実ブラウザで確かめるのに次の`data-testid`を使っている。
+UIを作り直すときも、同じ役割の要素にこれらの`data-testid`を付け直すこと
+（クラス名やDOM構造を変えるだけなら問題ない）。削る場合は、E2E側も必ず一緒に直す。
+
+| `data-testid` | 場所（現在） | 役割 |
+|---|---|---|
+| `file-input` | `src/ui/shell/LayerPanel.tsx` | ローカルファイル選択の`<input type="file">`。`setInputFiles`で駆動する |
+| `conversion-breakdown` | `src/ui/shell/LayerPanel.tsx`の`ConversionBreakdownPanel` | 変換完了後の「変換の内訳」パネル。表示を待つ |
+| `download-link` | `src/ui/shell/LayerPanel.tsx` | 変換したCOPCのダウンロードリンク（`<a>`） |
+| `viewer-error` | `src/ui/shell/LayerPanel.tsx` | エラーメッセージの`<p>`。無いことを確かめる |
+
 ## 守ること
 
 - 秘密鍵・キーストア・パスワード、点群データ（`*.laz`・`*.copc.laz`・`*.pcd`・`/data`）は**コミットしない**
