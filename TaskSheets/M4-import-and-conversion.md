@@ -4709,3 +4709,254 @@ npm test            # 319 passed(既存318 + 新規1)
    依頼する)
 4. CIの`frontend`/`rust`ジョブが緑であること(`gh run view <run-id>`)
 
+### 追記(2026-10-09、Sonnet): 修正を実装した
+
+コーディネーターが上記の診断(`encode_node_points`の`order.open_at`が無バッファ)
+を確認し、修正を別タスクとして指示した。`vendor/copc-writer`のノード圧縮という
+デスクトップ・Web共通のホットパスの変更になるため、「仮説が反証されたら修正
+しない」という最初の指示とは別に、今回明示的に承認を得てから実施している。
+
+#### 修正内容
+
+`vendor/copc-writer/src/writer.rs`の`encode_node_points`(行832付近)で、
+`order.open_at(node.start)?`が返すストリームを`BufReader`で包んだ:
+
+```rust
+let index_buffer_bytes = node
+    .count
+    .saturating_mul(crate::lod::INDEX_RECORD_BYTES as usize)
+    .min(crate::lod::INDEX_IO_BUFFER_BYTES);
+let mut index_reader =
+    BufReader::with_capacity(index_buffer_bytes, order.open_at(node.start)?);
+```
+
+バッファ容量は「ノード自身のorderデータ量(`node.count * INDEX_RECORD_BYTES`
+=4バイト)」と「`lod.rs`の`INDEX_IO_BUFFER_BYTES`(1MiB、`open_index_run`が
+既に使っている実績ある値)」の小さい方。既定の`max_points_per_node`
+(10万点)なら1ノードの最大データ量は約390KiBなので、ほとんどのノードで
+**1回のバッファ充填がノード全体をちょうど賄う**(無駄な先読みがほぼ無い)。
+読む順序・読む値は一切変えていない(バッファリングの有無だけの違い)ため、
+出力はバイト同一になるはず(下記「等価性の確認」で実測して裏付けた)。
+
+#### 他の`open_at`呼び出し箇所をすべて洗い出した(指示どおりgrepで確認)
+
+```
+vendor/copc-writer/src/lod.rs:302   copy_scratch_reader内(並列LOD構築)
+vendor/copc-writer/src/lod.rs:555   open_index_run内(LOD構築の逐次読み出し)
+vendor/copc-writer/src/lod.rs:786   #[cfg(test)]のread_lod_indexヘルパー
+vendor/copc-writer/src/scratch.rs   ScratchReaderトレイト定義・
+                                     SharedBytesReader/NativeScratchReaderの実装
+vendor/copc-writer/src/writer.rs:832 encode_node_points内 ← 今回修正した箇所
+```
+
+- **`lod.rs:302`(`copy_scratch_reader`)**: 並列LOD構築(`parallel-lod`機能、
+  Web版では無効)が、各ブランチのローカルorderファイルをグローバルなorder
+  ファイルへ連結するときに使う。`std::io::copy(&mut stream, out)`を呼んで
+  おり、`std::io::copy`は内部で約8KiBの固定バッファを使って読み書きする
+  (Rust標準ライブラリの実装)。**1点ずつではなく、ファイル全体を一括で
+  コピーする**用途なので、無バッファの点ごと呼び出し問題には当たらない。
+  修正不要と判断した。
+- **`lod.rs:555`(`open_index_run`)**: 既に`BufReader::with_capacity(
+  INDEX_IO_BUFFER_BYTES, reader)`で包まれている(このタスクの最初の調査で
+  確認済みの箇所、M4-13本文参照)。修正不要。
+- **`lod.rs:786`(`read_lod_index`)**: `#[cfg(test)] mod tests`内のテスト
+  専用ヘルパー(`MemoryScratchFs`/`NativeScratchFs`経由でしか呼ばれず、
+  OPFSを一切通らない)。本番経路ではないため、無バッファでも実害が無い。
+  修正しなかった(一貫性のためにバッファで包む案も検討したが、テストの
+  可読性を保つため、本番に影響しない箇所まで変える必要は無いと判断した)。
+- **`scratch.rs`**: `open_at`のトレイト定義と、ネイティブ実装
+  (`SharedBytesReader`・`NativeScratchReader`、どちらもmmap/`Arc<[u8]>`上の
+  メモリアクセスで、JS境界のコストが無い)。OPFS実装(`OpfsSeqReader`、
+  `crates/pcv-wasm/src/opfs.rs`)側は別ファイルで、今回は読み出し側
+  (`encode_node_points`)にバッファを足すことで対処した(`OpfsSeqReader`
+  自体にキャッシュを足す案も検討したが、`encode_node_points`は連続範囲を
+  順に読むだけなので、呼び出し側でバッファすれば十分で、`read_at`の
+  ブロックキャッシュのような複雑な仕組みは不要と判断した)。
+
+**`compress_nodes_parallel`(coordinatorが挙げた「writer.rs ~786」)について**:
+現在のソースでは`encode_node_points`は`compress_nodes_sequential`・
+`compress_nodes_parallel`の両方から**同じ1つの関数として共有**されており
+(`compress_nodes_parallel`は各バッチ内で`encode_node_points`を普通の`for`
+ループで呼んでから、できあがった生バイト列の圧縮だけを`par_iter`で並列化
+する設計。本文の「コーディネーターの指示」セクション参照)、`writer.rs`内に
+`open_at`の呼び出し箇所は**832行目の1箇所しか無い**ことをgrepで確認した
+(`grep -n "open_at" vendor/copc-writer/src/writer.rs`の出力は832行目のみ)。
+そのため1箇所を直すだけで逐次・並列の両方の経路が直る。
+
+#### 等価性の確認(ハッシュ比較、実データ)
+
+既存の回帰テスト(修正後も変更無しでpass):
+
+- `cargo test -p pcv-convert`の`native_output_hash_matches_recorded_value`
+  (合成1,000点、記録済みFNV-1aハッシュ`0x1835_0A7E_294F_68C3`と一致) → **pass**
+  (=修正前後で出力がバイト同一であることの既存の裏付け)
+- 同じく`parallel_compress_point_set_matches_sequential`(合成5万点、
+  逐次・並列の点集合一致) → **pass**
+
+加えて、**実データ(`09LD2626.las`、576万点)で直接ハッシュを比較した**
+(一時スクリプト、コミットしていない。`write_copc_from_spill_with_fs_and_timings`
+を直接呼び、FNV-1a 64bitを計算):
+
+| 経路 | 修正前 | 修正後 |
+|---|---|---|
+| 逐次圧縮 | `73,620,052`バイト, `0x516A43E2EFEEDA63` | `73,620,052`バイト, `0x516A43E2EFEEDA63` |
+| 並列圧縮 | `73,620,048`バイト, `0xBA00A6283C7C5438` | `73,620,048`バイト, `0xBA00A6283C7C5438` |
+
+**バイト数・ハッシュとも完全に一致**(修正前は`git checkout -- vendor/copc-writer/src/writer.rs`
+でHEAD時点のコードに戻してビルド・変換し、その後修正を復元して同じ入力で
+再変換して比較した)。読む順序・値を変えていないという設計どおりの結果。
+
+#### Web、実ブラウザでの計測(BEFORE/AFTER、同じ実データ)
+
+環境は本文と同じ(このサンドボックスのヘッドレスChromium、
+`channel: "chromium"`)。BEFORE列は`git checkout --`でHEAD版の
+`writer.rs`に戻してwasmを再ビルドして計測、AFTER列は修正版。
+
+| サンプル | 段階 | BEFORE | AFTER |
+|---|---|---|---|
+| 09LD2626.las 先頭50万点 | 合計 | 155.701秒 | **0.857秒** |
+| | ノードの圧縮 | 155.409秒 (99.8%) | 0.502秒 (58.6%) |
+| | OPFS逐次読み(open_at)呼び出し回数 | 500,020回 | **29回** |
+| | OPFS逐次読み(open_at)実I/O時間 | 153.314秒 | 0.023秒 |
+| 09LD2626.las 先頭200万点 | 合計 | 553.361秒 | **8.477秒** |
+| | ノードの圧縮 | 547.885秒 (99.0%) | 5.534秒 (65.3%) |
+| | OPFS逐次読み(open_at)呼び出し回数 | (計測なし、下記注参照) | **133回** |
+| | OPFS逐次読み(open_at)実I/O時間 | (計測なし) | 0.112秒 |
+| **09LD2626.las フル(576万点、所有者と同一ファイル)** | 合計 | **10分経っても未完了**(タイムアウト) | **31.939秒** |
+| | ノードの圧縮 | (未計測、未完了のため) | 17.327秒 (54.2%) |
+| | octreeの分割(LOD) | (未計測) | 13.263秒 (41.5%、今回は相対的に目立つようになった) |
+| | OPFS逐次読み(open_at)呼び出し回数 | (未計測) | **340回** |
+| | OPFS逐次読み(open_at)実I/O時間 | (未計測) | 0.373秒 |
+| | OPFS範囲読み(read_at)ヒット率 | (未計測) | 99.7%(22,129,902回中ミス76,551回) |
+
+(200万点のBEFORE行の「計測なし」: `OpfsSeqReadStats`を恒久カウンタとして
+組み込む前の1回目の計測ラウンドで取った数値だったため。`opfs_io_secs`
+〈全OPFS呼び出しの合計〉は546.293秒で、`opfs_read_secs`〈read_atの実I/O〉
+8.950秒との差〈537.343秒〉がほぼ全てopen_at側だったことは分かっている。
+恒久カウンタ導入後に50万点で確認した構造〈open_atがほぼ全て〉から、200万点
+でも同じ構造だったとほぼ断定できるが、**この行だけ実測した`opfs_seq_read_*`
+の値そのものは無い**。正直に明記する。)
+
+576万点のフルファイルは、修正前はこのサンドボックスで10分(タイムアウト
+設定)経っても変換が終わらなかった(前回BEFORE計測の報告どおり)。
+**修正後は31.939秒で完了し**、スクリーンショットで実際に点群が描画される
+ことを確認した(`drawn: 3,750,295 pts / 60 nodes`、`hasColor: true`。
+4秒待ってから撮ったスクリーンショットでは、グレー〜白っぽい建物らしき
+構造物が見えた。点そのものの色の見分けは解像度の都合で判別しづらく、
+実機での確認を依頼する点は変わらない)。
+
+修正後、相対的に「octreeの分割(LOD)」(13.263秒)が「ノードの圧縮」
+(17.327秒)に迫るほど目立つようになった。これは`read_at`経由の`xyz_at`
+呼び出し(22,129,902回、ヒット率99.7%、実I/O時間23.048秒)がこのサンドボックス
+環境では1回あたり比較的重い(ネイティブの参考値では0.091秒/576万回
+=1回あたり約16ナノ秒なのに対し、このサンドボックスでは23.048秒/
+22,129,902回≈1回あたり約1.04マイクロ秒、ネイティブの数十倍)ためで、
+`read_at`自体はキャッシュヒット率が高く「壊れている」わけではない
+(本文の「結果: 仮説は反証された」のとおり)。`xyz_at`がLOD構築の各階層で
+点1つにつき複数回呼ばれる構造(本文参照)である以上、絶対的な改善には
+wasmスレッド化などアーキテクチャ側の変更が要るが、**今回のタスクの
+範囲外**(「ノードの圧縮」という当初の問題は解消した)。
+
+#### Web、autzen.pcd(320MB、10,653,336点)
+
+コーディネーターから「動画撮影時、600秒経っても変換が終わらなかった」と
+報告されていたファイル。修正後に実際に試した:
+
+```
+入力の読み込みと展開: 4.221秒 (12.6%)
+一時ファイルへの書き込み: 2.995秒 (8.9%)
+octreeの分割(LOD): 14.700秒 (43.8%)
+ノードの圧縮: 11.674秒 (34.7%)
+書き出し: 0.004秒 (0.0%)
+合計: 33.595秒
+(参考)OPFSの読み書き合計: 17.836秒
+(参考)OPFS範囲読み(read_at): 呼び出し49,629,727回, ヒット率99.9%
+(参考)OPFS範囲読みの実I/O時間: 13.273秒
+(参考)OPFS逐次読み(open_at): 呼び出し794回, 実I/O時間: 0.860秒
+```
+
+**33.6秒で完了した**(修正前は600秒経っても終わらなかった)。スクリーン
+ショットで、Autzenスタジアムの点群が**はっきり色付きで**(緑・青・黄土色の
+地形)描画されることを確認した(`drawn: 5,208,951 pts / 93 nodes`、
+`hasColor: true`)。PCDインポート経路(`crates/pcv-wasm/src/pcd_import.rs`の
+`WasmPcdConverter`)も同じ`vendor/copc-writer`の`encode_node_points`を
+通るため、今回の修正がそのまま効いた。
+
+#### デスクトップ、ネイティブ(参考値、`post_process_stage_bench.rs`、09LD2626.las)
+
+| 経路 | BEFORE(修正前) | AFTER(修正後、2回計測) |
+|---|---|---|
+| 並列圧縮(既定) 合計 | 2.093秒 | 1.166秒 / 0.970秒 |
+| 並列圧縮 ノード圧縮のみ | 1.261秒 | 0.510秒 / 0.503秒 |
+| 逐次圧縮(--sequential-compress) 合計 | 5.787秒 | 3.518秒 / 2.258秒 |
+| 逐次圧縮 ノード圧縮のみ | 4.927秒 | 2.234秒 / 1.628秒 |
+
+**デスクトップは遅くなっていない(むしろ速くなっている)。**
+ネイティブはmmapなので`open_at`も元々メモリ上の参照に過ぎず
+(`crates/pcv-wasm/src/opfs.rs`のようなJS境界コストが無い)、無バッファ
+でも致命的ではなかったが、`read_u32`を4バイトずつ呼ぶたびに発生していた
+Rustの関数呼び出し・トレイトディスパッチのオーバーヘッドが`BufReader`で
+まとめて読むことにより減ったとみられる(**未検証の推測**。プロファイラ等
+での確認はしていない)。2回の計測で多少ばらつきがある(他プロセスの負荷の
+影響、このマシン上で他のエージェントセッションも動いている可能性がある)
+が、いずれも修正前より明確に速く、遅くなった形跡は無い。
+
+#### メモリ上限
+
+追加したバッファ(`index_buffer_bytes`)は「ノード自身のorderデータ量」と
+「`INDEX_IO_BUFFER_BYTES`(1MiB)」の小さい方なので、**常に1MiB以下**。
+`encode_node_points`は`compress_nodes_sequential`・`compress_nodes_parallel`
+のどちらでも、普通の`for`ループで1ノードずつ逐次呼ばれる(並列化されるのは
+圧縮済みバイト列への変換〈`compress_standalone_chunk`〉だけで、
+`encode_node_points`自体が複数スレッドから同時に呼ばれることは無い。
+ソースコードを読んで確認済み)。したがって**同時に存在するこのバッファは
+常に1個**で、追加メモリのピークは
+
+```
+1MiB(バッファ上限) × 1(同時読み出し数) = 1MiB
+```
+
+点数・ノード数に関わらず一定(規約「メモリが点数に比例しないこと」を
+満たす)。
+
+#### 検証(修正後、再実行)
+
+```bash
+cargo test --manifest-path vendor/copc-writer/Cargo.toml
+  # 21 passed
+cargo test -p pcv-convert
+  # 全件pass(native_output_hash_matches_recorded_value・
+  # parallel_compress_point_set_matches_sequentialを含む)
+cargo test --manifest-path crates/pcv-wasm/Cargo.toml --lib
+  # 28 passed
+cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+  # 成功
+cargo check --workspace
+  # 成功
+npm test        # 319 passed
+npm run typecheck  # 通った
+npm run lint       # 通った
+```
+
+#### 触ったファイル(この追記ぶん)
+
+- `vendor/copc-writer/src/writer.rs`: `encode_node_points`の
+  `order.open_at(node.start)`を`BufReader`で包んだ(上記の修正内容)
+- `src/wasm/pcv-wasm/*`(生成物): `npm run build:wasm`で再生成
+  (`.wasm`バイナリのみ差分)
+
+#### 所有者が自分で確認する手順(追記ぶん)
+
+1. 実機(所有者のChrome)で`09LD2626.las`を変換し、「ノードの圧縮」が
+   数秒程度(このサンドボックスでは17.3秒、実機はおそらくもっと速い)に
+   収まることを確認する(修正前は13.6秒〈87.8%〉だったので、改善幅は
+   このサンドボックスほど劇的ではないかもしれないが、「OPFS逐次読み
+   (open_at)」の呼び出し回数が数百回程度(点数に依存しない)になっている
+   ことが重要な確認点)
+2. `C:\rust\point-cloud-viewer\data\autzen.pcd`(320MB)を実機で変換し、
+   動画撮影時に経験した「600秒経っても終わらない」状態が解消しているか
+   確認する
+3. 変換した点群(09LD2626.las・autzen.pcd)が色付きで表示されることを
+   目視確認する(autzen.pcdはこのサンドボックスの画面でも明確に色付きだった)
+4. CIの`rust`/`frontend`ジョブが緑であること
+
