@@ -115,6 +115,28 @@ export async function pickLocalFile(): Promise<string | null> {
 }
 
 /**
+ * M4-14: 複数選択できるファイル選択ダイアログ。`pickLocalFile`と同じ対象
+ * 拡張子だが`multiple: true`を渡すため、`OpenDialogReturn`の条件型により
+ * 戻り値は`string[] | null`になる(1件だけ選んでも配列で返る)。
+ * PLY/E57/PCDの複数選択はビューア側(`src/state/useCopcViewer.ts`)で
+ * LAS/LAZ以外が混じっていないかを確認してから先に進む想定なので、ダイアログ
+ * 自体はフィルタを変えていない(受け入れ条件「単一ファイルは今までと同じ
+ * 挙動」「PLY/PCD/E57の複数選択は対象外、他と一緒に選ばれたら明確なエラー」)。
+ */
+export async function pickLocalFiles(): Promise<string[] | null> {
+  return await openFileDialog({
+    multiple: true,
+    directory: false,
+    filters: [
+      {
+        name: "点群ファイル (.las / .laz / .copc.laz / .e57 / .ply / .pcd)",
+        extensions: ["las", "laz", "e57", "ply", "pcd"],
+      },
+    ],
+  });
+}
+
+/**
  * M4-3: 一時ファイルの置き場所を所有者が設定で選ぶための、OSのフォルダ選択
  * ダイアログ。Androidでは`supportsCustomTempDir()`が`false`を返すため、
  * 呼び出し側(`SettingsModal.tsx`)はそもそもこの関数を使う設定行自体を出さない
@@ -148,6 +170,25 @@ export async function startLasConversion(
 ): Promise<ConversionOutcome> {
   const dto = await invoke<ConversionOutcomeDto>("start_las_conversion", {
     path,
+    tempDir,
+  });
+  return toConversionOutcome(dto);
+}
+
+/**
+ * M4-14: 複数のLAS/LAZを選んだときの変換開始。`startLasConversion`と同じ
+ * `ConversionOutcome`(`kind: "converting"`のときは進捗・完了・失敗を
+ * `startLasConversion`と共通のイベント(`onConversionProgress`等)で待つ)。
+ * Rust側(`src-tauri/src/conversion.rs`の`start_multi_las_conversion`)が
+ * `paths.length === 1`のときは`start_las_conversion`へ委譲するため、単一
+ * ファイルの選択は今までと同じ挙動になる。
+ */
+export async function startMultiLasConversion(
+  paths: string[],
+  tempDir: string | null,
+): Promise<ConversionOutcome> {
+  const dto = await invoke<ConversionOutcomeDto>("start_multi_las_conversion", {
+    paths,
     tempDir,
   });
   return toConversionOutcome(dto);

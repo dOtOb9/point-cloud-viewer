@@ -243,6 +243,27 @@ function fnv1a32(input: string): number {
   return hash >>> 0;
 }
 
+/**
+ * M4-14: 複数ファイル選択時のキャッシュキー。**選択した順序に依存しない**
+ * ことが要件(同じファイル集合なら選ぶ順番が変わっても同じキャッシュに
+ * 当たる)なので、ハッシュに入れる前に(名前, サイズ, 更新日時)の組を
+ * 昇順にソートする(デスクトップ版`crates/pcv-convert/src/cache.rs`の
+ * `multi_fingerprint_of_paths`と同じ考え方。ソートしてから1本のハッシュに
+ * 畳み込むだけなので、1ファイルだけの選択では`cacheKeyFor`と同じ結果になる
+ * ことを`opfs.test.ts`で確認する)。
+ */
+export function cacheKeyForMulti(fingerprints: FileFingerprint[]): string {
+  const sorted = [...fingerprints].sort((a, b) => {
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    if (a.size !== b.size) return a.size - b.size;
+    return a.lastModified - b.lastModified;
+  });
+  const raw = sorted
+    .map((f) => `${f.name}\u0000${f.size}\u0000${f.lastModified}`)
+    .join("\u0001");
+  return fnv1a32(raw).toString(16).padStart(8, "0");
+}
+
 /** OPFS上の変換結果の置き場所(サブディレクトリ名)。 */
 const CONVERTED_DIR_NAME = "pcv-converted";
 
@@ -272,11 +293,52 @@ export function outputFileNameFor(fingerprint: FileFingerprint): string {
   return `${cacheKeyFor(fingerprint)}.copc.laz`;
 }
 
+/** M4-14: 複数ファイル版の`outputFileNameFor`。 */
+export function outputFileNameForMulti(fingerprints: FileFingerprint[]): string {
+  return `${cacheKeyForMulti(fingerprints)}.copc.laz`;
+}
+
+/**
+ * M4-14: 複数ファイル選択時の表示名。「<先頭ファイルの拡張子抜きの名前>
+ * ほか<残り件数>ファイル」(要件の表示例「09LD2626 ほか54ファイル」のとおり。
+ * デスクトップ版`crates/pcv-convert/src/output_path.rs`の
+ * `multi_output_file_name`と同じ考え方)。`sortedNames`は選択順に依存しない
+ * 表示にするため、呼び出し側が昇順ソート済みで渡す。
+ */
+export function multiDisplayNameFor(sortedNames: string[]): string {
+  if (sortedNames.length === 0) return "";
+  const first = sortedNames[0].replace(/\.(las|laz)$/i, "");
+  const rest = sortedNames.length - 1;
+  return rest === 0 ? sortedNames[0] : `${first} ほか${rest}ファイル`;
+}
+
 interface CacheMeta {
   sourceName: string;
   sourceSize: number;
   sourceLastModified: number;
   outputName: string;
+}
+
+/** M4-14: 複数ファイル版のキャッシュ索引。`sources`は選択順に依存しない
+ *  比較のため、ソート済みの配列として保存・比較する。 */
+interface MultiCacheMeta {
+  sources: FileFingerprint[];
+  outputName: string;
+}
+
+function sortedFingerprints(fingerprints: FileFingerprint[]): FileFingerprint[] {
+  return [...fingerprints].sort((a, b) => {
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    if (a.size !== b.size) return a.size - b.size;
+    return a.lastModified - b.lastModified;
+  });
+}
+
+function fingerprintsEqual(a: FileFingerprint[], b: FileFingerprint[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every(
+    (f, i) => f.name === b[i].name && f.size === b[i].size && f.lastModified === b[i].lastModified,
+  );
 }
 
 /** OPFSが使える環境かどうか(Worker専用のcreateSyncAccessHandleではなく、
@@ -348,6 +410,42 @@ export async function writeCacheMeta(fingerprint: FileFingerprint, outputName: s
     sourceName: fingerprint.name,
     sourceSize: fingerprint.size,
     sourceLastModified: fingerprint.lastModified,
+    outputName,
+  };
+  await writable.write(JSON.stringify(meta));
+  await writable.close();
+}
+
+/** M4-14: 複数ファイル版の`findCachedOutput`。選択した集合(順序不問)が
+ *  一致するキャッシュがあれば、その出力ファイルを返す。 */
+export async function findCachedMultiOutput(fingerprints: FileFingerprint[]): Promise<File | null> {
+  try {
+    const dir = await getConvertedDir();
+    const key = cacheKeyForMulti(fingerprints);
+    const metaHandle = await dir.getFileHandle(metaFileNameFor(key));
+    const metaFile = await metaHandle.getFile();
+    const meta = JSON.parse(await metaFile.text()) as MultiCacheMeta;
+    if (!fingerprintsEqual(sortedFingerprints(fingerprints), meta.sources)) {
+      return null;
+    }
+    const outputHandle = await dir.getFileHandle(meta.outputName);
+    return await outputHandle.getFile();
+  } catch {
+    return null;
+  }
+}
+
+/** M4-14: 複数ファイル版の`writeCacheMeta`。 */
+export async function writeMultiCacheMeta(
+  fingerprints: FileFingerprint[],
+  outputName: string,
+): Promise<void> {
+  const dir = await getConvertedDir();
+  const key = cacheKeyForMulti(fingerprints);
+  const handle = await dir.getFileHandle(metaFileNameFor(key), { create: true });
+  const writable = await handle.createWritable();
+  const meta: MultiCacheMeta = {
+    sources: sortedFingerprints(fingerprints),
     outputName,
   };
   await writable.write(JSON.stringify(meta));
@@ -438,12 +536,19 @@ export async function getOpfsUsageBreakdown(): Promise<OpfsUsageBreakdown> {
       if (handle.kind !== "file" || !name.endsWith(".meta.json")) continue;
       try {
         const metaFile = await handle.getFile();
-        const meta = JSON.parse(await metaFile.text()) as CacheMeta;
+        // M4-14: 複数ファイル版(MultiCacheMeta、`sources`配列を持つ)と
+        // 単一ファイル版(CacheMeta、`sourceName`を持つ)の両方がこの
+        // ディレクトリに混在するため、形で見分ける。
+        const meta = JSON.parse(await metaFile.text()) as CacheMeta | MultiCacheMeta;
         const outputFile = await (await dir.getFileHandle(meta.outputName)).getFile();
+        const sourceName =
+          "sources" in meta
+            ? multiDisplayNameFor(meta.sources.map((f) => f.name))
+            : meta.sourceName;
         cachedConversions.push({
           outputName: meta.outputName,
           metaFileName: name,
-          sourceName: meta.sourceName,
+          sourceName,
           sizeBytes: metaFile.size + outputFile.size,
         });
       } catch {

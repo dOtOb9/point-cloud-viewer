@@ -145,6 +145,10 @@ export interface ConversionStageBreakdownDto {
   opfs_seq_read_secs: number | null;
   point_count: number;
   file_size_bytes: number;
+  /** M4-14: 入力ファイル数。単一ファイルの変換では常に1。複数ファイルの
+   *  マージ変換(src-tauriの`start_multi_las_conversion`・Web版の
+   *  `WasmConverter`を複数ファイルで使う経路)では選択したファイル数になる。 */
+  input_file_count: number;
 }
 
 /** `ConversionStageBreakdownDto`のcamelCase版。 */
@@ -165,6 +169,7 @@ export interface ConversionStageBreakdown {
   opfsSeqReadSecs: number | null;
   pointCount: number;
   fileSizeBytes: number;
+  inputFileCount: number;
 }
 
 export function toConversionStageBreakdown(
@@ -187,6 +192,7 @@ export function toConversionStageBreakdown(
     opfsSeqReadSecs: dto.opfs_seq_read_secs,
     pointCount: dto.point_count,
     fileSizeBytes: dto.file_size_bytes,
+    inputFileCount: dto.input_file_count,
   };
 }
 

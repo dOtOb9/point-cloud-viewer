@@ -22,6 +22,7 @@ const DESKTOP_BREAKDOWN: ConversionStageBreakdown = {
   opfsSeqReadSecs: null,
   pointCount: 66_848_096,
   fileSizeBytes: 470_599_680, // 448.8 MiB
+  inputFileCount: 1,
 };
 
 const DESKTOP_META: ConversionBreakdownMeta = {
@@ -159,10 +160,27 @@ describe("formatConversionBreakdown", () => {
       opfsSeqReadSecs: null,
       pointCount: 0,
       fileSizeBytes: 0,
+      inputFileCount: 1,
     };
     const text = formatConversionBreakdown(zero, DESKTOP_META);
     expect(text).toContain("入力の読み込みと展開: 0.000秒");
     expect(text).not.toContain("%");
+  });
+
+  it("M4-14: 入力ファイル数の行を出す(単一ファイルでは1)", () => {
+    const text = formatConversionBreakdown(DESKTOP_BREAKDOWN, DESKTOP_META);
+    expect(text).toContain("入力ファイル数: 1");
+  });
+
+  it("M4-14: 複数ファイル選択時は入力ファイル数・合計サイズを示す", () => {
+    const breakdown: ConversionStageBreakdown = {
+      ...DESKTOP_BREAKDOWN,
+      inputFileCount: 55,
+      fileSizeBytes: 12 * 1024 * 1024 * 1024, // 55タイル合計約12GB
+    };
+    const text = formatConversionBreakdown(breakdown, DESKTOP_META);
+    expect(text).toContain("入力ファイル数: 55");
+    expect(text).toContain("入力ファイルサイズ: 12.00 GiB");
   });
 
   it("ファイルサイズが1GiB以上ならGiB表示になる", () => {

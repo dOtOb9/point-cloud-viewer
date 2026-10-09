@@ -6,13 +6,16 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   cacheKeyFor,
+  cacheKeyForMulti,
   CONVERSION_LOCK_NAME,
   describeInsufficientSpaceWeb,
   ensurePersistentStorage,
   hasEnoughQuota,
   isScratchDirName,
+  multiDisplayNameFor,
   openHandlePool,
   outputFileNameFor,
+  outputFileNameForMulti,
   OUTPUT_BYTES_PER_POINT,
   requiredBytesForPointCount,
   requiredScratchBytes,
@@ -49,6 +52,47 @@ describe("outputFileNameFor", () => {
   it("キーに.copc.lazを付けたものを返す", () => {
     const fp: FileFingerprint = { name: "a.laz", size: 1, lastModified: 1 };
     expect(outputFileNameFor(fp)).toBe(`${cacheKeyFor(fp)}.copc.laz`);
+  });
+});
+
+// M4-14: 複数ファイル選択のキャッシュキー。「同じ選択を二度変換しない」
+// (選ぶ順序に依存しない)ための要件を確認する。
+describe("cacheKeyForMulti", () => {
+  const a: FileFingerprint = { name: "a.laz", size: 100, lastModified: 1 };
+  const b: FileFingerprint = { name: "b.laz", size: 200, lastModified: 2 };
+  const c: FileFingerprint = { name: "c.laz", size: 300, lastModified: 3 };
+
+  it("選ぶ順序が変わっても同じキーになる", () => {
+    expect(cacheKeyForMulti([a, b, c])).toBe(cacheKeyForMulti([c, a, b]));
+  });
+
+  it("ファイル集合が変われば別のキーになる", () => {
+    expect(cacheKeyForMulti([a, b])).not.toBe(cacheKeyForMulti([a, b, c]));
+  });
+
+  it("1ファイルだけの選択はcacheKeyForと同じ結果になる", () => {
+    expect(cacheKeyForMulti([a])).toBe(cacheKeyFor(a));
+  });
+});
+
+describe("outputFileNameForMulti", () => {
+  it("キーに.copc.lazを付けたものを返す", () => {
+    const fps: FileFingerprint[] = [
+      { name: "a.laz", size: 1, lastModified: 1 },
+      { name: "b.laz", size: 2, lastModified: 2 },
+    ];
+    expect(outputFileNameForMulti(fps)).toBe(`${cacheKeyForMulti(fps)}.copc.laz`);
+  });
+});
+
+describe("multiDisplayNameFor", () => {
+  it("要件どおりの表示形式になる(例: 09LD2626 ほか54ファイル)", () => {
+    const names = Array.from({ length: 55 }, (_, i) => `09LD26${String(26 + i).padStart(2, "0")}.las`);
+    expect(multiDisplayNameFor(names.slice(0, 4))).toBe("09LD2626 ほか3ファイル");
+  });
+
+  it("1ファイルだけなら拡張子付きのそのままの名前を返す", () => {
+    expect(multiDisplayNameFor(["a.las"])).toBe("a.las");
   });
 });
 

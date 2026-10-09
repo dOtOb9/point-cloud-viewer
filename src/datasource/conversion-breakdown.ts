@@ -65,6 +65,10 @@ export function formatConversionBreakdown(
   lines.push(`ファイル: ${meta.fileName}`);
   lines.push(`形式: ${meta.format}`);
   lines.push(`点数: ${breakdown.pointCount.toLocaleString("ja-JP")}`);
+  // M4-14: 複数ファイル選択時は「入力ファイルサイズ」が合計サイズになる
+  // (呼び出し側が全入力の合計をfileSizeBytesに入れる)。単一ファイルでは
+  // 常に1なので、この行は実質無害(「入力ファイル数: 1」とだけ出る)。
+  lines.push(`入力ファイル数: ${breakdown.inputFileCount.toLocaleString("ja-JP")}`);
   lines.push(`入力ファイルサイズ: ${formatBytes(breakdown.fileSizeBytes)}`);
   if (meta.browser !== undefined) {
     lines.push(`ブラウザ: ${meta.browser}`);
