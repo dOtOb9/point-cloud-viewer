@@ -868,7 +868,11 @@ mod tests {
         assert_eq!(stats.cache_misses, 1);
         assert_eq!(stats.bytes_read_from_opfs, 1024);
         assert_eq!(stats.read_time, Duration::from_millis(3));
-        assert_eq!(cloned.snapshot().read_at_calls, 3, "クローン先からも同じ合計が見える");
+        assert_eq!(
+            cloned.snapshot().read_at_calls,
+            3,
+            "クローン先からも同じ合計が見える"
+        );
     }
 
     /// M4-13追記: `OpfsSeqReadCounters`も`OpfsReadCounters`と同じく累積し、
