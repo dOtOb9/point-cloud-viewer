@@ -202,6 +202,47 @@ impl OpfsReadCounters {
     }
 }
 
+/// M4-13追記: `read_at`の計測だけでは「OPFSの読み書き合計」
+/// (`OpfsIoTimer::total`)の大半を説明できないことが、所有者の実機相当の
+/// 規模(Shibuyaのタイル、ヘッドレスChromiumでのBEFORE計測)で分かった
+/// (`TaskSheets/M4-import-and-conversion.md`のM4-13参照: `read_at`の実I/O時間は
+/// 全体の1%未満なのに、OPFSの読み書き合計はノード圧縮の時間とほぼ一致していた)。
+/// 原因は`ScratchReader::open_at`が返す逐次読み出しストリーム
+/// ([`OpfsSeqReader`])には`read_at`側のブロックキャッシュが無く、
+/// `vendor/copc-writer`の`encode_node_points`がノードのLOD順インデックス
+/// (`u32`、4バイト)を1点につき1回`read_u32`で読むため、無バッファの
+/// OPFS `read()`呼び出しが点数ぶん発生していたこと(`diag_seq_read_stats`での
+/// 一時計測で確認済み: 50万点の変換で`read`呼び出し500,020回・118.6秒、
+/// ノード圧縮全体120.4秒のほぼ全てに相当)。この構造体はその呼び出し回数・
+/// 時間を恒久的に計測するためのもの(`OpfsReadStats`と同じ`Rc<Cell<..>>`共有)。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpfsSeqReadStats {
+    /// `OpfsSeqReader::read`(`ScratchReader::open_at`が返すストリームの
+    /// `Read::read`)が呼ばれた回数。キャッシュを持たないため、呼び出し回数が
+    /// そのままOPFSへの実際の`read()`発行回数になる。
+    pub seq_read_calls: u64,
+    /// その呼び出しにかかった時間の合計。
+    pub seq_read_time: Duration,
+}
+
+/// [`OpfsSeqReadStats`]を複数の`OpfsSeqReader`間で共有するための薄いラッパー。
+#[derive(Clone, Default)]
+pub struct OpfsSeqReadCounters(Rc<Cell<OpfsSeqReadStats>>);
+
+impl OpfsSeqReadCounters {
+    fn record(&self, elapsed: Duration) {
+        let mut stats = self.0.get();
+        stats.seq_read_calls += 1;
+        stats.seq_read_time += elapsed;
+        self.0.set(stats);
+    }
+
+    /// 累積値を読む(`convert.rs`が`finish`の後に呼ぶ)。
+    pub fn snapshot(&self) -> OpfsSeqReadStats {
+        self.0.get()
+    }
+}
+
 /// プールの既定サイズ。モジュールのドキュメント「プールの個数について」参照
 /// (理論上限`8*(MAX_OCTREE_DEPTH+1)+1=249`に約3割の余裕を見た値)。
 pub const OPFS_SCRATCH_POOL_SIZE: usize = 256;
@@ -265,6 +306,11 @@ pub struct OpfsScratchFs {
     timer: OpfsIoTimer,
     /// M4-13: `read_at`の呼び出し・キャッシュヒット率・実読みバイト数の統計。
     read_counters: OpfsReadCounters,
+    /// M4-13追記: `open_at`が返す逐次読み出し([`OpfsSeqReader`])の呼び出し・
+    /// 時間の統計。`encode_node_points`のLOD順インデックス読みがこの経路を
+    /// 無バッファで使っており、計測の結果これが「ノードの圧縮」の大半を
+    /// 占めていた(モジュールドキュメントの[`OpfsSeqReadStats`]参照)。
+    seq_read_counters: OpfsSeqReadCounters,
 }
 
 // SAFETY: wasm32-unknown-unknownはatomics無効時はシングルスレッドで動く
@@ -304,6 +350,7 @@ impl OpfsScratchFs {
             output: Rc::new(RefCell::new(Some(output_handle))),
             timer: OpfsIoTimer::default(),
             read_counters: OpfsReadCounters::default(),
+            seq_read_counters: OpfsSeqReadCounters::default(),
         }
     }
 
@@ -317,6 +364,12 @@ impl OpfsScratchFs {
     /// (`crates/pcv-wasm/src/convert.rs`が`finish`の後に読む)。
     pub fn read_stats(&self) -> OpfsReadStats {
         self.read_counters.snapshot()
+    }
+
+    /// M4-13追記: `open_at`の逐次読み出し([`OpfsSeqReader`])の呼び出し・時間の
+    /// 統計(`crates/pcv-wasm/src/convert.rs`が`finish`の後に読む)。
+    pub fn seq_read_stats(&self) -> OpfsSeqReadStats {
+        self.seq_read_counters.snapshot()
     }
 }
 
@@ -342,6 +395,7 @@ impl ScratchFs for OpfsScratchFs {
             pos: 0,
             timer: self.timer.clone(),
             read_counters: self.read_counters.clone(),
+            seq_read_counters: self.seq_read_counters.clone(),
         }))
     }
 
@@ -378,6 +432,7 @@ struct OpfsTempWriter {
     pos: u64,
     timer: OpfsIoTimer,
     read_counters: OpfsReadCounters,
+    seq_read_counters: OpfsSeqReadCounters,
 }
 
 impl Write for OpfsTempWriter {
@@ -424,6 +479,7 @@ impl ScratchWriter for OpfsTempWriter {
             cache: RefCell::new(ReadCache::new()),
             timer: self.timer,
             read_counters: self.read_counters,
+            seq_read_counters: self.seq_read_counters,
         }))
     }
 
@@ -489,6 +545,9 @@ struct OpfsTempReader {
     timer: OpfsIoTimer,
     /// M4-13: `read_at`の呼び出し・キャッシュヒット率・実読みバイト数の統計。
     read_counters: OpfsReadCounters,
+    /// M4-13追記: `open_at`(逐次読み出し)の呼び出し・時間の統計。
+    /// `open_at`が返す[`OpfsSeqReader`]へクローンして渡す。
+    seq_read_counters: OpfsSeqReadCounters,
 }
 
 impl Drop for OpfsTempReader {
@@ -541,6 +600,7 @@ impl ScratchReader for OpfsTempReader {
             index: self.index,
             pos: offset,
             timer: self.timer.clone(),
+            seq_read_counters: self.seq_read_counters.clone(),
         }))
     }
 
@@ -610,6 +670,10 @@ struct OpfsSeqReader {
     index: usize,
     pos: u64,
     timer: OpfsIoTimer,
+    /// M4-13追記: このストリームにはキャッシュが無いため、`read`1回がそのまま
+    /// OPFSへの実際の`read()`発行1回になる(`OpfsReadCounters`のヒット/ミスの
+    /// ような区別は無い)。
+    seq_read_counters: OpfsSeqReadCounters,
 }
 
 impl Read for OpfsSeqReader {
@@ -621,7 +685,9 @@ impl Read for OpfsSeqReader {
                 .read_with_u8_array_and_options(buf, &at(self.pos))
                 .map_err(|e| js_io_err("OPFS scratch read", e))?
         };
-        self.timer.record(read_start.elapsed());
+        let elapsed = read_start.elapsed();
+        self.timer.record(elapsed);
+        self.seq_read_counters.record(elapsed);
         self.pos += n as u64;
         Ok(n as usize)
     }
@@ -803,6 +869,28 @@ mod tests {
         assert_eq!(stats.bytes_read_from_opfs, 1024);
         assert_eq!(stats.read_time, Duration::from_millis(3));
         assert_eq!(cloned.snapshot().read_at_calls, 3, "クローン先からも同じ合計が見える");
+    }
+
+    /// M4-13追記: `OpfsSeqReadCounters`も`OpfsReadCounters`と同じく累積し、
+    /// クローンした先でも同じ合計を共有する。BEFORE計測
+    /// (`TaskSheets/M4-import-and-conversion.md`のM4-13)で、この統計が
+    /// `read_at`側より実際のボトルネックをはるかによく説明することが
+    /// 分かった経緯の計測対象。
+    #[test]
+    fn opfs_seq_read_counters_accumulate_across_clones() {
+        let counters = OpfsSeqReadCounters::default();
+        counters.record(Duration::from_micros(200));
+        let cloned = counters.clone();
+        cloned.record(Duration::from_micros(300));
+
+        let stats = counters.snapshot();
+        assert_eq!(stats.seq_read_calls, 2);
+        assert_eq!(stats.seq_read_time, Duration::from_micros(500));
+        assert_eq!(
+            cloned.snapshot().seq_read_calls,
+            2,
+            "クローン先からも同じ合計が見える"
+        );
     }
 
     /// M4-11の受け入れ条件: プールを使い切ったら、黙って壊れたファイルを

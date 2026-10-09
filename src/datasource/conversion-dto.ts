@@ -119,6 +119,14 @@ export type ConversionProgressDto =
  * キャッシュがほぼ毎回外れて点数ぶんの`read`が発生している)を、所有者の
  * 実機で直接確かめられるようにするための値。デスクトップには存在しないため
  * `null`になる。
+ *
+ * `opfs_seq_read_calls`/`opfs_seq_read_secs`(M4-13追記): OPFSスクラッチの
+ * 逐次読み出し(`ScratchReader::open_at`、`crates/pcv-wasm/src/opfs.rs`の
+ * `OpfsSeqReadStats`)の統計。BEFORE計測の結果、`read_at`側の仮説(上記)は
+ * 実機で否定され(ブロックキャッシュのヒット率は99%台で、`opfs_read_secs`は
+ * ごく小さい)、実際の時間はほぼ全てこちら(`vendor/copc-writer`の
+ * `encode_node_points`がノードのLOD順インデックスを無バッファ・1点ずつ
+ * 読んでいる箇所)だったと分かった。同じ理由で`null`を許す。
  */
 export interface ConversionStageBreakdownDto {
   source_read_and_decode_secs: number;
@@ -133,6 +141,8 @@ export interface ConversionStageBreakdownDto {
   opfs_cache_misses: number | null;
   opfs_bytes_read_from_opfs: number | null;
   opfs_read_secs: number | null;
+  opfs_seq_read_calls: number | null;
+  opfs_seq_read_secs: number | null;
   point_count: number;
   file_size_bytes: number;
 }
@@ -151,6 +161,8 @@ export interface ConversionStageBreakdown {
   opfsCacheMisses: number | null;
   opfsBytesReadFromOpfs: number | null;
   opfsReadSecs: number | null;
+  opfsSeqReadCalls: number | null;
+  opfsSeqReadSecs: number | null;
   pointCount: number;
   fileSizeBytes: number;
 }
@@ -171,6 +183,8 @@ export function toConversionStageBreakdown(
     opfsCacheMisses: dto.opfs_cache_misses,
     opfsBytesReadFromOpfs: dto.opfs_bytes_read_from_opfs,
     opfsReadSecs: dto.opfs_read_secs,
+    opfsSeqReadCalls: dto.opfs_seq_read_calls,
+    opfsSeqReadSecs: dto.opfs_seq_read_secs,
     pointCount: dto.point_count,
     fileSizeBytes: dto.file_size_bytes,
   };

@@ -437,6 +437,7 @@ impl WasmConverter {
                 self.file_size_bytes,
                 Some(self.fs.io_timings()),
                 Some(self.fs.read_stats()),
+                Some(self.fs.seq_read_stats()),
             ),
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)

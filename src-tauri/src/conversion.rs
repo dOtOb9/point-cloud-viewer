@@ -94,6 +94,8 @@ pub struct ConversionStageBreakdownDto {
     pub opfs_cache_misses: Option<u64>,
     pub opfs_bytes_read_from_opfs: Option<u64>,
     pub opfs_read_secs: Option<f64>,
+    pub opfs_seq_read_calls: Option<u64>,
+    pub opfs_seq_read_secs: Option<f64>,
     pub point_count: u64,
     pub file_size_bytes: u64,
     /// M4-14: 入力ファイル数。単一ファイルの変換では常に1。複数ファイルの
@@ -122,6 +124,8 @@ impl ConversionStageBreakdownDto {
             opfs_cache_misses: None,
             opfs_bytes_read_from_opfs: None,
             opfs_read_secs: None,
+            opfs_seq_read_calls: None,
+            opfs_seq_read_secs: None,
             point_count,
             file_size_bytes,
             input_file_count,

@@ -108,5 +108,15 @@ export function formatConversionBreakdown(
       lines.push(`(参考)OPFS範囲読みの実I/O時間: ${formatSeconds(breakdown.opfsReadSecs)}`);
     }
   }
+  // M4-13追記: OPFSスクラッチの逐次読み出し(`open_at`)の統計。BEFORE計測で、
+  // 上の`read_at`側ではなくこちらが「ノードの圧縮」のほぼ全てを占めていた
+  // (`vendor/copc-writer`の`encode_node_points`がノードのLOD順インデックスを
+  // 無バッファ・1点ずつ読んでいるため)。
+  if (breakdown.opfsSeqReadCalls !== null && breakdown.opfsSeqReadSecs !== null) {
+    lines.push(
+      `(参考)OPFS逐次読み(open_at): 呼び出し${breakdown.opfsSeqReadCalls.toLocaleString("ja-JP")}回` +
+        `, 実I/O時間: ${formatSeconds(breakdown.opfsSeqReadSecs)}`,
+    );
+  }
   return lines.join("\n");
 }

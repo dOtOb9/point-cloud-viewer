@@ -10,7 +10,7 @@ use std::time::Duration;
 use copc_writer::PostProcessStageTimings;
 use serde::Serialize;
 
-use crate::opfs::OpfsReadStats;
+use crate::opfs::{OpfsReadStats, OpfsSeqReadStats};
 
 #[derive(Serialize)]
 pub struct CloudInfoDto {
@@ -89,6 +89,14 @@ pub struct FinishResultDto {
 /// `opfs.rs`の`OpfsReadStats`(`read_at`の呼び出し回数・ブロックキャッシュの
 /// ヒット/ミス・OPFSから実際に読んだバイト数・読み時間)をそのまま運ぶ。
 /// `opfs_io_secs`と同じ理由で`Option`(デスクトップは常に`None`)。
+///
+/// `opfs_seq_read_calls`/`opfs_seq_read_secs`(M4-13追記)は`opfs.rs`の
+/// `OpfsSeqReadStats`(`ScratchReader::open_at`が返す無バッファの逐次読み出し
+/// [`OpfsSeqReader`]の呼び出し回数・時間)を運ぶ。所有者の実機相当の規模での
+/// BEFORE計測で、`read_at`側(`opfs_read_secs`)はほぼ無視できる時間なのに対し、
+/// こちらが「ノードの圧縮」のほぼ全てを占めていた(`vendor/copc-writer`の
+/// `encode_node_points`がノードのLOD順インデックスをこの経路で1点ずつ無バッファに
+/// 読むため)。同じ理由で`Option`。
 #[derive(Serialize)]
 pub struct ConversionStageBreakdownDto {
     pub source_read_and_decode_secs: f64,
@@ -103,6 +111,8 @@ pub struct ConversionStageBreakdownDto {
     pub opfs_cache_misses: Option<u64>,
     pub opfs_bytes_read_from_opfs: Option<u64>,
     pub opfs_read_secs: Option<f64>,
+    pub opfs_seq_read_calls: Option<u64>,
+    pub opfs_seq_read_secs: Option<f64>,
     pub point_count: u64,
     pub file_size_bytes: u64,
 }
@@ -117,6 +127,7 @@ impl ConversionStageBreakdownDto {
         file_size_bytes: u64,
         opfs_io: Option<Duration>,
         opfs_read_stats: Option<OpfsReadStats>,
+        opfs_seq_read_stats: Option<OpfsSeqReadStats>,
     ) -> Self {
         let total = source_read_and_decode
             + spill_write
@@ -136,6 +147,8 @@ impl ConversionStageBreakdownDto {
             opfs_cache_misses: opfs_read_stats.map(|s| s.cache_misses),
             opfs_bytes_read_from_opfs: opfs_read_stats.map(|s| s.bytes_read_from_opfs),
             opfs_read_secs: opfs_read_stats.map(|s| s.read_time.as_secs_f64()),
+            opfs_seq_read_calls: opfs_seq_read_stats.map(|s| s.seq_read_calls),
+            opfs_seq_read_secs: opfs_seq_read_stats.map(|s| s.seq_read_time.as_secs_f64()),
             point_count,
             file_size_bytes,
         }

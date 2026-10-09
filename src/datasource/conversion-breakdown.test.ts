@@ -18,6 +18,8 @@ const DESKTOP_BREAKDOWN: ConversionStageBreakdown = {
   opfsCacheMisses: null,
   opfsBytesReadFromOpfs: null,
   opfsReadSecs: null,
+  opfsSeqReadCalls: null,
+  opfsSeqReadSecs: null,
   pointCount: 66_848_096,
   fileSizeBytes: 470_599_680, // 448.8 MiB
 };
@@ -107,6 +109,26 @@ describe("formatConversionBreakdown", () => {
     expect(text).toContain("OPFS範囲読みの実I/O時間: 9.800秒");
   });
 
+  it("M4-13追記: OPFS逐次読み(open_at)の統計が揃っていれば行を追加する", () => {
+    const breakdown: ConversionStageBreakdown = {
+      ...DESKTOP_BREAKDOWN,
+      opfsIoSecs: 120.5,
+      opfsSeqReadCalls: 500_020,
+      opfsSeqReadSecs: 118.614,
+    };
+    const meta: ConversionBreakdownMeta = {
+      platform: "web",
+      format: "las",
+      fileName: "beer.las",
+    };
+
+    const text = formatConversionBreakdown(breakdown, meta);
+
+    expect(text).toContain("OPFS逐次読み(open_at)");
+    expect(text).toContain("呼び出し500,020回");
+    expect(text).toContain("実I/O時間: 118.614秒");
+  });
+
   it("hardwareConcurrency/deviceMemoryGiBが無ければその行を出さない", () => {
     const meta: ConversionBreakdownMeta = {
       platform: "web",
@@ -133,6 +155,8 @@ describe("formatConversionBreakdown", () => {
       opfsCacheMisses: null,
       opfsBytesReadFromOpfs: null,
       opfsReadSecs: null,
+      opfsSeqReadCalls: null,
+      opfsSeqReadSecs: null,
       pointCount: 0,
       fileSizeBytes: 0,
     };
