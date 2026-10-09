@@ -1,0 +1,237 @@
+import { useState } from "react";
+import type { PreparingStep } from "../../datasource/conversion-dto";
+import type { BackgroundMode, CopcViewerState } from "../../state/useCopcViewer";
+
+/**
+ * M4-11(`TaskSheets/M4-import-and-conversion.md`): Web版の「準備」段階の
+ * 各ステップを文言にする(以前`LayerPanel.tsx`にあった関数。ADR-0017で移動)。
+ */
+function preparingStepLabel(preparing: PreparingStep): string {
+  switch (preparing.step) {
+    case "acquiringLock":
+      return "変換のロックを取得しています…";
+    case "cleaningStaleScratch":
+      return "古い一時ファイルを掃除しています…";
+    case "openingScratchFiles":
+      return `一時ファイルを開いています(${preparing.opened}/${preparing.total})…`;
+    case "openingOutputFile":
+      return "出力ファイルを開いています…";
+    case "readingHeader":
+      return "ヘッダーを読み込んでいます…";
+    case "startingDecompressWorkers":
+      return `展開用のWorkerを起動しています(${preparing.started}/${preparing.total})…`;
+  }
+}
+
+/** 経過秒数を"1分23秒"のような読める形にする(小数は切り捨て)。 */
+function formatElapsed(seconds: number): string {
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+}
+
+function fmt3(v: readonly [number, number, number]): string {
+  return `[${v.map((x) => x.toFixed(2)).join(", ")}]`;
+}
+
+const BACKGROUND_MODE_LABELS: Record<BackgroundMode, string> = {
+  "solid-dark": "単色(暗)",
+  "solid-light": "単色(明)",
+  sky: "空",
+};
+
+/**
+ * M4-12(`TaskSheets/M4-import-and-conversion.md`): 変換完了後、段階ごとの
+ * 所要時間を所有者がそのまま報告できるようにする内訳パネル(以前
+ * `LayerPanel.tsx`にあったもの。ADR-0017でこちらへ移動。コピー機能含めて
+ * そのまま)。
+ */
+function ConversionBreakdownPanel({ text, onCopy }: { text: string; onCopy: () => Promise<boolean> }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidで「変換の内訳」の
+    // 表示を待つ。削除・リネームするときはそちらも直すこと(`CLAUDE.md`参照)。
+    <div data-testid="conversion-breakdown" className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10">
+      <div className="flex items-center justify-between">
+        <span className="opacity-70">変換の内訳</span>
+        <button
+          type="button"
+          onClick={() => {
+            void (async () => {
+              const ok = await onCopy();
+              if (ok) {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }
+            })();
+          }}
+          className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900"
+        >
+          {copied ? "コピーしました" : "内訳をコピー"}
+        </button>
+      </div>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] opacity-80">{text}</pre>
+    </div>
+  );
+}
+
+/**
+ * ADR-0017 (UIシェル再構築): 左パネルの「レイヤー情報」節。
+ *
+ * タスクシートの指定: ファイル名・点数・CRS・バウンディングボックス・
+ * 変換の内訳(コピー機能ごと移動)。以前は`LayerPanel.tsx`(開く操作・点予算・
+ * 背景・グリッド・変換進捗・エラー・ダウンロード・内訳)と`InfoPanel.tsx`
+ * (cloudInfoの先頭部分)に分かれていた表示をここへまとめた。
+ *
+ * **CRSについて(正直に書く):** このファイルは`CloudInfo`(`DataSource.ts`)の
+ * `crs`フィールドを表示する想定だが、**現時点でCRSはバックエンドから
+ * フロントエンドまで配線されていない**(`crates/pcv-core/src/crs`モジュールは
+ * 存在するが、`CloudInfo`には`min`/`max`/`scale`/`offset`/`hasColor`/
+ * `pointCount`しか無い。`grep -rn "crs" crates/pcv-core/src/lib.rs`で確認済み)。
+ * 今回のタスクはUIシェルの再構築であり、新しいデータパイプラインを追加する
+ * 範囲ではないと判断し、CRSは「不明（未配線）」と表示するに留めた
+ * (推測で値を出さない。CLAUDE.mdの「測っていないことを確認したと書かない」
+ * と同じ考え方を、表示する情報自体にも適用した)。配線する場合は
+ * `pcv-core::crs`→`CloudInfo.crs`→ここの3箇所が必要になる。
+ */
+export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-0.5 text-xs">
+        <p>
+          <span className="opacity-60">ファイル名: </span>
+          {viewer.openedFileName ?? "（未選択）"}
+        </p>
+        <p>
+          <span className="opacity-60">点数: </span>
+          {viewer.cloudInfo ? viewer.cloudInfo.pointCount.toLocaleString() : "―"}
+        </p>
+        <p>
+          <span className="opacity-60">CRS: </span>
+          不明（未配線）
+        </p>
+        <p>
+          <span className="opacity-60">バウンディングボックス: </span>
+          {viewer.cloudInfo ? (
+            <span className="font-mono">
+              min={fmt3(viewer.cloudInfo.min)} / max={fmt3(viewer.cloudInfo.max)}
+            </span>
+          ) : (
+            "―"
+          )}
+        </p>
+      </div>
+
+      {viewer.error && (
+        // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidでエラー表示の
+        // 有無を確かめる。削除・リネームするときはそちらも直すこと(CLAUDE.md参照)。
+        <p data-testid="viewer-error" className="text-xs text-red-600 dark:text-red-400">
+          {viewer.error}
+        </p>
+      )}
+
+      {/* M4-3: 変換中の進捗とキャンセル。 */}
+      {viewer.status === "converting" && (
+        <div className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10">
+          {viewer.conversionProgress === null ? (
+            <p className="opacity-70">変換を準備しています…</p>
+          ) : viewer.conversionProgress.phase === "preparing" ? (
+            <p className="opacity-70">{preparingStepLabel(viewer.conversionProgress.preparing)}</p>
+          ) : viewer.conversionProgress.phase === "reading" ? (
+            <>
+              <p className="opacity-70">
+                読み込み中: {viewer.conversionProgress.pointsRead.toLocaleString()} / {viewer.conversionProgress.totalPoints.toLocaleString()}{" "}
+                点({((viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100).toFixed(1)}%)
+              </p>
+              <div className="h-1.5 w-full overflow-hidden rounded bg-black/10 dark:bg-white/10">
+                <div
+                  className="h-full bg-slate-900/80 dark:bg-white/80"
+                  style={{
+                    width: `${Math.min(100, (viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100)}%`,
+                  }}
+                />
+              </div>
+              <p className="opacity-60">経過: {formatElapsed(viewer.conversionProgress.elapsedSecs)}</p>
+            </>
+          ) : (
+            <p className="opacity-70">octreeを構築・書き出し中(割合は出せません)… 経過: {formatElapsed(viewer.conversionProgress.elapsedSecs)}</p>
+          )}
+          <button
+            type="button"
+            onClick={viewer.cancelConversion}
+            className="mt-1 self-start rounded border border-red-700/50 px-2 py-1 text-xs text-red-700 hover:bg-red-700/10 dark:border-red-400/50 dark:text-red-400"
+          >
+            キャンセル
+          </button>
+        </div>
+      )}
+
+      {/* M4-6b: Web版のダウンロード導線。 */}
+      {viewer.isBrowser && viewer.downloadReady && (
+        <div className="flex items-center justify-between gap-2 rounded border border-black/10 p-2 text-xs dark:border-white/10">
+          <span className="opacity-70">変換したCOPCを保存できます</span>
+          <a
+            href={viewer.downloadReady.url}
+            download={viewer.downloadReady.fileName}
+            // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidでダウンロード
+            // リンクの表示を確かめる。削除・リネームするときはそちらも直すこと。
+            data-testid="download-link"
+            className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900"
+          >
+            ダウンロード
+          </a>
+        </div>
+      )}
+
+      {/* M4-12: 変換完了後の内訳。 */}
+      {viewer.conversionBreakdownText && (
+        <ConversionBreakdownPanel text={viewer.conversionBreakdownText} onCopy={viewer.copyConversionBreakdownText} />
+      )}
+
+      {/* 点予算・背景・グリッドはタスクシートが「表示」グループへの移動を
+          明示した5項目(着色・EDL・点のサイズ・中央優先度の強さと下限)には
+          含まれていないため、ここ(レイヤー情報)に残した(ADR-0017の対応表参照)。 */}
+      <div className="flex flex-col gap-1 border-t border-black/10 pt-2 text-xs dark:border-white/10">
+        <div className="flex items-center justify-between">
+          <label className="opacity-70">点予算{viewer.autoPointBudgetEnabled ? "（自動調整中）" : ""}</label>
+        </div>
+        <input
+          type="number"
+          min={1000}
+          step={100_000}
+          value={viewer.pointBudget}
+          onChange={(e) => viewer.setPointBudget(Number(e.target.value) || 0)}
+          disabled={viewer.autoPointBudgetEnabled}
+          title={viewer.autoPointBudgetEnabled ? "自動調整中のため読み取り専用。下のチェックを外すと手動で変更できる" : undefined}
+          className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit disabled:opacity-60 dark:border-white/10 dark:bg-black/30"
+        />
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={viewer.autoPointBudgetEnabled} onChange={(e) => viewer.setAutoPointBudgetEnabled(e.target.checked)} />
+          点予算を自動調整する
+        </label>
+      </div>
+
+      <div className="flex flex-col gap-1 text-xs">
+        <label className="opacity-70">背景</label>
+        <select
+          value={viewer.backgroundMode}
+          onChange={(e) => viewer.setBackgroundMode(e.target.value as BackgroundMode)}
+          className="rounded border border-black/10 bg-white/60 px-2 py-1 text-xs text-inherit dark:border-white/10 dark:bg-black/30"
+        >
+          {(Object.keys(BACKGROUND_MODE_LABELS) as BackgroundMode[]).map((mode) => (
+            <option key={mode} value={mode}>
+              {BACKGROUND_MODE_LABELS[mode]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <label className="flex items-center gap-2 text-xs">
+        <input type="checkbox" checked={viewer.gridEnabled} onChange={(e) => viewer.setGridEnabled(e.target.checked)} />
+        グリッド
+      </label>
+    </div>
+  );
+}
