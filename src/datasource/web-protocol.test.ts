@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildConvertCancelRequest,
+  buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
@@ -92,6 +93,31 @@ describe("buildConvertStartRequest / buildConvertCancelRequest", () => {
   it("convertCancelリクエストを組み立てる", () => {
     const req = buildConvertCancelRequest(12);
     expect(req).toEqual({ type: "convertCancel", id: 12 });
+  });
+});
+
+// M4-14: 複数のLAS/LAZを選択したときの変換開始リクエスト。
+describe("buildConvertMultiStartRequest", () => {
+  it("複数のFileをまとめたconvertMultiStartリクエストを組み立てる", () => {
+    const files = [
+      new File([new Uint8Array([1])], "a.las"),
+      new File([new Uint8Array([2])], "b.laz"),
+    ];
+    const req = buildConvertMultiStartRequest(30, files, false);
+    expect(req).toEqual({
+      type: "convertMultiStart",
+      id: 30,
+      files,
+      maxPointsPerNode: DEFAULT_MAX_POINTS_PER_NODE,
+      isMobile: false,
+    });
+  });
+
+  it("isMobile・maxPointsPerNodeを明示的に指定できる", () => {
+    const files = [new File([new Uint8Array([1])], "a.las")];
+    const req = buildConvertMultiStartRequest(31, files, true, 5_000);
+    expect(req.isMobile).toBe(true);
+    expect(req.maxPointsPerNode).toBe(5_000);
   });
 });
 

@@ -27,6 +27,7 @@ import * as opfs from "./opfs";
 import { estimatePointCountForLasFile, estimatePointCountForPcdFile } from "./point-count-estimate";
 import {
   buildConvertCancelRequest,
+  buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
@@ -70,6 +71,36 @@ async function checkInsufficientSpace(
   // 判断できるよう、OPFSの使用量の内訳(消せるもの)と永続化の状態を
   // 併せて返す(`useCopcViewer.ts`が`opfs.describeInsufficientSpaceWeb`で
   // 文言化する。受け入れ条件「容量不足の表示が空ける方法を示す」)。
+  const breakdown = await opfs.getOpfsUsageBreakdown();
+  const persisted = await opfs.isPersisted();
+  return {
+    kind: "insufficientSpaceWeb",
+    requiredBytes,
+    quotaBytes: estimate.quota,
+    usageBytes: estimate.usage,
+    persisted,
+    reclaimableBytes: breakdown.cachedConversionsTotalBytes + breakdown.staleScratchTotalBytes,
+  };
+}
+
+/**
+ * M4-14: 複数ファイル版の`checkInsufficientSpace`。各ファイルの点数が
+ * わかれば合計して見積もり、1つでも読めなければ(壊れたヘッダー等)安全側に
+ * 倒してファイルサイズの合計から見積もる(単一ファイル版と同じ考え方。
+ * 一部だけ点数で・残りをファイルサイズで見積もると係数の意味が食い違うため、
+ * 「全部わかるか、全部わからないか」の二択にしている)。
+ */
+async function checkInsufficientSpaceMulti(files: File[]): Promise<ConversionOutcome | null> {
+  await opfs.ensurePersistentStorage(navigator.storage);
+
+  const pointCounts = await Promise.all(files.map(estimatePointCountForLasFile));
+  const allKnown = pointCounts.every((c): c is number => c !== null);
+  const requiredBytes = allKnown
+    ? opfs.requiredBytesForPointCount(pointCounts.reduce((sum, c) => sum + c, 0))
+    : opfs.requiredScratchBytes(files.reduce((sum, f) => sum + f.size, 0));
+  const estimate = await opfs.estimateQuota();
+  if (opfs.hasEnoughQuota(estimate, requiredBytes)) return null;
+
   const breakdown = await opfs.getOpfsUsageBreakdown();
   const persisted = await opfs.isPersisted();
   return {
@@ -287,6 +318,39 @@ export class WebSource implements DataSource {
     const id = this.nextRequestId++;
     this.activeConvertId = id;
     this.worker.postMessage(buildPcdConvertStartRequest(id, file, isMobile));
+    return { kind: "converting" };
+  }
+
+  /**
+   * M4-14: 複数のLAS/LAZを1つのCOPCへマージする変換を始める。
+   * `startConversion`(単一ファイル)と同じ役割分担だが、`alreadyCopc`判定が
+   * 無い(呼び出し側`src/state/useCopcViewer.ts`の`openFiles`が、1件だけの
+   * 選択は`openFile`(既存の単一ファイル経路)へ委譲するため、ここに来る時点で
+   * 必ず2件以上)。
+   */
+  async startMultiConversion(files: File[], isMobile: boolean): Promise<ConversionOutcome> {
+    const fingerprints = files.map((f) => ({
+      name: f.name,
+      size: f.size,
+      lastModified: f.lastModified,
+    }));
+
+    const cached = await opfs.findCachedMultiOutput(fingerprints);
+    if (cached) {
+      const key = this.registerFile(cached);
+      return { kind: "cached", outputPath: key };
+    }
+
+    if (!(await opfs.isOpfsAvailable())) {
+      return { kind: "opfsUnavailable" };
+    }
+
+    const insufficient = await checkInsufficientSpaceMulti(files);
+    if (insufficient) return insufficient;
+
+    const id = this.nextRequestId++;
+    this.activeConvertId = id;
+    this.worker.postMessage(buildConvertMultiStartRequest(id, files, isMobile));
     return { kind: "converting" };
   }
 

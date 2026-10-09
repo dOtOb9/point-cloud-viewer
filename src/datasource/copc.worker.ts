@@ -28,6 +28,7 @@
 
 import init, {
   init_panic_hook as initPanicHook,
+  inspectLasHeaderSummary,
   lastAllocationFailureMessage,
   opfsScratchPoolSize,
   WasmConverter,
@@ -46,7 +47,13 @@ import {
 import type { PointRange } from "./decompress-partition";
 import type { DecompressRequest, DecompressResponse } from "./laz-decompress.worker";
 import * as opfs from "./opfs";
-import type { OpenSource, PcdConvertStartRequest, WorkerRequest, WorkerResponse } from "./web-protocol";
+import type {
+  ConvertMultiStartRequest,
+  OpenSource,
+  PcdConvertStartRequest,
+  WorkerRequest,
+  WorkerResponse,
+} from "./web-protocol";
 
 /**
  * `self`の型をDOM libとWebWorker libの衝突を避けつつ最小限だけ宣言する
@@ -148,6 +155,9 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         return;
       case "convertStart":
         await handleConvertStart(request.id, request.file, request.maxPointsPerNode, request.isMobile);
+        return;
+      case "convertMultiStart":
+        await handleConvertMultiStart(request);
         return;
       case "pcdConvertStart":
         await handlePcdConvertStart(request);
@@ -655,6 +665,225 @@ async function runConversion(
     });
   } finally {
     // 受け入れ条件: 成功・失敗・キャンセルのいずれでも一時ファイルを必ず消す。
+    converter?.free();
+    opfs.closeHandles(scratchHandles);
+    if (outputHandle) opfs.closeHandles([outputHandle]);
+    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
+    if (!succeeded) {
+      await opfs.removeOutputFile(outputName);
+    }
+    if (activeConvertId === id) activeConvertId = null;
+  }
+}
+
+// --- M4-14: 複数のLAS/LAZを1つのCOPCへマージする変換 ---
+//
+// `runConversion`(単一ファイル)とほぼ同じ構造だが、以下が異なる:
+// 1. 変換前に全ファイルのヘッダーを`inspectLasHeaderSummary`で確認し、
+//    point format・CRSの不一致を明確なエラーにする(デスクトップ版
+//    `pcv_convert::merge::summarize_headers`と同じ目的)
+// 2. 1本の`WasmConverter`を先頭ファイルで作り、`setDeclaredTotals`で全入力の
+//    合計点数・合計サイズに上書きした上で、`openNextFile`でファイルを順番に
+//    切り替えながら読み進める(`crates/pcv-wasm/src/convert.rs`の
+//    `WasmConverter::openNextFile`のドキュメント参照。spillは1本のまま、
+//    読み込み元だけを入れ替える)
+// 3. 進捗は「全入力の合計点数」に対する割合で報告する(受け入れ条件
+//    「全入力の総点数に対する1本の進捗バー」)
+
+/** `inspectLasHeaderSummary`が返すDTO(`crates/pcv-wasm/src/dto.rs`の
+ *  `HeaderSummaryDto`。serdeのデフォルトなのでsnake_case)。 */
+interface HeaderSummaryDto {
+  declared_points: number;
+  layout_key: string;
+  crs_label: string;
+  file_size_bytes: number;
+}
+
+async function handleConvertMultiStart(request: ConvertMultiStartRequest): Promise<void> {
+  const { id, files, maxPointsPerNode, isMobile } = request;
+  reportPreparing(id, { step: "acquiring_lock" });
+  const outcome = await opfs.withConversionLock(navigator.locks, () =>
+    runMultiConversion(id, files, maxPointsPerNode, isMobile),
+  );
+  if (outcome.kind === "busy") {
+    scope.postMessage({
+      type: "convert-failed",
+      id,
+      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
+      cancelled: false,
+    });
+  }
+}
+
+async function runMultiConversion(
+  id: number,
+  files: File[],
+  maxPointsPerNode: number,
+  isMobile: boolean,
+): Promise<void> {
+  activeConvertId = id;
+  convertCancelRequested = false;
+
+  const fingerprints = files.map((f) => ({ name: f.name, size: f.size, lastModified: f.lastModified }));
+  const outputName = opfs.outputFileNameForMulti(fingerprints);
+  const startedAt = performance.now();
+  const elapsedSecs = () => (performance.now() - startedAt) / 1000;
+
+  let scratchDirName: string | null = null;
+  let scratchHandles: FileSystemSyncAccessHandle[] = [];
+  let outputHandle: FileSystemSyncAccessHandle | null = null;
+  let converter: WasmConverter | null = null;
+  let succeeded = false;
+
+  try {
+    reportPreparing(id, { step: "cleaning_stale_scratch" });
+    try {
+      await opfs.cleanupStaleScratchDirs();
+    } catch {
+      // 失敗しても変換自体は試みる。
+    }
+
+    // M4-14: 全ファイルのヘッダーだけを読み(`fill_points`を呼ばないため、
+    // 全点読み込みとは別のI/Oパス。デスクトップ版`summarize_headers`の
+    // ドキュメントと同じ理由)、point format・CRSの一致を確認する。
+    reportPreparing(id, { step: "reading_header" });
+    const summaries: HeaderSummaryDto[] = files.map(
+      (file) => inspectLasHeaderSummary(file) as HeaderSummaryDto,
+    );
+    const first = summaries[0];
+    for (let i = 1; i < summaries.length; i++) {
+      if (summaries[i].layout_key !== first.layout_key) {
+        throw new Error(
+          `${files[i].name}: 点フォーマットが${files[0].name}と異なるため、まとめて変換できません`,
+        );
+      }
+      if (summaries[i].crs_label !== first.crs_label) {
+        throw new Error(
+          `${files[i].name}: CRS(座標系)が${files[0].name}と異なるため、まとめて変換できません`,
+        );
+      }
+    }
+    const totalPoints = summaries.reduce((sum, s) => sum + s.declared_points, 0);
+    const totalFileSizeBytes = summaries.reduce((sum, s) => sum + s.file_size_bytes, 0);
+
+    const poolSize = opfsScratchPoolSize();
+    const pool = await opfs.createScratchPool(poolSize, (opened, total) => {
+      reportPreparing(id, { step: "opening_scratch_files", opened, total });
+    });
+    scratchDirName = pool.dirName;
+    scratchHandles = pool.handles;
+    reportPreparing(id, { step: "opening_output_file" });
+    outputHandle = await opfs.createOutputHandle(outputName);
+
+    converter = new WasmConverter(files[0], scratchHandles, outputHandle, outputName, maxPointsPerNode);
+    // M4-14: `new`時点では先頭ファイルのヘッダーしか見えていない
+    // (totalPoints()は1ファイル分)ため、事前に求めた全入力の合計で上書きする
+    // (進捗バー・内訳表示を「全入力の合計」にするため)。
+    converter.setDeclaredTotals(totalPoints, totalFileSizeBytes);
+
+    // M4-14: 全入力の合計点数に対する割合で進捗を報告する(受け入れ条件
+    // 「全入力の総点数に対する1本の進捗バー」)。`pointsCompletedBeforeCurrentFile`
+    // は、既に読み終わったファイルの点数の合計(ファイルを切り替えるたびに加算)。
+    let pointsCompletedBeforeCurrentFile = 0;
+    const reportReadingProgress = (pointsReadInCurrentFile: number) => {
+      scope.postMessage({
+        type: "convert-progress",
+        id,
+        progress: {
+          phase: "reading",
+          points_read: pointsCompletedBeforeCurrentFile + pointsReadInCurrentFile,
+          total_points: totalPoints,
+          elapsed_secs: elapsedSecs(),
+        },
+      });
+    };
+
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      if (fileIndex > 0) {
+        // M4-14: spillはそのまま、読み込み元だけを次のファイルへ入れ替える
+        // (`WasmConverter::openNextFile`のドキュメント参照)。
+        converter.openNextFile(files[fileIndex]);
+      }
+      const fileTotalPoints = summaries[fileIndex].declared_points;
+      const workerCount = decompressWorkerCountFor(fileTotalPoints, {
+        hardwareConcurrency:
+          typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined,
+        isMobile,
+      });
+
+      if (workerCount > 1) {
+        const reportWorkerStarting = (started: number) => {
+          reportPreparing(id, { step: "starting_decompress_workers", started, total: workerCount });
+        };
+        const phaseOutcome = await runParallelReadPhase(
+          converter,
+          files[fileIndex],
+          fileTotalPoints,
+          workerCount,
+          reportReadingProgress,
+          reportWorkerStarting,
+        );
+        if (phaseOutcome === "cancelled") {
+          scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+          return;
+        }
+      } else {
+        // バッチごとにWorkerのイベントループへ制御を返す(単一ファイル版と同じ理由)。
+        for (;;) {
+          if (convertCancelRequested) {
+            scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+            return;
+          }
+          const result = converter.feed(CONVERT_BATCH_SIZE) as FeedResultDto;
+          reportReadingProgress(result.points_read);
+          if (result.done) break;
+          await yieldToEventLoop();
+        }
+      }
+
+      if (convertCancelRequested) {
+        scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+        return;
+      }
+      pointsCompletedBeforeCurrentFile += fileTotalPoints;
+    }
+
+    scope.postMessage({
+      type: "convert-progress",
+      id,
+      progress: { phase: "post_processing", elapsed_secs: elapsedSecs() },
+    });
+    let finishResult: FinishResultDto;
+    try {
+      finishResult = converter.finish() as FinishResultDto;
+    } finally {
+      converter = null;
+    }
+
+    if (convertCancelRequested) {
+      scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
+      return;
+    }
+
+    await opfs.writeMultiCacheMeta(fingerprints, outputName);
+    succeeded = true;
+    const sortedNames = files.map((f) => f.name).sort();
+    scope.postMessage({
+      type: "convert-done",
+      id,
+      outputName,
+      suggestedFileName: `${opfs.multiDisplayNameFor(sortedNames)}.copc.laz`,
+      pointCount: finishResult.point_count,
+      stageTimings: finishResult.stage_timings,
+    });
+  } catch (err) {
+    scope.postMessage({
+      type: "convert-failed",
+      id,
+      message: describeConversionFailure(err),
+      cancelled: false,
+    });
+  } finally {
     converter?.free();
     opfs.closeHandles(scratchHandles);
     if (outputHandle) opfs.closeHandles([outputHandle]);

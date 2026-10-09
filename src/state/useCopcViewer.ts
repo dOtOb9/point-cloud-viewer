@@ -8,6 +8,7 @@ import {
   pickTempDirectory,
   reportToBackendConsole,
   startLasConversion,
+  startMultiLasConversion,
   supportsCustomTempDir as fetchSupportsCustomTempDir,
 } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
@@ -21,6 +22,7 @@ import {
   getConvertedFile,
   getOpfsUsageBreakdown,
   isPersisted,
+  multiDisplayNameFor,
   removeCachedConversionEntry,
   removeScratchDirByName,
   type CachedConversionEntry,
@@ -215,6 +217,15 @@ export interface CopcViewerState {
   gpuErrors: GpuErrorEntry[];
   /** Tauri版はパス文字列、Web版はURL文字列か、ドラッグ&ドロップ/選択した`File`を渡す。 */
   openFile: (pathOrFile: string | File) => Promise<void>;
+  /**
+   * M4-14: ファイル選択で複数(2件以上)選ばれたときに呼ぶ。LAS/LAZを1つの
+   * COPCへマージして開く(`src-tauri`の`start_multi_las_conversion`/Web版の
+   * `WebSource.startMultiConversion`)。1件だけ渡された場合は`openFile`と
+   * 同じ挙動になる(受け入れ条件「単一ファイルは今までと同じ挙動」)。
+   * PLY/PCD/E57が混じっていた場合は、変換を試みる前に明確なエラーを出す
+   * (受け入れ条件。LAS/LAZの混在はOK)。
+   */
+  openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
   /** LayerPanelがTauri用のパス入力とWeb用のファイル選択/URL入力を切り替えるための判定。 */
   isBrowser: boolean;
   /**
@@ -828,6 +839,114 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     }
   }, [colorMode, tempDir, setDownloadReady, deviceProfileDefaults.isMobile, refreshOpfsStorageInfo]);
 
+  /**
+   * M4-14: 複数ファイル選択時の入口。`openFile`とほぼ同じ判断
+   * (キャッシュ・容量不足・変換開始)を行うが、対象が常にLAS/LAZ(複数)に
+   * 絞られる分だけ単純になる(既にCOPCかどうかの判定・PCD/E57等の経路分岐は
+   * 単一ファイル専用の`openFile`にしか無い)。
+   */
+  const openFiles = useCallback(async (pathsOrFiles: string[] | File[]) => {
+    if (pathsOrFiles.length === 0) return;
+    if (pathsOrFiles.length === 1) {
+      await openFileRef.current(pathsOrFiles[0]);
+      return;
+    }
+
+    const renderer = rendererRef.current;
+    const source = sourceRef.current;
+    if (!renderer || !source) return;
+
+    setStatus("opening");
+    setError(null);
+    setConversionProgress(null);
+    setDownloadReady(null);
+    setConversionBreakdownText(null);
+
+    const isFileArray = typeof pathsOrFiles[0] !== "string";
+    const names = isFileArray
+      ? (pathsOrFiles as File[]).map((f) => f.name)
+      : (pathsOrFiles as string[]).map(basenameOfPath);
+
+    // 受け入れ条件: LAS/LAZの混在はOK、PLY/PCD/E57が混じっていたら変換を
+    // 試みる前に明確なエラーを出す(ファイル名を挙げる)。
+    const nonLasNames = names.filter((n) => detectSourceFormatByName(n) !== "lasLaz");
+    if (nonLasNames.length > 0) {
+      setStatus("error");
+      setError(
+        `複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`,
+      );
+      return;
+    }
+
+    // M4-12と同じ理由(`openFile`参照): 内訳テキストの「ファイル」欄に使う
+    // 表示名を、変換開始前に覚えておく。選択順に依存しない表示にするため
+    // 昇順ソートしてから組み立てる(要件の表示例「09LD2626 ほか54ファイル」)。
+    convertingSourceNameRef.current = multiDisplayNameFor([...names].sort());
+
+    try {
+      const outcome =
+        isFileArray && source instanceof WebSource
+          ? await source.startMultiConversion(pathsOrFiles as File[], deviceProfileDefaults.isMobile)
+          : !isFileArray && source instanceof TauriSource
+            ? await startMultiLasConversion(pathsOrFiles as string[], tempDir)
+            : null;
+      if (outcome === null) {
+        throw new Error("複数ファイルの選択はこの環境では対応していません");
+      }
+
+      switch (outcome.kind) {
+        case "cached":
+          void openFileRef.current(outcome.outputPath, true);
+          return;
+        case "converting":
+          setStatus("converting");
+          return;
+        case "opfsUnavailable":
+          setStatus("error");
+          setError(
+            "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。",
+          );
+          return;
+        case "insufficientSpace": {
+          const toGiB = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+          gpuErrorLogRef.current.report(
+            `空き容量が足りません(必要: 約${toGiB(outcome.requiredBytes)}GiB、空き: 約${toGiB(outcome.availableBytes)}GiB)。設定から一時ファイルの置き場所を変更できます。`,
+            undefined,
+            "conversion",
+          );
+          setGpuErrors(gpuErrorLogRef.current.list());
+          setStatus("error");
+          setError("空き容量が足りません");
+          return;
+        }
+        case "insufficientSpaceWeb": {
+          const message = describeInsufficientSpaceWeb({
+            requiredBytes: outcome.requiredBytes,
+            quotaBytes: outcome.quotaBytes,
+            usageBytes: outcome.usageBytes,
+            persisted: outcome.persisted,
+            reclaimableBytes: outcome.reclaimableBytes,
+          });
+          gpuErrorLogRef.current.report(message, undefined, "conversion");
+          setGpuErrors(gpuErrorLogRef.current.list());
+          setStatus("error");
+          setError("空き容量が足りません");
+          void refreshOpfsStorageInfo();
+          return;
+        }
+        case "alreadyCopc":
+          // 複数ファイルのマージ経路では、呼び出し側(Rust/wasm)がこの値を
+          // 返すことは無い(常に新しいCOPCを作る)。型の網羅性のためだけに
+          // 置く、到達しないはずの分岐(`openFile`の同種のコメント参照)。
+          void openFileRef.current(outcome.path, true);
+          return;
+      }
+    } catch (e) {
+      setStatus("error");
+      setError(String(e));
+    }
+  }, [tempDir, deviceProfileDefaults.isMobile, setDownloadReady, refreshOpfsStorageInfo]);
+
   // `openFileRef`を毎レンダー最新化する。マウント時に一度だけ張るイベント
   // 購読(上のuseEffect、deps=[])から常に最新の`openFile`(最新のcolorMode/
   // tempDirを閉じ込めたもの)を呼べるようにするための、定番の対処。
@@ -963,6 +1082,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     colorMode,
     gpuErrors,
     openFile,
+    openFiles,
     isBrowser: !isTauriEnvironment(),
     conversionProgress,
     cancelConversion,

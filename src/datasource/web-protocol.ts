@@ -53,6 +53,21 @@ export interface ConvertStartRequest {
 }
 
 /**
+ * M4-14: 複数のLAS/LAZを選択したときの変換開始。`ConvertStartRequest`
+ * (単一ファイル)と同じ役割だが、`files`が配列になる。応答(`convert-progress`/
+ * `convert-done`/`convert-failed`)は単一ファイル版と共通の型を使う
+ * (`copc.worker.ts`の`handleConvertMultiStart`が、複数ファイルをまたいで
+ * 1本のWasmConverterへ流し込む経路で処理する)。
+ */
+export interface ConvertMultiStartRequest {
+  type: "convertMultiStart";
+  id: number;
+  files: File[];
+  maxPointsPerNode: number;
+  isMobile: boolean;
+}
+
+/**
  * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 生PCD→COPCの変換の開始。
  * `ConvertStartRequest`(LAS/LAZ)と同じ役割だが、Worker側
  * (`copc.worker.ts`)はPCD専用の`WasmPcdConverter`(`crates/pcv-wasm/src/
@@ -84,6 +99,7 @@ export type WorkerRequest =
   | OpenRequest
   | ReadNodeRequest
   | ConvertStartRequest
+  | ConvertMultiStartRequest
   | PcdConvertStartRequest
   | ConvertCancelRequest;
 
@@ -215,6 +231,15 @@ export function buildConvertStartRequest(
 
 export function buildConvertCancelRequest(id: number): ConvertCancelRequest {
   return { type: "convertCancel", id };
+}
+
+export function buildConvertMultiStartRequest(
+  id: number,
+  files: File[],
+  isMobile: boolean,
+  maxPointsPerNode: number = DEFAULT_MAX_POINTS_PER_NODE,
+): ConvertMultiStartRequest {
+  return { type: "convertMultiStart", id, files, maxPointsPerNode, isMobile };
 }
 
 export function buildPcdConvertStartRequest(
