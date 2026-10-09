@@ -2,8 +2,9 @@ import { useState } from "react";
 import type { PreparingStep } from "../../datasource/conversion-dto";
 import type { BackgroundMode, ColorMode, CopcViewerState } from "../../state/useCopcViewer";
 // 規約2: `@tauri-apps/plugin-dialog`を直接importしない。DataSource側の関数
-// (`pickLocalFile`)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
-import { pickLocalFile } from "../../datasource/tauri";
+// (`pickLocalFiles`。M4-14で複数選択に対応)越しに呼ぶ
+// (`src/datasource/tauri.ts`参照)。
+import { pickLocalFiles } from "../../datasource/tauri";
 import { glassSurfaceClass } from "./glass";
 
 /**
@@ -162,13 +163,18 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                   // 選べば依然として選択自体はできる。その場合は`openFile`が
                   // 「デスクトップ版で変換してください」という案内を出す)。
                   accept=".las,.laz,.pcd"
+                  // M4-14: 複数選択できるようにする(受け入れ条件)。LAS/LAZを
+                  // 複数選んだときは1つのCOPCへマージする(`viewer.openFiles`、
+                  // `src/state/useCopcViewer.ts`参照)。1件だけの選択は今までと
+                  // 同じ挙動になる。
+                  multiple
                   // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidで
                   // `setInputFiles`してファイル選択を駆動する。
                   // 削除・リネームするときはそちらも直すこと(`CLAUDE.md`参照)。
                   data-testid="file-input"
                   onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) void viewer.openFile(file);
+                    const files = e.target.files;
+                    if (files && files.length > 0) void viewer.openFiles(Array.from(files));
                     e.target.value = "";
                   }}
                   disabled={busy}
@@ -206,8 +212,11 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
                 type="button"
                 onClick={() => {
                   void (async () => {
-                    const picked = await pickLocalFile();
-                    if (picked) void viewer.openFile(picked);
+                    // M4-14: 複数選択できるダイアログに変えた(受け入れ条件)。
+                    // 複数選んだとき(LAS/LAZのみ)は1つのCOPCへマージする
+                    // (`viewer.openFiles`)。1件だけの選択は今までと同じ挙動。
+                    const picked = await pickLocalFiles();
+                    if (picked && picked.length > 0) void viewer.openFiles(picked);
                   })();
                 }}
                 disabled={busy}
