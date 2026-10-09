@@ -71,8 +71,12 @@ export const DEFAULT_EDL_ENABLED = true;
  * 陰影が潰れて逆に見えにくくなっていた。この確認を受け、強さのスライダーは
  * `LayerPanel`から削除し、EDLはオン/オフだけをUIから切り替える形にした
  * （TaskSheets/M2-shading-and-ui.md M2-1「強さ固定の経緯」参照）。
+ *
+ * その後、所有者から「0.05でもちょっと強すぎる、弱くしてよい」との指摘があり、
+ * 0.03に下げた（2026-10-10）。0.03は「少し弱く」の目安として選んだ値で、
+ * 実機で見て決めた値ではない。所有者の確認で再調整しうる。
  */
-export const DEFAULT_EDL_STRENGTH = 0.05;
+export const DEFAULT_EDL_STRENGTH = 0.03;
 
 /**
  * EDLが近傍として見る距離（スクリーンピクセル単位）の既定値。**未検証の初期値。**
