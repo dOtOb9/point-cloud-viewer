@@ -1,36 +1,7 @@
 import { useState } from "react";
-import type { PreparingStep } from "../../datasource/conversion-dto";
 import type { BackgroundMode, CopcViewerState } from "../../state/useCopcViewer";
 
-/**
- * M4-11(`TaskSheets/M4-import-and-conversion.md`): Web版の「準備」段階の
- * 各ステップを文言にする(以前`LayerPanel.tsx`にあった関数。ADR-0017で移動)。
- */
-function preparingStepLabel(preparing: PreparingStep): string {
-  switch (preparing.step) {
-    case "acquiringLock":
-      return "変換のロックを取得しています…";
-    case "cleaningStaleScratch":
-      return "古い一時ファイルを掃除しています…";
-    case "openingScratchFiles":
-      return `一時ファイルを開いています(${preparing.opened}/${preparing.total})…`;
-    case "openingOutputFile":
-      return "出力ファイルを開いています…";
-    case "readingHeader":
-      return "ヘッダーを読み込んでいます…";
-    case "startingDecompressWorkers":
-      return `展開用のWorkerを起動しています(${preparing.started}/${preparing.total})…`;
-  }
-}
-
-/** 経過秒数を"1分23秒"のような読める形にする(小数は切り捨て)。 */
-function formatElapsed(seconds: number): string {
-  const total = Math.floor(seconds);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m > 0 ? `${m}分${s}秒` : `${s}秒`;
-}
-
+// 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
 function fmt3(v: readonly [number, number, number]): string {
   return `[${v.map((x) => x.toFixed(2)).join(", ")}]`;
 }
@@ -130,42 +101,6 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
         <p data-testid="viewer-error" className="text-xs text-red-600 dark:text-red-400">
           {viewer.error}
         </p>
-      )}
-
-      {/* M4-3: 変換中の進捗とキャンセル。 */}
-      {viewer.status === "converting" && (
-        <div className="flex flex-col gap-1 rounded border border-black/10 p-2 text-xs dark:border-white/10">
-          {viewer.conversionProgress === null ? (
-            <p className="opacity-70">変換を準備しています…</p>
-          ) : viewer.conversionProgress.phase === "preparing" ? (
-            <p className="opacity-70">{preparingStepLabel(viewer.conversionProgress.preparing)}</p>
-          ) : viewer.conversionProgress.phase === "reading" ? (
-            <>
-              <p className="opacity-70">
-                読み込み中: {viewer.conversionProgress.pointsRead.toLocaleString()} / {viewer.conversionProgress.totalPoints.toLocaleString()}{" "}
-                点({((viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100).toFixed(1)}%)
-              </p>
-              <div className="h-1.5 w-full overflow-hidden rounded bg-black/10 dark:bg-white/10">
-                <div
-                  className="h-full bg-slate-900/80 dark:bg-white/80"
-                  style={{
-                    width: `${Math.min(100, (viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100)}%`,
-                  }}
-                />
-              </div>
-              <p className="opacity-60">経過: {formatElapsed(viewer.conversionProgress.elapsedSecs)}</p>
-            </>
-          ) : (
-            <p className="opacity-70">octreeを構築・書き出し中(割合は出せません)… 経過: {formatElapsed(viewer.conversionProgress.elapsedSecs)}</p>
-          )}
-          <button
-            type="button"
-            onClick={viewer.cancelConversion}
-            className="mt-1 self-start rounded border border-red-700/50 px-2 py-1 text-xs text-red-700 hover:bg-red-700/10 dark:border-red-400/50 dark:text-red-400"
-          >
-            キャンセル
-          </button>
-        </div>
       )}
 
       {/* M4-6b: Web版のダウンロード導線。 */}

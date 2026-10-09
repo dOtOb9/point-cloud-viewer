@@ -16,10 +16,12 @@ export function StatusBar({
   viewer,
   glassEnabled,
   onOpenErrorLog,
+  onOpenConversion,
 }: {
   viewer: CopcViewerState;
   glassEnabled: boolean;
   onOpenErrorLog: () => void;
+  onOpenConversion: () => void;
 }) {
   const stats = viewer.stats;
 
@@ -53,7 +55,14 @@ export function StatusBar({
       {/* CRS: LayerInfoSection.tsxと同じ理由で「不明（未配線）」。
           CloudInfoにCRSが無いため、ここも同じ文言で揃える。狭幅では省く(詳細は左パネルで見られる)。 */}
       <span className="hidden whitespace-nowrap md:inline">CRS: 不明（未配線）</span>
-      <span className="min-w-0 truncate">{loadProgressLabel}</span>
+      {viewer.status === "converting" ? (
+        // 変換中はクリックで変換ダイアログを開き直せる(✕で閉じても変換は続くため)。
+        <button type="button" onClick={onOpenConversion} className="min-h-11 min-w-0 truncate underline">
+          {loadProgressLabel}
+        </button>
+      ) : (
+        <span className="min-w-0 truncate">{loadProgressLabel}</span>
+      )}
       <button
         type="button"
         onClick={onOpenErrorLog}

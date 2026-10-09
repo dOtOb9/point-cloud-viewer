@@ -1,36 +1,35 @@
-import { useState } from "react";
+import { Box, FolderOpen, Link2 } from "lucide-react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
-// 規約2: `@tauri-apps/plugin-dialog`を直接importしない。DataSource側の関数
+// 規約2: Tauriのダイアログのパッケージを直接importしない。DataSource側の関数
 // (`pickLocalFiles`。M4-14で複数選択に対応)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
 import { pickLocalFiles } from "../../datasource/tauri";
-import { RIBBON_BUTTON_CLASS, RIBBON_GROUP_CLASS, RIBBON_GROUP_LABEL_CLASS, RIBBON_INPUT_CLASS } from "./ribbon-styles";
+import { RibbonButton } from "./RibbonButton";
+import { RIBBON_BUTTON_CLASS, RIBBON_BUTTON_PRIMARY_CLASS, RIBBON_GROUP_CLASS, RIBBON_GROUP_LABEL_CLASS } from "./ribbon-styles";
 
 // CORSとHTTP Rangeに対応した公開COPCのサンプル(TaskSheets/TEST-DATA.mdのautzen)。
-// 以前はLayerPanel.tsxにあった定数(ADR-0017でリボンへ移動)。
 const SAMPLE_COPC_URL = "https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz";
 
 interface Props {
   viewer: CopcViewerState;
+  /** 「URLから開く」ダイアログを開く(ダイアログ本体はAppShellが持つ。リボンの
+   *  重ね順(z-20)の内側に出すと他の面に隠れるため)。 */
+  onOpenUrlDialog: () => void;
 }
 
 /**
  * ADR-0017 (UIシェル再構築): トップリボンの「ファイル」グループ。
  *
- * 以前`LayerPanel.tsx`に直書きしていた「ファイルを開く」操作一式
- * (Web版: ファイル選択/URL入力/サンプルを開く、デスクトップ・Android版:
- * OSのファイル選択ダイアログ)をそのまま移した。見た目・DOM構造は変えたが、
- * `viewer.openFile()`を呼ぶだけの薄い呼び出しである点は変えていない
- * (並行して別のエージェントが複数ファイル選択(`multiple`属性)を
- * このファイル選択input自体に足す作業をしているため、ロジックをここに
- * 増やさず、呼び出すだけに留める。タスクの指示)。
+ * **ファイルはOSのファイル選択ダイアログからだけ開く**(所有者の要件: パスを
+ * 人に打たせない)。Web版は隠した`<input type="file">`、デスクトップ・Androidは
+ * Tauriのダイアログ(`pickLocalFiles`)。ドラッグ&ドロップは`useFileDrop.ts`。
+ * リモートCOPCのURLは「URLから開く」ボタンで`UrlDialog`(1つの入力欄)を開く。
  *
- * `data-testid="file-input"`は`e2e/web-conversion.spec.ts`が
- * `setInputFiles`で駆動するために必須(CLAUDE.md参照)。場所が
- * `LayerPanel.tsx`からここへ変わっただけで、要素の役割(ローカルファイル選択)は
- * 変えていない。
+ * どの経路も`viewer.openFiles()`/`viewer.openFile()`を呼ぶだけの薄い呼び出し
+ * (並行して別のエージェントが複数ファイル選択の対応をしているため、ロジックは
+ * ここに増やさない)。`data-testid="file-input"`は`e2e/web-conversion.spec.ts`が
+ * `setInputFiles`で駆動するために必須(CLAUDE.md参照)。
  */
-export function RibbonFileGroup({ viewer }: Props) {
-  const [urlInput, setUrlInput] = useState("");
+export function RibbonFileGroup({ viewer, onOpenUrlDialog }: Props) {
   const busy = viewer.status === "opening" || viewer.status === "converting";
 
   return (
@@ -39,8 +38,13 @@ export function RibbonFileGroup({ viewer }: Props) {
       <div className="flex flex-wrap items-center gap-1">
         {viewer.isBrowser ? (
           <>
-            <label className={`${RIBBON_BUTTON_CLASS} flex cursor-pointer items-center bg-slate-900/90 text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900`}>
-              開く…
+            {/* 隠した<input>をラベルで包み、見た目はリボンのボタン(アイコン+ラベル)にする。 */}
+            <label
+              className={`${RIBBON_BUTTON_CLASS} ${RIBBON_BUTTON_PRIMARY_CLASS} cursor-pointer ${busy ? "pointer-events-none opacity-40" : ""}`}
+              title="ファイルを開く"
+            >
+              <FolderOpen size={20} aria-hidden="true" />
+              <span>開く</span>
               <input
                 type="file"
                 // M4-3/M4-6b/M4-9: 生のLAS/LAZ・PCDも選べる(Web版はOPFS上で
@@ -60,32 +64,15 @@ export function RibbonFileGroup({ viewer }: Props) {
                 className="sr-only"
               />
             </label>
-            <input
-              type="text"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              placeholder="COPCのURL"
-              title="COPCのURL (CORS+Rangeが必要)"
-              className={`${RIBBON_INPUT_CLASS} w-40 font-mono`}
-            />
-            <button
-              type="button"
-              onClick={() => void viewer.openFile(urlInput)}
-              disabled={busy || urlInput.trim() === ""}
-              className={RIBBON_BUTTON_CLASS}
-            >
-              {viewer.status === "opening" ? "開いています…" : "URLを開く"}
-            </button>
-            <button type="button" onClick={() => void viewer.openFile(SAMPLE_COPC_URL)} disabled={busy} className={RIBBON_BUTTON_CLASS}>
-              サンプル
-            </button>
+            <RibbonButton icon={Link2} label="URLから開く" onClick={onOpenUrlDialog} disabled={busy} />
+            <RibbonButton icon={Box} label="サンプル" onClick={() => void viewer.openFile(SAMPLE_COPC_URL)} disabled={busy} />
           </>
         ) : (
-          // デスクトップ・Android共通: OSのファイル選択ダイアログ
-          // (`tauri-plugin-dialog`)。Androidはパスを手入力できないため、
-          // これが唯一の開き方になる(TaskSheets/M3-release-and-update.md参照)。
-          <button
-            type="button"
+          <RibbonButton
+            icon={FolderOpen}
+            label={viewer.status === "opening" ? "開いています…" : viewer.status === "converting" ? "変換中…" : "開く"}
+            primary
+            disabled={busy}
             onClick={() => {
               void (async () => {
                 // M4-14: 複数選択できるダイアログ。LAS/LAZを複数選ぶと1つのCOPCへ
@@ -94,11 +81,7 @@ export function RibbonFileGroup({ viewer }: Props) {
                 if (picked && picked.length > 0) void viewer.openFiles(picked);
               })();
             }}
-            disabled={busy}
-            className={`${RIBBON_BUTTON_CLASS} bg-slate-900/90 text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900`}
-          >
-            {viewer.status === "opening" ? "開いています…" : viewer.status === "converting" ? "変換しています…" : "開く…"}
-          </button>
+          />
         )}
       </div>
     </div>

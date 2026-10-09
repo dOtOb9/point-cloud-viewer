@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import type { ThemePreference, ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { IpcBenchPanel } from "../IpcBenchPanel";
 import { NodeConcurrencyBenchPanel } from "../NodeConcurrencyBenchPanel";
 import { WebGpuProbePanel } from "../WebGpuProbePanel";
+import { Dialog } from "./Dialog";
+import { DIALOG_PRIMARY_BUTTON_CLASS } from "./dialog-styles";
 
 interface Props {
   open: boolean;
@@ -49,7 +51,6 @@ function toGiBLabel(bytes: number): string {
  * (機能は削っていない。折りたたみ式(<details>)なのは変わらず)。
  */
 export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabled, onGlassEnabledChange }: Props) {
-  const [devPathInput, setDevPathInput] = useState("");
 
   // M4-6追記: 設定画面を開いたときにOPFSの使用量を取り直す(開いている間
   // 消したあとも`refreshOpfsStorageInfo`を呼べば更新されるが、開いた直後の
@@ -64,21 +65,21 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
 
   if (!open) return null;
 
+  // ADR-0017: 共通の`Dialog`(中央・タイトルバー・フッター)に載せる。不透明なのは
+  // ADR-0005どおり(`Dialog`自体が不透明)。フッターは「閉じる」だけ。
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex max-h-[85vh] w-full max-w-3xl flex-col gap-4 overflow-y-auto rounded-2xl bg-white p-6 text-slate-900 shadow-2xl dark:bg-slate-900 dark:text-slate-100">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">設定</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="設定を閉じる"
-            className="rounded px-2 py-1 text-sm hover:bg-black/5 dark:hover:bg-white/10"
-          >
-            閉じる
-          </button>
-        </div>
-
+    <Dialog
+      open={open}
+      title="設定"
+      onClose={onClose}
+      widthClass="max-w-3xl"
+      footer={
+        <button type="button" onClick={onClose} aria-label="設定を閉じる" className={DIALOG_PRIMARY_BUTTON_CLASS}>
+          閉じる
+        </button>
+      }
+    >
+      <div className="flex flex-col gap-4">
         <section className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold opacity-70">テーマ</h3>
           <div className="flex gap-2">
@@ -142,12 +143,10 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
               空きのあるドライブ・フォルダを指定する。
             </p>
             <div className="flex items-center gap-2">
-              <input
-                type="text"
-                readOnly
-                value={viewer.tempDir ?? "(既定のまま)"}
-                className="flex-1 rounded border border-slate-300 bg-slate-50 px-2 py-1 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
-              />
+              {/* 選んだフォルダの表示だけ(入力欄ではない。変更は「選ぶ…」のOSダイアログから。ADR-0017) */}
+              <p className="min-w-0 flex-1 break-all rounded border border-slate-300 bg-slate-50 px-2 py-1 font-mono text-xs dark:border-slate-600 dark:bg-slate-800">
+                {viewer.tempDir ?? "(既定のまま)"}
+              </p>
               <button
                 type="button"
                 onClick={() => void viewer.pickAndSetTempDir()}
@@ -400,39 +399,8 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
             <IpcBenchPanel />
             <NodeConcurrencyBenchPanel />
           </div>
-
-          {/* M3: 主要UI(LayerPanel)はOSのファイル選択ダイアログに絞ったため
-              (Androidではパスを手入力できない。TaskSheets/M3-release-and-update.md参照)、
-              開発中に同じファイルを繰り返し開きたいときのための、パス直指定の
-              抜け道をここに残す。Web版には意味が無いので出さない。 */}
-          {!viewer.isBrowser && (
-            <div className="mt-3 flex flex-col gap-2 border-t border-slate-200 pt-3 dark:border-slate-700">
-              <h4 className="text-xs font-semibold opacity-70">開発用: パス指定で開く</h4>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={devPathInput}
-                  onChange={(e) => setDevPathInput(e.target.value)}
-                  placeholder="絶対パス (.laz)"
-                  className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-600 dark:bg-slate-800"
-                />
-                <button
-                  type="button"
-                  onClick={() => void viewer.openFile(devPathInput)}
-                  disabled={viewer.status === "opening" || devPathInput.trim() === ""}
-                  className="rounded bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50 dark:bg-white dark:text-slate-900"
-                >
-                  開く
-                </button>
-              </div>
-              <p className="text-xs opacity-60">
-                OSのファイル選択ダイアログを毎回出したくない開発時用。通常の利用では
-                左のレイヤーパネルの「ファイルを選ぶ…」を使う。
-              </p>
-            </div>
-          )}
         </details>
       </div>
-    </div>
+    </Dialog>
   );
 }

@@ -82,7 +82,7 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
             className="fixed inset-0 z-10 bg-black/30"
           />
         )}
-        <div className="pointer-events-none fixed bottom-11 left-0 top-14 z-10 flex max-w-[88vw] items-stretch">
+        <div className="pointer-events-none fixed bottom-11 left-0 top-[4.5rem] z-10 flex max-w-[88vw] items-stretch">
           {open && panelBody}
         </div>
         <button
@@ -100,7 +100,7 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
 
   return (
     // 上はリボン(top-3 + 高さ約4.5rem)、下はステータスバー(約2.75rem)に重ならない位置にする。
-    <div className="pointer-events-none absolute bottom-14 left-3 top-24 z-10 flex items-start gap-2">
+    <div className="pointer-events-none absolute bottom-14 left-3 top-28 z-10 flex items-start gap-2">
       {open && panelBody}
 
       <button
