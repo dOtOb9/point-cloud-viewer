@@ -4,6 +4,12 @@ import { glassSurfaceClass } from "./glass";
 import { LayerInfoSection } from "./LayerInfoSection";
 import { LayerStatsDetails } from "./LayerStatsDetails";
 
+/** レイヤー1件(ADR-0018)。今は名前だけ。将来は「どのレイヤーから何の操作で作ったか」を持たせる。 */
+interface Layer {
+  id: string;
+  name: string;
+}
+
 interface Props {
   viewer: CopcViewerState;
   open: boolean;
@@ -34,19 +40,40 @@ interface Props {
  */
 export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) {
   const narrow = useNarrowViewport();
-  const hasFile = viewer.openedFileName !== null || viewer.status === "opening" || viewer.status === "converting";
-  const layerLabel = viewer.openedFileName ?? (viewer.status === "opening" || viewer.status === "converting" ? "読み込み中…" : null);
+  // ADR-0018(機能は「選んだレイヤーから新しいレイヤーを作る」向き)に備え、レイヤー一覧と
+  // 「選択中のレイヤーid」の形で持つ。今は`useCopcViewer`が1ファイルしか持たないため、
+  // 一覧は最大1件・選択は常にその1件。state(`src/state`)は変えず、ここで形だけ揃えた
+  // (ADR-0017に記録)。複数レイヤー化するときは、この`layers`/`selectedLayerId`を
+  // stateへ引き上げるだけで、下の描画はそのまま使える。
+  const loading = viewer.status === "opening" || viewer.status === "converting";
+  const layers: Layer[] =
+    viewer.openedFileName !== null
+      ? [{ id: "current", name: viewer.openedFileName }]
+      : loading
+        ? [{ id: "current", name: "読み込み中…" }]
+        : [];
+  const selectedLayerId: string | null = layers[0]?.id ?? null;
 
   const tree = (
     <div className="flex flex-col gap-1">
       <h3 className="border-l-2 border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー</h3>
-      {hasFile && layerLabel ? (
-        <div className="flex items-center gap-2 rounded border-l-[3px] border-l-primary bg-black/5 px-2 py-1.5 text-xs dark:bg-white/10">
-          <span aria-hidden="true">📄</span>
-          <span className="min-w-0 flex-1 truncate" title={layerLabel}>
-            {layerLabel}
-          </span>
-        </div>
+      {layers.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {layers.map((layer) => (
+            <li
+              key={layer.id}
+              aria-selected={layer.id === selectedLayerId}
+              className={`flex items-center gap-2 rounded px-2 py-1.5 text-xs ${
+                layer.id === selectedLayerId ? "border-l-[3px] border-l-primary bg-black/5 dark:bg-white/10" : ""
+              }`}
+            >
+              <span aria-hidden="true">📄</span>
+              <span className="min-w-0 flex-1 truncate" title={layer.name}>
+                {layer.name}
+              </span>
+            </li>
+          ))}
+        </ul>
       ) : (
         <p className="px-2 py-1.5 text-xs opacity-60">開いているファイルはありません</p>
       )}
