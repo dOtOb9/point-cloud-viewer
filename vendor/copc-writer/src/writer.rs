@@ -810,6 +810,41 @@ fn write_copc_inner<S: CopcPointSource>(
 /// `ScratchReader`の抽象はオフセット指定の開き直しだけを提供するので、
 /// これで置き換えた。ネイティブ実装はmmap済みの領域を指すだけなので、
 /// 開き直しの実コストはほぼ無い)。
+///
+/// M4-13追記(`TaskSheets/M4-import-and-conversion.md`): `order.open_at(..)`が
+/// 返すストリームは、OPFS実装(`crates/pcv-wasm/src/opfs.rs`の
+/// `OpfsSeqReader`)では一切バッファを持たない。以前はここで
+/// `read_u32::<LittleEndian>()`(4バイト)を`node.count`回、つまり**1点につき
+/// 1回**呼んでいたため、OPFS上では無バッファの`FileSystemSyncAccessHandle.read()`
+/// JSコールが点数ぶん発生し、所有者の実機で「ノードの圧縮」の時間の大半を
+/// 占めていた(50万点のBEFORE計測で呼び出し500,020回・153秒、ノード圧縮
+/// 全体のほぼ100%)。`lod.rs`の`open_index_run`は同じ`open_at`を
+/// `BufReader::with_capacity(INDEX_IO_BUFFER_BYTES, ..)`で包んでいたが、
+/// ここだけ書き漏れていた。
+///
+/// `BufReader`で包み、1回のJS呼び出しでノード1つぶんのorderデータ
+/// (`node.count * INDEX_RECORD_BYTES`バイト、既定の`max_points_per_node`
+/// =10万点なら最大約390KiB)をまとめて読むようにする。バッファ容量は
+/// `lod.rs`の`INDEX_IO_BUFFER_BYTES`(1MiB、既存の実績ある値)と
+/// ノード自身のデータ量の小さい方(`index_buffer_bytes`)にする:
+/// ノードが1MiBより小さければ(既定設定ではほぼ常にそう)ムダに大きく
+/// 確保せず、ノードのデータ全体がちょうど1回のバッファ充填に収まる。
+/// ネイティブ実装(mmap)は元々バッファの有無で速度が変わらないため、
+/// この変更はOPFS(Web)専用の改善でも、ネイティブの挙動は変えない
+/// (出力はバイト同一のまま。読む順序・読む値は変わらず、読み出し単位が
+/// 大きくなるだけ)。
+///
+/// # メモリ
+///
+/// `encode_node_points`は`compress_nodes_sequential`・
+/// `compress_nodes_parallel`のどちらでも**常に1ノードずつ逐次**呼ばれる
+/// (`compress_nodes_parallel`は各バッチ内で`encode_node_points`を
+/// 普通の`for`ループで回してから、できあがった生バイト列の圧縮
+/// (`compress_standalone_chunk`)だけを`par_iter`で並列化している。
+/// つまりこの関数自体が複数スレッドから同時に呼ばれることは無い)。
+/// そのため、このバッファが同時に複数個存在することは無く、追加メモリの
+/// ピークは常に1インスタンスぶん: 高々`INDEX_IO_BUFFER_BYTES`
+/// (1MiB) × 同時読み出し数1 = **1MiB**。
 #[allow(clippy::too_many_arguments)]
 fn encode_node_points<S: CopcPointSource>(
     node: &crate::lod::LodNodeRange,
@@ -829,7 +864,12 @@ fn encode_node_points<S: CopcPointSource>(
         .checked_mul(record_len)
         .ok_or_else(|| Error::InvalidInput("node point buffer size overflows usize".into()))?;
     raw.resize(raw_len, 0);
-    let mut index_reader = order.open_at(node.start)?;
+    let index_buffer_bytes = node
+        .count
+        .saturating_mul(crate::lod::INDEX_RECORD_BYTES as usize)
+        .min(crate::lod::INDEX_IO_BUFFER_BYTES);
+    let mut index_reader =
+        BufReader::with_capacity(index_buffer_bytes, order.open_at(node.start)?);
     for point_index in 0..node.count {
         if point_index.is_multiple_of(CANCEL_POLL_STRIDE) {
             cancel.check()?;
