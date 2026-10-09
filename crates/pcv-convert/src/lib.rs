@@ -19,6 +19,10 @@
 //! - [`cache`][]: 「同じファイルを二度変換しない」の判定(指紋・サイドカー)
 //! - [`output_path`][]: 変換結果(`<元ファイル名>.copc.laz`)の置き場所を決める
 //! - [`disk_space`][]: 変換前の空き容量チェック(現時点ではWindowsのみ実装)
+//!
+//! ## 開発者向けツール(アプリのUI・Tauriコマンドからは呼ばない)
+//! - [`merge`][]: 隣接する多数のLAS/LAZタイルを1つのCOPCへまとめる
+//!   (`examples/merge_las_to_copc.rs`の本体。`TaskSheets/TOOL-merge-las-to-copc.md`参照)
 
 pub mod import;
 pub mod octree;
@@ -29,6 +33,7 @@ pub mod cache;
 pub mod copc_detect;
 pub mod crs_override;
 pub mod disk_space;
+pub mod merge;
 pub mod output_path;
 pub mod stage_timings;
 pub mod streaming;

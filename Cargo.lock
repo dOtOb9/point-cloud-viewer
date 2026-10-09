@@ -2692,6 +2692,7 @@ dependencies = [
  "copc-core",
  "copc-writer",
  "e57",
+ "glob",
  "las",
  "laz",
  "libc",
