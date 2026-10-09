@@ -84,5 +84,29 @@ export function formatConversionBreakdown(
   if (breakdown.opfsIoSecs !== null) {
     lines.push(`(参考)OPFSの読み書き合計: ${formatSeconds(breakdown.opfsIoSecs)}`);
   }
+  // M4-13(`TaskSheets/M4-import-and-conversion.md`): OPFSスクラッチの範囲読み
+  // (`read_at`)の統計。「ノード圧縮がLOD順に読むためspill上はランダムアクセス
+  // になり、64KiBブロックキャッシュがほぼ毎回外れる」という仮説を、所有者の
+  // 実機の数値で直接確かめられるようにする(4つとも揃っているときだけ出す。
+  // どれかがnullなら全部nullのはず=デスクトップ)。
+  if (
+    breakdown.opfsReadAtCalls !== null &&
+    breakdown.opfsCacheHits !== null &&
+    breakdown.opfsCacheMisses !== null &&
+    breakdown.opfsBytesReadFromOpfs !== null
+  ) {
+    const totalLookups = breakdown.opfsCacheHits + breakdown.opfsCacheMisses;
+    const hitRate = totalLookups > 0 ? (breakdown.opfsCacheHits / totalLookups) * 100 : 0;
+    lines.push(
+      `(参考)OPFS範囲読み(read_at): 呼び出し${breakdown.opfsReadAtCalls.toLocaleString("ja-JP")}回` +
+        `, キャッシュヒット${breakdown.opfsCacheHits.toLocaleString("ja-JP")}回` +
+        `, ミス${breakdown.opfsCacheMisses.toLocaleString("ja-JP")}回` +
+        ` (ヒット率${hitRate.toFixed(1)}%)` +
+        `, OPFSから実際に読んだバイト数: ${formatBytes(breakdown.opfsBytesReadFromOpfs)}`,
+    );
+    if (breakdown.opfsReadSecs !== null) {
+      lines.push(`(参考)OPFS範囲読みの実I/O時間: ${formatSeconds(breakdown.opfsReadSecs)}`);
+    }
+  }
   return lines.join("\n");
 }

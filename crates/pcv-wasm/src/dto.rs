@@ -10,6 +10,8 @@ use std::time::Duration;
 use copc_writer::PostProcessStageTimings;
 use serde::Serialize;
 
+use crate::opfs::OpfsReadStats;
+
 #[derive(Serialize)]
 pub struct CloudInfoDto {
     pub point_count: u64,
@@ -82,6 +84,11 @@ pub struct FinishResultDto {
 /// (`crates/pcv-wasm/src/opfs.rs`の`OpfsIoTimer`)。計測できなかった場合
 /// (理論上は無いはずだが、将来`ScratchFs`実装を切り替える可能性に備えて)
 /// `None`(JSONでは`null`)を許す。
+///
+/// `opfs_read_at_calls`以下の4つ(M4-13、`TaskSheets/M4-import-and-conversion.md`)は
+/// `opfs.rs`の`OpfsReadStats`(`read_at`の呼び出し回数・ブロックキャッシュの
+/// ヒット/ミス・OPFSから実際に読んだバイト数・読み時間)をそのまま運ぶ。
+/// `opfs_io_secs`と同じ理由で`Option`(デスクトップは常に`None`)。
 #[derive(Serialize)]
 pub struct ConversionStageBreakdownDto {
     pub source_read_and_decode_secs: f64,
@@ -91,11 +98,17 @@ pub struct ConversionStageBreakdownDto {
     pub header_and_hierarchy_write_secs: f64,
     pub total_secs: f64,
     pub opfs_io_secs: Option<f64>,
+    pub opfs_read_at_calls: Option<u64>,
+    pub opfs_cache_hits: Option<u64>,
+    pub opfs_cache_misses: Option<u64>,
+    pub opfs_bytes_read_from_opfs: Option<u64>,
+    pub opfs_read_secs: Option<f64>,
     pub point_count: u64,
     pub file_size_bytes: u64,
 }
 
 impl ConversionStageBreakdownDto {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         source_read_and_decode: Duration,
         spill_write: Duration,
@@ -103,6 +116,7 @@ impl ConversionStageBreakdownDto {
         point_count: u64,
         file_size_bytes: u64,
         opfs_io: Option<Duration>,
+        opfs_read_stats: Option<OpfsReadStats>,
     ) -> Self {
         let total = source_read_and_decode
             + spill_write
@@ -117,6 +131,11 @@ impl ConversionStageBreakdownDto {
             header_and_hierarchy_write_secs: post.header_and_hierarchy_write.as_secs_f64(),
             total_secs: total.as_secs_f64(),
             opfs_io_secs: opfs_io.map(|d| d.as_secs_f64()),
+            opfs_read_at_calls: opfs_read_stats.map(|s| s.read_at_calls),
+            opfs_cache_hits: opfs_read_stats.map(|s| s.cache_hits),
+            opfs_cache_misses: opfs_read_stats.map(|s| s.cache_misses),
+            opfs_bytes_read_from_opfs: opfs_read_stats.map(|s| s.bytes_read_from_opfs),
+            opfs_read_secs: opfs_read_stats.map(|s| s.read_time.as_secs_f64()),
             point_count,
             file_size_bytes,
         }

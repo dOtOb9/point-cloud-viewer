@@ -111,6 +111,14 @@ export type ConversionProgressDto =
  *
  * `opfs_io_secs`はWeb版だけが持つ値(OPFSへの実際の読み書きにかかった時間)。
  * デスクトップには存在しないため`null`になる。
+ *
+ * `opfs_read_at_calls`以下の4つ(M4-13、`TaskSheets/M4-import-and-conversion.md`):
+ * OPFSスクラッチの範囲読み(`ScratchReader::read_at`、`crates/pcv-wasm/src/opfs.rs`の
+ * `OpfsReadStats`)の統計。コーディネーターの仮説(ノード圧縮がLOD順に点を
+ * 読むと、元のspillファイル上ではランダムアクセスになり、64KiBブロック
+ * キャッシュがほぼ毎回外れて点数ぶんの`read`が発生している)を、所有者の
+ * 実機で直接確かめられるようにするための値。デスクトップには存在しないため
+ * `null`になる。
  */
 export interface ConversionStageBreakdownDto {
   source_read_and_decode_secs: number;
@@ -120,6 +128,11 @@ export interface ConversionStageBreakdownDto {
   header_and_hierarchy_write_secs: number;
   total_secs: number;
   opfs_io_secs: number | null;
+  opfs_read_at_calls: number | null;
+  opfs_cache_hits: number | null;
+  opfs_cache_misses: number | null;
+  opfs_bytes_read_from_opfs: number | null;
+  opfs_read_secs: number | null;
   point_count: number;
   file_size_bytes: number;
 }
@@ -133,6 +146,11 @@ export interface ConversionStageBreakdown {
   headerAndHierarchyWriteSecs: number;
   totalSecs: number;
   opfsIoSecs: number | null;
+  opfsReadAtCalls: number | null;
+  opfsCacheHits: number | null;
+  opfsCacheMisses: number | null;
+  opfsBytesReadFromOpfs: number | null;
+  opfsReadSecs: number | null;
   pointCount: number;
   fileSizeBytes: number;
 }
@@ -148,6 +166,11 @@ export function toConversionStageBreakdown(
     headerAndHierarchyWriteSecs: dto.header_and_hierarchy_write_secs,
     totalSecs: dto.total_secs,
     opfsIoSecs: dto.opfs_io_secs,
+    opfsReadAtCalls: dto.opfs_read_at_calls,
+    opfsCacheHits: dto.opfs_cache_hits,
+    opfsCacheMisses: dto.opfs_cache_misses,
+    opfsBytesReadFromOpfs: dto.opfs_bytes_read_from_opfs,
+    opfsReadSecs: dto.opfs_read_secs,
     pointCount: dto.point_count,
     fileSizeBytes: dto.file_size_bytes,
   };

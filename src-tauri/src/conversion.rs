@@ -77,6 +77,9 @@ pub enum ConversionProgressEvent {
 ///
 /// `opfs_io_secs`はOPFS(Web版だけが使う一時ファイル機構)の読み書き時間。
 /// デスクトップには存在しないため常に`None`(JSONでは`null`)。
+///
+/// `opfs_read_at_calls`以下の4つ(M4-13、`TaskSheets/M4-import-and-conversion.md`、
+/// `crates/pcv-wasm/src/dto.rs`の同名フィールド参照)も同じ理由で常に`None`。
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct ConversionStageBreakdownDto {
     pub source_read_and_decode_secs: f64,
@@ -86,6 +89,11 @@ pub struct ConversionStageBreakdownDto {
     pub header_and_hierarchy_write_secs: f64,
     pub total_secs: f64,
     pub opfs_io_secs: Option<f64>,
+    pub opfs_read_at_calls: Option<u64>,
+    pub opfs_cache_hits: Option<u64>,
+    pub opfs_cache_misses: Option<u64>,
+    pub opfs_bytes_read_from_opfs: Option<u64>,
+    pub opfs_read_secs: Option<f64>,
     pub point_count: u64,
     pub file_size_bytes: u64,
     /// M4-14: 入力ファイル数。単一ファイルの変換では常に1。複数ファイルの
@@ -109,6 +117,11 @@ impl ConversionStageBreakdownDto {
             header_and_hierarchy_write_secs: timings.header_and_hierarchy_write.as_secs_f64(),
             total_secs: timings.total().as_secs_f64(),
             opfs_io_secs: None,
+            opfs_read_at_calls: None,
+            opfs_cache_hits: None,
+            opfs_cache_misses: None,
+            opfs_bytes_read_from_opfs: None,
+            opfs_read_secs: None,
             point_count,
             file_size_bytes,
             input_file_count,

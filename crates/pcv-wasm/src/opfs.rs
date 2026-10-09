@@ -142,6 +142,66 @@ impl OpfsIoTimer {
     }
 }
 
+/// M4-13(`TaskSheets/M4-import-and-conversion.md`): `read_at`の呼び出し回数・
+/// ブロックキャッシュのヒット/ミス・OPFSから実際に読んだバイト数・読みに
+/// かかった時間の累積。コーディネーターの仮説(「ノード圧縮がLOD順に点を
+/// 走査すると、元のspillファイル上では順序がランダムになり、ほぼ毎回
+/// キャッシュミスして64KiBの`read`が点数ぶん発生している」)を実測で
+/// 確かめるための計測。1回の変換で1個の`OpfsScratchFs`しか作らないため、
+/// `OpfsIoTimer`と同じ考え方(`Rc<Cell<..>>`)で全ての`OpfsTempReader`
+/// インスタンス(spill・LOD索引の各一時ファイル)間で共有する。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpfsReadStats {
+    /// `ScratchReader::read_at`が呼ばれた回数(=呼び出し元が範囲読みを
+    /// 要求した回数。ブロックをまたぐ要求でも1回と数える)。
+    pub read_at_calls: u64,
+    /// ブロックキャッシュに命中した回数(ブロック単位。1回の`read_at`が
+    /// 複数ブロックにまたがる場合はブロックごとに数える)。
+    pub cache_hits: u64,
+    /// ブロックキャッシュを外した回数(=実際にOPFSへ`read`を発行した回数)。
+    pub cache_misses: u64,
+    /// キャッシュミス時にOPFSから実際に読んだバイト数の合計(ブロック単位、
+    /// 要求されたバイト数ではなく読み込んだブロック全体のバイト数)。
+    pub bytes_read_from_opfs: u64,
+    /// キャッシュミス時の`FileSystemSyncAccessHandle::read`呼び出しに
+    /// かかった時間の合計(`OpfsIoTimer`と同じ計測区間を使う。ヒット時は
+    /// `Instant::now()`を呼ばないため、ここに含まれない)。
+    pub read_time: Duration,
+}
+
+/// [`OpfsReadStats`]を複数の`OpfsTempReader`間で共有するための薄いラッパー。
+#[derive(Clone, Default)]
+pub struct OpfsReadCounters(Rc<Cell<OpfsReadStats>>);
+
+impl OpfsReadCounters {
+    fn record_call(&self) {
+        let mut stats = self.0.get();
+        stats.read_at_calls += 1;
+        self.0.set(stats);
+    }
+
+    fn record_hit(&self) {
+        let mut stats = self.0.get();
+        stats.cache_hits += 1;
+        self.0.set(stats);
+    }
+
+    /// キャッシュミス1回ぶんを記録する。`bytes`はOPFSから実際に読んだ
+    /// ブロックのバイト数、`elapsed`は`read_opfs_exact`1回の所要時間。
+    fn record_miss(&self, bytes: u64, elapsed: Duration) {
+        let mut stats = self.0.get();
+        stats.cache_misses += 1;
+        stats.bytes_read_from_opfs += bytes;
+        stats.read_time += elapsed;
+        self.0.set(stats);
+    }
+
+    /// 累積値を読む(`convert.rs`が`finish`の後に呼ぶ)。
+    pub fn snapshot(&self) -> OpfsReadStats {
+        self.0.get()
+    }
+}
+
 /// プールの既定サイズ。モジュールのドキュメント「プールの個数について」参照
 /// (理論上限`8*(MAX_OCTREE_DEPTH+1)+1=249`に約3割の余裕を見た値)。
 pub const OPFS_SCRATCH_POOL_SIZE: usize = 256;
@@ -203,6 +263,8 @@ pub struct OpfsScratchFs {
     output: Rc<RefCell<Option<FileSystemSyncAccessHandle>>>,
     /// M4-12: OPFSへの実際のJS呼び出しにかかった累積時間。
     timer: OpfsIoTimer,
+    /// M4-13: `read_at`の呼び出し・キャッシュヒット率・実読みバイト数の統計。
+    read_counters: OpfsReadCounters,
 }
 
 // SAFETY: wasm32-unknown-unknownはatomics無効時はシングルスレッドで動く
@@ -241,6 +303,7 @@ impl OpfsScratchFs {
             })),
             output: Rc::new(RefCell::new(Some(output_handle))),
             timer: OpfsIoTimer::default(),
+            read_counters: OpfsReadCounters::default(),
         }
     }
 
@@ -248,6 +311,12 @@ impl OpfsScratchFs {
     /// (`crates/pcv-wasm/src/convert.rs`が`finish`の後に読む)。
     pub fn io_timings(&self) -> Duration {
         self.timer.total()
+    }
+
+    /// M4-13: `read_at`の呼び出し・キャッシュヒット率・実読みバイト数の統計
+    /// (`crates/pcv-wasm/src/convert.rs`が`finish`の後に読む)。
+    pub fn read_stats(&self) -> OpfsReadStats {
+        self.read_counters.snapshot()
     }
 }
 
@@ -272,6 +341,7 @@ impl ScratchFs for OpfsScratchFs {
             index,
             pos: 0,
             timer: self.timer.clone(),
+            read_counters: self.read_counters.clone(),
         }))
     }
 
@@ -307,6 +377,7 @@ struct OpfsTempWriter {
     index: usize,
     pos: u64,
     timer: OpfsIoTimer,
+    read_counters: OpfsReadCounters,
 }
 
 impl Write for OpfsTempWriter {
@@ -352,6 +423,7 @@ impl ScratchWriter for OpfsTempWriter {
             len: len as u64,
             cache: RefCell::new(ReadCache::new()),
             timer: self.timer,
+            read_counters: self.read_counters,
         }))
     }
 
@@ -415,6 +487,8 @@ struct OpfsTempReader {
     /// 「小さな読みの集積を抑えるブロックキャッシュ」参照。
     cache: RefCell<ReadCache>,
     timer: OpfsIoTimer,
+    /// M4-13: `read_at`の呼び出し・キャッシュヒット率・実読みバイト数の統計。
+    read_counters: OpfsReadCounters,
 }
 
 impl Drop for OpfsTempReader {
@@ -450,7 +524,12 @@ impl OpfsTempReader {
             read_total += n as usize;
         }
         drop(pool);
-        self.timer.record(read_start.elapsed());
+        let elapsed = read_start.elapsed();
+        self.timer.record(elapsed);
+        // M4-13: このメソッドは`read_at`のキャッシュミス時だけ呼ばれるので、
+        // ここで1回だけ記録すればミス回数・実読みバイト数・読み時間が揃う
+        // (`read_at`側でもう一度`Instant::now()`を呼ぶ観測者効果を避ける)。
+        self.read_counters.record_miss(buf.len() as u64, elapsed);
         Ok(())
     }
 }
@@ -472,6 +551,11 @@ impl ScratchReader for OpfsTempReader {
     /// 減る。キャッシュ自体のメモリ使用量は
     /// `READ_CACHE_BLOCK_BYTES * READ_CACHE_MAX_BLOCKS`(4MiB)で固定。
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        // M4-13: 呼び出し元(`spill.rs`の`xyz_at`/`record_into`)が範囲読みを
+        // 要求した回数。コーディネーターの仮説(ノード圧縮がLOD順=spill上は
+        // ランダムな順で読むため、ほぼ毎回キャッシュミスする)を実測で
+        // 確かめるための計測。
+        self.read_counters.record_call();
         let end = offset
             .checked_add(buf.len() as u64)
             .ok_or_else(|| Error::InvalidData("OPFS scratch read offset overflow".into()))?;
@@ -493,6 +577,7 @@ impl ScratchReader for OpfsTempReader {
 
             let mut cache = self.cache.borrow_mut();
             if let Some(cached) = cache.get(block_index) {
+                self.read_counters.record_hit();
                 buf[filled..filled + want]
                     .copy_from_slice(&cached[in_block_offset..in_block_offset + want]);
                 filled += want;
@@ -696,6 +781,28 @@ mod tests {
 
         assert_eq!(timer.total(), Duration::from_millis(15));
         assert_eq!(cloned.total(), Duration::from_millis(15));
+    }
+
+    /// M4-13: `OpfsReadCounters`は`OpfsIoTimer`と同じく累積し、クローンした
+    /// 先でも同じ合計を共有する。`web_sys`に触れない純粋なロジックなので、
+    /// ネイティブで検証する。
+    #[test]
+    fn opfs_read_counters_accumulate_across_clones() {
+        let counters = OpfsReadCounters::default();
+        counters.record_call();
+        counters.record_call();
+        counters.record_hit();
+        let cloned = counters.clone();
+        cloned.record_call();
+        cloned.record_miss(1024, Duration::from_millis(3));
+
+        let stats = counters.snapshot();
+        assert_eq!(stats.read_at_calls, 3);
+        assert_eq!(stats.cache_hits, 1);
+        assert_eq!(stats.cache_misses, 1);
+        assert_eq!(stats.bytes_read_from_opfs, 1024);
+        assert_eq!(stats.read_time, Duration::from_millis(3));
+        assert_eq!(cloned.snapshot().read_at_calls, 3, "クローン先からも同じ合計が見える");
     }
 
     /// M4-11の受け入れ条件: プールを使い切ったら、黙って壊れたファイルを

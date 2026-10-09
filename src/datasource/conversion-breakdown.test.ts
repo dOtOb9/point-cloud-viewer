@@ -13,6 +13,11 @@ const DESKTOP_BREAKDOWN: ConversionStageBreakdown = {
   headerAndHierarchyWriteSecs: 0.1,
   totalSecs: 95.1,
   opfsIoSecs: null,
+  opfsReadAtCalls: null,
+  opfsCacheHits: null,
+  opfsCacheMisses: null,
+  opfsBytesReadFromOpfs: null,
+  opfsReadSecs: null,
   pointCount: 66_848_096,
   fileSizeBytes: 470_599_680, // 448.8 MiB
 };
@@ -71,6 +76,35 @@ describe("formatConversionBreakdown", () => {
     expect(text).toContain("論理コア数: 8");
     expect(text).toContain("メモリ: 約8GiB");
     expect(text).toContain("(参考)OPFSの読み書き合計: 12.500秒");
+    // この内訳自体はread_at統計を持たない(null)ので、その行は出ない。
+    expect(text).not.toContain("read_at");
+  });
+
+  it("M4-13: OPFS範囲読み(read_at)の統計がすべて揃っていれば行を追加する", () => {
+    const breakdown: ConversionStageBreakdown = {
+      ...DESKTOP_BREAKDOWN,
+      opfsIoSecs: 12.5,
+      opfsReadAtCalls: 6_199_414,
+      opfsCacheHits: 123_456,
+      opfsCacheMisses: 6_075_958,
+      opfsBytesReadFromOpfs: 6_075_958 * 65536,
+      opfsReadSecs: 9.8,
+    };
+    const meta: ConversionBreakdownMeta = {
+      platform: "web",
+      format: "las",
+      fileName: "beer.las",
+    };
+
+    const text = formatConversionBreakdown(breakdown, meta);
+
+    expect(text).toContain("read_at");
+    expect(text).toContain("呼び出し6,199,414回");
+    expect(text).toContain("キャッシュヒット123,456回");
+    expect(text).toContain("ミス6,075,958回");
+    // 123456 / (123456 + 6075958) * 100 = 1.99...% -> 2.0%
+    expect(text).toContain("ヒット率2.0%");
+    expect(text).toContain("OPFS範囲読みの実I/O時間: 9.800秒");
   });
 
   it("hardwareConcurrency/deviceMemoryGiBが無ければその行を出さない", () => {
@@ -94,6 +128,11 @@ describe("formatConversionBreakdown", () => {
       headerAndHierarchyWriteSecs: 0,
       totalSecs: 0,
       opfsIoSecs: null,
+      opfsReadAtCalls: null,
+      opfsCacheHits: null,
+      opfsCacheMisses: null,
+      opfsBytesReadFromOpfs: null,
+      opfsReadSecs: null,
       pointCount: 0,
       fileSizeBytes: 0,
     };
