@@ -359,6 +359,7 @@ pub fn run() {
             default_bench_data_path,
             copc_state::open_copc,
             conversion::start_las_conversion,
+            conversion::start_multi_las_conversion,
             conversion::cancel_las_conversion,
             conversion::supports_custom_temp_dir
         ])

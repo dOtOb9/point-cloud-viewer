@@ -35,6 +35,7 @@ use std::time::Instant;
 
 use copc_writer::CopcWriterParams;
 use pcv_convert::import::{self, SourceFormat};
+use pcv_convert::merge;
 use pcv_convert::stage_timings::ConversionStageTimings;
 use pcv_convert::streaming::{convert_and_timings, AtomicCancel, ReadProgress};
 use pcv_convert::{cache, copc_detect, disk_space, output_path};
@@ -87,10 +88,19 @@ pub struct ConversionStageBreakdownDto {
     pub opfs_io_secs: Option<f64>,
     pub point_count: u64,
     pub file_size_bytes: u64,
+    /// M4-14: 入力ファイル数。単一ファイルの変換では常に1。複数ファイルの
+    /// マージ変換(`start_multi_las_conversion`)では選択したファイル数になる
+    /// (受け入れ条件「内訳が入力ファイル数・合計サイズを示す」)。
+    pub input_file_count: u64,
 }
 
 impl ConversionStageBreakdownDto {
-    fn new(timings: ConversionStageTimings, point_count: u64, file_size_bytes: u64) -> Self {
+    fn new(
+        timings: ConversionStageTimings,
+        point_count: u64,
+        file_size_bytes: u64,
+        input_file_count: u64,
+    ) -> Self {
         Self {
             source_read_and_decode_secs: timings.source_read_and_decode.as_secs_f64(),
             spill_write_secs: timings.spill_write.as_secs_f64(),
@@ -101,6 +111,7 @@ impl ConversionStageBreakdownDto {
             opfs_io_secs: None,
             point_count,
             file_size_bytes,
+            input_file_count,
         }
     }
 }
@@ -239,6 +250,195 @@ pub fn start_las_conversion(
                 &state,
                 move || open_uri_file(&app_for_convert, &uri_for_convert),
             )
+        }
+    }
+}
+
+/// M4-14: 複数のLAS/LAZファイルを選択したときの変換開始。`pcv_convert::merge`
+/// (元は開発者向けCLI専用だったマージ本体、`TaskSheets/
+/// TOOL-merge-las-to-copc.md`参照)をそのまま呼ぶ。
+///
+/// `paths`は`start_las_conversion`と同じ文字列の並び(デスクトップのファイル
+/// システムパス、またはAndroidの`content://` URI)だが、**マージの実体
+/// (`pcv_convert::merge::summarize_headers`/`MultiFileLasPoints`)は
+/// `std::fs::File::open`/`las::Reader::from_path`というパス文字列前提の
+/// APIのままで、Androidの`content://` URIは読めない。** そのため
+/// `content://` URIが混じっていたら、変換を試みる前に明確な日本語エラーで
+/// 止める(Android複数選択への対応は本タスクでは見送った=未対応・未検証。
+/// `TaskSheets/M4-import-and-conversion.md`のM4-14参照)。
+///
+/// `paths.len() == 1`のときは`start_las_conversion`へそのまま委譲する
+/// (受け入れ条件「単一ファイルの選択は今までと同じ挙動」)。
+#[tauri::command]
+pub fn start_multi_las_conversion(
+    app: AppHandle,
+    paths: Vec<String>,
+    temp_dir: Option<String>,
+    state: State<ConversionState>,
+) -> Result<ConversionOutcome, String> {
+    if paths.len() == 1 {
+        return start_las_conversion(app, paths[0].clone(), temp_dir, state);
+    }
+    if paths.is_empty() {
+        return Err("ファイルが選択されていない".to_string());
+    }
+
+    let mut fs_paths: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for raw in &paths {
+        match FilePath::from_str(raw).unwrap_or_else(|e: std::convert::Infallible| match e {}) {
+            FilePath::Path(p) => fs_paths.push(p),
+            FilePath::Url(_) => {
+                return Err(format!(
+                    "複数ファイルの選択はこの環境(Android等のcontent:// URI)では未対応: {raw}"
+                ));
+            }
+        }
+    }
+    // `merge::collect_input_paths`(CLI向け)と同じ理由: 選んだ順序に関わらず
+    // 出力(点の並び・ファイル名)が決まるようにする。
+    fs_paths.sort();
+
+    let fingerprint = cache::multi_fingerprint_of_paths(&fs_paths)
+        .map_err(|e| format!("入力ファイルの情報取得に失敗した: {e}"))?;
+
+    let sorted_names: Vec<String> = fs_paths
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("input")
+                .to_string()
+        })
+        .collect();
+
+    let fallback_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("アプリのキャッシュディレクトリを取得できなかった: {e}"))?
+        .join("converted");
+    let output_path = output_path::resolve_multi_output_path(&sorted_names, &fallback_dir)
+        .map_err(|e| format!("出力先の決定に失敗した: {e}"))?;
+
+    if !cache::needs_remerge(fingerprint, cache::read_multi_sidecar(&output_path)) {
+        return Ok(ConversionOutcome::Cached {
+            output_path: output_path.to_string_lossy().into_owned(),
+        });
+    }
+
+    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
+    // 単一ファイル版(`decide_and_start`)と同じ理由(モジュールのドキュメント参照)。
+    redirect_os_temp_dir(&spill_dir);
+    std::fs::create_dir_all(&spill_dir).map_err(|e| {
+        format!(
+            "一時ディレクトリを作成できなかった ({}): {e}",
+            spill_dir.display()
+        )
+    })?;
+
+    let available = disk_space::free_bytes_at(&spill_dir)
+        .map_err(|e| format!("空き容量を確認できなかった ({}): {e}", spill_dir.display()))?;
+    if !disk_space::has_enough_free_space(fingerprint.total_bytes, available) {
+        return Ok(ConversionOutcome::InsufficientSpace {
+            required_bytes: disk_space::required_free_bytes(fingerprint.total_bytes),
+            available_bytes: available,
+        });
+    }
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    *state.0.lock().expect("ConversionState mutex poisoned") = Some(cancel_flag.clone());
+
+    let app_for_thread = app.clone();
+    std::thread::spawn(move || {
+        run_merge_conversion_thread(app_for_thread, fs_paths, output_path, spill_dir, fingerprint, cancel_flag);
+    });
+
+    Ok(ConversionOutcome::Converting)
+}
+
+/// M4-14: `run_conversion_thread`(単一ファイル版)の複数ファイル版。
+/// `pcv_convert::merge::merge_paths_and_timings`を呼ぶだけで、進捗・完了・
+/// 失敗イベントの組み立ては単一ファイル版と同じ形にしてある(フロント側の
+/// `src/state/useCopcViewer.ts`は単一・複数どちらの経路でも同じイベントハンドラで
+/// 受け取れる)。
+fn run_merge_conversion_thread(
+    app: AppHandle,
+    paths: Vec<PathBuf>,
+    output_path: PathBuf,
+    spill_dir: PathBuf,
+    fingerprint: cache::MultiSourceFingerprint,
+    cancel_flag: Arc<AtomicBool>,
+) {
+    let input_file_count = paths.len() as u64;
+    let started = Instant::now();
+    let app_for_progress = app.clone();
+    // M4-12と同じ理由(`run_conversion_thread`参照): マージ本体は最終的な
+    // 書き込み点数を返さないため、進捗コールバックが最後に報告した値を使う。
+    let points_read_for_breakdown = Arc::new(AtomicU64::new(0));
+    let points_read_for_breakdown_in_closure = points_read_for_breakdown.clone();
+    let on_progress = move |progress: ReadProgress| {
+        points_read_for_breakdown_in_closure.store(progress.points_read, Ordering::Relaxed);
+        let event = ConversionProgressEvent::Reading {
+            points_read: progress.points_read,
+            total_points: progress.total_points,
+            elapsed_secs: started.elapsed().as_secs_f64(),
+        };
+        if let Err(e) = app_for_progress.emit(EVENT_PROGRESS, &event) {
+            log::warn!("[conversion] progressイベントの送出に失敗した(マージ): {e}");
+        }
+        if progress.points_read == progress.total_points {
+            let event = ConversionProgressEvent::PostProcessing {
+                elapsed_secs: started.elapsed().as_secs_f64(),
+            };
+            if let Err(e) = app_for_progress.emit(EVENT_PROGRESS, &event) {
+                log::warn!("[conversion] progressイベントの送出に失敗した(マージ): {e}");
+            }
+        }
+    };
+
+    let cancel = AtomicCancel(cancel_flag);
+    let mut timings = ConversionStageTimings::default();
+    let result = merge::merge_paths_and_timings(
+        paths,
+        &output_path,
+        &spill_dir,
+        &CopcWriterParams::default(),
+        &cancel,
+        on_progress,
+        &mut timings,
+    );
+
+    match result {
+        Ok(_summary) => {
+            if let Err(e) = cache::write_multi_sidecar(&output_path, fingerprint) {
+                log::warn!(
+                    "[conversion] キャッシュ情報の保存に失敗した(次回は再変換される、マージ): {e}"
+                );
+            }
+            log::info!("[conversion] マージ完了: {}", output_path.display());
+            let point_count = points_read_for_breakdown.load(Ordering::Relaxed);
+            let event = ConversionDoneEvent {
+                output_path: output_path.to_string_lossy().into_owned(),
+                // M4-14: 複数ファイルの変換は単一拡張子を持たないため固定文字列にする
+                // (内訳テキストの「形式」欄、`conversion-breakdown.ts`参照)。
+                source_format: "las/laz(複数ファイル)".to_string(),
+                stage_timings: ConversionStageBreakdownDto::new(
+                    timings,
+                    point_count,
+                    fingerprint.total_bytes,
+                    input_file_count,
+                ),
+            };
+            if let Err(e) = app.emit(EVENT_DONE, &event) {
+                log::warn!("[conversion] done イベントの送出に失敗した(マージ): {e}");
+            }
+        }
+        Err(merge::MergeError::Write(copc_core::Error::Cancelled)) => {
+            log::info!("[conversion] マージがキャンセルされた: {}", output_path.display());
+            emit_failed(&app, "キャンセルされた".to_string(), true);
+        }
+        Err(e) => {
+            log::error!("[conversion] マージに失敗した: {e}");
+            emit_failed(&app, e.to_string(), false);
         }
     }
 }
@@ -493,7 +693,7 @@ fn run_conversion_thread(
             let event = ConversionDoneEvent {
                 output_path: output_path.to_string_lossy().into_owned(),
                 source_format: source_format_label,
-                stage_timings: ConversionStageBreakdownDto::new(timings, point_count, input_len),
+                stage_timings: ConversionStageBreakdownDto::new(timings, point_count, input_len, 1),
             };
             if let Err(e) = app.emit(EVENT_DONE, &event) {
                 log::warn!("[conversion] done イベントの送出に失敗した: {e}");
