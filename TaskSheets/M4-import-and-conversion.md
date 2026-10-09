@@ -4438,3 +4438,274 @@ npm run build       # 通った
 4. Web版でダウンロードリンクから実際にファイルをダウンロードし、開けることを
    確認する（`clearDownload`/再変換などで壊れていないか）
 
+## M4-13: 「ノードの圧縮」が遅い件の調査 — コーディネーターの仮説は反証、実際の原因は別の無バッファ読みだった(2026-10-09、Sonnet)
+
+### 所有者の計測(問題提起)
+
+Web版で5,766,330点のLAS(09LD2626.las相当、187MiB)を変換したときの内訳
+(Chrome 152、20コア):
+
+| 段階 | 秒 | 割合 |
+|---|---|---|
+| 入力の読み込みと展開 | 0.139 | 0.9% |
+| 一時ファイルへの書き込み | 0.541 | 3.5% |
+| octreeの分割(LOD) | 1.180 | 7.6% |
+| **ノードの圧縮** | **13.647** | **87.8%** |
+| 書き出し | 0.033 | 0.2% |
+| 合計 | 15.541 | |
+| (参考)OPFSの読み書き合計 | 10.400 | |
+
+### コーディネーターの仮説
+
+「`compress_nodes_sequential`→`encode_node_points`がLOD順に点を読むと、元の
+spillファイル上ではランダムアクセスになり、`vendor/copc-writer`の
+`SpillReader::record_into`(=`ScratchReader::read_at`)がOPFSの64KiBブロック
+キャッシュ(`crates/pcv-wasm/src/opfs.rs`)をほぼ毎回外し、点数ぶんの
+`FileSystemSyncAccessHandle.read`が発生しているのではないか」というもの。
+対策として、ノード内の点をspill上の昇順にソートしてから読む(COPCは
+ノード内の点順を問わない)ことが提案されていた。
+
+### Step 1: 計測を追加する
+
+`crates/pcv-wasm/src/opfs.rs`に、`OpfsReadStats`/`OpfsReadCounters`
+(`ScratchReader::read_at`の呼び出し回数・ブロックキャッシュのヒット/ミス・
+OPFSから実際に読んだバイト数・読み時間)を追加した。`OpfsIoTimer`
+(M4-12で追加済み、OPFSへの全JS呼び出しの累積時間)と同じ`Rc<Cell<..>>`共有の
+考え方。`crates/pcv-wasm/src/dto.rs`・`src-tauri/src/conversion.rs`の
+`ConversionStageBreakdownDto`に5つの`Option`フィールド
+(`opfs_read_at_calls`・`opfs_cache_hits`・`opfs_cache_misses`・
+`opfs_bytes_read_from_opfs`・`opfs_read_secs`)として追加し、
+`src/datasource/conversion-breakdown.ts`の「変換の内訳」テキストに
+既存の「(参考)OPFSの読み書き合計」と同じパターンで行を足した
+(コミット: instrumentation、先に1本)。
+
+### BEFORE計測(実データ、実ブラウザ)
+
+**環境(正直に書く)**: 所有者の実機ではなく、このエージェントが作業している
+Windowsサンドボックス上のヘッドレスChromium(`channel: "chromium"`、
+`playwright`パッケージを直接使ったアドホックなスクリプト。
+`e2e/web-conversion.spec.ts`と同じ起動設定だが、CIのPlaywrightテストとしては
+組み込んでいない使い捨てスクリプト)。データは
+`C:\rust\point-cloud-viewer\data\tokyo-shibuya\09LD2626.las`
+(**所有者の計測と同一ファイル**。ヘッダーの点数が5,766,330点で一致することを
+確認した)。
+
+**フルサイズ(5,766,330点)はヘッドレスブラウザで10分(タイムアウト設定)経っても
+終わらなかった。** 完了を待たずに計測を諦め、点数を減らしたサンプルで検証した
+(理由は下記「環境についての注意」)。LASは固定長レコードなので、ヘッダーの
+点数フィールドを書き換えてバイト列を先頭から切り詰めるだけで有効な部分集合に
+なる(`tmp_measure/truncate-las.mjs`、一時スクリプト、コミットしていない)。
+
+**50万点サンプル**(`09LD2626.las`の先頭50万点、16.2MiB):
+
+```
+入力の読み込みと展開: 0.014秒 (0.0%)
+一時ファイルへの書き込み: 0.102秒 (0.1%)
+octreeの分割(LOD): 0.173秒 (0.1%)
+ノードの圧縮: 155.409秒 (99.8%)
+書き出し: 0.004秒 (0.0%)
+合計: 155.701秒
+(参考)OPFSの読み書き合計: 154.094秒
+(参考)OPFS範囲読み(read_at): 呼び出し1,115,786回, キャッシュヒット1,114,443回,
+  ミス1,987回 (ヒット率99.8%), OPFSから実際に読んだバイト数: 124.2 MiB
+(参考)OPFS範囲読みの実I/O時間: 0.651秒
+```
+
+**200万点サンプル**(64.9MiB、最初の計測ラウンド。下記「追加の計測」の
+恒久カウンタ追加前のビルドで取得):
+
+```
+ノードの圧縮: 547.885秒 (99.0%)
+(参考)OPFSの読み書き合計: 546.293秒
+(参考)OPFS範囲読み(read_at): 呼び出し6,921,348回, キャッシュヒット6,900,933回,
+  ミス23,871回 (ヒット率99.7%), OPFSから実際に読んだバイト数: 1.46 GiB
+(参考)OPFS範囲読みの実I/O時間: 8.950秒
+```
+
+### 結果: 仮説は反証された
+
+`read_at`(spillのランダムアクセス読み)のブロックキャッシュのヒット率は
+**99.7〜99.8%**で、実際のOPFS I/O時間は合計の**1%未満**(50万点で0.651秒/
+155.7秒、200万点で8.950秒/553.4秒)。コーディネーターが疑った「LOD順の
+ランダムアクセスでキャッシュがほぼ毎回外れる」という現象は**起きていない**。
+
+(理由の推測、未検証: `partition_index_run`がoctree分割の各レベルで元の
+spill順を保ったまま子へ振り分けており〈`lod.rs`のコメント参照〉、特に
+**葉ノード**は1つの連続したrunをそのまま使うため、ノード内の点は
+spill上でもおおむね近接している。内部ノード(複数オクタントを束ねた
+粗いLOD)だけが複数の連続runを交互に読むため非連続になりうるが、全体に
+占める割合が小さく、64ブロック×64KiB=4MiBのキャッシュで十分吸収できていた
+と考えられる。)
+
+### では実際は何に時間を使っているか — 追加の計測で特定
+
+`opfs_io_secs`(OPFSへの全JS呼び出しの累積、`OpfsIoTimer`)と
+`opfs_read_secs`(`read_at`のキャッシュミス時の実I/O時間)の差が大きすぎる
+(50万点で154.094秒 vs 0.651秒、ギャップ153.4秒)。`OpfsIoTimer`は書き込み・
+flush・truncate・get_size・**`open_at`が返す逐次読み出し
+(`OpfsSeqReader::read`)もすべて合算しているため、まずこのギャップを
+一時的な(コミットしない)`thread_local`カウンタで`OpfsSeqReader::read`
+だけに絞って計測した: **呼び出し500,020回・時間118.614秒**(50万点サンプル、
+ノード圧縮120.4秒のほぼ全て)。
+
+ソースを確認すると原因は明確だった。`vendor/copc-writer/src/writer.rs`の
+`encode_node_points`:
+
+```rust
+let mut index_reader = order.open_at(node.start)?;
+for point_index in 0..node.count {
+    ...
+    let source_index = index_reader.read_u32::<LittleEndian>()...; // 4バイトずつ
+    ...
+}
+```
+
+`order.open_at(..)`が返す`Box<dyn Read + Send>`は、OPFS実装
+(`OpfsSeqReader`)では**キャッシュも`BufReader`も無い生のストリーム**で、
+`read()`1回がそのままOPFSへの`FileSystemSyncAccessHandle.read()`発行1回になる
+(`crates/pcv-wasm/src/opfs.rs`)。このループは1点につき`read_u32`(4バイト)を
+1回呼ぶため、**無バッファのOPFS `read()`が点数ぶん発生する**。これは
+コーディネーターが疑った「spillのランダムアクセス(`read_at`)」とは別の、
+「LODのorderファイルの逐次読み(`open_at`)にバッファが無い」という問題。
+
+対照的に、`lod.rs`の`open_index_run`(octree分割段階が同じ`open_at`を使う
+箇所)は`BufReader::with_capacity(INDEX_IO_BUFFER_BYTES=1MiB, ...)`で包んで
+おり、`lod_index_build_secs`は50万点で0.173秒(0.1%)・200万点で4.818秒(0.9%)と
+小さい。**`encode_node_points`の`order.open_at(node.start)`だけ
+`BufReader`で包まれていない**、という1箇所の書き漏れが支配的な原因と見られる
+(ソース上は確認したが、`BufReader`を足して直す変更自体はこのタスクの
+スコープ外なので未実施・未検証。下記「今回やらなかったこと」参照)。
+
+この発見を恒久的なカウンタとして残した: `OpfsSeqReadStats`/
+`OpfsSeqReadCounters`(`opfs.rs`、`OpfsReadStats`と同じ`Rc<Cell<..>>`共有)、
+DTOに`opfs_seq_read_calls`/`opfs_seq_read_secs`を追加、内訳テキストに
+「(参考)OPFS逐次読み(open_at)」の行を追加した。恒久カウンタを組み込んだ
+最終ビルドで同じ50万点サンプルを再計測し、シェルの`console.log`に頼っていた
+一時計測と同じ値がUIの内訳パネルに出ることを確認した:
+
+```
+(参考)OPFS逐次読み(open_at): 呼び出し500,020回, 実I/O時間: 153.314秒
+```
+
+(呼び出し500,020回 ≈ 点数500,000+LOD orderファイル自体の読み出しに伴う
+少数の余分な呼び出し。1点につきほぼ1回という仮説と一致する。)
+
+### 環境についての注意(正直に)
+
+このサンドボックス上の数値(50万点で155秒、200万点で547秒)は、**所有者の
+実機の数値と桁が大きく違う**(所有者: 576万点で13.6秒 ≈ 1点あたり2.4μs。
+このサンドボックス: 50万点で120秒 ≈ 1点あたり240μs、約100倍)。呼び出し回数
+(構造的な事実、CPU速度に依存しない)は環境によらず同じはずだが、1回あたりの
+時間はこのサンドボックスのヘッドレスChromium・仮想化・他のエージェント
+セッションとの同居による負荷などで大きく水増しされている可能性が高い
+(**未検証**: 実際に何が遅いのかは切り分けていない)。
+
+ただし、この水増しは「仮説が反証された」という結論(`read_at`のヒット率が
+99.7〜99.8%という**比率**)には影響しない。比率や呼び出し回数は負荷に
+依存しない構造的な値であり、CPU/IOが遅い環境でも「どこに時間が集中して
+いるか」という相対的な内訳は変わらないはずである(推定)。
+
+**所有者の実機でこの新しいカウンタ(`opfs_seq_read_calls`/
+`opfs_seq_read_secs`)付きのビルドを実際に走らせた値は未確認**。下記
+「所有者が自分で確認する手順」で依頼する。
+
+### 検討した代替案(仮説が反証されたため、いずれも見送り)
+
+コーディネーターが提案していた3案は、いずれも「`read_at`(spillのランダム
+アクセス)」を対象にしたものだったが、実測により`read_at`はボトルネックでは
+ないと分かったため、以下の理由でどれも実施しなかった:
+
+| 案 | 見送った理由 |
+|---|---|
+| ブロックキャッシュを大きくする | `read_at`のヒット率は既に99.7〜99.8%で、キャッシュを増やしても伸びしろがほぼ無い。実際のボトルネック(`open_at`の無バッファ読み)には効かない |
+| LOD段階でspillをノード順に並べ替える(permute) | 同上。`read_at`側は既に十分速いため、並べ替えても「ノードの圧縮」のほぼ全てを占める`open_at`側の時間は変わらない |
+| wasmスレッド(`SharedArrayBuffer`) | GitHub PagesがCOOP/COEPヘッダーを設定できないため`crossOriginIsolated`にならず使えない(`ADR-0012`で既出の制約)。仮にスレッド化できても、無バッファの`open_at`読みという根本原因(1回のJS呼び出しのオーバーヘッドが点数ぶん発生する構造)は並列化しても解消しない |
+
+### 今回やらなかったこと(今回のタスクの範囲について)
+
+**コーディネーターの指示「仮説が反証されたら、Step 1で止めて実際の原因を
+報告し、修正は実施しない」に従い、アルゴリズムやコードの修正は一切
+行っていない。** 計測(カウンタの追加)だけがこのタスクの成果物。
+
+発見した「`encode_node_points`の`order.open_at(node.start)`を
+`BufReader`で包んでいない」という問題は、修正自体は(`lod.rs`の
+`open_index_run`と同じパターンを当てはめるだけなので)小さく見えるが、
+
+- `vendor/copc-writer`のノード圧縮という、デスクトップ・Web両方が通る
+  ホットパスの変更になる
+- バイト同一性・点の集合一致などの回帰確認、ネイティブでの前後比較、
+  メモリ上限の確認(本タスクが要求していたのと同種の検証)が改めて要る
+
+ため、**別タスクとして切り出して実施することを推奨する**(このタスクの
+指示の範囲を超えるため、今回はソースを読んで原因を特定するところまでに
+留めた)。
+
+### 触ったファイル
+
+- `crates/pcv-wasm/src/opfs.rs`: `OpfsReadStats`/`OpfsReadCounters`
+  (`read_at`の計測)、`OpfsSeqReadStats`/`OpfsSeqReadCounters`
+  (`open_at`の計測)を追加
+- `crates/pcv-wasm/src/dto.rs`: `ConversionStageBreakdownDto`に
+  `opfs_read_at_calls`・`opfs_cache_hits`・`opfs_cache_misses`・
+  `opfs_bytes_read_from_opfs`・`opfs_read_secs`・`opfs_seq_read_calls`・
+  `opfs_seq_read_secs`(すべて`Option`)を追加
+- `crates/pcv-wasm/src/convert.rs`・`crates/pcv-wasm/src/pcd_import.rs`:
+  `finish()`で`OpfsScratchFs::read_stats()`/`seq_read_stats()`を呼びDTOへ渡す
+- `src-tauri/src/conversion.rs`: 対応するデスクトップ側DTOに同名フィールドを
+  追加(常に`None`、既存の`opfs_io_secs`と同じ理由)
+- `src/datasource/conversion-dto.ts`: DTO型とcamelCase変換に新フィールドを追加
+- `src/datasource/conversion-breakdown.ts`: 内訳テキストに
+  「(参考)OPFS範囲読み(read_at)」「(参考)OPFS範囲読みの実I/O時間」
+  「(参考)OPFS逐次読み(open_at)」の行を追加
+- `src/datasource/conversion-breakdown.test.ts`: 上記の表示条件のテストを追加
+- `src/wasm/pcv-wasm/*`(生成物): `npm run build:wasm`で再生成
+  (`.wasm`バイナリのみ差分、`.js`/`.d.ts`はAPI変更が無いため無差分)
+
+### 検証
+
+```bash
+cargo test --manifest-path crates/pcv-wasm/Cargo.toml --lib
+  # 28 passed(新規: opfs_seq_read_counters_accumulate_across_clones)
+cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown
+  # 成功
+cargo test --manifest-path vendor/copc-writer/Cargo.toml
+  # 21 passed(無変更、既存のまま。このタスクではvendor/copc-writerに触れていない)
+cargo test -p pcv-convert
+  # 全件pass(無変更)
+cargo check --workspace
+  # 成功(src-tauri含む)
+npm run typecheck   # 通った
+npm run lint        # 通った
+npm test            # 319 passed(既存318 + 新規1)
+```
+
+**デスクトップ経路(参考値、`crates/pcv-convert/examples/post_process_stage_bench.rs`、
+09LD2626.las、576万点、ネイティブ、修正なしなので前後比較ではなく現状値)**:
+
+```
+並列圧縮(既定): 後処理合計2.093秒(ノード圧縮1.261秒)
+逐次圧縮(--sequential-compress、Web版と同じ逐次経路): 後処理合計5.787秒(ノード圧縮4.927秒)
+```
+
+ネイティブはmmap経由でOS任せのページキャッシュを使うため(`ADR-0006`)、
+`encode_node_points`の`order.open_at`もメモリ上の読み出しに過ぎず、Web版の
+ようなJS境界越えのコストが無い。このため同じ「無バッファ」構造でもネイティブ
+では問題にならない(デスクトップ版が今まで気づかれなかった理由)。
+
+### 所有者が自分で確認する手順(未確認事項)
+
+1. **このブランチの最新コードで`npm run build:wasm && npm run build`し、
+   実機(所有者のChrome)で`09LD2626.las`(または同等の数百万点規模のLAS)を
+   変換し、「変換の内訳」パネルの「(参考)OPFS逐次読み(open_at)」の行の
+   数値を確認してほしい。** `ノードの圧縮`の秒数とほぼ一致するはずで、
+   一致すれば今回の診断(実機でも同じ要因が支配的)が裏付けられる
+2. 「(参考)OPFS範囲読み(read_at)」のヒット率が実機でも99%台かどうか
+   (このサンドボックスと違う挙動(例: 実機の方がキャッシュ効率が悪い)が
+   無いか)
+3. 変換した点群が色付きで表示されること(`hasColor: true`はこのサンドボックスの
+   ヘッドレスChromiumで確認済み。スクリーンショットで建物らしき構造物が
+   淡色で描画されていることを目視確認した。点自体の色の見分けは
+   スクリーンショットの解像度では判別しづらかったため、実機での目視確認を
+   依頼する)
+4. CIの`frontend`/`rust`ジョブが緑であること(`gh run view <run-id>`)
+
