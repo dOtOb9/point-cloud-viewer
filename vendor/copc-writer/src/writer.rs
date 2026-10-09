@@ -868,8 +868,7 @@ fn encode_node_points<S: CopcPointSource>(
         .count
         .saturating_mul(crate::lod::INDEX_RECORD_BYTES as usize)
         .min(crate::lod::INDEX_IO_BUFFER_BYTES);
-    let mut index_reader =
-        BufReader::with_capacity(index_buffer_bytes, order.open_at(node.start)?);
+    let mut index_reader = BufReader::with_capacity(index_buffer_bytes, order.open_at(node.start)?);
     for point_index in 0..node.count {
         if point_index.is_multiple_of(CANCEL_POLL_STRIDE) {
             cancel.check()?;
