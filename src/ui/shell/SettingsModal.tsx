@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { CopcViewerState, PointShape } from "../../state/useCopcViewer";
+import type { CopcViewerState } from "../../state/useCopcViewer";
 import type { ThemePreference, ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { IpcBenchPanel } from "../IpcBenchPanel";
@@ -30,34 +30,6 @@ const THEME_LABELS: Record<ThemePreference, string> = {
  *  (自由入力にしないのは、極端な値(0や負数)を誤って入れて画面が壊れる
  *  ことを避けるため)。 */
 const RENDER_SCALE_OPTIONS = [0.25, 0.5, 0.75, 1.0] as const;
-
-/**
- * 2026-10-08追記: 中央優先度の強さ・下限はスライダーに変更した。
- *
- * 以前は選択肢ボタン(0, 1, 2, 4)だったが、所有者が実機で4(選択肢の最大)を
- * 試した結果「これ以上だといいのかも」という感触だったため、4より上も
- * 自由に試せるようにスライダーにした(RENDER_SCALE_OPTIONSのような
- * 「極端な値を避ける」ボタン方式ではなく、範囲をスライダーのmin/maxで
- * 区切ることで誤操作を防ぐ)。詳細はTaskSheets/ADR-0010-lod-priority-and-point-budget.md
- * 追記4参照。
- *
- * - 強さ: 0〜16。4が所有者の実測済みの既定値。16は「4より上も試せる」
- *   ための余裕で、根拠のある上限ではない(未検証)。
- * - 下限: 0〜0.5。既定の0.2は変えていない。0.5より上にすると中央優先の
- *   効果自体が薄くなりすぎる(下限が1に近いほどgaussianの影響が消える)ため、
- *   そこで区切った。
- */
-const CENTER_PRIORITY_STRENGTH_MIN = 0;
-const CENTER_PRIORITY_STRENGTH_MAX = 16;
-const CENTER_PRIORITY_STRENGTH_STEP = 0.5;
-const MIN_CENTER_PRIORITY_WEIGHT_MIN = 0;
-const MIN_CENTER_PRIORITY_WEIGHT_MAX = 0.5;
-const MIN_CENTER_PRIORITY_WEIGHT_STEP = 0.01;
-
-const POINT_SHAPE_LABELS: Record<PointShape, string> = {
-  round: "丸",
-  square: "四角",
-};
 
 /** バイトを「約X.XGiB」の形にする(小数1桁)。`opfs.ts`の`describeInsufficientSpaceWeb`
  *  内部にも同じ式があるが、UI(src/ui)はdatasourceを直接触らずstate経由にする
@@ -246,38 +218,10 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
             <p className="text-xs opacity-60">現在値: {viewer.renderScale}（再起動なしで反映される）</p>
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs opacity-70">点の形（既定: モバイル四角 / デスクトップ丸）</label>
-            <div className="flex gap-2">
-              {(Object.keys(POINT_SHAPE_LABELS) as PointShape[]).map((shape) => (
-                <button
-                  key={shape}
-                  type="button"
-                  onClick={() => viewer.setPointShape(shape)}
-                  className={`rounded px-3 py-1.5 text-sm ${
-                    viewer.pointShape === shape
-                      ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                      : "border border-slate-300 dark:border-slate-600"
-                  }`}
-                >
-                  {POINT_SHAPE_LABELS[shape]}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs opacity-60">
-              丸は円形マスクに`discard`を使う。四角は`discard`が無いパイプラインを使うため、
-              タイル方式のGPUで早期に打ち切りやすい（判断の理由はTaskSheets/M3-release-and-update.md M3-8参照）。
-            </p>
-          </div>
-
-          <label className="flex items-center gap-2 text-xs">
-            <input type="checkbox" checked={viewer.edlEnabled} onChange={(e) => viewer.setEdlEnabled(e.target.checked)} />
-            EDL（陰影で凹凸を強調。既定: モバイルオフ / デスクトップオン）
-          </label>
-          <p className="text-xs opacity-60">
-            オフのとき、点群をオフスクリーンを経由せずスワップチェーンへ直接描く1パス描画になる
-            （メモリ帯域の往復を1回減らす）。
-          </p>
+          {/* ADR-0017: 点の形（点のサイズ）・EDLはトップリボンの「表示」グループ
+              (`RibbonViewGroup.tsx`)へ移した。タスクシートのレイアウト指定
+              (着色モード・EDL・点のサイズ・中央優先度の強さと下限はリボンへ)
+              に従った。設定画面にはここでは置かない(二重管理を避けるため)。 */}
 
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={glassEnabled} onChange={(e) => onGlassEnabledChange(e.target.checked)} />
@@ -300,65 +244,10 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
           </div>
         </section>
 
-        <section className="flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
-          <h3 className="text-sm font-semibold opacity-70">LODの中央優先度 (ADR-0010追記)</h3>
-          <p className="text-xs opacity-60">
-            所有者の要望「画面中央のチャンクを優先して細かく表示しないと使いにくい」への対応。画面空間誤差
-            （点の間隔が画面上で何ピクセルに見えるか）だけで優先度を決めると、画面の端にある近いノードと
-            中央のノードが同じ扱いになることがあった。ここの強さを上げると、画面中央に近いノードほど
-            優先度が上乗せされる（式・下限で端のノードが飢餓しないようにしている理由は
-            TaskSheets/ADR-0010-lod-priority-and-point-budget.md参照）。
-          </p>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs opacity-70" htmlFor="center-priority-strength">
-              中央優先の強さ（0 = 今までどおり画面空間誤差のみ）
-            </label>
-            <input
-              id="center-priority-strength"
-              type="range"
-              min={CENTER_PRIORITY_STRENGTH_MIN}
-              max={CENTER_PRIORITY_STRENGTH_MAX}
-              step={CENTER_PRIORITY_STRENGTH_STEP}
-              value={viewer.centerPriorityStrength}
-              onChange={(e) => viewer.setCenterPriorityStrength(Number(e.target.value))}
-            />
-            <p className="text-xs opacity-60">
-              現在値: {viewer.centerPriorityStrength}（再起動なしで反映される）。
-              これが変えるのは「中央として優先される範囲の狭さ」:
-              大きくするほど、画面中央のごく近くだけが優先され、少し離れただけで
-              優先度が急に下がる。
-              <strong>所有者が実機で0/1/2/4を試した結果、4(今の既定値)が一番良かった
-              （「これ以上だといいのかも」とのこと）。</strong>
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-xs opacity-70" htmlFor="min-center-priority-weight">
-              中央優先の重みの下限（端のノードをどれだけ後回しにしてよいか）
-            </label>
-            <input
-              id="min-center-priority-weight"
-              type="range"
-              min={MIN_CENTER_PRIORITY_WEIGHT_MIN}
-              max={MIN_CENTER_PRIORITY_WEIGHT_MAX}
-              step={MIN_CENTER_PRIORITY_WEIGHT_STEP}
-              value={viewer.minCenterPriorityWeight}
-              onChange={(e) => viewer.setMinCenterPriorityWeight(Number(e.target.value))}
-            />
-            <p className="text-xs opacity-60">
-              現在値: {viewer.minCenterPriorityWeight.toFixed(2)}（既定0.2、再起動なしで反映される）。
-              これが変えるのは「端をどれだけ後回しにしてよいか」:
-              下げるほど、画面中央のノードが画面端のノードより優先されやすくなるが、
-              下げ過ぎると画面端のノードが点予算の厳しい間ずっと読み込まれない
-              （飢餓）おそれが大きくなる。
-              <strong>
-                {viewer.minCenterPriorityWeight === 0
-                  ? " 今は0: 下限が無いのと同じで、強さを上げた状態で点予算が厳しいと、画面端のノードが実質ずっと選ばれなくなることがある。"
-                  : ""}
-              </strong>
-            </p>
-          </div>
-        </section>
+        {/* ADR-0017: LODの中央優先度(強さ・下限)はトップリボンの「表示」グループ
+            (`RibbonViewGroup.tsx`)へ移した。タスクシートのレイアウト指定通り。
+            詳しい式・既定値の根拠はTaskSheets/ADR-0010-lod-priority-and-point-budget.md
+            に変わらず残っている。 */}
 
         {/* M4-6追記: Web版だけ(OPFSという概念がTauri版には無いため`viewer.isBrowser`
             で弾く)。所有者の実機不具合「空き容量が足りません」の対処として、

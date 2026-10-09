@@ -952,6 +952,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
             "conversion",
           );
           setGpuErrors(gpuErrorLogRef.current.list());
+          recordErrorHistory(gpuErrorLogRef.current.list());
           setStatus("error");
           setError("空き容量が足りません");
           return;
@@ -966,6 +967,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
           });
           gpuErrorLogRef.current.report(message, undefined, "conversion");
           setGpuErrors(gpuErrorLogRef.current.list());
+          recordErrorHistory(gpuErrorLogRef.current.list());
           setStatus("error");
           setError("空き容量が足りません");
           void refreshOpfsStorageInfo();

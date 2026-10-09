@@ -5,22 +5,26 @@ import { useUpdateCheck } from "../../state/useUpdateCheck";
 import { useWebGpuSupport } from "../../state/useWebGpuSupport";
 import { defaultRenderSettings, readDeviceProfileInput } from "../../renderer/device-profile";
 import { ViewerPanel } from "../ViewerPanel";
-import { Dock } from "./Dock";
+import { ErrorLogDialog } from "./ErrorLogDialog";
 import { GpuErrorBanner } from "./GpuErrorBanner";
-import { InfoPanel } from "./InfoPanel";
 import { LayerPanel } from "./LayerPanel";
+import { Ribbon } from "./Ribbon";
 import { SettingsModal } from "./SettingsModal";
+import { StatusBar } from "./StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 import { UpdateNotice } from "./UpdateNotice";
 
 /**
- * M2-3: ADR-0005で決めたUIシェルの組み立て役。
+ * ADR-0017 (UIシェル再構築): UIシェルの組み立て役。
  *
- * `useCopcViewer()`をここで一度だけ呼び、canvasRefとviewer状態を各パネルへ
- * propsで配る(以前はViewerPanelの中で呼んでいたが、パネルを分割するために
- * ここへ引き上げた)。すべてのパネルはViewerPanel(canvas, absolute inset-0)の
- * 上に重ねた絶対配置の層として置く。これがADR-0005の「全面ビューア + 浮かぶガラス面」
- * の実装そのもの。
+ * レイアウトを、デスクトップの点群/GIS系ソフトに多い構成
+ * 「上部リボン + 左レイヤーツリー + 下部ステータスバー」に変えた
+ * (以前は画面下部中央のフローティングドック+左右2枚のパネル。ADR-0005時点の
+ * 構成。対応関係の詳細はADR-0017の対応表を参照)。ADR-0005の決定(全面ビューア+
+ * 浮かぶガラス面、設定モーダルだけ不透明)自体は変えていない。
+ *
+ * `useCopcViewer()`をここで一度だけ呼び、canvasRefとviewer状態を各部品へ
+ * propsで配る方針もM2-3から変えていない。
  */
 export function AppShell() {
   const [canvasRef, viewer] = useCopcViewer();
@@ -28,25 +32,23 @@ export function AppShell() {
   const webGpuSupport = useWebGpuSupport();
   const update = useUpdateCheck();
 
-  const [layerOpen, setLayerOpen] = useState(true);
-  const [infoOpen, setInfoOpen] = useState(true);
+  // 狭幅(<768px)ではドロワーが画面を覆うため、最初は閉じて点群が見えるようにする。
+  // 広い画面では従来どおり開いておく(E2Eが変換の内訳の表示を待つため、
+  // デスクトップ幅では開いていることが必要)。
+  const [layerOpen, setLayerOpen] = useState(() => !(typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [errorLogOpen, setErrorLogOpen] = useState(false);
 
   // M3-8: ガラス表現(backdrop-blur)のオン/オフ。「点群の3Dビューとは無関係な
   // 純粋なUIの見た目の設定」なので、`useCopcViewer`のCopcViewerStateには
-  // 含めず、AppShellが直接持つ(子のLayerPanel/InfoPanel/Dock/UpdateNoticeへ
-  // propsで配る。GpuErrorBanner/SettingsModalは意図的にガラスを使わないため
-  // 対象外。理由はそれぞれのファイル冒頭のコメント参照)。既定値は
+  // 含めず、AppShellが直接持つ(子のRibbon/LayerPanel/StatusBar/UpdateNoticeへ
+  // propsで配る。GpuErrorBanner/SettingsModal/ErrorLogDialogは意図的にガラスを
+  // 使わないため対象外。理由はそれぞれのファイル冒頭のコメント参照)。既定値は
   // `useCopcViewer`内部と同じ`defaultRenderSettings(readDeviceProfileInput())`
-  // から決める(同じ純粋関数を呼ぶだけなのでハンドシェイク不要。呼び出しが
-  // 2箇所に増えるが、この関数は副作用が無く呼び出しコストも無視できるほど
-  // 軽いため、共有のためだけに新しいhook/contextを作るより単純)。
+  // から決める(同じ純粋関数を呼ぶだけなのでハンドシェイク不要)。
   const [glassEnabled, setGlassEnabled] = useState(() => defaultRenderSettings(readDeviceProfileInput()).glassEnabled);
 
   // M3-5: WebGPUが確定して「非対応」だった場合はここで打ち切り、専用画面に差し替える。
-  // useCopcViewer()自体は上で呼び終えている(Reactのフックは条件分岐の前で呼ぶ規約)が、
-  // 内部のeffectは<canvas>がDOMに無ければ何もしない(canvasRef.currentがnullのまま)ので、
-  // 以降<ViewerPanel>を描画しないことで実質的に何も起動させない。
   if (webGpuSupport.status === "done" && !webGpuSupport.result.supported) {
     return <UnsupportedDeviceScreen reason={webGpuSupport.result.reason} />;
   }
@@ -55,17 +57,11 @@ export function AppShell() {
     <div className="fixed inset-0 overflow-hidden bg-black">
       <ViewerPanel canvasRef={canvasRef} />
 
-      <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
-      <InfoPanel viewer={viewer} open={infoOpen} onToggleOpen={() => setInfoOpen((v) => !v)} glassEnabled={glassEnabled} />
+      <Ribbon viewer={viewer} glassEnabled={glassEnabled} onOpenSettings={() => setSettingsOpen(true)} />
 
-      <Dock
-        layerOpen={layerOpen}
-        infoOpen={infoOpen}
-        onToggleLayer={() => setLayerOpen((v) => !v)}
-        onToggleInfo={() => setInfoOpen((v) => !v)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        glassEnabled={glassEnabled}
-      />
+      <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
+
+      <StatusBar viewer={viewer} glassEnabled={glassEnabled} onOpenErrorLog={() => setErrorLogOpen(true)} />
 
       <SettingsModal
         open={settingsOpen}
@@ -77,13 +73,13 @@ export function AppShell() {
         onGlassEnabledChange={setGlassEnabled}
       />
 
+      <ErrorLogDialog open={errorLogOpen} onClose={() => setErrorLogOpen(false)} errors={viewer.errorHistory} />
+
       {/* M3-2/M3-4: 更新通知。新しいバージョンがあるときだけ出る（デスクトップ・Android共通）。 */}
       <UpdateNotice update={update} glassEnabled={glassEnabled} />
 
-      {/* WebGPUのエラーバナー（新設）。z-50で他のすべての面より前面に出す
-          （EDL(M2-1)の事故のように画面が真っ黒になっても、devtoolsを開かずに
-          原因が読めるようにするため。詳細はGpuErrorBanner.tsx冒頭のコメント）。 */}
-      <GpuErrorBanner errors={viewer.gpuErrors} onDismiss={viewer.dismissGpuError} />
+      {/* WebGPUのエラーバナー（ADR-0011）。z-50で他のすべての面より前面に出す。 */}
+      <GpuErrorBanner errors={viewer.gpuErrors} onDismiss={viewer.dismissGpuError} onOpenErrorLog={() => setErrorLogOpen(true)} />
     </div>
   );
 }

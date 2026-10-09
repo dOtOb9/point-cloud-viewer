@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 // 規約2: `@tauri-apps/plugin-dialog`を直接importしない。DataSource側の関数
-// (`pickLocalFile`)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
-import { pickLocalFile } from "../../datasource/tauri";
+// (`pickLocalFiles`。M4-14で複数選択に対応)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
+import { pickLocalFiles } from "../../datasource/tauri";
 import { RIBBON_BUTTON_CLASS, RIBBON_GROUP_CLASS, RIBBON_GROUP_LABEL_CLASS, RIBBON_INPUT_CLASS } from "./ribbon-styles";
 
 // CORSとHTTP Rangeに対応した公開COPCのサンプル(TaskSheets/TEST-DATA.mdのautzen)。
@@ -49,9 +49,11 @@ export function RibbonFileGroup({ viewer }: Props) {
                 // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidで
                 // `setInputFiles`してファイル選択を駆動する。
                 data-testid="file-input"
+                // M4-14: 複数選択できる(`viewer.openFiles`。1件だけなら従来どおり)。
+                multiple
                 onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) void viewer.openFile(file);
+                  const files = e.target.files;
+                  if (files && files.length > 0) void viewer.openFiles(Array.from(files));
                   e.target.value = "";
                 }}
                 disabled={busy}
@@ -86,8 +88,10 @@ export function RibbonFileGroup({ viewer }: Props) {
             type="button"
             onClick={() => {
               void (async () => {
-                const picked = await pickLocalFile();
-                if (picked) void viewer.openFile(picked);
+                // M4-14: 複数選択できるダイアログ。LAS/LAZを複数選ぶと1つのCOPCへ
+                // マージする(`viewer.openFiles`)。1件だけなら従来どおり。
+                const picked = await pickLocalFiles();
+                if (picked && picked.length > 0) void viewer.openFiles(picked);
               })();
             }}
             disabled={busy}

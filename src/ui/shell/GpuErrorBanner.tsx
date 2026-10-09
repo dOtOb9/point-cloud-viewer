@@ -3,6 +3,9 @@ import type { GpuErrorEntry } from "../../state/useCopcViewer";
 interface Props {
   errors: GpuErrorEntry[];
   onDismiss: (id: number) => void;
+  /** ADR-0017: エラーログダイアログを開く（このバナーを閉じたあとも
+   *  履歴から確認できるようにする。`StatusBar`からも同じダイアログを開ける）。 */
+  onOpenErrorLog: () => void;
 }
 
 /** `error.source`ごとの見出し文言。バナーのコンポーネント名・クラス名は
@@ -52,7 +55,7 @@ const SOURCE_LABEL: Record<GpuErrorEntry["source"], string> = {
  * このバナーの存在理由そのものと矛盾する）。通常UIのライト/ダーク追従からも
  * 意図的に外し、エラーであることが一目で分かる警告色（赤系）に固定した。
  */
-export function GpuErrorBanner({ errors, onDismiss }: Props) {
+export function GpuErrorBanner({ errors, onDismiss, onOpenErrorLog }: Props) {
   if (errors.length === 0) return null;
 
   return (
@@ -76,6 +79,17 @@ export function GpuErrorBanner({ errors, onDismiss }: Props) {
                   役立つため（タスクシートの必須要件）。 */}
               <p className="mt-1 whitespace-pre-wrap break-words font-mono">{error.message}</p>
             </div>
+            {/* ADR-0017: このバナーを閉じると、現在の一覧（gpuErrors）からは
+                消えるが、履歴（errorHistory）には残る。「あとで見返したい」
+                場合の導線をここに置く。 */}
+            <button
+              type="button"
+              onClick={onOpenErrorLog}
+              title="エラーログを開く（閉じたエラーも含めて確認できる）"
+              className="shrink-0 rounded px-2 py-1 text-xs text-red-50 hover:bg-red-800"
+            >
+              ログ
+            </button>
             <button
               type="button"
               onClick={() => onDismiss(error.id)}
