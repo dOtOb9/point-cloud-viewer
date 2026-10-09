@@ -4,6 +4,7 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { DataSource, OpenedCloud } from "./DataSource";
 import {
@@ -123,6 +124,28 @@ export async function pickLocalFile(): Promise<string | null> {
  * 自体はフィルタを変えていない(受け入れ条件「単一ファイルは今までと同じ
  * 挙動」「PLY/PCD/E57の複数選択は対象外、他と一緒に選ばれたら明確なエラー」)。
  */
+/**
+ * ADR-0017: OSからウィンドウへファイルをドラッグ&ドロップしたときのイベント
+ * (デスクトップのTauri版。Webはブラウザ標準のdrop eventを`useFileDrop.ts`が直接扱う)。
+ * 規約2のため、Tauriのイベント購読はこのファイルの中に閉じ込め、呼び出し側には
+ * 「ドロップされたパス」「ドラッグ中かどうか」のコールバックと解除関数だけを見せる。
+ * ※デスクトップ/Android実機での動作は未確認(Webビルドでは呼ばれない)。
+ */
+export async function onFilesDropped(
+  onDrop: (paths: string[]) => void,
+  onHover: (hovering: boolean) => void,
+): Promise<() => void> {
+  return await getCurrentWebview().onDragDropEvent((event) => {
+    const payload = event.payload;
+    if (payload.type === "over" || payload.type === "enter") onHover(true);
+    else if (payload.type === "leave") onHover(false);
+    else if (payload.type === "drop") {
+      onHover(false);
+      if (payload.paths.length > 0) onDrop(payload.paths);
+    }
+  });
+}
+
 export async function pickLocalFiles(): Promise<string[] | null> {
   return await openFileDialog({
     multiple: true,

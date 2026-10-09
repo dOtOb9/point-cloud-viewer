@@ -229,6 +229,8 @@ export interface CopcViewerState {
    *  まだ何も開いていない・開くのに失敗した場合は`null`（UIシェル再構築で追加。
    *  左パネルのレイヤー情報に表示する）。 */
   openedFileName: string | null;
+  /** 変換ダイアログ(ConversionDialog.tsx)に出す、変換中の元ファイル名。まだ変換していなければnull。 */
+  convertingFileName: string | null;
   /** Tauri版はパス文字列、Web版はURL文字列か、ドラッグ&ドロップ/選択した`File`を渡す。 */
   openFile: (pathOrFile: string | File) => Promise<void>;
   /**
@@ -373,6 +375,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   };
   // UIシェル再構築(ADR-0017)で追加: 左パネルのレイヤー情報に出すファイル名。
   const [openedFileName, setOpenedFileName] = useState<string | null>(null);
+  // 変換ダイアログに出す「いま変換している元ファイル名」(複数選択のときは表示名)。
+  const [convertingFileName, setConvertingFileName] = useState<string | null>(null);
   // M4-3: 変換中の進捗。変換していないときはnull。
   const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
   // M4-6b: Web版の変換完了後だけ入るダウンロード用URL。
@@ -743,6 +747,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
           // 読めるように覚えておく(マウント時に1度だけ張る`onConvertDone`の
           // クロージャはこの呼び出しのスコープを知らないため)。
           convertingSourceNameRef.current = pathOrFile.name;
+          setConvertingFileName(pathOrFile.name);
           const outcome =
             format === "pcd"
               ? await source.startPcdConversion(pathOrFile, deviceProfileDefaults.isMobile)
@@ -812,6 +817,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       if (source instanceof TauriSource) {
         // M4-12: Web版と同じ理由(直前のコメント参照)。
         convertingSourceNameRef.current = basenameOfPath(path);
+        setConvertingFileName(basenameOfPath(path));
         const outcome = await startLasConversion(path, tempDir);
         switch (outcome.kind) {
           case "alreadyCopc":
@@ -919,6 +925,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     // 表示名を、変換開始前に覚えておく。選択順に依存しない表示にするため
     // 昇順ソートしてから組み立てる(要件の表示例「09LD2626 ほか54ファイル」)。
     convertingSourceNameRef.current = multiDisplayNameFor([...names].sort());
+    setConvertingFileName(convertingSourceNameRef.current);
 
     try {
       const outcome =
@@ -1122,6 +1129,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     gpuErrors,
     errorHistory,
     openedFileName,
+    convertingFileName,
     openFile,
     openFiles,
     isBrowser: !isTauriEnvironment(),
