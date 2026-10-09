@@ -62,7 +62,10 @@ pub fn resolve_output_path(source: &Path, fallback_dir: &Path) -> io::Result<Pat
 /// ファイル名が衝突しても「キャッシュが外れて作り直すだけ」で済む
 /// (`resolve_output_path`が元ファイルの指紋だけで安全性を保つのと同じ考え方)。
 pub fn multi_output_file_name(sorted_file_names: &[String]) -> String {
-    debug_assert!(!sorted_file_names.is_empty(), "呼び出し側が空でないことを保証する");
+    debug_assert!(
+        !sorted_file_names.is_empty(),
+        "呼び出し側が空でないことを保証する"
+    );
     if sorted_file_names.len() == 1 {
         return copc_output_file_name(&sorted_file_names[0]);
     }
@@ -174,7 +177,11 @@ mod tests {
     fn multi_output_file_name_is_order_independent_given_sorted_input() {
         // 呼び出し側がソート済みの配列を渡す前提なので、同じ集合なら常に
         // 同じ名前になる(受け入れ条件「同じ選択を二度変換しない」の一部)。
-        let mut names = vec!["b.las".to_string(), "a.las".to_string(), "c.las".to_string()];
+        let mut names = vec![
+            "b.las".to_string(),
+            "a.las".to_string(),
+            "c.las".to_string(),
+        ];
         names.sort();
         assert_eq!(multi_output_file_name(&names), "a ほか2ファイル.copc.laz");
     }

@@ -99,11 +99,15 @@ fn run(
     );
     println!(
         "CRS(WKT)        : {}",
-        summary.metadata.wkt_crs.as_deref().unwrap_or("(なし。CRSが失われる)")
+        summary
+            .metadata
+            .wkt_crs
+            .as_deref()
+            .unwrap_or("(なし。CRSが失われる)")
     );
 
-    let params =
-        CopcWriterParams::new(max_points_per_node).with_parallel_node_compression(!sequential_compress);
+    let params = CopcWriterParams::new(max_points_per_node)
+        .with_parallel_node_compression(!sequential_compress);
     let points = MultiFileLasPoints::new(paths, summary.declared_points_total);
 
     let t0 = Instant::now();

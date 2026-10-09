@@ -143,7 +143,10 @@ pub fn multi_fingerprint_of_paths(paths: &[PathBuf]) -> io::Result<MultiSourceFi
 }
 
 /// 複数ファイル版の`needs_reconversion`。
-pub fn needs_remerge(source: MultiSourceFingerprint, cached: Option<MultiSourceFingerprint>) -> bool {
+pub fn needs_remerge(
+    source: MultiSourceFingerprint,
+    cached: Option<MultiSourceFingerprint>,
+) -> bool {
     cached != Some(source)
 }
 

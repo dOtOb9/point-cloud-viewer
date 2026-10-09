@@ -366,7 +366,14 @@ pub fn start_multi_las_conversion(
 
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
-        run_merge_conversion_thread(app_for_thread, fs_paths, output_path, spill_dir, fingerprint, cancel_flag);
+        run_merge_conversion_thread(
+            app_for_thread,
+            fs_paths,
+            output_path,
+            spill_dir,
+            fingerprint,
+            cancel_flag,
+        );
     });
 
     Ok(ConversionOutcome::Converting)
@@ -450,7 +457,10 @@ fn run_merge_conversion_thread(
             }
         }
         Err(merge::MergeError::Write(copc_core::Error::Cancelled)) => {
-            log::info!("[conversion] マージがキャンセルされた: {}", output_path.display());
+            log::info!(
+                "[conversion] マージがキャンセルされた: {}",
+                output_path.display()
+            );
             emit_failed(&app, "キャンセルされた".to_string(), true);
         }
         Err(e) => {

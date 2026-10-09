@@ -138,10 +138,12 @@ pub fn collect_input_paths(input: &str) -> Result<Vec<PathBuf>, MergeError> {
             for entry in std::fs::read_dir(dir).map_err(MergeError::ReadDir)? {
                 let entry = entry.map_err(MergeError::ReadDir)?;
                 let path = entry.path();
-                let is_las_or_laz = path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("las") || ext.eq_ignore_ascii_case("laz"));
+                let is_las_or_laz =
+                    path.extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| {
+                            ext.eq_ignore_ascii_case("las") || ext.eq_ignore_ascii_case("laz")
+                        });
                 if is_las_or_laz {
                     found.push(path);
                 }
@@ -188,11 +190,10 @@ pub fn summarize_headers(paths: &[PathBuf]) -> Result<HeaderSummary, MergeError>
     let mut metadata: Option<CopcWriteMetadata> = None;
 
     for path in paths {
-        let reader =
-            las::Reader::from_path(path).map_err(|source| MergeError::OpenHeader {
-                path: path.clone(),
-                source,
-            })?;
+        let reader = las::Reader::from_path(path).map_err(|source| MergeError::OpenHeader {
+            path: path.clone(),
+            source,
+        })?;
         let header = reader.header();
         let this_layout = StreamingLayout::from_las_header(header);
         let this_crs = detect_crs_from_las_header(header);
@@ -532,8 +533,7 @@ mod tests {
         for name in ["b.las", "a.las", "c.laz", "ignore.txt"] {
             std::fs::File::create(dir.path().join(name)).expect("create");
         }
-        let paths = collect_input_paths(dir.path().to_str().expect("utf8 path"))
-            .expect("collect");
+        let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
         let names: Vec<_> = paths
             .iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
@@ -558,20 +558,8 @@ mod tests {
         // 3つの隣接タイルを模す。それぞれ1点だけ、バウンディングボックスの
         // 角になる座標を置く(マージ後のbounds検算をしやすくするため)。
         write_single_point_las(&dir.path().join("tile-0.las"), 0.0, 0.0, 0.0, [100, 0, 0]);
-        write_single_point_las(
-            &dir.path().join("tile-1.las"),
-            400.0,
-            0.0,
-            1.0,
-            [0, 200, 0],
-        );
-        write_single_point_las(
-            &dir.path().join("tile-2.las"),
-            0.0,
-            300.0,
-            2.0,
-            [0, 0, 300],
-        );
+        write_single_point_las(&dir.path().join("tile-1.las"), 400.0, 0.0, 1.0, [0, 200, 0]);
+        write_single_point_las(&dir.path().join("tile-2.las"), 0.0, 300.0, 2.0, [0, 0, 300]);
 
         let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
         assert_eq!(paths.len(), 3);
@@ -606,7 +594,11 @@ mod tests {
         assert_eq!(max, [400.0, 300.0, 2.0]);
 
         // hierarchyの点数合計も3であること(verify.rsと同じ確認)。
-        let hierarchy_sum: u64 = file.hierarchy().nodes().map(|n| u64::from(n.point_count)).sum();
+        let hierarchy_sum: u64 = file
+            .hierarchy()
+            .nodes()
+            .map(|n| u64::from(n.point_count))
+            .sum();
         assert_eq!(hierarchy_sum, 3);
 
         // 3入力すべての点が、実際に`read_node`で読めるノードの中に存在する
@@ -650,7 +642,10 @@ mod tests {
     #[test]
     fn multi_file_points_iterator_yields_points_from_every_input_in_order() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_multi_point_las(&dir.path().join("a.las"), &[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)]);
+        write_multi_point_las(
+            &dir.path().join("a.las"),
+            &[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)],
+        );
         write_multi_point_las(&dir.path().join("b.las"), &[(2.0, 2.0, 2.0)]);
 
         let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
@@ -691,7 +686,11 @@ mod tests {
         writer
             .write_point(las::Point {
                 gps_time: Some(0.0), // PDRF3はGPS時刻が必須
-                color: Some(las::Color { red: 1, green: 1, blue: 1 }),
+                color: Some(las::Color {
+                    red: 1,
+                    green: 1,
+                    blue: 1,
+                }),
                 ..Default::default()
             })
             .expect("write point");
@@ -749,7 +748,10 @@ mod tests {
         builder.transforms = las::Vector {
             x: las::Transform { scale, offset },
             y: las::Transform { scale, offset },
-            z: las::Transform { scale: 0.001, offset: 0.0 },
+            z: las::Transform {
+                scale: 0.001,
+                offset: 0.0,
+            },
         };
         let header = builder.into_header().expect("valid header");
         let file = std::fs::File::create(path).expect("create las");
@@ -761,7 +763,11 @@ mod tests {
                 y,
                 z,
                 gps_time: Some(0.0), // PDRF3はGPS時刻が必須
-                color: Some(las::Color { red: 10, green: 20, blue: 30 }),
+                color: Some(las::Color {
+                    red: 10,
+                    green: 20,
+                    blue: 30,
+                }),
                 ..Default::default()
             })
             .expect("write point");
@@ -785,7 +791,14 @@ mod tests {
     #[test]
     fn merging_with_different_scale_and_offset_keeps_real_world_coordinates() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_single_point_las_with_transform(&dir.path().join("tile-a.las"), 0.0, 0.0, 0.0, 0.001, 0.0);
+        write_single_point_las_with_transform(
+            &dir.path().join("tile-a.las"),
+            0.0,
+            0.0,
+            0.0,
+            0.001,
+            0.0,
+        );
         write_single_point_las_with_transform(
             &dir.path().join("tile-b.las"),
             123.46,
@@ -823,18 +836,29 @@ mod tests {
         // (1e-6)で比較する(浮動小数演算の丸め誤差はあるが、scale/offsetの
         // 取り違え(例: offsetの100000がそのまま残る等)なら誤差は0.001を
         // はるかに超えるので、この許容幅でも取り違えは確実に検出できる)。
-        let close = |a: [f64; 3], b: [f64; 3]| {
-            a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() < 1e-6)
-        };
-        assert!(close(file.info().min, [0.0, -50.0, 0.0]), "min={:?}", file.info().min);
-        assert!(close(file.info().max, [123.46, 0.0, 1.0]), "max={:?}", file.info().max);
+        let close =
+            |a: [f64; 3], b: [f64; 3]| a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(
+            close(file.info().min, [0.0, -50.0, 0.0]),
+            "min={:?}",
+            file.info().min
+        );
+        assert!(
+            close(file.info().max, [123.46, 0.0, 1.0]),
+            "max={:?}",
+            file.info().max
+        );
 
         // hierarchyの点数合計もbounds同様2であること(`NodeBuffer`はノード
         // ローカル相対座標のバイナリ形式(`node_format.rs`)にエンコードされて
         // いるため、ここでは個々の点のXYZまでは解きなおさない。bounds
         // (min/max)が入力2点の実世界座標そのものと一致していることで、
         // 量子化のやり直しが正しく行われたことは確認できている)。
-        let hierarchy_sum: u64 = file.hierarchy().nodes().map(|n| u64::from(n.point_count)).sum();
+        let hierarchy_sum: u64 = file
+            .hierarchy()
+            .nodes()
+            .map(|n| u64::from(n.point_count))
+            .sum();
         assert_eq!(hierarchy_sum, 2);
     }
 
@@ -843,7 +867,10 @@ mod tests {
     #[test]
     fn merge_paths_and_timings_reports_progress_and_correct_metadata() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_multi_point_las(&dir.path().join("a.las"), &[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)]);
+        write_multi_point_las(
+            &dir.path().join("a.las"),
+            &[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)],
+        );
         write_multi_point_las(&dir.path().join("b.las"), &[(2.0, 2.0, 2.0)]);
         let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
 
