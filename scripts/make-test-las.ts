@@ -36,6 +36,19 @@ export interface SyntheticLasOptions {
   pointCount?: number;
   /** 疑似乱数の種。既定値を固定し、テストのたびに同じ点群を再現できるようにする。 */
   seed?: number;
+  /**
+   * M4-14: ヘッダーのX/Y/Z offset(既定0,0,0)。複数ファイルをマージする
+   * 受け入れ条件(「異なるscale/offsetを持つ入力を混ぜても座標が正しい」)を
+   * 実ブラウザのE2E(`e2e/web-multi-conversion.spec.ts`)で確かめるため、
+   * ファイルごとに異なる値を指定できるようにした。点の生のXYZ(ローカル座標、
+   * 0〜50m四方)は変えず、ヘッダーのoffsetだけを変えることで、実世界座標
+   * (`offset + raw*scale`)がファイルごとに異なる場所になる
+   * (`crates/pcv-convert/src/merge.rs`のscale/offsetに関する設計ドキュメント
+   * 「`LasPointRecord`は実世界座標(f64)を運ぶ」を、合成データでも再現する)。
+   */
+  offsetX?: number;
+  offsetY?: number;
+  offsetZ?: number;
 }
 
 interface SyntheticPoint {
@@ -103,6 +116,9 @@ function writeAscii(view: DataView, offset: number, text: string, fieldLength: n
 export function buildSyntheticLas(options: SyntheticLasOptions = {}): Uint8Array {
   const pointCount = options.pointCount ?? 2000;
   const seed = options.seed ?? 1;
+  const offsetX = options.offsetX ?? 0;
+  const offsetY = options.offsetY ?? 0;
+  const offsetZ = options.offsetZ ?? 0;
   const points = generatePoints(pointCount, seed);
 
   const totalSize = HEADER_SIZE + pointCount * POINT_RECORD_LENGTH;
@@ -170,23 +186,25 @@ export function buildSyntheticLas(options: SyntheticLasOptions = {}): Uint8Array
   o += 8;
   view.setFloat64(o, SCALE, true); // Z scale factor
   o += 8;
-  view.setFloat64(o, 0, true); // X offset
+  view.setFloat64(o, offsetX, true); // X offset
   o += 8;
-  view.setFloat64(o, 0, true); // Y offset
+  view.setFloat64(o, offsetY, true); // Y offset
   o += 8;
-  view.setFloat64(o, 0, true); // Z offset
+  view.setFloat64(o, offsetZ, true); // Z offset
   o += 8;
-  view.setFloat64(o, maxX, true);
+  // Max/Min(実世界座標 = offset + raw*scale。M4-14追記: offsetが0でない
+  // 場合も正しくbounds表示されるようにする)。
+  view.setFloat64(o, offsetX + maxX, true);
   o += 8;
-  view.setFloat64(o, minX, true);
+  view.setFloat64(o, offsetX + minX, true);
   o += 8;
-  view.setFloat64(o, maxY, true);
+  view.setFloat64(o, offsetY + maxY, true);
   o += 8;
-  view.setFloat64(o, minY, true);
+  view.setFloat64(o, offsetY + minY, true);
   o += 8;
-  view.setFloat64(o, maxZ, true);
+  view.setFloat64(o, offsetZ + maxZ, true);
   o += 8;
-  view.setFloat64(o, minZ, true);
+  view.setFloat64(o, offsetZ + minZ, true);
   o += 8;
 
   if (o !== HEADER_SIZE) {
