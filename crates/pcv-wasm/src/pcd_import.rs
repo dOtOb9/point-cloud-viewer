@@ -393,6 +393,7 @@ impl WasmPcdConverter {
                 Some(self.fs.io_timings()),
                 Some(self.fs.read_stats()),
                 Some(self.fs.seq_read_stats()),
+                1, // M4-14: PCDは複数ファイル選択に未対応(常に1ファイル)。
             ),
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)

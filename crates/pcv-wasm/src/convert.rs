@@ -162,6 +162,7 @@ use std::time::Duration;
 use copc_core::{deserialize_le, serialize_le, LasPointRecord, NeverCancel, StreamingLayout};
 use copc_writer::{write_copc_from_spill_with_fs_and_timings, CopcWriterParams, SpillWriter};
 use js_sys::Array;
+use pcv_core::crs::{detect_crs_from_las_header, Crs};
 use wasm_bindgen::prelude::*;
 use web_sys::{File, FileSystemSyncAccessHandle};
 use web_time::Instant;
@@ -192,6 +193,61 @@ pub(crate) fn handles_from_js_array(
         handles.push(handle);
     }
     Ok(handles)
+}
+
+/// M4-14: `open_next_file`の比較ロジック本体。`JsValue`/`web_sys::File`に
+/// 依存しない純粋関数にして、ネイティブの`cargo test`から検証できるように
+/// する(`range_math.rs`/`RangeDecompressorCore`と同じ考え方。`WasmConverter`
+/// 自体は`web_sys`の型を持つため、ネイティブではインスタンス化できない)。
+fn check_layout_and_crs_match(
+    current_layout: &StreamingLayout,
+    new_layout: &StreamingLayout,
+    current_crs: Crs,
+    new_crs: Crs,
+) -> Result<(), String> {
+    if new_layout != current_layout {
+        return Err(format!(
+            "入力ファイルの点フォーマットが一致しない({new_layout:?} != {current_layout:?})"
+        ));
+    }
+    if new_crs != current_crs {
+        return Err(format!(
+            "入力ファイルのCRSが一致しない({new_crs:?} != {current_crs:?})"
+        ));
+    }
+    Ok(())
+}
+
+/// M4-14: 複数ファイル選択時の事前確認。`file`の**ヘッダーだけ**を読み
+/// (`las::Reader::new`はヘッダー+VLRしか読まず、点データは`fill_points`を
+/// 呼ぶまで読まれない。デスクトップ版`pcv_convert::merge::summarize_headers`の
+/// ドキュメントと同じ理由)、point format・CRS・申告点数・ファイルサイズを
+/// 返す。
+///
+/// `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::Crs`の`Debug`
+/// 表示そのまま。呼び出し側(`src/datasource/copc.worker.ts`)は文字列として
+/// `===`比較するだけで、中身の構造は解釈しない(デスクトップ版の
+/// `MergeError::LayoutMismatch`/`CrsMismatch`のエラー文言と同じく`{:?}`を使う。
+/// 値を2箇所で比較するための「比較可能な文字列」として十分という判断)。
+#[wasm_bindgen(js_name = inspectLasHeaderSummary)]
+pub fn inspect_las_header_summary(file: File) -> Result<JsValue, JsValue> {
+    let file_size_bytes = file.size() as u64;
+    let stats = Stats::new();
+    let source = FileRangeReader::new(file, stats);
+    let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
+    let reader = las::Reader::new(buffered).map_err(to_js_error)?;
+
+    let layout = StreamingLayout::from_las_header(reader.header());
+    let crs = detect_crs_from_las_header(reader.header());
+    let declared_points = reader.header().number_of_points();
+
+    let dto = crate::dto::HeaderSummaryDto {
+        declared_points: declared_points as f64,
+        layout_key: format!("{layout:?}"),
+        crs_label: format!("{crs:?}"),
+        file_size_bytes: file_size_bytes as f64,
+    };
+    serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
 }
 
 #[wasm_bindgen]
@@ -228,7 +284,17 @@ pub struct WasmConverter {
     /// (`SpillWriter::push`。同じくバッチ単位でしか`Instant::now()`を呼ばない)。
     spill_write: Duration,
     /// M4-12: 内訳のコピー用テキストに入れる、入力ファイルのバイト数。
+    /// M4-14: 複数ファイル選択時は`open_next_file`を呼ぶたびに加算される
+    /// (合計サイズ)。
     file_size_bytes: u64,
+    /// M4-14: 先頭ファイルから判定したCRS。`open_next_file`が、以降の
+    /// ファイルがこれと一致することを確認する(デスクトップ版
+    /// `pcv_convert::merge::summarize_headers`と同じ確認を複数ファイル選択の
+    /// Web経路でも行う)。
+    crs: Crs,
+    /// M4-14: これまでに`open_next_file`で開いたファイル数(先頭の1を含む)。
+    /// 内訳の「入力ファイル数」表示に使う。
+    input_file_count: u64,
 }
 
 #[wasm_bindgen]
@@ -259,6 +325,7 @@ impl WasmConverter {
         let reader = las::Reader::new(buffered).map_err(to_js_error)?;
 
         let layout = StreamingLayout::from_las_header(reader.header());
+        let crs = detect_crs_from_las_header(reader.header());
         let metadata = copc_write_metadata_from_source_header(reader.header());
         let total_points = reader.header().number_of_points();
         let point_data = las::PointDataBuilder::new()
@@ -283,6 +350,8 @@ impl WasmConverter {
             source_read_and_decode: Duration::ZERO,
             spill_write: Duration::ZERO,
             file_size_bytes,
+            crs,
+            input_file_count: 1,
         })
     }
 
@@ -302,6 +371,52 @@ impl WasmConverter {
     #[wasm_bindgen(js_name = recordWidth)]
     pub fn record_width(&self) -> u32 {
         self.layout.record_width() as u32
+    }
+
+    /// M4-14: 複数ファイル選択時、このファイルを読み終えた後に次のファイルへ
+    /// 切り替える。`spill`(1本のoctree用の書き込み先)・`metadata`・`params`は
+    /// そのまま使い続け、読み込み元(`reader`/`point_data`)だけを入れ替える
+    /// (デスクトップ版`pcv_convert::merge::MultiFileLasPoints`が複数ファイルを
+    /// 1本のイテレータにまとめるのと同じ考え方。モジュール冒頭のドキュメント
+    /// 「M4-7」の設計がWeb版でも成立する根拠(`SpillWriter::push`は呼ばれた
+    /// 順にその場で蓄積するだけ)は、ここでも変わらない)。
+    ///
+    /// 呼び出し側(`src/datasource/copc.worker.ts`)は、呼ぶ前に
+    /// `inspectLasHeaderSummary`で全ファイルのpoint format・CRSが一致することを
+    /// 確認している前提だが、ここでも同じ確認をもう一度行う(触った関数の
+    /// 周りはpanicしない形にする、CLAUDE.mdのエラー処理方針。TypeScript側の
+    /// 確認漏れ・不整合があっても、ここで明確なエラーとして止まる)。
+    #[wasm_bindgen(js_name = openNextFile)]
+    pub fn open_next_file(&mut self, file: File) -> Result<(), JsValue> {
+        let stats = Stats::new();
+        let source = FileRangeReader::new(file, stats);
+        let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
+        let reader = las::Reader::new(buffered).map_err(to_js_error)?;
+
+        let layout = StreamingLayout::from_las_header(reader.header());
+        let crs = detect_crs_from_las_header(reader.header());
+        check_layout_and_crs_match(&self.layout, &layout, self.crs, crs)
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        let point_data = las::PointDataBuilder::new()
+            .for_header(reader.header())
+            .build();
+        self.input_file_count += 1;
+        self.reader = reader;
+        self.point_data = point_data;
+        Ok(())
+    }
+
+    /// M4-14: 複数ファイル選択時、全ファイルのヘッダー確認
+    /// (`inspectLasHeaderSummary`)で事前に計算した合計点数・合計サイズで
+    /// 上書きする。`new()`時点では先頭ファイルのヘッダーしか見えていない
+    /// ため(`totalPoints()`はまだ1ファイル分)、全体の進捗バー・内訳表示を
+    /// 正しくするために呼ぶ(呼ばなければ単一ファイルの値のまま=既存の
+    /// 単一ファイル経路は無変更)。
+    #[wasm_bindgen(js_name = setDeclaredTotals)]
+    pub fn set_declared_totals(&mut self, total_points: f64, total_file_size_bytes: f64) {
+        self.total_points = total_points as u64;
+        self.file_size_bytes = total_file_size_bytes as u64;
     }
 
     /// M4-7: 並列展開Worker(`decompress_laz_range`)が返したバイト列を
@@ -438,6 +553,7 @@ impl WasmConverter {
                 Some(self.fs.io_timings()),
                 Some(self.fs.read_stats()),
                 Some(self.fs.seq_read_stats()),
+                self.input_file_count,
             ),
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
@@ -603,6 +719,45 @@ impl RangeDecompressorCore {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn layout_for_point_format(format: u8) -> StreamingLayout {
+        let mut builder = las::Builder::from((1, 2));
+        builder.point_format = las::point::Format::new(format).expect("有効なpoint format");
+        let header = builder.into_header().expect("valid header");
+        StreamingLayout::from_las_header(&header)
+    }
+
+    /// M4-14受け入れ条件: 複数ファイル選択時、point formatが一致しない
+    /// 入力は明確なエラーで拒否する(デスクトップ版
+    /// `pcv_convert::merge::MergeError::LayoutMismatch`と同じ確認)。
+    #[test]
+    fn check_layout_and_crs_match_rejects_different_layout() {
+        let layout3 = layout_for_point_format(3);
+        let layout0 = layout_for_point_format(0);
+
+        let err = check_layout_and_crs_match(&layout3, &layout0, Crs::Unknown, Crs::Unknown);
+        assert!(err.is_err());
+    }
+
+    /// M4-14受け入れ条件: CRSが異なる入力は明確なエラーで拒否する
+    /// (デスクトップ版`MergeError::CrsMismatch`と同じ確認)。
+    #[test]
+    fn check_layout_and_crs_match_rejects_different_crs() {
+        let layout = layout_for_point_format(3);
+        let crs_a = Crs::from_epsg(6677); // JGD2011 平面直角座標系IX系
+        let crs_b = Crs::from_epsg(32654); // UTM54N
+
+        let err = check_layout_and_crs_match(&layout, &layout, crs_a, crs_b);
+        assert!(err.is_err());
+    }
+
+    /// 両方`Crs::Unknown`(CRS情報が無い)どうしは一致として扱う
+    /// (デスクトップ版と同じ方針。モジュール冒頭のドキュメント参照)。
+    #[test]
+    fn check_layout_and_crs_match_allows_matching_layout_and_unknown_crs() {
+        let layout = layout_for_point_format(3);
+        assert!(check_layout_and_crs_match(&layout, &layout, Crs::Unknown, Crs::Unknown).is_ok());
+    }
 
     /// 複数チャンク(LAZの既定チャンクサイズはおよそ5万点)にまたがる
     /// 合成LAZを、メモリ上の`Vec<u8>`として作る。`las::Writer`はパス越しの

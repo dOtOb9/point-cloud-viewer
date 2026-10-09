@@ -54,6 +54,21 @@ impl From<&pcv_core::HierarchyNode> for HierarchyNodeDto {
     }
 }
 
+/// M4-14: `inspectLasHeaderSummary`が返す、1ファイルのヘッダーだけの要約。
+/// `src/datasource/copc.worker.ts`の`handleConvertMultiStart`が、複数ファイル
+/// 選択時の事前確認(point format・CRSの一致、合計点数)に使う
+/// (デスクトップ/Android版`pcv_convert::merge::summarize_headers`と同じ目的。
+/// ただしWeb版はTypeScript側で比較する。`layout_key`/`crs_label`は
+/// `StreamingLayout`/`pcv_core::crs::Crs`の`Debug`表示そのままで、
+/// JS側は文字列の`===`比較にしか使わない=中身の構造を解釈しない)。
+#[derive(Serialize)]
+pub struct HeaderSummaryDto {
+    pub declared_points: f64,
+    pub layout_key: String,
+    pub crs_label: String,
+    pub file_size_bytes: f64,
+}
+
 /// M4-6b: `WasmConverter::feed`が返す、読み込み段階の進捗。
 /// `src/datasource/conversion-dto.ts`の`ConversionProgressDto`(`phase:
 /// "reading"`)と対応させる(デスクトップ版・M4-3と同じ見せ方にそろえる)。
@@ -115,6 +130,11 @@ pub struct ConversionStageBreakdownDto {
     pub opfs_seq_read_secs: Option<f64>,
     pub point_count: u64,
     pub file_size_bytes: u64,
+    /// M4-14: 入力ファイル数。単一ファイルの変換では常に1。複数ファイルの
+    /// マージ変換(`WasmConverter`を複数ファイルで使う経路)では選択した
+    /// ファイル数になる(デスクトップ版`src-tauri/src/conversion.rs`の
+    /// 同名フィールドと対応)。
+    pub input_file_count: u64,
 }
 
 impl ConversionStageBreakdownDto {
@@ -128,6 +148,7 @@ impl ConversionStageBreakdownDto {
         opfs_io: Option<Duration>,
         opfs_read_stats: Option<OpfsReadStats>,
         opfs_seq_read_stats: Option<OpfsSeqReadStats>,
+        input_file_count: u64,
     ) -> Self {
         let total = source_read_and_decode
             + spill_write
@@ -151,6 +172,7 @@ impl ConversionStageBreakdownDto {
             opfs_seq_read_secs: opfs_seq_read_stats.map(|s| s.seq_read_time.as_secs_f64()),
             point_count,
             file_size_bytes,
+            input_file_count,
         }
     }
 }

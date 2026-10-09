@@ -158,6 +158,28 @@ export class WasmConverter {
         return this;
     }
     /**
+     * M4-14: 複数ファイル選択時、このファイルを読み終えた後に次のファイルへ
+     * 切り替える。`spill`(1本のoctree用の書き込み先)・`metadata`・`params`は
+     * そのまま使い続け、読み込み元(`reader`/`point_data`)だけを入れ替える
+     * (デスクトップ版`pcv_convert::merge::MultiFileLasPoints`が複数ファイルを
+     * 1本のイテレータにまとめるのと同じ考え方。モジュール冒頭のドキュメント
+     * 「M4-7」の設計がWeb版でも成立する根拠(`SpillWriter::push`は呼ばれた
+     * 順にその場で蓄積するだけ)は、ここでも変わらない)。
+     *
+     * 呼び出し側(`src/datasource/copc.worker.ts`)は、呼ぶ前に
+     * `inspectLasHeaderSummary`で全ファイルのpoint format・CRSが一致することを
+     * 確認している前提だが、ここでも同じ確認をもう一度行う(触った関数の
+     * 周りはpanicしない形にする、CLAUDE.mdのエラー処理方針。TypeScript側の
+     * 確認漏れ・不整合があっても、ここで明確なエラーとして止まる)。
+     * @param {File} file
+     */
+    openNextFile(file) {
+        const ret = wasm.wasmconverter_openNextFile(this.__wbg_ptr, file);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * M4-7: 並列展開Worker(`decompress_laz_range`)が返したバイト列を
      * spillへ書く。バイト列は`recordWidth()`ちょうどの倍数の長さを持つ、
      * `copc_core::serialize_le`形式のレコードが連続したものであること。
@@ -187,6 +209,19 @@ export class WasmConverter {
     recordWidth() {
         const ret = wasm.wasmconverter_recordWidth(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * M4-14: 複数ファイル選択時、全ファイルのヘッダー確認
+     * (`inspectLasHeaderSummary`)で事前に計算した合計点数・合計サイズで
+     * 上書きする。`new()`時点では先頭ファイルのヘッダーしか見えていない
+     * ため(`totalPoints()`はまだ1ファイル分)、全体の進捗バー・内訳表示を
+     * 正しくするために呼ぶ(呼ばなければ単一ファイルの値のまま=既存の
+     * 単一ファイル経路は無変更)。
+     * @param {number} total_points
+     * @param {number} total_file_size_bytes
+     */
+    setDeclaredTotals(total_points, total_file_size_bytes) {
+        wasm.wasmconverter_setDeclaredTotals(this.__wbg_ptr, total_points, total_file_size_bytes);
     }
     /**
      * 入力の総点数(ヘッダーの申告値)。TypeScript側
@@ -400,6 +435,29 @@ if (Symbol.dispose) WasmPcdConverter.prototype[Symbol.dispose] = WasmPcdConverte
  */
 export function init_panic_hook() {
     wasm.init_panic_hook();
+}
+
+/**
+ * M4-14: 複数ファイル選択時の事前確認。`file`の**ヘッダーだけ**を読み
+ * (`las::Reader::new`はヘッダー+VLRしか読まず、点データは`fill_points`を
+ * 呼ぶまで読まれない。デスクトップ版`pcv_convert::merge::summarize_headers`の
+ * ドキュメントと同じ理由)、point format・CRS・申告点数・ファイルサイズを
+ * 返す。
+ *
+ * `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::Crs`の`Debug`
+ * 表示そのまま。呼び出し側(`src/datasource/copc.worker.ts`)は文字列として
+ * `===`比較するだけで、中身の構造は解釈しない(デスクトップ版の
+ * `MergeError::LayoutMismatch`/`CrsMismatch`のエラー文言と同じく`{:?}`を使う。
+ * 値を2箇所で比較するための「比較可能な文字列」として十分という判断)。
+ * @param {File} file
+ * @returns {any}
+ */
+export function inspectLasHeaderSummary(file) {
+    const ret = wasm.inspectLasHeaderSummary(file);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
 }
 
 /**

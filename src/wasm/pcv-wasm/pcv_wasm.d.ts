@@ -90,6 +90,22 @@ export class WasmConverter {
      */
     constructor(file: File, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
     /**
+     * M4-14: 複数ファイル選択時、このファイルを読み終えた後に次のファイルへ
+     * 切り替える。`spill`(1本のoctree用の書き込み先)・`metadata`・`params`は
+     * そのまま使い続け、読み込み元(`reader`/`point_data`)だけを入れ替える
+     * (デスクトップ版`pcv_convert::merge::MultiFileLasPoints`が複数ファイルを
+     * 1本のイテレータにまとめるのと同じ考え方。モジュール冒頭のドキュメント
+     * 「M4-7」の設計がWeb版でも成立する根拠(`SpillWriter::push`は呼ばれた
+     * 順にその場で蓄積するだけ)は、ここでも変わらない)。
+     *
+     * 呼び出し側(`src/datasource/copc.worker.ts`)は、呼ぶ前に
+     * `inspectLasHeaderSummary`で全ファイルのpoint format・CRSが一致することを
+     * 確認している前提だが、ここでも同じ確認をもう一度行う(触った関数の
+     * 周りはpanicしない形にする、CLAUDE.mdのエラー処理方針。TypeScript側の
+     * 確認漏れ・不整合があっても、ここで明確なエラーとして止まる)。
+     */
+    openNextFile(file: File): void;
+    /**
      * M4-7: 並列展開Worker(`decompress_laz_range`)が返したバイト列を
      * spillへ書く。バイト列は`recordWidth()`ちょうどの倍数の長さを持つ、
      * `copc_core::serialize_le`形式のレコードが連続したものであること。
@@ -108,6 +124,15 @@ export class WasmConverter {
      * 戻り値を別途やり取りする手間を省くため)。
      */
     recordWidth(): number;
+    /**
+     * M4-14: 複数ファイル選択時、全ファイルのヘッダー確認
+     * (`inspectLasHeaderSummary`)で事前に計算した合計点数・合計サイズで
+     * 上書きする。`new()`時点では先頭ファイルのヘッダーしか見えていない
+     * ため(`totalPoints()`はまだ1ファイル分)、全体の進捗バー・内訳表示を
+     * 正しくするために呼ぶ(呼ばなければ単一ファイルの値のまま=既存の
+     * 単一ファイル経路は無変更)。
+     */
+    setDeclaredTotals(total_points: number, total_file_size_bytes: number): void;
     /**
      * 入力の総点数(ヘッダーの申告値)。TypeScript側
      * (`src/datasource/copc.worker.ts`)が、並列展開Workerへ割り振る
@@ -204,6 +229,21 @@ export class WasmPcdConverter {
 export function init_panic_hook(): void;
 
 /**
+ * M4-14: 複数ファイル選択時の事前確認。`file`の**ヘッダーだけ**を読み
+ * (`las::Reader::new`はヘッダー+VLRしか読まず、点データは`fill_points`を
+ * 呼ぶまで読まれない。デスクトップ版`pcv_convert::merge::summarize_headers`の
+ * ドキュメントと同じ理由)、point format・CRS・申告点数・ファイルサイズを
+ * 返す。
+ *
+ * `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::Crs`の`Debug`
+ * 表示そのまま。呼び出し側(`src/datasource/copc.worker.ts`)は文字列として
+ * `===`比較するだけで、中身の構造は解釈しない(デスクトップ版の
+ * `MergeError::LayoutMismatch`/`CrsMismatch`のエラー文言と同じく`{:?}`を使う。
+ * 値を2箇所で比較するための「比較可能な文字列」として十分という判断)。
+ */
+export function inspectLasHeaderSummary(file: File): any;
+
+/**
  * 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば
  * そのメッセージを返す。`src/datasource/copc.worker.ts`が変換失敗の
  * catchブロックで呼び、`unreachable`トラップしか伝わらないエラーメッセージに
@@ -228,6 +268,7 @@ export interface InitOutput {
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
     readonly __wbg_wasmpcdconverter_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
+    readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
     readonly lastAllocationFailureMessage: () => [number, number];
     readonly lazrangedecompressor_feed: (a: number, b: number) => [number, number, number, number];
     readonly lazrangedecompressor_new: (a: any, b: number, c: number) => [number, number, number];
@@ -235,8 +276,10 @@ export interface InitOutput {
     readonly wasmconverter_feed: (a: number, b: number) => [number, number, number];
     readonly wasmconverter_finish: (a: number) => [number, number, number];
     readonly wasmconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];
+    readonly wasmconverter_openNextFile: (a: number, b: any) => [number, number];
     readonly wasmconverter_pushSerializedRecords: (a: number, b: number, c: number) => [number, number];
     readonly wasmconverter_recordWidth: (a: number) => number;
+    readonly wasmconverter_setDeclaredTotals: (a: number, b: number, c: number) => void;
     readonly wasmconverter_totalPoints: (a: number) => number;
     readonly wasmcopcfile_bytesRead: (a: number) => number;
     readonly wasmcopcfile_hierarchy: (a: number) => [number, number, number];
@@ -254,8 +297,8 @@ export interface InitOutput {
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;
 }
 
