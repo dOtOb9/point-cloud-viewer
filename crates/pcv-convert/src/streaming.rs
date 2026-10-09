@@ -120,8 +120,9 @@ use crate::write_metadata::copc_write_metadata_from_source_header;
 /// 進捗の報告間隔(点数)。`copc-writer`内部のキャンセル確認間隔
 /// (`CANCEL_POLL_STRIDE`=4096、非公開定数だが`writer.rs`のソースで確認済み)と
 /// 同じ桁にして、進捗コールバック自体が読み込みのボトルネックにならない
-/// 頻度に抑える。
-const PROGRESS_REPORT_STRIDE: u64 = 4096;
+/// 頻度に抑える。`pub(crate)`: `merge.rs`(複数ファイルの変換経路)が同じ値を
+/// 使うため(M4-14、進捗の粒度を単一ファイル経路と揃える)。
+pub(crate) const PROGRESS_REPORT_STRIDE: u64 = 4096;
 
 /// 1回の`fill_points`で読むバッチサイズ。
 ///
