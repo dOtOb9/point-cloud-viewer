@@ -1,0 +1,134 @@
+{
+  "_comment": "docs/video/tools/render.mjs が読むシーン台本。docs/video/script.mdの文言をもとにしている。narrationはTTS(docs/video/tools/lib/tts.mjs)に渡す文字列、captionは画面に焼き込む字幕(1シーン1本)。visualsは1つ以上の映像ソースを等分して並べる(複数なら各スライスを均等割り)。kind:'footage'はdocs/video/footage/<file>があればそれを使い、無ければplaceholder(docs/video/cards/<placeholder>)にフォールバックする。kind:'card'はdocs/video/cards/<file>を常に使う。",
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "paddingHeadSec": 0.4,
+  "paddingTailSec": 0.7,
+  "minSceneSec": 2.2,
+  "voice": "Microsoft Ayumi (ja-JP, Windows OneCore)",
+  "scenes": [
+    {
+      "id": "01-hook",
+      "narration": "数億点の点群も、一瞬で開いて、見ている場所から細かく表示します。点群ビューア、Point Cloud Viewer です。",
+      "caption": "4.62GB ／ 347,797,138 points",
+      "visuals": [
+        { "kind": "footage", "file": "01-hook.mp4", "placeholder": "01-hook-placeholder.html" }
+      ],
+      "note": "東京都デジタルツイン実現プロジェクト「区部点群データ」(渋谷区、55タイルを結合、CC BY 4.0)。点数(347,797,138)とファイルサイズ(4.62GB)は`cargo run -p pcv-core --release --example open_bench -- data/tokyo-shibuya-merged.copc.laz`の実行結果から取った実測値(COPCヘッダーのpoint_count)。このファイルが無い場合はautzen-classified.copc.lazにフォールバックし、narration/captionは誇張を避けた言い回し(「大きな点群も」+実点数)に変えること(docs/video/tools/capture-app.mjsのhookSourceFile分岐が自動で切り替える。見た目の文言はscenes.json側を手で戻す必要がある)。"
+    },
+    {
+      "id": "02-cross-platform",
+      "narration": "Windowsでも、Androidのタブレットでも、そしてインストールなしでブラウザでも動きます。中身はRustとWebGPUで、3つとも同じコードで描いています。",
+      "caption": "Windows / Android / Web ── Tauri + Rust + WebGPU",
+      "visuals": [
+        { "kind": "footage", "file": "02-windows.mp4", "placeholder": "02-windows-placeholder.html" },
+        { "kind": "footage", "file": "02-android.mp4", "placeholder": "02-android-placeholder.html" },
+        { "kind": "footage", "file": "01-hook.mp4", "placeholder": "01-hook-placeholder.html" }
+      ],
+      "note": "Web部分は01-hook.mp4(ブラウザで撮った実機映像)を再利用している。Windows/Androidは所有者が02-windows.mp4 / 02-android.mp4を撮って差し替える。"
+    },
+    {
+      "id": "03-formats",
+      "narration": "開けるのはCOPC、LAS、LAZ、E57、PLY、PCDです。COPC以外のファイルは、開くときに一度だけCOPCに変換して保存するので、2回目からは一瞬で開きます。変換は進捗が見えて、途中で止めることもできます。",
+      "caption": "COPC / LAS / LAZ / E57 / PLY / PCD",
+      "visuals": [
+        { "kind": "footage", "file": "03-windows-formats.mp4", "placeholder": "03-windows-formats-placeholder.html" }
+      ],
+      "note": "Windows版でのLAZ変換(進捗→完了)とPLY/PCDを開く場面。所有者が撮影してdocs/video/footage/03-windows-formats.mp4に置く。"
+    },
+    {
+      "id": "04-web-convert",
+      "narration": "ブラウザ版でも変換できます。ファイルをどこかにアップロードすることはなく、手元のブラウザの中だけで変換します。",
+      "caption": "ブラウザだけで変換 ── WebAssembly + OPFS",
+      "visuals": [
+        { "kind": "footage", "file": "04-web-convert.mp4", "placeholder": "04-web-convert-placeholder.html" }
+      ],
+      "note": "docs/video/tools/capture-app.mjsで実際に撮影した映像(autzen.pcdをWeb版で変換→内訳→表示)。"
+    },
+    {
+      "id": "05-color-modes",
+      "narration": "色は、RGB、標高、強度、分類から選べます。色の情報を持たない点群でも、標高で色を付ければ形が分かります。",
+      "caption": "着色: 標高 → 強度 → 分類 → RGB",
+      "visuals": [
+        { "kind": "footage", "file": "05-color-modes.mp4", "placeholder": "05-color-modes-placeholder.html" }
+      ],
+      "note": "docs/video/tools/capture-app.mjsで実際に撮影(autzen-classified.copc.lazの着色切り替え)。"
+    },
+    {
+      "id": "06-edl",
+      "narration": "陰影を付けると、色が無くても凹凸が読めます。",
+      "caption": "EDL（陰影）: オン / オフ",
+      "visuals": [
+        { "kind": "footage", "file": "06-edl.mp4", "placeholder": "06-edl-placeholder.html" }
+      ],
+      "note": "docs/video/tools/capture-app.mjsで実際に撮影(設定画面のEDLチェックボックス)。"
+    },
+    {
+      "id": "07-center-priority",
+      "narration": "細かく読み込む順番は、画面の中央を優先します。見たい場所から先に、はっきりします。",
+      "caption": "中央優先度の強さ: 0 → 4",
+      "visuals": [
+        { "kind": "footage", "file": "07-center-priority.mp4", "placeholder": "07-center-priority-placeholder.html" }
+      ],
+      "note": "docs/video/tools/capture-app.mjsで実際に撮影(設定画面のスライダーを0→4にして同じ視点から再読み込み)。"
+    },
+    {
+      "id": "08-touch",
+      "narration": "タブレットでは指で操作できます。",
+      "caption": "1本指で回転 / 2本指でズーム・パン",
+      "visuals": [
+        { "kind": "footage", "file": "08-touch.mp4", "placeholder": "08-touch-placeholder.html" }
+      ],
+      "note": "Android実機でのタッチ操作。所有者が撮影してdocs/video/footage/08-touch.mp4に置く。"
+    },
+    {
+      "id": "09-copc-diagram",
+      "narration": "速さの秘密は、COPCという形式です。点が木の構造、octreeの順に並び、どの部分がファイルのどこにあるかの一覧が入っています。開くときに読むのはこの一覧だけで、あとは見ている場所に必要な部分だけを読み込みます。",
+      "caption": "COPC（Cloud Optimized Point Cloud）",
+      "visuals": [
+        { "kind": "card", "file": "09-copc-diagram.html" }
+      ]
+    },
+    {
+      "id": "10-table-open",
+      "narration": "ファイルが25倍大きくなっても、開く時間とメモリはほとんど変わりません。",
+      "caption": "開発機での実測",
+      "visuals": [
+        { "kind": "card", "file": "10-table-open.html" }
+      ]
+    },
+    {
+      "id": "11-point-budget",
+      "narration": "一度に描く点の数は、端末の重さに合わせて自動で調整しています。",
+      "caption": "点予算をフレーム時間で自動調整（AIMD制御）",
+      "visuals": [
+        { "kind": "card", "file": "11-point-budget.html" }
+      ]
+    },
+    {
+      "id": "12-table-convert",
+      "narration": "変換も、メモリに収まらない大きさのデータを少しずつ処理するので、数億点でもメモリはわずかです。",
+      "caption": "開発機での実測（変換）",
+      "visuals": [
+        { "kind": "card", "file": "12-table-convert.html" }
+      ]
+    },
+    {
+      "id": "13-future-cta",
+      "narration": "これから、点の計測、断面、複数のデータの重ね合わせを加えていきます。ソースコードと設計の記録はGitHubで公開しています。",
+      "caption": "https://github.com/dOtOb9/point-cloud-viewer",
+      "visuals": [
+        { "kind": "card", "file": "13-future-cta.html" }
+      ]
+    },
+    {
+      "id": "14-credits",
+      "narration": "点群データの出典と、ナレーション音声はこちらです。",
+      "caption": "出典・使用音声",
+      "visuals": [
+        { "kind": "card", "file": "14-credits.html" }
+      ]
+    }
+  ]
+}
