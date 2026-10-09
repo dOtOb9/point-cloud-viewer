@@ -40,7 +40,7 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 | [`Ribbon.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Ribbon.tsx)（上部） | ファイル(開く)/表示(着色・EDL・点のサイズ・中央優先度)/ツール(未実装4種、グレーアウト)/設定(モーダルを開く)の4グループ。各グループは`Ribbon*Group.tsx`に分けてある |
 | [`LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/LayerPanel.tsx)（左） | レイヤーツリー(開いているファイルを1件のレイヤーとして表示)+レイヤー情報(`LayerInfoSection.tsx`: ファイル名・点数・CRS・バウンディングボックス・背景・グリッド・点予算・変換の進捗/内訳/エラー)+詳細統計(`LayerStatsDetails.tsx`、折りたたみ) |
 | [`StatusBar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/StatusBar.tsx)（下部、1行） | 表示点数/点予算、fps、CRS、読み込み進捗、エラーログを開くボタン |
-| [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/SettingsModal.tsx) | レンダースケール、ガラス表現の切り替え、テーマ、更新チェック、一時ファイルの置き場所、OPFSの保存領域、診断パネル |
+| [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/SettingsModal.tsx) | レンダースケール、テーマ、更新チェック、一時ファイルの置き場所、OPFSの保存領域、診断パネル |
 | [`Dialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dialog.tsx) | 設定・変換・エラーが共通で使う中央ダイアログ枠(不透明、Esc/✕、フォーカス移動、狭幅は全幅近く) |
 | [`ConversionDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/ConversionDialog.tsx) | 変換の進捗・結果(「変換中」、キャンセル) |
 | [`ErrorDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/ErrorDialog.tsx) | エラー(コピー・閉じる)と、このセッションの全エラー履歴 |
@@ -76,10 +76,9 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 上でも確実に読めるようにするため）。UI シェル再構築(ADR-0017)でレイアウトを変えた際も、この区別は
 そのまま維持しました(`Ribbon`・`LayerPanel`・`StatusBar`・`UpdateNotice`はガラス、残り3つは不透明)。
 
-モバイルでは `glassEnabled` を false にすることでガラス表現自体をオフにでき、
+ガラスのオン/オフというユーザー設定は無く、常にガラスです（ADR-0017）。ただしモバイル端末では端末プロファイル（`device-profile.ts`）が `glassEnabled` を false にしてぼかしを自動で切り、
 `OPAQUE_GLASS_SURFACE`（不透明な tint のみ）に切り替わります（[M3-8](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/M3-release-and-update.md)、
-GPU 負荷削減の一手段）。**ガラスの fps への影響自体は、所有者の実機計測待ちで
-未計測のままです**（[ADR-0005](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0005-ui-shell.md) が計測すると決めた項目。ADR-0017 でも計測できていない。詳細は ADR-0017 参照）。
+GPU 負荷削減の一手段。ユーザーが切り替える設定ではない）。ガラスの fps 比較は、切り替えが無くなったため行いません（ADR-0017 参照）。
 
 ## エラー・変換の表示: 中央ダイアログ
 
