@@ -1,7 +1,7 @@
 import type { PreparingStep } from "../../datasource/conversion-dto";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "./Dialog";
-import { DIALOG_BUTTON_CLASS, DIALOG_PRIMARY_BUTTON_CLASS } from "./dialog-styles";
+import { DIALOG_BUTTON_CLASS } from "./dialog-styles";
 
 /**
  * M4-11: Web版の「準備」段階の各ステップを文言にする
@@ -53,6 +53,7 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
     <Dialog
       open={open}
       title={converting ? "変換中" : "変換が完了しました"}
+      accent="secondary"
       onClose={onClose}
       footer={
         converting ? (
@@ -62,7 +63,7 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
             </button>
           </>
         ) : (
-          <button type="button" onClick={onClose} className={DIALOG_PRIMARY_BUTTON_CLASS}>
+          <button type="button" onClick={onClose} className={DIALOG_BUTTON_CLASS}>
             閉じる
           </button>
         )
@@ -75,6 +76,10 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
 
       {converting ? (
         <div className="flex flex-col gap-2 text-sm">
+          {/* いまの段階(進行中なのでsecondary=橙で示す) */}
+          <span className="self-start rounded bg-secondary px-2 py-0.5 text-xs text-on-secondary">
+            段階: {progress === null || progress.phase === "preparing" ? "準備" : progress.phase === "reading" ? "読み込み" : "構築・書き出し"}
+          </span>
           {progress === null ? (
             <p className="opacity-70">変換を準備しています…</p>
           ) : progress.phase === "preparing" ? (
@@ -85,9 +90,9 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
                 読み込み中: {progress.pointsRead.toLocaleString()} / {progress.totalPoints.toLocaleString()} 点(
                 {((progress.pointsRead / Math.max(1, progress.totalPoints)) * 100).toFixed(1)}%)
               </p>
-              <div className="h-2 w-full overflow-hidden rounded bg-black/10 dark:bg-white/10">
+              <div className="h-2 w-full overflow-hidden rounded bg-tertiary/25">
                 <div
-                  className="h-full bg-slate-900/80 dark:bg-white/80"
+                  className="h-full bg-secondary"
                   style={{ width: `${Math.min(100, (progress.pointsRead / Math.max(1, progress.totalPoints)) * 100)}%` }}
                 />
               </div>
@@ -96,8 +101,8 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
           ) : (
             <>
               <p>octreeを構築・書き出し中(割合は出せません)…</p>
-              <div className="h-2 w-full overflow-hidden rounded bg-black/10 dark:bg-white/10">
-                <div className="h-full w-1/3 animate-pulse bg-slate-900/60 dark:bg-white/60" />
+              <div className="h-2 w-full overflow-hidden rounded bg-tertiary/25">
+                <div className="h-full w-1/3 animate-pulse bg-secondary" />
               </div>
               <p className="opacity-70">経過: {formatElapsed(progress.elapsedSecs)}</p>
             </>

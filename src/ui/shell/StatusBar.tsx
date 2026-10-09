@@ -57,7 +57,7 @@ export function StatusBar({
       <span className="hidden whitespace-nowrap md:inline">CRS: 不明（未配線）</span>
       {viewer.status === "converting" ? (
         // 変換中はクリックで変換ダイアログを開き直せる(✕で閉じても変換は続くため)。
-        <button type="button" onClick={onOpenConversion} className="min-h-11 min-w-0 truncate underline">
+        <button type="button" onClick={onOpenConversion} className="min-h-8 min-w-0 truncate rounded bg-secondary px-2 text-on-secondary">
           {loadProgressLabel}
         </button>
       ) : (
@@ -66,7 +66,7 @@ export function StatusBar({
       <button
         type="button"
         onClick={onOpenErrorLog}
-        className="ml-auto min-h-11 min-w-11 shrink-0 whitespace-nowrap rounded px-2 py-0.5 hover:bg-black/5 dark:hover:bg-white/10"
+        className={`ml-auto min-h-11 min-w-11 shrink-0 whitespace-nowrap rounded px-2 py-0.5 ${viewer.errorHistory.length > 0 ? "bg-error text-on-error" : "hover:bg-black/5 dark:hover:bg-white/10"}`}
       >
         ログ{viewer.errorHistory.length > 0 ? `（${viewer.errorHistory.length}）` : ""}
       </button>

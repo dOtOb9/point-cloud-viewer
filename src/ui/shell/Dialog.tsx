@@ -13,7 +13,12 @@ interface Props {
   layer?: "normal" | "top";
   /** "error"はタイトルバーを警告色にする(エラー用)。 */
   tone?: "normal" | "error";
+  /** 上端の3pxのアクセント線の役割色(設定・URL=primary、変換=secondary、エラー=error。ADR-0017)。 */
+  accent?: "primary" | "secondary" | "error";
 }
+
+/** 役割色トークン(index.css)の名前で上端線を引く。クラス名は文字列のまま書く(Tailwindが検出できるように)。 */
+const ACCENT_BORDER = { primary: "border-t-primary", secondary: "border-t-secondary", error: "border-t-error" } as const;
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -35,7 +40,7 @@ const FOCUSABLE =
  * 外側の暗幕クリックでは閉じない(変換中・エラーの本文を読んでいる最中に
  * 誤って閉じるのを避けるため)。
  */
-export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", layer = "normal", tone = "normal" }: Props) {
+export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", layer = "normal", tone = "normal", accent = "primary" }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
 
@@ -81,8 +86,8 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
     }
   };
 
-  const headerTone = tone === "error" ? "bg-red-900 text-red-50" : "border-b border-slate-200 dark:border-slate-700";
-  const closeTone = tone === "error" ? "hover:bg-red-800" : "hover:bg-black/5 dark:hover:bg-white/10";
+  const headerTone = tone === "error" ? "bg-error text-on-error" : "border-b border-slate-200 dark:border-slate-700";
+  const closeTone = tone === "error" ? "hover:bg-black/20" : "hover:bg-black/5 dark:hover:bg-white/10";
 
   return (
     <div className={`fixed inset-0 ${layer === "top" ? "z-50" : "z-40"} flex items-center justify-center bg-black/50 p-3 md:p-4`}>
@@ -93,7 +98,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className={`flex max-h-[85vh] w-full ${widthClass} flex-col overflow-hidden rounded-2xl bg-white text-slate-900 shadow-2xl outline-none dark:bg-slate-900 dark:text-slate-100`}
+        className={`flex max-h-[85vh] w-full ${widthClass} flex-col overflow-hidden rounded-2xl border-t-[3px] ${ACCENT_BORDER[accent]} bg-white text-slate-900 shadow-2xl outline-none dark:bg-slate-900 dark:text-slate-100`}
       >
         <div className={`flex items-center justify-between gap-2 px-4 py-2 ${headerTone}`}>
           <h2 id={titleId} className="text-base font-semibold">

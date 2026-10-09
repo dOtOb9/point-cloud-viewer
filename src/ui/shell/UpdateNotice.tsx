@@ -39,7 +39,7 @@ export function UpdateNotice({ update, glassEnabled }: { update: UpdateCheckStat
             onClick={() => {
               update.openRelease().catch((e: unknown) => console.error("openRelease failed", e));
             }}
-            className="rounded bg-slate-900 px-3 py-1.5 text-sm text-white dark:bg-white dark:text-slate-900"
+            className="rounded bg-primary px-3 py-1.5 text-sm text-on-primary"
           >
             リリースページを開く
           </button>

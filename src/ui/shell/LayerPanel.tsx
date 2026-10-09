@@ -39,9 +39,9 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
 
   const tree = (
     <div className="flex flex-col gap-1">
-      <h3 className={`text-xs font-semibold uppercase tracking-wide opacity-70`}>レイヤー</h3>
+      <h3 className="border-l-2 border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー</h3>
       {hasFile && layerLabel ? (
-        <div className="flex items-center gap-2 rounded bg-black/5 px-2 py-1.5 text-xs dark:bg-white/10">
+        <div className="flex items-center gap-2 rounded border-l-[3px] border-l-primary bg-black/5 px-2 py-1.5 text-xs dark:bg-white/10">
           <span aria-hidden="true">📄</span>
           <span className="min-w-0 flex-1 truncate" title={layerLabel}>
             {layerLabel}
@@ -59,7 +59,7 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
     >
       {tree}
       <div className="flex flex-col gap-1">
-        <h3 className="text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー情報</h3>
+        <h3 className="border-l-2 border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー情報</h3>
         <LayerInfoSection viewer={viewer} />
       </div>
       <LayerStatsDetails viewer={viewer} />

@@ -47,7 +47,7 @@ export function Ribbon({ viewer, glassEnabled, onOpenSettings, onOpenUrlDialog }
     return (
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex max-h-[70vh] flex-col">
         <div
-          className={`pointer-events-auto flex items-center justify-between gap-2 px-3 py-2 shadow-lg ${glassSurfaceClass(glassEnabled)}`}
+          className={`pointer-events-auto flex items-center justify-between gap-2 border-t-[3px] border-t-primary px-3 py-2 shadow-lg ${glassSurfaceClass(glassEnabled)}`}
         >
           <RibbonButton icon={menuOpen ? X : Menu} label={menuOpen ? "閉じる" : "メニュー"} onClick={() => setMenuOpen((v) => !v)} title={menuOpen ? "メニューを閉じる" : "メニューを開く"} />
           <span className="truncate text-sm font-semibold">点群ビューア</span>
@@ -62,7 +62,7 @@ export function Ribbon({ viewer, glassEnabled, onOpenSettings, onOpenUrlDialog }
 
   return (
     <div
-      className={`pointer-events-auto absolute inset-x-3 top-3 z-20 flex flex-wrap items-stretch gap-3 rounded-2xl px-3 py-2 shadow-lg ${glassSurfaceClass(glassEnabled)}`}
+      className={`pointer-events-auto absolute inset-x-3 top-3 z-20 flex flex-wrap items-stretch gap-3 rounded-2xl border-t-[3px] border-t-primary px-3 py-2 shadow-lg ${glassSurfaceClass(glassEnabled)}`}
     >
       {groups}
     </div>

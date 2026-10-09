@@ -38,7 +38,7 @@ function ConversionBreakdownPanel({ text, onCopy }: { text: string; onCopy: () =
               }
             })();
           }}
-          className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900"
+          className="rounded bg-tertiary px-2 py-1 text-xs text-on-tertiary hover:opacity-90"
         >
           {copied ? "コピーしました" : "内訳をコピー"}
         </button>
@@ -98,7 +98,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
       {viewer.error && (
         // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidでエラー表示の
         // 有無を確かめる。削除・リネームするときはそちらも直すこと(CLAUDE.md参照)。
-        <p data-testid="viewer-error" className="text-xs text-red-600 dark:text-red-400">
+        <p data-testid="viewer-error" className="text-xs text-error">
           {viewer.error}
         </p>
       )}
@@ -113,7 +113,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
             // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidでダウンロード
             // リンクの表示を確かめる。削除・リネームするときはそちらも直すこと。
             data-testid="download-link"
-            className="rounded bg-slate-900/90 px-2 py-1 text-xs text-white hover:bg-slate-900 dark:bg-white/90 dark:text-slate-900"
+            className="rounded bg-primary px-2 py-1 text-xs text-on-primary hover:opacity-90"
           >
             ダウンロード
           </a>
@@ -143,7 +143,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
           className="rounded border border-black/10 bg-white/60 px-2 py-1 font-mono text-xs text-inherit disabled:opacity-60 dark:border-white/10 dark:bg-black/30"
         />
         <label className="flex items-center gap-2">
-          <input type="checkbox" checked={viewer.autoPointBudgetEnabled} onChange={(e) => viewer.setAutoPointBudgetEnabled(e.target.checked)} />
+          <input type="checkbox" className="accent-primary" checked={viewer.autoPointBudgetEnabled} onChange={(e) => viewer.setAutoPointBudgetEnabled(e.target.checked)} />
           点予算を自動調整する
         </label>
       </div>
@@ -164,7 +164,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
       </div>
 
       <label className="flex items-center gap-2 text-xs">
-        <input type="checkbox" checked={viewer.gridEnabled} onChange={(e) => viewer.setGridEnabled(e.target.checked)} />
+        <input type="checkbox" className="accent-primary" checked={viewer.gridEnabled} onChange={(e) => viewer.setGridEnabled(e.target.checked)} />
         グリッド
       </label>
     </div>

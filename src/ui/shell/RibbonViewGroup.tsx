@@ -72,7 +72,7 @@ export function RibbonViewGroup({ viewer }: { viewer: CopcViewerState }) {
         </RibbonControl>
 
         <RibbonControl icon={Contrast} label="EDL" title="EDL(陰影で凹凸を強調)">
-          <input type="checkbox" checked={viewer.edlEnabled} onChange={(e) => viewer.setEdlEnabled(e.target.checked)} className="h-5 w-5 self-start" />
+          <input type="checkbox" checked={viewer.edlEnabled} onChange={(e) => viewer.setEdlEnabled(e.target.checked)} className="h-5 w-5 self-start accent-primary" />
         </RibbonControl>
 
         <RibbonControl icon={Circle} label="点の形" title="点のサイズ（点の形。丸/四角）">
@@ -93,7 +93,7 @@ export function RibbonViewGroup({ viewer }: { viewer: CopcViewerState }) {
             step={0.5}
             value={viewer.centerPriorityStrength}
             onChange={(e) => viewer.setCenterPriorityStrength(Number(e.target.value))}
-            className="h-6 w-24"
+            className="h-6 w-24 accent-primary"
           />
         </RibbonControl>
 
@@ -105,7 +105,7 @@ export function RibbonViewGroup({ viewer }: { viewer: CopcViewerState }) {
             step={0.01}
             value={viewer.minCenterPriorityWeight}
             onChange={(e) => viewer.setMinCenterPriorityWeight(Number(e.target.value))}
-            className="h-6 w-24"
+            className="h-6 w-24 accent-primary"
           />
         </RibbonControl>
       </div>

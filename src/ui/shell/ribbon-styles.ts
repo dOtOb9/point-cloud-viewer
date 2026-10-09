@@ -16,11 +16,11 @@ export const RIBBON_GROUP_LABEL_CLASS = "text-[10px] font-semibold uppercase tra
 export const RIBBON_BUTTON_CLASS =
   "flex min-h-14 min-w-14 flex-col items-center justify-center gap-0.5 rounded-md px-2 py-1 text-[11px] leading-tight whitespace-nowrap " +
   "hover:bg-black/5 dark:hover:bg-white/10 " +
-  "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:pointer-events-none";
+  "disabled:cursor-not-allowed disabled:bg-tertiary/20 disabled:opacity-50 disabled:pointer-events-none";
 
 /** 塗りつぶしの強調ボタン(「開く」など主要操作)。 */
 export const RIBBON_BUTTON_PRIMARY_CLASS =
-  "bg-slate-900/90 text-white hover:!bg-slate-900 dark:bg-white/90 dark:text-slate-900 dark:hover:!bg-white";
+  "bg-primary text-on-primary hover:!bg-primary hover:opacity-90";
 
 /** グループ1つの外枠。縦に見出し+横並びの操作、を並べる。 */
 export const RIBBON_GROUP_CLASS = "flex flex-col gap-1 border-r border-black/10 pr-3 last:border-r-0 dark:border-white/10";

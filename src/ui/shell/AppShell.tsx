@@ -58,11 +58,12 @@ export function AppShell() {
     }
   }
 
-  // M3-8: ガラス表現(backdrop-blur)のオン/オフ。「点群の3Dビューとは無関係な
-  // 純粋なUIの見た目の設定」なので、`useCopcViewer`のCopcViewerStateには
-  // 含めず、AppShellが直接持つ(子のRibbon/LayerPanel/StatusBar/UpdateNoticeへ
-  // propsで配る。ダイアログ類は意図的にガラスを使わないため対象外)。
-  const [glassEnabled, setGlassEnabled] = useState(() => defaultRenderSettings(readDeviceProfileInput()).glassEnabled);
+  // ガラス表現(backdrop-blur)は固定(ADR-0017: 所有者の決定でユーザー設定は廃止)。
+  // ただしモバイル端末では`device-profile.ts`の端末プロファイル(M3-8: GPU負荷の
+  // 軽減)が自動でぼかしを切り、不透明のtintにする。これは性能プロファイルであって
+  // ユーザーが切り替える設定ではない。子のRibbon/LayerPanel/StatusBar/UpdateNoticeへ
+  // propsで配る(ダイアログ類は意図的にガラスを使わない)。
+  const [glassEnabled] = useState(() => defaultRenderSettings(readDeviceProfileInput()).glassEnabled);
 
   // M3-5: WebGPUが確定して「非対応」だった場合はここで打ち切り、専用画面に差し替える。
   if (webGpuSupport.status === "done" && !webGpuSupport.result.supported) {
@@ -108,8 +109,6 @@ export function AppShell() {
         theme={theme}
         update={update}
         viewer={viewer}
-        glassEnabled={glassEnabled}
-        onGlassEnabledChange={setGlassEnabled}
       />
 
       <UrlDialog open={urlDialogOpen} onClose={() => setUrlDialogOpen(false)} onSubmit={(url) => void viewer.openFile(url)} />

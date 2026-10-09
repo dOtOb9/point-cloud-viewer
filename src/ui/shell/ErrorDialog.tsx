@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { GpuErrorEntry } from "../../state/useCopcViewer";
 import { Dialog } from "./Dialog";
-import { DIALOG_BUTTON_CLASS, DIALOG_PRIMARY_BUTTON_CLASS } from "./dialog-styles";
+import { DIALOG_BUTTON_CLASS } from "./dialog-styles";
 
 const SOURCE_LABEL: Record<GpuErrorEntry["source"], string> = {
   gpu: "WebGPU エラー",
@@ -75,6 +75,7 @@ export function ErrorDialog({ open, mode, onClose, onShowHistory, current, histo
       onClose={onClose}
       layer="top"
       tone="error"
+      accent="error"
       widthClass="max-w-2xl"
       footer={
         <>
@@ -96,7 +97,7 @@ export function ErrorDialog({ open, mode, onClose, onShowHistory, current, histo
           >
             {copied ? "コピーしました" : "コピー"}
           </button>
-          <button type="button" onClick={onClose} className={DIALOG_PRIMARY_BUTTON_CLASS}>
+          <button type="button" onClick={onClose} className={DIALOG_BUTTON_CLASS}>
             閉じる
           </button>
         </>

@@ -25,7 +25,7 @@ export function LayerStatsDetails({ viewer }: { viewer: CopcViewerState }) {
 
   return (
     <details className="flex flex-col gap-2 border-t border-black/10 pt-2 text-xs font-mono dark:border-white/10">
-      <summary className="cursor-pointer font-sans text-xs font-semibold uppercase tracking-wide opacity-70">詳細統計</summary>
+      <summary className="cursor-pointer border-l-2 border-tertiary pl-2 font-sans text-xs font-semibold uppercase tracking-wide opacity-70">詳細統計</summary>
 
       <div className="flex flex-col gap-0.5">
         <p>nodes: {viewer.nodeCount}</p>

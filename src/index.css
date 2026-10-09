@@ -6,6 +6,43 @@
    src/state/useTheme.ts参照)、属性ベースのカスタムvariantに差し替える。 */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+/* ADR-0017: 色の役割(デザイントークン)。primary=緑 / secondary=橙 / tertiary=灰 / error=赤。
+   各役割に「面の色」と、その上に置く文字色(on-*)を持たせ、ライト/ダークで値を分ける。
+   組み合わせの文字コントラストはすべてWCAG AAの4.5:1以上(数値はADR-0017に記載)。
+   コンポーネントは生の色(hex・slate-900など)ではなく bg-primary / text-on-primary の
+   ように役割の名前で使う。ガラスの面(glass.ts)のtintは従来のまま。 */
+:root {
+  --primary: #15803d;
+  --on-primary: #ffffff;
+  --secondary: #c2410c;
+  --on-secondary: #ffffff;
+  --tertiary: #475569;
+  --on-tertiary: #ffffff;
+  --error: #b91c1c;
+  --on-error: #ffffff;
+}
+:root[data-theme="dark"] {
+  --primary: #4ade80;
+  --on-primary: #052e16;
+  --secondary: #fb923c;
+  --on-secondary: #431407;
+  --tertiary: #334155;
+  --on-tertiary: #f1f5f9;
+  --error: #f87171;
+  --on-error: #450a0a;
+}
+/* Tailwindのユーティリティ名(bg-primary, text-on-primary, border-tertiary など)にする。 */
+@theme inline {
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-secondary: var(--secondary);
+  --color-on-secondary: var(--on-secondary);
+  --color-tertiary: var(--tertiary);
+  --color-on-tertiary: var(--on-tertiary);
+  --color-error: var(--error);
+  --color-on-error: var(--on-error);
+}
+
 /* ADR-0005: 3Dビューをウィンドウ全面に敷く(全面ビューア)。
    html/body/#root がビューポート全体の高さを持たないと、canvasをabsolute inset-0
    で敷いても全面にならない。 */

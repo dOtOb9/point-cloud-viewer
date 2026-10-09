@@ -6,7 +6,7 @@ import { IpcBenchPanel } from "../IpcBenchPanel";
 import { NodeConcurrencyBenchPanel } from "../NodeConcurrencyBenchPanel";
 import { WebGpuProbePanel } from "../WebGpuProbePanel";
 import { Dialog } from "./Dialog";
-import { DIALOG_PRIMARY_BUTTON_CLASS } from "./dialog-styles";
+import { DIALOG_BUTTON_CLASS } from "./dialog-styles";
 
 interface Props {
   open: boolean;
@@ -14,11 +14,6 @@ interface Props {
   theme: ThemeState;
   update: UpdateCheckState;
   viewer: CopcViewerState;
-  /** M3-8: ガラス表現(backdrop-blur)のオン/オフ。CopcViewerStateではなく
-   *  AppShellが直接持つ値なので、他のtheme/update/viewerと同じ形で
-   *  別途受け取る(AppShell.tsxのglassEnabled stateのコメント参照)。 */
-  glassEnabled: boolean;
-  onGlassEnabledChange: (enabled: boolean) => void;
 }
 
 const THEME_LABELS: Record<ThemePreference, string> = {
@@ -50,7 +45,7 @@ function toGiBLabel(bytes: number): string {
  * 以前App.tsx直下の<details>にあったが、UIシェル導入でここへ移した
  * (機能は削っていない。折りたたみ式(<details>)なのは変わらず)。
  */
-export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabled, onGlassEnabledChange }: Props) {
+export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
 
   // M4-6追記: 設定画面を開いたときにOPFSの使用量を取り直す(開いている間
   // 消したあとも`refreshOpfsStorageInfo`を呼べば更新されるが、開いた直後の
@@ -74,7 +69,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
       onClose={onClose}
       widthClass="max-w-3xl"
       footer={
-        <button type="button" onClick={onClose} aria-label="設定を閉じる" className={DIALOG_PRIMARY_BUTTON_CLASS}>
+        <button type="button" onClick={onClose} aria-label="設定を閉じる" className={DIALOG_BUTTON_CLASS}>
           閉じる
         </button>
       }
@@ -90,7 +85,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
                 onClick={() => theme.setPreference(p)}
                 className={`rounded px-3 py-1.5 text-sm ${
                   theme.preference === p
-                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                    ? "bg-primary text-on-primary"
                     : "border border-slate-300 dark:border-slate-600"
                 }`}
               >
@@ -150,7 +145,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
               <button
                 type="button"
                 onClick={() => void viewer.pickAndSetTempDir()}
-                className="rounded bg-slate-900 px-2 py-1 text-xs text-white dark:bg-white dark:text-slate-900"
+                className="rounded bg-primary px-2 py-1 text-xs text-on-primary"
               >
                 選ぶ…
               </button>
@@ -206,7 +201,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
                   onClick={() => viewer.setRenderScale(scale)}
                   className={`rounded px-3 py-1.5 text-sm ${
                     viewer.renderScale === scale
-                      ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                      ? "bg-primary text-on-primary"
                       : "border border-slate-300 dark:border-slate-600"
                   }`}
                 >
@@ -221,14 +216,6 @@ export function SettingsModal({ open, onClose, theme, update, viewer, glassEnabl
               (`RibbonViewGroup.tsx`)へ移した。タスクシートのレイアウト指定
               (着色モード・EDL・点のサイズ・中央優先度の強さと下限はリボンへ)
               に従った。設定画面にはここでは置かない(二重管理を避けるため)。 */}
-
-          <label className="flex items-center gap-2 text-xs">
-            <input type="checkbox" checked={glassEnabled} onChange={(e) => onGlassEnabledChange(e.target.checked)} />
-            UIのガラス表現（ぼかし。既定: モバイルオフ / デスクトップオン）
-          </label>
-          <p className="text-xs opacity-60">
-            オフにすると、パネルの背景が`backdrop-filter`によるぼかしではなく不透明な単色(tint)になる。
-          </p>
 
           <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
             <p className="font-semibold opacity-70">点予算の上限（端末のメモリから算出。既定: デスクトップ1GiB固定）</p>
