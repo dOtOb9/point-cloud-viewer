@@ -1,0 +1,18 @@
+{
+  "name": "pcv-video-tools",
+  "private": true,
+  "version": "0.1.0",
+  "description": "紹介動画 docs/video/out/intro-draft.mp4 を scenes.json から作り直すためのツール群。アプリ本体の package.json とは別（CLAUDE.md の指示）。",
+  "type": "module",
+  "scripts": {
+    "build": "node render.mjs",
+    "capture": "node capture-app.mjs",
+    "capture:center-priority": "node lib/capture-center-priority.mjs",
+    "capture:web-convert": "node lib/capture-web-convert.mjs"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "playwright-core": "^1.48.0"
+  }
+}
