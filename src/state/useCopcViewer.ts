@@ -215,6 +215,20 @@ export interface CopcViewerState {
    *  切り出してあり、ここではそのスナップショットを保持するだけ。表示は
    *  `src/ui/shell/GpuErrorBanner.tsx`が担当する（規約3）。 */
   gpuErrors: GpuErrorEntry[];
+  /**
+   * UIシェル再構築(ADR-0017)で追加: このセッション中に報告された全エラーの
+   * 履歴（`dismissGpuError`で消しても消えない）。`gpuErrors`は バナーが表示する
+   * 「現在出ている」エラーで、閉じると配列から消える。エラーログダイアログ
+   * （`ErrorLogDialog.tsx`）はこちらを表示することで、閉じたエラーも含めて
+   * 「このセッションで何が起きたか」をあとから確認できるようにする。
+   * 追記・countの更新だけを行い、エントリを削除することは無い
+   * （`recordErrorHistory`参照）。
+   */
+  errorHistory: GpuErrorEntry[];
+  /** 開いているファイルの名前（パス/URLの最後の区切り以降、またはFileのname）。
+   *  まだ何も開いていない・開くのに失敗した場合は`null`（UIシェル再構築で追加。
+   *  左パネルのレイヤー情報に表示する）。 */
+  openedFileName: string | null;
   /** Tauri版はパス文字列、Web版はURL文字列か、ドラッグ&ドロップ/選択した`File`を渡す。 */
   openFile: (pathOrFile: string | File) => Promise<void>;
   /**
@@ -346,6 +360,19 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [minCenterPriorityWeight, setMinCenterPriorityWeightState] = useState(DEFAULT_MIN_CENTER_PRIORITY_WEIGHT);
   const [colorMode, setColorModeState] = useState<ColorMode>(DEFAULT_COLOR_MODE);
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
+  // UIシェル再構築(ADR-0017)で追加: dismissで消えないエラー履歴。
+  // `setGpuErrors`の直後に呼ぶ`recordErrorHistory`だけが更新する
+  // （`dismissGpuError`からは呼ばない。消えないことがこの履歴の存在理由）。
+  const [errorHistory, setErrorHistory] = useState<GpuErrorEntry[]>([]);
+  const recordErrorHistory = (current: GpuErrorEntry[]) => {
+    setErrorHistory((prev) => {
+      const byId = new Map(prev.map((entry) => [entry.id, entry] as const));
+      for (const entry of current) byId.set(entry.id, entry);
+      return Array.from(byId.values()).sort((a, b) => a.firstAt - b.firstAt);
+    });
+  };
+  // UIシェル再構築(ADR-0017)で追加: 左パネルのレイヤー情報に出すファイル名。
+  const [openedFileName, setOpenedFileName] = useState<string | null>(null);
   // M4-3: 変換中の進捗。変換していないときはnull。
   const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
   // M4-6b: Web版の変換完了後だけ入るダウンロード用URL。
@@ -489,6 +516,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         "conversion",
       );
       setGpuErrors(gpuErrorLogRef.current.list());
+      recordErrorHistory(gpuErrorLogRef.current.list());
     };
 
     if (source instanceof WebSource) {
@@ -615,6 +643,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     renderer.onGpuErrorReported((message) => {
       gpuErrorLogRef.current.report(message);
       setGpuErrors(gpuErrorLogRef.current.list());
+      recordErrorHistory(gpuErrorLogRef.current.list());
       // GUIを目視できない環境でも、devtoolsを開かなくてもRust側stdoutから
       // WebGPUのエラーを追えるようにする（onStatsUpdateのstdout連携と同じ狙い）。
       reportToBackendConsole(`[gpu-error] ${message}`).catch((e) =>
@@ -630,6 +659,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     renderer.onNodeLoadErrorReported((message) => {
       gpuErrorLogRef.current.report(message, undefined, "node-read");
       setGpuErrors(gpuErrorLogRef.current.list());
+      recordErrorHistory(gpuErrorLogRef.current.list());
       reportToBackendConsole(`[node-load-error] ${message}`).catch((e) =>
         console.error("reportToBackendConsole failed", e),
       );
@@ -672,6 +702,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
 
     setStatus("opening");
     setError(null);
+    setOpenedFileName(null);
     setConversionProgress(null);
     if (shouldClearConversionResultOnOpen(isConversionContinuation)) {
       setDownloadReady(null);
@@ -751,6 +782,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
               });
               gpuErrorLogRef.current.report(message, undefined, "conversion");
               setGpuErrors(gpuErrorLogRef.current.list());
+              recordErrorHistory(gpuErrorLogRef.current.list());
               setStatus("error");
               setError("空き容量が足りません");
               // 消す・永続化を許可する等の導線(設定画面)を出す前に、現在の
@@ -796,6 +828,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
               "conversion",
             );
             setGpuErrors(gpuErrorLogRef.current.list());
+            recordErrorHistory(gpuErrorLogRef.current.list());
             setStatus("error");
             setError("空き容量が足りません");
             return;
@@ -818,6 +851,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setCloudInfo(opened.info);
       setNodeCount(opened.nodes.length);
       setStatus("ready");
+      // UIシェル再構築(ADR-0017): 左パネルのレイヤー情報に出すファイル名。
+      // Tauri版のパス・Web版のURLはbasenameOfPathで最後の区切り以降だけにし、
+      // 選択したFileはそのままname（既にファイル名そのもの）を使う。
+      setOpenedFileName(typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name);
       // M2-2: 開いたファイルがRGBを持たない場合、現在"rgb"を選んでいれば
       // 自動的に標高へ落とす（colormap.tsの`resolveColorMode`/
       // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。renderer側にも同じ解決結果を
@@ -1081,6 +1118,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     minCenterPriorityWeight,
     colorMode,
     gpuErrors,
+    errorHistory,
+    openedFileName,
     openFile,
     openFiles,
     isBrowser: !isTauriEnvironment(),
