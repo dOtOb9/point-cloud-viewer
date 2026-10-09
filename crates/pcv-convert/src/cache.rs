@@ -9,6 +9,8 @@
 //! テストする(受け入れ条件のとおり)。ファイルから指紋を読み取る部分
 //! (`fingerprint_of`)とサイドカーの読み書きは別関数に分けてある。
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -84,6 +86,92 @@ pub fn read_sidecar(output: &Path) -> Option<SourceFingerprint> {
     Some(SourceFingerprint {
         len,
         modified_unix_nanos,
+    })
+}
+
+// --- M4-14: 複数ファイル(マージ変換)の指紋。「同じ選択を二度変換しない」。 ---
+//
+// 単一ファイルの`SourceFingerprint`(サイズ+更新日時)をそのまま複数個持つのでは
+// なく、1つの`u64`ハッシュへまとめる。**選択した順序に依存しない**ことが要件
+// (「同じファイル集合なら、選ぶ順番が変わっても同じキャッシュに当たる」)
+// なので、ハッシュに入れる前に(ファイル名, サイズ, 更新日時)の組を昇順に
+// ソートする。ソートしてから1本のハッシュに畳み込むだけなので、
+// XOR等で各ファイルのハッシュを個別に合成する案(順序に依存しないが、
+// 同じファイルを2回選ぶと打ち消し合う欠点がある)より素直で正しい。
+
+/// 複数ファイルの「指紋」。`combined_hash`はソート済みの(ファイル名, サイズ,
+/// 更新日時)列を1つの`DefaultHasher`に順番に食わせた結果(`DefaultHasher`は
+/// 乱数化されない決定的なハッシュ関数。`output_path.rs`の`hash_path`と同じ
+/// 前提)。`file_count`/`total_bytes`も併せて比較することで、ハッシュの衝突
+/// (起こり得るが稀)がそのまま誤ったキャッシュ命中にはならないようにする。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiSourceFingerprint {
+    pub combined_hash: u64,
+    pub file_count: u64,
+    pub total_bytes: u64,
+}
+
+/// 複数の元ファイルの現在の指紋を読む。1つでも読めなければ`Err`
+/// (単一ファイル版の`fingerprint_of`と同じく、呼び出し側へそのまま伝える)。
+pub fn multi_fingerprint_of_paths(paths: &[PathBuf]) -> io::Result<MultiSourceFingerprint> {
+    let mut entries: Vec<(String, u64, u128)> = Vec::with_capacity(paths.len());
+    let mut total_bytes = 0u64;
+    for path in paths {
+        let fp = fingerprint_of(path)?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        total_bytes += fp.len;
+        entries.push((name, fp.len, fp.modified_unix_nanos));
+    }
+    // 選択順に依存しないキーにする(ファイル名→サイズ→更新日時の順でソート)。
+    entries.sort();
+
+    let mut hasher = DefaultHasher::new();
+    for (name, len, nanos) in &entries {
+        name.hash(&mut hasher);
+        len.hash(&mut hasher);
+        nanos.hash(&mut hasher);
+    }
+    Ok(MultiSourceFingerprint {
+        combined_hash: hasher.finish(),
+        file_count: paths.len() as u64,
+        total_bytes,
+    })
+}
+
+/// 複数ファイル版の`needs_reconversion`。
+pub fn needs_remerge(source: MultiSourceFingerprint, cached: Option<MultiSourceFingerprint>) -> bool {
+    cached != Some(source)
+}
+
+/// 複数ファイル版のサイドカーパス(単一ファイル版と同じ命名規則、
+/// `<出力>.meta`)。出力ファイル名自体が入力集合から決まる(`output_path.rs`の
+/// `multi_output_file_name`)ため、単一ファイル版と同じ`sidecar_path`を
+/// そのまま使ってよい(形式(3行のテキスト)だけが違う)。
+pub fn write_multi_sidecar(output: &Path, fingerprint: MultiSourceFingerprint) -> io::Result<()> {
+    std::fs::write(
+        sidecar_path(output),
+        format!(
+            "{}\n{}\n{}\n",
+            fingerprint.combined_hash, fingerprint.file_count, fingerprint.total_bytes
+        ),
+    )
+}
+
+/// 複数ファイル版のサイドカーを読む。壊れている・存在しない場合は`None`。
+pub fn read_multi_sidecar(output: &Path) -> Option<MultiSourceFingerprint> {
+    let text = std::fs::read_to_string(sidecar_path(output)).ok()?;
+    let mut lines = text.lines();
+    let combined_hash: u64 = lines.next()?.trim().parse().ok()?;
+    let file_count: u64 = lines.next()?.trim().parse().ok()?;
+    let total_bytes: u64 = lines.next()?.trim().parse().ok()?;
+    Some(MultiSourceFingerprint {
+        combined_hash,
+        file_count,
+        total_bytes,
     })
 }
 
@@ -168,5 +256,58 @@ mod tests {
             fingerprint_of_file(&file).unwrap(),
             fingerprint_of(&path).unwrap()
         );
+    }
+
+    fn write_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|name| {
+                let path = dir.join(name);
+                std::fs::write(&path, format!("content-of-{name}")).unwrap();
+                path
+            })
+            .collect()
+    }
+
+    /// 受け入れ条件: 同じファイル集合なら、選ぶ順番が変わっても同じ
+    /// キャッシュキー(指紋)になる。
+    #[test]
+    fn multi_fingerprint_is_order_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = write_files(dir.path(), &["a.las", "b.las", "c.las"]);
+        let reversed: Vec<PathBuf> = paths.iter().rev().cloned().collect();
+
+        let forward = multi_fingerprint_of_paths(&paths).unwrap();
+        let backward = multi_fingerprint_of_paths(&reversed).unwrap();
+
+        assert_eq!(forward, backward);
+    }
+
+    #[test]
+    fn multi_fingerprint_differs_when_file_set_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths_a = write_files(dir.path(), &["a.las", "b.las"]);
+        let paths_b = write_files(dir.path(), &["a.las", "b.las", "c.las"]);
+
+        let fp_a = multi_fingerprint_of_paths(&paths_a).unwrap();
+        let fp_b = multi_fingerprint_of_paths(&paths_b[..2]).unwrap();
+        let fp_c = multi_fingerprint_of_paths(&paths_b).unwrap();
+
+        // 同じ2ファイルなら一致する。
+        assert_eq!(fp_a, fp_b);
+        // 3ファイル目が増えれば(ファイル数も中身も違うので)一致しない。
+        assert_ne!(fp_a, fp_c);
+    }
+
+    #[test]
+    fn multi_sidecar_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("09LD2626 ほか2ファイル.copc.laz");
+        let paths = write_files(dir.path(), &["a.las", "b.las"]);
+        let fingerprint = multi_fingerprint_of_paths(&paths).unwrap();
+
+        assert!(needs_remerge(fingerprint, read_multi_sidecar(&output)));
+        write_multi_sidecar(&output, fingerprint).unwrap();
+        assert!(!needs_remerge(fingerprint, read_multi_sidecar(&output)));
     }
 }
