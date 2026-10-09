@@ -43,7 +43,20 @@ Thumbs.db
 *.las
 *.laz
 *.copc.laz
+*.pcd
 /data
+
+# 紹介動画(docs/video/)の生成物。scenes.jsonから作り直せるので追跡しない
+# (TaskSheets/VIDEO-intro.md参照)。footage/は所有者が撮影した実写素材の置き場だが、
+# 点群を映した動画でサイズも大きいためコミットしない(差し替え手順はTaskSheetに書く)。
+docs/video/out/
+docs/video/footage/
+docs/video/narration/
+# tools/配下で動作確認のために作る一時ファイル(動画・画像)の保険。
+# 本来はコミット前に消すが、消し忘れても追跡されないようにする。
+docs/video/tools/*.mp4
+docs/video/tools/*.png
+docs/video/tools/lib/*.png
 
 # vendor/ はビルド時に Cargo.lock を再生成する。patch 先の lock は使われないので追跡しない。
 vendor/*/Cargo.lock
