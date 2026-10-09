@@ -2,7 +2,7 @@
 
 - 状態: 採択
 - 日付: 2026-10-09
-- 前提: [ADR-0005](./ADR-0005-ui-shell.md)（ガラスの質感、維持）、[ADR-0011](./ADR-0011-gpu-error-visibility.md)（エラーバナー、維持）
+- 前提: [ADR-0005](./ADR-0005-ui-shell.md)（ガラスの質感、維持）、[ADR-0011](./ADR-0011-gpu-error-visibility.md)（エラー表示。本ADRで「バナー」から中央ダイアログに変更）
 - 置き換え: [ADR-0014](./ADR-0014-ui-forge.md)（ui-forgeでのレイアウト記述。本ADRで廃止）
 
 ## 決定（所有者の判断）
@@ -35,9 +35,9 @@
   <LayerPanel />                  ← 左。レイヤーツリー+レイヤー情報、折りたたみ可
   <StatusBar />                   ← 下部、1行
   <SettingsModal />                ← 不透明なモーダル
-  <ErrorLogDialog />               ← 不透明なモーダル(新設)
+  <ConversionDialog />             ← 中央ダイアログ「変換中」(新設)
+  <ErrorDialog />                  ← 中央ダイアログ「エラー」。z-50、最前面(新設。旧バナーの後継)
   <UpdateNotice />
-  <GpuErrorBanner />               ← z-50、最前面
 </div>
 ```
 
@@ -58,9 +58,9 @@
 
 | 旧コントロール | 新しい場所 |
 |---|---|
-| COPCファイル選択(Web: ファイル選択/URL入力/サンプルを開く。デスクトップ: OSのファイル選択ダイアログ) | `Ribbon`の「ファイル」グループ(`RibbonFileGroup.tsx`)。`data-testid="file-input"`はそのまま維持 |
+| COPCファイル選択(Web: ファイル選択/URL入力/サンプルを開く。デスクトップ: OSのファイル選択ダイアログ) | `Ribbon`の「ファイル」グループ(`RibbonFileGroup.tsx`): 開く(`data-testid="file-input"`維持)・URLから開く(中央の`UrlDialog`。常設のURL欄は廃止)・サンプル |
 | エラー表示(`data-testid="viewer-error"`) | `LayerPanel`の「レイヤー情報」(`LayerInfoSection.tsx`)。testidはそのまま維持 |
-| 変換中の進捗+キャンセルボタン | `LayerInfoSection.tsx` |
+| 変換中の進捗+キャンセルボタン | 中央の変換ダイアログ(`ConversionDialog.tsx`、「変換中」。キャンセルはフッター) |
 | ダウンロードリンク(`data-testid="download-link"`) | `LayerInfoSection.tsx`。testidはそのまま維持 |
 | 変換の内訳(`data-testid="conversion-breakdown"`、コピー機能) | `LayerInfoSection.tsx`の`ConversionBreakdownPanel`(ロジック・testid・コピー機能ともそのまま) |
 | 点予算(数値入力+自動調整チェック) | `LayerInfoSection.tsx`(タスクシートの「表示」グループ5項目に含まれないため左パネルに残した) |
@@ -96,14 +96,16 @@
 | EDL(checkbox) | `Ribbon`の「表示」グループ(そのまま) |
 | 中央優先度の強さ(スライダー) | `Ribbon`の「表示」グループ(そのまま) |
 | 中央優先度の下限(スライダー) | `Ribbon`の「表示」グループ(そのまま) |
+| 「開発用: パス指定で開く」(絶対パス入力欄) | 廃止(パスを人に打たせない。OSのダイアログ/ドラッグ&ドロップで代替) |
 | テーマ/更新確認/一時ファイル置き場所/レンダースケール/ガラス切替/点予算上限表示/OPFS保存領域/診断パネル/開発用パス直指定 | `SettingsModal.tsx`に残存(位置不変) |
 
-### 旧 `GpuErrorBanner.tsx`
+### 旧 `GpuErrorBanner.tsx`（廃止。中央のエラーダイアログに置き換え）
 
 | 旧コントロール | 新しい場所 |
 |---|---|
-| エラー表示+個別の✕閉じる | そのまま(`GpuErrorBanner.tsx`) |
-| (新設)「ログ」ボタン | `ErrorLogDialog.tsx`を開く。閉じたエラーも含めて確認できる(タスクシートの要求) |
+| エラー表示(本文そのまま・複数を縦に並べる) | `ErrorDialog.tsx`(中央、「エラー」) |
+| 個別の✕閉じる | ダイアログの「閉じる」(✕・Escも同じ)。現在のエラーをまとめて消す。個別には消さない(まとめて読んで閉じる使い方に変わったため) |
+| (新設)エラーログ | 同じ`ErrorDialog`の履歴モード。ステータスバーの「ログ」ボタンから開く |
 
 ### 新規追加
 
@@ -111,7 +113,76 @@
 |---|---|---|
 | 未実装ツール(計測・断面・点の選択・複数レイヤー)、いずれも`disabled` | `Ribbon`の「ツール」グループ(`RibbonToolsGroup.tsx`) | タスクシートの指定どおり |
 | 表示点数/予算、fps、CRS、読み込み進捗、エラーログを開くボタン | `StatusBar.tsx` | 新規 |
-| セッション中の全エラー履歴(閉じても消えない) | `ErrorLogDialog.tsx` | `GpuErrorBanner`と`StatusBar`の両方から開ける |
+| セッション中の全エラー履歴(閉じても消えない) | `ErrorDialog.tsx`の履歴モード | ステータスバーの「ログ」と、エラーダイアログ本文の「履歴を見る」から開く |
+| 変換ダイアログ(ファイル名・進捗バー・段階・経過時間・キャンセル。完了後は結果表示) | `ConversionDialog.tsx` | ステータスバーの変換中表示から開き直せる |
+| 共通のダイアログ枠 | `Dialog.tsx` | 下記「ダイアログ」参照 |
+
+## ダイアログ（所有者の追加要件）
+
+設定・変換の進捗・エラーは、画面中央のダイアログで出す(タイトルバーが上、本文、右寄せボタンのフッターが下)。
+
+- **共通部品は`Dialog.tsx`(手書き1ファイル)。** 不透明(ADR-0005どおり)、Escと✕で閉じる、
+  開いたら本文の最初の操作要素へフォーカスを移して閉じたら元の要素へ戻す、Tabはダイアログ内で循環。
+  狭幅(<768px)は外枠の余白を詰めたほぼ全幅の中央ダイアログ。暗幕クリックでは閉じない
+  (読んでいる最中の誤操作を避けるため)。ボタンは44px以上。振る舞いは`Dialog.test.tsx`で確認。
+- **設定:** `Dialog`に載せた(不透明のまま)。フッターは「閉じる」。
+- **変換の進捗:** 長時間のLAS/LAZ→COPC変換だけが対象。タイトル「変換中」、本文は
+  ファイル名(複数選択時は表示名)・進捗バー・いまの段階・経過時間、フッターは「キャンセル」。
+  ✕/Escで隠しても変換は続く(ステータスバーの変換中表示から開き直せる)。
+  変換が終わると同じダイアログが「変換が完了しました」の結果表示になり、フッターは「閉じる」。
+  **「開く」ボタンは置かない:** 変換結果は完了時に自動で開かれる(`onConversionDone`/`onConvertDone`が
+  `openFile`を続けて呼ぶ既存の流れ)ため、押せるボタンが何もしない状態になるのを避けた。
+  変換の内訳(コピー可)・ダウンロードは左パネルの「レイヤー情報」に残し、ダイアログからそこを案内する
+  (`data-testid`はそちらに残るため、ダイアログ側では重複させない)。失敗・キャンセルのときは変換ダイアログは
+  出さず、エラーダイアログが出る。ノードの逐次読み込みの進捗はステータスバーのまま。
+- **エラー:** タイトル「エラー」、本文は全文(要約しない・選択してコピー可・複数なら縦に並べる)、
+  フッターは「コピー」「閉じる」。新しいエラー(`gpuErrors`の増加、または`viewer.error`の変化)で自動で開く。
+  **旧バナー(`GpuErrorBanner.tsx`)は廃止し、角のインジケータも残さなかった。** 代わりにステータスバーの
+  「ログ」ボタンが同じダイアログを履歴モードで開く(エラーログ用の別ダイアログ`ErrorLogDialog.tsx`も
+  `ErrorDialog`に統合して廃止)。ADR-0011が守った要件(本文そのまま・最初のエラーを隠さない・不透明・
+  最前面(z-50)・テーマに依らない警告色)は引き継いだ。「閉じる」は現在のエラーを一覧から消すが、
+  履歴(`viewer.errorHistory`)には残る。
+- **`data-testid`:** `viewer-error`は左パネルの`LayerInfoSection.tsx`にエラーがあるときだけ描画する
+  (E2Eは成功後に不在を確かめる)。`file-input`・`conversion-breakdown`・`download-link`も従来どおり。
+
+## ファイルの開き方（所有者の追加要件）: パスを人に打たせない
+
+- **ローカルファイルのパスを打つ入力欄は、アプリのどこにも無い。** 削除したもの: 設定画面の
+  「開発用: パス指定で開く」(絶対パスの入力欄+開くボタン)。設定画面の一時ファイルの置き場所も、
+  以前は読み取り専用の`<input>`で表示していたが、入力欄に見えないよう`<p>`の表示に変えた
+  (変更は「選ぶ…」のOSのフォルダ選択から)。確認: `grep -rn 'type="text"' src/ui`が空、
+  `<input>`は`file`・`checkbox`・`range`・`number`(点予算)・`url`(下のURLダイアログ)だけ。
+- **開く経路は3つだけ。** (1) OSのファイル選択ダイアログ(Web: 隠した`<input type="file">`
+  `data-testid="file-input"`をリボンの「開く」ボタンのラベルで包む。デスクトップ・Android:
+  `src/datasource/tauri.ts`の`pickLocalFiles`)。(2) ドラッグ&ドロップ(`src/state/useFileDrop.ts`)。
+  Webはブラウザ標準のdrop、デスクトップはTauriのドラッグ&ドロップイベントを
+  `src/datasource/tauri.ts`の`onFilesDropped`越しに受ける(規約2: Tauriのパッケージのimportは
+  `tauri.ts`だけ)。ドラッグ中は「ここにドロップして開く」の案内を重ねる。どちらも
+  `viewer.openFiles()`を呼ぶだけ(複数ならマージ、1件なら従来どおり)。(3) リモートCOPCのURL。
+- **URLから開く:** リボンの「URLから開く」ボタン(Webのみ)が`UrlDialog.tsx`(中央ダイアログ、
+  入力欄はURL1つ、フッターは キャンセル/開く)を開く。パネルへの常設入力欄は無い。
+  ダイアログはリボンのz-20の重ね順の外に出すため、`AppShell`が持つ。
+- **未確認:** Tauriのドラッグ&ドロップ(`onDragDropEvent`)は、デスクトップ・Android実機で
+  動かしていない(Webビルドでは呼ばれない。型検査とlintのみ)。所有者の確認手順は下記。
+
+## ボタンのアイコンとラベル（所有者の追加要件）
+
+- リボンのボタンは**アイコンが上、短い文字ラベルが下**(`RibbonButton.tsx`)。未実装ツールも
+  アイコンとラベルを残したまま無効スタイル(`disabled`、不透明度40%、`title`「未実装（予定）」)。
+  select・スライダー・チェックのような「ボタンではない操作」は、アイコン+短いラベルの見出しを
+  操作の上に添える(`RibbonViewGroup.tsx`の`RibbonControl`)。
+- 狭幅(<768px)のコンパクトなバーは、「メニュー」ボタン(アイコンの下にラベル)を置く。
+  開いたメニューの中のボタンも同じ`RibbonButton`(アイコン+ラベル)なので、アイコンだけで
+  名前を省く場面は無い(ホバーの`title`にも説明を入れてある)。
+- **アイコンセット: `lucide-react`**(本体をそのまま使う。同梱する1つのセットだけ)。
+  ライセンスは**ISC**(Feather由来の一部アイコンのみMIT。`node_modules/lucide-react/LICENSE`で確認)。
+  どちらも寛容なライセンスで、このプロジェクトの`MIT OR Apache-2.0`と両立する。
+  理由: アイコンの見た目が1つのセットで揃う・必要なものだけimportすればビルドに入る
+  (ツリーシェイク。使うのは約15個)・Reactコンポーネントなので手書きSVGの管理が要らない。
+  採らなかった案: 手書きインラインSVG(15個ぶんの図形を自分で保守することになり、
+  見た目も揃えにくい)。追加した依存は`lucide-react`の1つ(`package.json`、バージョンは
+  インストール時の1.54.0)。使うアイコン: FolderOpen・Link2・Box・Palette・Contrast・Circle・
+  Crosshair・ArrowDownToLine・Ruler・Slice・MousePointerClick・Layers・Settings・Menu・X。
 
 ### `point size`の対応付けについて
 
@@ -152,14 +223,20 @@
 - `src/ui/shell/LayerInfoSection.tsx` — 左パネルの「レイヤー情報」節
 - `src/ui/shell/LayerStatsDetails.tsx` — 左パネルの折りたたみ式詳細統計(旧InfoPanel)
 - `src/ui/shell/StatusBar.tsx` — 下部ステータスバー
-- `src/ui/shell/ErrorLogDialog.tsx` — エラー履歴ダイアログ
+- `src/ui/shell/RibbonButton.tsx` — アイコン上・ラベル下のリボンボタン
+- `src/ui/shell/UrlDialog.tsx` — 「URLから開く」ダイアログ
+- `src/state/useFileDrop.ts` — ドラッグ&ドロップで開く。`src/datasource/tauri.ts`に`onFilesDropped`を追加
+- `package.json`/`package-lock.json` — `lucide-react`を追加
+- `src/ui/shell/Dialog.tsx` / `dialog-styles.ts` / `Dialog.test.tsx` — 共通ダイアログ枠とそのテスト
+- `src/ui/shell/ConversionDialog.tsx` — 変換の進捗・結果ダイアログ
+- `src/ui/shell/ErrorDialog.tsx` — エラー・エラー履歴ダイアログ
 - `TaskSheets/ADR-0017-ui-shell-ribbon.md` — 本ファイル
 
 **変更:**
 - `src/state/useCopcViewer.ts` — `openedFileName`(開いているファイル名)・
   `errorHistory`(dismissで消えないエラー履歴)・`recordErrorHistory`を追加
 - `src/ui/shell/AppShell.tsx` — 新レイアウトへの組み替え
-- `src/ui/shell/GpuErrorBanner.tsx` — `onOpenErrorLog`props・「ログ」ボタンを追加
+- `src/ui/shell/SettingsModal.tsx` — 共通`Dialog`に載せ替え(上の「リボンへ移した5項目の節を削除」と同じファイル)
 - `src/ui/shell/LayerPanel.tsx` — レイヤーツリー+情報パネルとして全面書き換え、ドロワー対応
 - `src/ui/shell/SettingsModal.tsx` — リボンへ移した5項目の節を削除
 - `package.json` — ui-forge依存・`ui:gen`/`ui:check`スクリプトを削除
@@ -170,6 +247,8 @@
 
 **削除:**
 - `src/ui/shell/InfoPanel.tsx` — `LayerInfoSection.tsx`/`LayerStatsDetails.tsx`へ統合
+- `src/ui/shell/GpuErrorBanner.tsx` — `ErrorDialog.tsx`へ置き換え
+- (追加した後に統合した)`src/ui/shell/ErrorLogDialog.tsx` — `ErrorDialog.tsx`の履歴モードに統合
 - `src/ui/shell/Dock.tsx` / `Dock.generated.tsx` / `Dock.ui` / `Dock.test.tsx`
 
 ## 検証

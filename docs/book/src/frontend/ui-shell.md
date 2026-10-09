@@ -19,9 +19,9 @@
   <LayerPanel />                  ← 左、レイヤーツリー+レイヤー情報、折りたたみ可
   <StatusBar />                   ← 下部、1行（表示点数/予算・fps・CRS・読み込み進捗）
   <SettingsModal />                ← 不透明なモーダル
-  <ErrorLogDialog />               ← 不透明なモーダル。このセッションの全エラー履歴
+  <ConversionDialog />             ← 中央ダイアログ「変換中」
+  <ErrorDialog />                  ← 中央ダイアログ「エラー」。z-50、最前面。履歴モードもある
   <UpdateNotice />                 ← 更新通知
-  <GpuErrorBanner />               ← z-50、最前面
 </div>
 ```
 
@@ -41,7 +41,9 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 | [`LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/LayerPanel.tsx)（左） | レイヤーツリー(開いているファイルを1件のレイヤーとして表示)+レイヤー情報(`LayerInfoSection.tsx`: ファイル名・点数・CRS・バウンディングボックス・背景・グリッド・点予算・変換の進捗/内訳/エラー)+詳細統計(`LayerStatsDetails.tsx`、折りたたみ) |
 | [`StatusBar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/StatusBar.tsx)（下部、1行） | 表示点数/点予算、fps、CRS、読み込み進捗、エラーログを開くボタン |
 | [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/SettingsModal.tsx) | レンダースケール、ガラス表現の切り替え、テーマ、更新チェック、一時ファイルの置き場所、OPFSの保存領域、診断パネル |
-| [`ErrorLogDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/ErrorLogDialog.tsx) | このセッション中に起きた全エラーの履歴（閉じても消えない）。`GpuErrorBanner`と`StatusBar`から開ける |
+| [`Dialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dialog.tsx) | 設定・変換・エラーが共通で使う中央ダイアログ枠(不透明、Esc/✕、フォーカス移動、狭幅は全幅近く) |
+| [`ConversionDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/ConversionDialog.tsx) | 変換の進捗・結果(「変換中」、キャンセル) |
+| [`ErrorDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/ErrorDialog.tsx) | エラー(コピー・閉じる)と、このセッションの全エラー履歴 |
 
 **CRS について(正直に):** `LayerInfoSection`・`StatusBar`はどちらも「CRS: 不明（未配線）」と表示します。
 `CloudInfo`（`src/datasource/DataSource.ts`）には現時点で CRS フィールドが無く、`crates/pcv-core/src/crs`
@@ -79,18 +81,17 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 GPU 負荷削減の一手段）。**ガラスの fps への影響自体は、所有者の実機計測待ちで
 未計測のままです**（[ADR-0005](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0005-ui-shell.md) が計測すると決めた項目。ADR-0017 でも計測できていない。詳細は ADR-0017 参照）。
 
-## エラーの表示: `GpuErrorBanner.tsx` と `ErrorLogDialog.tsx`
+## エラー・変換の表示: 中央ダイアログ
 
-[`GpuErrorBanner.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/GpuErrorBanner.tsx) は `z-50` で他のすべての面より前面に表示される、**意図的に
-不透明な**バナーです。WebGPU のエラーとノード読み出しの失敗を `source` で
-見出しを出し分けながら表示します。本文はそのまま表示し、要約しません。
-複数のエラーが出ても最初のエラーを隠さず、個別に閉じられます。設計の経緯は
-[renderer の章](./renderer.md#エラーの表示-gpu-error-logts--gpuerrorbannertsx)と [ADR-0011](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0011-gpu-error-visibility.md) を参照してください。
+設定・変換の進捗・エラーは、共通の [`Dialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dialog.tsx)（タイトルバー・本文・右寄せボタンのフッター）で出します。
+エラーは以前は画面最前面のバナー（`GpuErrorBanner`、[ADR-0011](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0011-gpu-error-visibility.md)）でしたが、
+ADR-0017 で中央の `ErrorDialog` に置き換えました（バナーは廃止）。ADR-0011 の要件（本文を要約しない・複数でも
+最初のエラーを隠さない・不透明・最前面）は引き継いでいます。「閉じる」は現在のエラーを一覧（`viewer.gpuErrors`）から
+消しますが、このセッションの全履歴（`viewer.errorHistory`）には残り、ステータスバーの「ログ」ボタンが同じダイアログを
+履歴モードで開きます。設計の経緯は [renderer の章](./renderer.md#エラーの表示-gpu-error-logts--gpuerrorbannertsx)も参照してください。
 
-バナーを閉じる(`dismiss`)と、現在表示中の一覧(`viewer.gpuErrors`)からは消えますが、このセッション中に
-起きた全エラーの履歴(`viewer.errorHistory`、`useCopcViewer.ts`の`recordErrorHistory`)には残ります。
-`ErrorLogDialog.tsx`はこの履歴を一覧表示する、不透明なモーダルです。`GpuErrorBanner`の「ログ」ボタンと
-`StatusBar`の「エラーログ」ボタンの両方から開けます（ADR-0017で追加）。
+変換ダイアログ（`ConversionDialog`）は長時間のLAS/LAZ→COPC変換だけが対象で、ノードの逐次読み込みの進捗は
+ステータスバーに出ます。
 
 ## まず読むファイル
 
