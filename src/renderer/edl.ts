@@ -8,11 +8,24 @@
 // アルゴリズムそのもの（Potreeのedl.fragが元ネタ。考え方は同じで、このプロジェクトの
 // 深度レンジ・命名に合わせて書き直した）:
 //   1. 各ピクセルの深度を、NDCの[0,1]から「カメラからの実距離」に戻す(linearizeDepth)
-//   2. 8方向の近傍ピクセルと比べ、「自分のほうが奥にある」ぶんだけ(max(0, 自分-近傍))
-//      差を足し合わせ、平均する(response)
-//   3. shade = exp(-response * スケール定数 * strength) を色に掛ける
+//   2. 8方向の近傍ピクセルと比べ、「自分のほうが奥にある」ぶんだけ
+//      max(0, log2(自分) - log2(近傍)) を足し合わせ、平均する(response)。
+//      **メートルの差ではなくlog2の差（=距離の比）で比べる**（下の「log2にした理由」参照）
+//   3. shade = max(EDL_MIN_SHADE, exp(-response * スケール定数 * strength)) を色に掛ける
 //      （自分が近傍より手前にある＝画面から見て手前に飛び出している場合は
-//      差が0にクリップされるので暗くならない。奥まった場所だけが暗くなる）
+//      差が0にクリップされるので暗くならない。奥まった場所だけが暗くなる。
+//      暗くなりすぎて真っ黒にならないよう、下限EDL_MIN_SHADEで止める）
+//
+// ## log2にした理由（2026-10-10の不具合修正。M2-1追記参照）
+//
+// 当初はメートルの深度差(max(0, 自分-近傍))をそのまま足していた。これだと
+// 木の裏の10mの段差が`exp(-10*300*strength)`でほぼ0（真っ黒）に潰れ、
+// 木の輪郭・未読み込みノードの縁・建物の縁に黒い線が出た（所有者が画面で確認）。
+// しかも応答がシーンのスケールに依存し、カメラが遠いほど暗くなる。
+// Potreeのedl.fragは深度のlog2の差を使う。log2の差は「距離の比」なので、
+// 10mの距離での1mの段差と1000mの距離での100mの段差が同じ応答になり、
+// カメラ距離に依らない。強さをPotreeと同じ桁（0.4〜1.0）で使えるのもこのため
+// （メートルのままだと0.05→0.03まで下げ続ける必要があった）。
 //
 // **色に依存する計算をせず、深度だけを見る。** これによりRGBを持たない点群
 // （sofi.copc.laz）でも問題なく機能する。
@@ -62,21 +75,22 @@ export type Vec3 = readonly [number, number, number];
 export const DEFAULT_EDL_ENABLED = true;
 
 /**
- * EDLの強さの既定値。**所有者が実機で確認して決めた値。**
- * 当初はPotreeの既定値(edlStrength、バージョンにより0.4〜1.0)を参考にした
- * 未検証の値(1.0)を置き、UIのスライダーで調整できるようにしていたが、
- * 所有者が実機(`sofi.copc.laz`)でスライダーを動かして確認した結果、
- * **0.05で固定して問題ない**との判断が出た。1.0はこのプロジェクトの深度レンジ
- * (NEAR=0.01, FAR=1e7、point-cloud-renderer.ts参照)に対しては強すぎ、
- * 陰影が潰れて逆に見えにくくなっていた。この確認を受け、強さのスライダーは
- * `LayerPanel`から削除し、EDLはオン/オフだけをUIから切り替える形にした
- * （TaskSheets/M2-shading-and-ui.md M2-1「強さ固定の経緯」参照）。
+ * EDLの強さの既定値。**未検証の初期値（画面を見て決めた値。所有者の確認待ち）。**
  *
- * その後、所有者から「0.05でもちょっと強すぎる、弱くしてよい」との指摘があり、
- * 0.03に下げた（2026-10-10）。0.03は「少し弱く」の目安として選んだ値で、
- * 実機で見て決めた値ではない。所有者の確認で再調整しうる。
+ * 経緯（古い順）:
+ * 1. 当初はPotreeの既定(edlStrength、0.4〜1.0)を参考に1.0を置いた。
+ * 2. 所有者が実機(`sofi.copc.laz`)で確認し、強すぎるので0.05で固定した
+ *    （強さのスライダーはUIから削除。M2-1「強さ固定の経緯」参照）。
+ * 3. 「0.05でもちょっと強すぎる」との指摘で0.03に下げた（2026-10-10）。
+ *    ただし0.03にしても、木の輪郭・建物の縁などの深度の段差に黒い線が出続けた。
+ * 4. 原因は強さではなく式だった。深度の差を**メートル**で足していたため、
+ *    10mの段差だけで陰影が0（黒）に飽和していた（1.0→0.05→0.03と下げ続けたのは
+ *    この飽和を弱さで誤魔化していただけ）。式を**log2の差（Potreeと同じ）**に
+ *    改め、陰影の下限(EDL_MIN_SHADE)も設けた。これでPotreeと同じ桁の強さに戻せる。
+ *    値はスクリーンショットを見て決めた（TaskSheets/M2-shading-and-ui.md
+ *    M2-1「EDLの黒い輪郭の修正」参照）。
  */
-export const DEFAULT_EDL_STRENGTH = 0.03;
+export const DEFAULT_EDL_STRENGTH = 0.15;
 
 /**
  * EDLが近傍として見る距離（スクリーンピクセル単位）の既定値。**未検証の初期値。**
@@ -85,12 +99,19 @@ export const DEFAULT_EDL_STRENGTH = 0.03;
 export const DEFAULT_EDL_RADIUS_PX = 1.4;
 
 /**
- * 深度差(response)を陰影に変換する際のスケール定数。Potreeのedl.fragが使っている
- * 値(300.0)をそのまま借りている。**この値の妥当性はこのプロジェクトの深度レンジで
- * 実測していない。** 深度差がどれだけの暗さになるかはシーンのスケールにも依存する
- * ため、実際の効き具合はUIのstrengthスライダーで調整することを想定している。
+ * 深度差(response、log2の差)を陰影に変換する際のスケール定数。Potreeのedl.fragが
+ * 使っている値(300.0)をそのまま借りている。responseがPotreeと同じlog2の差に
+ * なったので、この値とstrengthの組み合わせの桁もPotreeと同じになる。
  */
 export const EDL_RESPONSE_SCALE = 300.0;
+
+/**
+ * 陰影の下限。`shade`はこれより小さくならない（=エッジは暗くなるが真っ黒にはならない）。
+ * **未検証の初期値。** 0.3〜0.5の範囲でスクリーンショットを見て決めた
+ * （M2-1「EDLの黒い輪郭の修正」参照）。下限が無いと、深度の段差が大きい所
+ * （木の裏・未読み込みノードの縁）でshadeが0になり黒い線になる。
+ */
+export const EDL_MIN_SHADE = 0.5;
 
 /**
  * NDC深度(0..1、WebGPUの深度バッファの値そのもの)を、カメラからの実距離に戻す。
@@ -107,35 +128,43 @@ export function linearizeDepth(ndcDepth: number, near: number, far: number): num
 
 /**
  * EDLの陰影係数(shade)を計算する。1.0で無変化、小さいほど暗くなる。
+ * 戻り値は[EDL_MIN_SHADE, 1]の範囲（strength=0・近傍なしは1.0）。
  *
- * - `ownDepth`: このピクセルの線形化済み深度（`linearizeDepth`の戻り値）
+ * - `ownDepth`: このピクセルの線形化済み深度（`linearizeDepth`の戻り値。
+ *   メートル相当で、0より大きいこと）
  * - `neighbourDepths`: 近傍ピクセルの線形化済み深度の配列（背景など「点が無い」
- *   近傍は呼び出し側で除外して渡すか、`ownDepth`より確実に大きい値にしておけば
- *   自動的に寄与0になる。GPU側の実装では除外する方式を使っている）
+ *   近傍は呼び出し側で除外して渡す。GPU側の実装でも除外している）
  * - `strength`: UIから渡される強さ。0のとき常に1.0を返す（EDL無効=元の色のまま、
  *   タスクシートの受け入れ条件「強さ0でM1と同じ見た目になる」を満たす）
  *
+ * 深度は**log2を取ってから**差を見る（ファイル冒頭「log2にした理由」参照）。
  * 自分が近傍より「奥にある」(ownDepth > neighbourDepth)ぶんだけ暗くなり、
- * 自分が近傍より「手前にある」(ownDepthが小さい)場合は寄与が0にクリップされ
- * 暗くならない。これにより、奥まった場所（近傍に囲まれた凹み）だけが暗くなり、
+ * 自分が近傍より「手前にある」場合は寄与が0にクリップされ暗くならない。
+ * これにより、奥まった場所（手前の物の裏・凹み）だけが暗くなり、
  * 手前に飛び出した部分は明るいまま残る（Eye-Dome Lightingの見た目の根拠）。
  */
 export function edlShadingFactor(ownDepth: number, neighbourDepths: readonly number[], strength: number): number {
   if (neighbourDepths.length === 0 || strength === 0) return 1.0;
 
+  const ownLog = Math.log2(ownDepth);
   let sum = 0;
   for (const neighbourDepth of neighbourDepths) {
-    sum += Math.max(0, ownDepth - neighbourDepth);
+    sum += Math.max(0, ownLog - Math.log2(neighbourDepth));
   }
   const response = sum / neighbourDepths.length;
 
-  return Math.exp(-response * EDL_RESPONSE_SCALE * strength);
+  return Math.max(EDL_MIN_SHADE, Math.exp(-response * EDL_RESPONSE_SCALE * strength));
 }
 
 /** EDL合成パス用のuniformバッファのレイアウト。フィールドはすべてf32のスカラーで、
  *  point-cloud-renderer.tsのUniforms構造体と同じ流儀（vec4に詰め替えない）。 */
 const EDL_UNIFORM_FLOATS = 8; // strength, radiusPx, near, far, viewportWidth, viewportHeight, pad, pad
 const EDL_UNIFORM_BYTES = EDL_UNIFORM_FLOATS * 4;
+
+/** WGSLのf32リテラルとして書ける形（小数点付き）にする。`1`のような整数表記を避ける。 */
+function wgslFloat(value: number): string {
+  return value.toFixed(4);
+}
 
 const EDL_SHADER_SRC = /* wgsl */ `
 struct EdlUniforms {
@@ -217,13 +246,15 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
       // (edl.tsのedlShadingFactor()コメント参照。除外しない場合、背景の深度=遠方を
       // 「大きな凹み」と誤検出してしまう)。
       let neighbourDepth = linearizeDepth(neighbourDepthNdc);
-      responseSum = responseSum + max(0.0, ownDepth - neighbourDepth);
+      // メートルではなくlog2の差（距離の比）で比べる。edl.tsのedlShadingFactor()と同じ式。
+      responseSum = responseSum + max(0.0, log2(ownDepth) - log2(neighbourDepth));
     }
   }
   let response = responseSum / 8.0;
 
-  // 300.0(EDL_RESPONSE_SCALE)はPotreeから借りた経験値。edl.ts冒頭のコメント参照。
-  let shade = exp(-response * 300.0 * u.strength);
+  // スケール定数(EDL_RESPONSE_SCALE)と下限(EDL_MIN_SHADE)はedl.tsの定数を埋め込んでいる
+  // (TypeScript版edlShadingFactor()と同じ式。edl.ts冒頭のコメント参照)。
+  let shade = max(${wgslFloat(EDL_MIN_SHADE)}, exp(-response * ${wgslFloat(EDL_RESPONSE_SCALE)} * u.strength));
 
   return vec4<f32>(color.rgb * shade, 1.0);
 }
