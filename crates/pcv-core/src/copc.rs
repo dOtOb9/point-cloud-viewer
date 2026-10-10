@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -15,6 +15,7 @@ use copc_core::{CopcInfo, VoxelKey};
 use copc_reader::CopcReader;
 
 use crate::color_depth::{self, ColorBitDepth};
+use crate::crs::{read_crs_info, CrsInfo};
 use crate::node_format::{encode_node, NodeBuffer, NodePoint};
 
 /// pcv-core が返すエラー。`tauri::Error` などには変換しない
@@ -122,6 +123,9 @@ pub struct CloudInfo {
     pub offset: [f64; 3],
     /// LASポイントフォーマット7/8はRGB色を持つ。6は持たない。
     pub has_color: bool,
+    /// ファイルのCRS(WKT/GeoTIFFキー)。読み取りに失敗してもファイルは開ける
+    /// (`CrsInfo::error`に入る。ADR-0015)。
+    pub crs: CrsInfo,
 }
 
 /// octree中の1ノード（点データを持つチャンク）。空ノードや子ページ参照は含まない。
@@ -182,8 +186,13 @@ pub struct CopcFile<R: Read + Seek + Send = BufReader<File>> {
 impl CopcFile<BufReader<File>> {
     /// ネイティブ経路。`std::fs::File`をパスから開く。
     pub fn open(path: &Path) -> Result<Self> {
+        // CRSはヘッダーとVLRだけ読む別のハンドルで調べる(開けなければCRS欄の失敗として扱う)。
+        let crs = match File::open(path) {
+            Ok(f) => read_crs_info(&mut BufReader::new(f)),
+            Err(e) => CrsInfo::failed(format!("CRS用にファイルを開けなかった: {e}")),
+        };
         let mut reader = CopcReader::from_path(path).map_err(CopcError::Open)?;
-        let info = build_cloud_info(&reader);
+        let info = build_cloud_info(&reader, crs);
         let hierarchy = build_hierarchy(&reader);
         let color_bit_depth = detect_color_bit_depth(&mut reader, &hierarchy, info.has_color)?;
         Ok(Self {
@@ -199,9 +208,14 @@ impl<R: Read + Seek + Send> CopcFile<R> {
     /// Web版経路。すでに開いている（あるいは開いたのと同等の）`Read + Seek`を
     /// そのまま受け取る。ファイル全体を読むかどうか・どこからバイト列を
     /// 取ってくるかは`R`の実装次第で、`pcv-core`はここでは関知しない。
-    pub fn from_reader(reader: R) -> Result<Self> {
+    pub fn from_reader(mut reader: R) -> Result<Self> {
+        // 先にCRSを読む。位置は`read_crs_info`が動かすので、`CopcReader::open`の前に先頭へ戻す。
+        let crs = read_crs_info(&mut reader);
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| CopcError::Open(copc_core::Error::io("seek to start", e)))?;
         let mut reader = CopcReader::open(reader).map_err(CopcError::Open)?;
-        let info = build_cloud_info(&reader);
+        let info = build_cloud_info(&reader, crs);
         let hierarchy = build_hierarchy(&reader);
         let color_bit_depth = detect_color_bit_depth(&mut reader, &hierarchy, info.has_color)?;
         Ok(Self {
@@ -278,7 +292,7 @@ impl<R: Read + Seek + Send> CopcFile<R> {
     }
 }
 
-fn build_cloud_info<R>(reader: &CopcReader<R>) -> CloudInfo
+fn build_cloud_info<R>(reader: &CopcReader<R>, crs: CrsInfo) -> CloudInfo
 where
     R: std::io::Read + std::io::Seek + Send,
 {
@@ -296,6 +310,7 @@ where
         offset: [header.x_offset, header.y_offset, header.z_offset],
         // COPCが要求するLASフォーマットは6/7/8。7と8だけがRGB色を持つ。
         has_color: matches!(point_format_id, 7 | 8),
+        crs,
     }
 }
 
@@ -639,6 +654,29 @@ mod copc_file_tests {
         assert!(file.info().min[0] < file.info().max[0]);
         assert!(file.info().min[1] < file.info().max[1]);
         assert!(!file.hierarchy().is_empty());
+    }
+
+    /// CRSを持たないCOPCは`none`になる(エラーにも、他の系にもならない)。
+    #[test]
+    fn open_reports_no_crs_when_file_has_none() {
+        let (_dir, path, _point_total) = synthetic_copc_file();
+        let file = CopcFile::open(&path).unwrap();
+        assert_eq!(file.info().crs, CrsInfo::none());
+    }
+
+    /// 実データ(あれば)のCOPCからCRSが読めること。無い環境では何もしない。
+    #[test]
+    fn open_reports_crs_of_real_merged_copc() {
+        let path = Path::new("C:/rust/point-cloud-viewer/data/tokyo-shibuya-merged.copc.laz");
+        if !path.exists() {
+            eprintln!("skip: {path:?} が無い");
+            return;
+        }
+        let file = CopcFile::open(path).unwrap();
+        let crs = &file.info().crs;
+        assert_eq!(crs.epsg, Some(6677), "{crs:?}");
+        assert_eq!(crs.kind, crate::crs::CrsKind::PlaneRectangular);
+        assert_eq!(crs.error, None);
     }
 
     #[test]

@@ -352,6 +352,31 @@ pub struct CloudInfoDto {
     pub scale: [f64; 3],
     pub offset: [f64; 3],
     pub has_color: bool,
+    pub crs: CrsInfoDto,
+}
+
+/// ファイルのCRS(`pcv_core::crs::CrsInfo`)。Tauri版(ここ)とWeb版
+/// (`crates/pcv-wasm/src/dto.rs`)で同じ形のJSONになるよう、フィールドを揃えてある
+/// (片方を変えたらもう片方も直す)。`kind`は
+/// `"plane-rectangular" | "utm" | "other" | "none"`。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CrsInfoDto {
+    pub epsg: Option<u32>,
+    pub name: String,
+    pub kind: &'static str,
+    /// 読み取りに失敗したときのエラー文言(失敗してもファイルは開ける。ADR-0015)。
+    pub error: Option<String>,
+}
+
+impl From<&pcv_core::crs::CrsInfo> for CrsInfoDto {
+    fn from(crs: &pcv_core::crs::CrsInfo) -> Self {
+        Self {
+            epsg: crs.epsg,
+            name: crs.name.clone(),
+            kind: crs.kind.as_str(),
+            error: crs.error.clone(),
+        }
+    }
 }
 
 impl From<&CloudInfo> for CloudInfoDto {
@@ -363,6 +388,7 @@ impl From<&CloudInfo> for CloudInfoDto {
             scale: info.scale,
             offset: info.offset,
             has_color: info.has_color,
+            crs: CrsInfoDto::from(&info.crs),
         }
     }
 }
@@ -683,6 +709,9 @@ mod tests {
         let response = open_copc_impl(pool, path.to_str().unwrap(), &state).unwrap();
 
         assert_eq!(response.info.point_count, 500);
+        // CRSを持たない合成ファイルは"none"(DTOの形はWeb版と同じ)。
+        assert_eq!(response.info.crs.kind, "none");
+        assert_eq!(response.info.crs.epsg, None);
         assert!(!response.nodes.is_empty());
         assert!(state.opened.lock().unwrap().is_some());
     }

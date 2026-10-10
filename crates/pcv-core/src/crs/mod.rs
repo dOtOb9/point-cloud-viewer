@@ -21,11 +21,13 @@
 //! - このファイル: 上記をまとめる`Crs`列挙型、EPSGコードとの対応、
 //!   LAS VLRからのCRS判定、精度検証用の統合テスト
 
+pub mod describe;
 pub mod ellipsoid;
 pub mod plane_rectangular;
 pub mod transverse_mercator;
 pub mod utm;
 
+pub use describe::{describe_crs_from_las_header, read_crs_info, CrsInfo, CrsKind};
 pub use ellipsoid::{Ellipsoid, GRS80, WGS84};
 pub use plane_rectangular::{JgdEpoch, PlaneRectangularCrs, PlaneRectangularZone};
 pub use transverse_mercator::{ForwardResult, InverseResult};

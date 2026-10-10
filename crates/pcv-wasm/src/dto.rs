@@ -20,6 +20,30 @@ pub struct CloudInfoDto {
     pub scale: [f64; 3],
     pub offset: [f64; 3],
     pub has_color: bool,
+    pub crs: CrsInfoDto,
+}
+
+/// ファイルのCRS(`pcv_core::crs::CrsInfo`)。Tauri版(`src-tauri/src/copc_state.rs`)と
+/// 同じ形のJSONになるよう、フィールドを揃えてある(片方を変えたらもう片方も直す)。
+/// `kind`は`"plane-rectangular" | "utm" | "other" | "none"`。
+#[derive(Serialize)]
+pub struct CrsInfoDto {
+    pub epsg: Option<u32>,
+    pub name: String,
+    pub kind: &'static str,
+    /// 読み取りに失敗したときのエラー文言(失敗してもファイルは開ける。ADR-0015)。
+    pub error: Option<String>,
+}
+
+impl From<&pcv_core::crs::CrsInfo> for CrsInfoDto {
+    fn from(crs: &pcv_core::crs::CrsInfo) -> Self {
+        Self {
+            epsg: crs.epsg,
+            name: crs.name.clone(),
+            kind: crs.kind.as_str(),
+            error: crs.error.clone(),
+        }
+    }
 }
 
 impl From<&pcv_core::CloudInfo> for CloudInfoDto {
@@ -31,6 +55,7 @@ impl From<&pcv_core::CloudInfo> for CloudInfoDto {
             scale: info.scale,
             offset: info.offset,
             has_color: info.has_color,
+            crs: CrsInfoDto::from(&info.crs),
         }
     }
 }
