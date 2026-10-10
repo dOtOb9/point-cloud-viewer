@@ -43,6 +43,46 @@
   --color-on-error: var(--on-error);
 }
 
+/* ADR-0017 (AN-3): UIの動き。時間とイージングはここ1箇所にまとめる(すべて未検証の初期値。
+   所有者が画面で見て調整する)。動かすのはopacityとtransformだけ(ガラスのbackdrop-filterは
+   動かさない。ADR-0005)。進捗バーだけtransform: scaleXで動かす。
+   OSの「視差効果を減らす」が有効なら、時間を0にして動きを止める。 */
+:root {
+  --motion-dialog-in: 170ms;
+  --motion-dialog-out: 120ms;
+  --motion-panel: 220ms;
+  --motion-press: 100ms;
+  --motion-progress: 300ms;
+  --motion-pulse: 450ms;
+  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-dialog-in: 0ms;
+    --motion-dialog-out: 0ms;
+    --motion-panel: 0ms;
+    --motion-press: 0ms;
+    --motion-progress: 0ms;
+    --motion-pulse: 0ms;
+  }
+}
+/* エラーが新しく届いたときに1回だけ脈打つ(ステータスバーのエラーログボタン)。 */
+@keyframes pcv-pulse {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.pcv-pulse-once {
+  animation: pcv-pulse var(--motion-pulse) var(--motion-ease-out) 1;
+}
+
 /* ADR-0005: 3Dビューをウィンドウ全面に敷く(全面ビューア)。
    html/body/#root がビューポート全体の高さを持たないと、canvasをabsolute inset-0
    で敷いても全面にならない。 */

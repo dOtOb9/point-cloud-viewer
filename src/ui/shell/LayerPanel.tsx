@@ -1,8 +1,13 @@
+import type { CSSProperties } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
 import { glassSurfaceClass } from "./glass";
 import { LayerInfoSection } from "./LayerInfoSection";
 import { LayerStatsDetails } from "./LayerStatsDetails";
+import { useTransitionMount } from "./useTransitionMount";
+
+/** パネルが滑って消えるまでの時間(ms)。index.cssの`--motion-panel`と同じ値(未検証の初期値)。 */
+const PANEL_EXIT_MS = 220;
 
 /** レイヤー1件(ADR-0018)。今は名前だけ。将来は「どのレイヤーから何の操作で作ったか」を持たせる。 */
 interface Layer {
@@ -80,8 +85,16 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
     </div>
   );
 
+  // AN-3: パネルは横へ滑って出入りする(transformだけ。ガラスのぼかしの大きさは動かさない)。
+  const { mounted, shown } = useTransitionMount(open, PANEL_EXIT_MS);
+  const slide: CSSProperties = {
+    transitionProperty: "transform, opacity",
+    transitionDuration: "var(--motion-panel)",
+    transitionTimingFunction: shown ? "var(--motion-ease-out)" : "var(--motion-ease-in)",
+  };
   const panelBody = (
     <section
+      style={{ ...slide, transform: shown ? "translateX(0)" : "translateX(-110%)", opacity: shown ? 1 : 0 }}
       className={`pointer-events-auto flex w-72 max-w-[38vw] flex-col gap-4 overflow-y-auto rounded-2xl p-4 text-sm shadow-lg ${glassSurfaceClass(glassEnabled)} ${narrow ? "!w-full !max-w-none !rounded-none" : ""}`}
     >
       {tree}
@@ -101,16 +114,17 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
     // 実機での見た目は所有者の確認手順に記載)。
     return (
       <>
-        {open && (
+        {mounted && (
           <button
             type="button"
             aria-label="レイヤーパネルを閉じる"
             onClick={onToggleOpen}
-            className="fixed inset-0 z-10 bg-black/30"
+            style={{ ...slide, transitionProperty: "opacity", opacity: shown ? 1 : 0 }}
+            className={`fixed inset-0 z-10 bg-black/30 ${shown ? "" : "pointer-events-none"}`}
           />
         )}
         <div className="pointer-events-none fixed bottom-11 left-0 top-[4.5rem] z-10 flex max-w-[88vw] items-stretch">
-          {open && panelBody}
+          {mounted && panelBody}
         </div>
         <button
           type="button"
@@ -127,15 +141,18 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
 
   return (
     // 上はリボン(top-3 + 高さ約4.5rem)、下はステータスバー(約2.75rem)に重ならない位置にする。
-    <div className="pointer-events-none absolute bottom-14 left-3 top-28 z-10 flex items-start gap-2">
-      {open && panelBody}
+    // パネルと開閉ボタンは、どちらも絶対配置+transformで動かす(flexの並びだと、パネルが
+    // DOMから消えた瞬間に開閉ボタンの位置が飛ぶため)。ボタンはパネル幅(w-72=18rem)+隙間ぶん右へずらす。
+    <div className="pointer-events-none absolute bottom-14 left-3 top-28 z-10">
+      {mounted && <div className="absolute left-0 top-0 flex max-h-full">{panelBody}</div>}
 
       <button
         type="button"
         onClick={onToggleOpen}
         aria-label={open ? "レイヤーパネルを畳む" : "レイヤーパネルを開く"}
         title={open ? "レイヤーパネルを畳む" : "レイヤーパネルを開く"}
-        className={`pointer-events-auto rounded-full px-2 py-2 text-xs shadow-lg ${glassSurfaceClass(glassEnabled)}`}
+        style={{ ...slide, transitionProperty: "transform", transform: shown ? "translateX(18.5rem)" : "translateX(0)" }}
+        className={`pointer-events-auto absolute left-0 top-0 rounded-full px-2 py-2 text-xs shadow-lg ${glassSurfaceClass(glassEnabled)}`}
       >
         {open ? "◀" : "▶"}
       </button>

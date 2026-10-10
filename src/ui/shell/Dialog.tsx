@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { useTransitionMount } from "./useTransitionMount";
 
 interface Props {
   open: boolean;
@@ -19,6 +20,9 @@ interface Props {
 
 /** 役割色トークン(index.css)の名前で上端線を引く。クラス名は文字列のまま書く(Tailwindが検出できるように)。 */
 const ACCENT_BORDER = { primary: "border-t-primary", secondary: "border-t-secondary", error: "border-t-error" } as const;
+
+/** 閉じるアニメーションの長さ(ms)。index.cssの`--motion-dialog-out`と同じ値にしておく(未検証の初期値)。 */
+const EXIT_MS = 120;
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -59,7 +63,9 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
     };
   }, [open]);
 
-  if (!open) return null;
+  // AN-3: 閉じるときもDOMに少し残して、閉じるアニメーション(逆再生。開くより速い)を見せる。
+  const { mounted, shown } = useTransitionMount(open, EXIT_MS);
+  if (!mounted) return null;
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Escape") {
@@ -89,9 +95,23 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
   const headerTone = tone === "error" ? "bg-error text-on-error" : "border-b border-slate-200 dark:border-slate-700";
   const closeTone = tone === "error" ? "hover:bg-black/20" : "hover:bg-black/5 dark:hover:bg-white/10";
 
+  // 動かすのはopacityとtransformだけ。出る: 暗幕はフェード、パネルは0.96倍→1倍+フェード(ease-out)。
+  // 閉じる: 逆向きで速く(ease-in)。時間・イージングはindex.cssの`--motion-*`(1箇所)。
+  const motionStyle: CSSProperties = {
+    transitionProperty: "opacity, transform",
+    transitionDuration: shown ? "var(--motion-dialog-in)" : "var(--motion-dialog-out)",
+    transitionTimingFunction: shown ? "var(--motion-ease-out)" : "var(--motion-ease-in)",
+  };
+  const backdropStyle: CSSProperties = { ...motionStyle, opacity: shown ? 1 : 0 };
+  const panelStyle: CSSProperties = { ...motionStyle, opacity: shown ? 1 : 0, transform: shown ? "scale(1)" : "scale(0.96)" };
+
   return (
-    <div className={`fixed inset-0 ${layer === "top" ? "z-50" : "z-40"} flex items-center justify-center bg-black/50 p-3 md:p-4`}>
+    <div
+      style={backdropStyle}
+      className={`fixed inset-0 ${layer === "top" ? "z-50" : "z-40"} flex items-center justify-center bg-black/50 p-3 md:p-4 ${shown ? "" : "pointer-events-none"}`}
+    >
       <div
+        style={panelStyle}
         ref={panelRef}
         role="dialog"
         aria-modal="true"

@@ -209,6 +209,34 @@
 - **アクティブなタブ/トグルの下線:** `RibbonButton`に`active`(下端3pxのprimary)を用意したが、
   いまのリボンにタブ・トグル型のボタンは無いため、使っている箇所は無い(将来のため)。
 
+## UIの動き（AN-3。`TaskSheets/AN-animation.md`）
+
+- **実装:** アニメーションライブラリは使わない。CSSのtransition/keyframesと、出入りのためだけの
+  小さなフック`useTransitionMount.ts`(`mounted`=DOMに居る、`shown`=見せている状態。開くとき次のフレームで
+  `shown`にしてtransitionを走らせ、閉じるときは`shown`を先にfalseにして、`exitMs`後にDOMから外す)。
+- **動かすのは`opacity`と`transform`だけ**(`backdrop-filter`・ぼかし・幅・高さは動かさない。ADR-0005)。
+  進捗バーも幅ではなく`transform: scaleX`(`ConversionDialog.tsx`)。
+- **時間・イージングは`src/index.css`の`--motion-*`の1箇所**(すべて未検証の初期値。所有者が画面で見て調整する):
+  ダイアログの出る170ms・閉じる120ms、パネル220ms、押下100ms、進捗300ms、脈打ち450ms、
+  イージングはease-out/ease-in(`cubic-bezier`)。`Dialog.tsx`の`EXIT_MS`と`LayerPanel.tsx`の
+  `PANEL_EXIT_MS`はDOMを外すタイミング用の同じ値(CSS側と合わせて直す)。
+- **`prefers-reduced-motion: reduce`:** `--motion-*`を0msにし、フックも待たずにDOMから外す。
+- **内容:** ダイアログ(設定・URL・変換・エラー)は暗幕のフェード+パネルが0.96倍→1倍のフェード
+  (閉じるときは逆向きで速い)。左パネルと狭幅のドロワーはtranslateXで滑る(デスクトップでは開閉ボタンも
+  同じtransformで動かし、パネルがDOMから消えたときに位置が飛ばないようにした)。リボンのボタンは
+  ホバーで1px浮き、押下で0.97倍。`RibbonButton`の`active`は下線がscaleXで中央から伸びる(使う箇所はまだ無い)。
+  ステータスバーのエラーログボタンは、新しいエラー(履歴の件数が増えたとき)に1回だけ脈打つ。
+  点数・fpsなどの数値には動きをつけない。
+- **やっていないこと:** (1) 「スイッチのつまみ」の動き: UIにスイッチ部品が無く、チェックボックスはブラウザ標準のため。
+  (2) AN-animation.mdの「設定にアニメーション: オン/オフ」: ユーザー設定を増やさない方針(ガラスの設定廃止と同じ)で
+  見送り、OSの`prefers-reduced-motion`にだけ従う。
+- **確認(実行した出力):** headed Chromiumでrequest​AnimationFrameごとにcomputed styleを標本化した。設定ダイアログの
+  開くとき: opacityが0.00→0.49→0.75→0.87→…→1.00、scaleが0.96→0.9795→0.9899→…→1.0に推移(中間フレームあり)。
+  閉じるとき: 約120msでopacity 1→0・scale 1→0.96に推移した後、DOMから消えた。左パネルの畳む/開くも
+  translateXが0↔-316.8pxを中間値を通って推移した。E2E(`web-conversion`・`web-multi-conversion`)は通る
+  (`viewer-error`は左パネルにありダイアログのアニメーションの影響を受けない)。
+  未確認: 見た目の心地よさ(所有者が画面で調整)、デスクトップ(Tauri)・Android実機での滑らかさ。
+
 ## ファイルの開き方（所有者の追加要件）: パスを人に打たせない
 
 - **ローカルファイルのパスを打つ入力欄は、アプリのどこにも無い。** 削除したもの: 設定画面の

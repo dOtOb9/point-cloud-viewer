@@ -92,8 +92,9 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
               </p>
               <div className="h-2 w-full overflow-hidden rounded bg-tertiary/25">
                 <div
-                  className="h-full bg-secondary"
-                  style={{ width: `${Math.min(100, (progress.pointsRead / Math.max(1, progress.totalPoints)) * 100)}%` }}
+                  // AN-3: 幅ではなくscaleXで伸ばす(transformだけ。レイアウトを再計算させない)。
+                  className="h-full w-full origin-left bg-secondary transition-transform duration-(--motion-progress) ease-linear"
+                  style={{ transform: `scaleX(${Math.min(1, progress.pointsRead / Math.max(1, progress.totalPoints))})` }}
                 />
               </div>
               <p className="opacity-70">経過: {formatElapsed(progress.elapsedSecs)}</p>

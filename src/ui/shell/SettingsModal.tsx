@@ -58,7 +58,8 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
     if (open && viewer.isBrowser) void refreshOpfsStorageInfo();
   }, [open, viewer.isBrowser, refreshOpfsStorageInfo]);
 
-  if (!open) return null;
+  // AN-3: `open`がfalseでもここでは早期returnしない(閉じるアニメーションのため`Dialog`がDOMに残す。
+  // `Dialog`が描画しない間は子の診断パネルも作られない)。
 
   // ADR-0017: 共通の`Dialog`(中央・タイトルバー・フッター)に載せる。不透明なのは
   // ADR-0005どおり(`Dialog`自体が不透明)。フッターは「閉じる」だけ。

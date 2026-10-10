@@ -14,7 +14,9 @@ export const RIBBON_GROUP_LABEL_CLASS = "text-[10px] font-semibold uppercase tra
  * min-h-14(56px)・min-w-14は44px以上のタッチ領域。
  */
 export const RIBBON_BUTTON_CLASS =
-  "flex min-h-14 min-w-14 flex-col items-center justify-center gap-0.5 rounded-md px-2 py-1 text-[11px] leading-tight whitespace-nowrap " +
+  "relative flex min-h-14 min-w-14 flex-col items-center justify-center gap-0.5 rounded-md px-2 py-1 text-[11px] leading-tight whitespace-nowrap " +
+  // AN-3: ホバーで1px浮き、押すと0.97倍(transformだけ。時間・イージングはindex.cssの--motion-*)。
+  "transition-transform duration-(--motion-press) ease-(--motion-ease-out) hover:-translate-y-px active:translate-y-0 active:scale-[0.97] " +
   "hover:bg-black/5 dark:hover:bg-white/10 " +
   "disabled:cursor-not-allowed disabled:bg-tertiary/20 disabled:opacity-50 disabled:pointer-events-none";
 

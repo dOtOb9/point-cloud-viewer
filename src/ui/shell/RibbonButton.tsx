@@ -27,10 +27,15 @@ export function RibbonButton({ icon: Icon, label, onClick, disabled = false, tit
       disabled={disabled}
       aria-disabled={disabled}
       title={title ?? label}
-      className={`${RIBBON_BUTTON_CLASS} ${primary ? RIBBON_BUTTON_PRIMARY_CLASS : ""} ${active ? "border-b-[3px] border-b-primary" : ""}`}
+      className={`${RIBBON_BUTTON_CLASS} ${primary ? RIBBON_BUTTON_PRIMARY_CLASS : ""}`}
     >
       <Icon size={20} aria-hidden="true" />
       <span>{label}</span>
+      {/* 選択中の下線。scaleXで中央から伸び縮みする(transformだけ。AN-3)。 */}
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none absolute inset-x-2 bottom-0 h-[3px] origin-center rounded bg-primary transition-transform duration-(--motion-panel) ease-(--motion-ease-out) ${active ? "scale-x-100" : "scale-x-0"}`}
+      />
     </button>
   );
 }

@@ -66,7 +66,9 @@ export function StatusBar({
       <button
         type="button"
         onClick={onOpenErrorLog}
-        className={`ml-auto min-h-11 min-w-11 shrink-0 whitespace-nowrap rounded px-2 py-0.5 ${viewer.errorHistory.length > 0 ? "bg-error text-on-error" : "hover:bg-black/5 dark:hover:bg-white/10"}`}
+        // AN-3: 新しいエラーが届くとkeyが変わって作り直され、1回だけ脈打つ(件数が増えないとき=同じ文言の連投は脈打たない)。
+        key={viewer.errorHistory.length}
+        className={`ml-auto min-h-11 min-w-11 shrink-0 whitespace-nowrap rounded px-2 py-0.5 ${viewer.errorHistory.length > 0 ? "pcv-pulse-once bg-error text-on-error" : "hover:bg-black/5 dark:hover:bg-white/10"}`}
       >
         ログ{viewer.errorHistory.length > 0 ? `（${viewer.errorHistory.length}）` : ""}
       </button>
