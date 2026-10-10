@@ -147,6 +147,8 @@ export class PointCloudRenderer {
   /** AN-2: ダブルクリックで寄るときのレイキャスト対象。直近フレームで実際に描いたノード。 */
   private lastDrawn: CachedNode[] = [];
   private hierarchyByKey = new Map<string, HierarchyNodeInfo>();
+  /** LASヘッダーの実データ範囲（setElevationRangeで受け取る）。未設定ならnull。 */
+  private cloudBounds: { boundsMin: [number, number, number]; boundsMax: [number, number, number] } | null = null;
   /** AN-2: 「全体を表示」の行き先（setHierarchyで更新）。 */
   private fitGoal: { target: [number, number, number]; distance: number } | null = null;
 
@@ -344,7 +346,7 @@ export class PointCloudRenderer {
       const info = this.hierarchyByKey.get(node.key);
       if (info) boxes.push(info);
     }
-    const hit = pickFlyToPoint(ray, boxes);
+    const hit = pickFlyToPoint(ray, boxes, this.cloudBounds ?? undefined);
     if (!hit) return;
     const goal = flyToGoal(hit, this.camera.distance);
     this.camera.animateTo(goal);
@@ -414,6 +416,8 @@ export class PointCloudRenderer {
    */
   setElevationRange(cloudMin: readonly [number, number, number], cloudMax: readonly [number, number, number]): void {
     this.elevationRange = elevationRangeFromCloudBounds(cloudMin, cloudMax);
+    // AN-2: ダブルクリックで寄るときに、octreeの立方体の箱を実データの範囲で切るために覚えておく。
+    this.cloudBounds = { boundsMin: [cloudMin[0], cloudMin[1], cloudMin[2]], boundsMax: [cloudMax[0], cloudMax[1], cloudMax[2]] };
   }
 
   /**
@@ -472,6 +476,18 @@ export class PointCloudRenderer {
    */
   isCameraAnimating(): boolean {
     return this.camera.isAnimating();
+  }
+
+  /** 計測・テスト用: カメラの現在の状態（毎フレーム読める。統計は500msごとなので粗い）。 */
+  debugCameraState(): {
+    yaw: number;
+    pitch: number;
+    distance: number;
+    target: [number, number, number];
+    animating: boolean;
+  } {
+    const c = this.camera;
+    return { yaw: c.yaw, pitch: c.pitch, distance: c.distance, target: [...c.target], animating: c.isAnimating() };
   }
 
   setAnimationEnabled(enabled: boolean): void {

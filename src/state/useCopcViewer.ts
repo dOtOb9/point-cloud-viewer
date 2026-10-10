@@ -501,6 +501,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     const renderer = new PointCloudRenderer(canvas);
     const source: DataSource = isTauriEnvironment() ? new TauriSource() : new WebSource();
     rendererRef.current = renderer;
+    // 実ブラウザでの計測・確認用（AN-1/AN-2）。URLに?pcvDebugが付いたときだけ、
+    // rendererを window.__pcvRenderer に出す。付けなければ何も起きない。
+    if (typeof location !== "undefined" && new URLSearchParams(location.search).has("pcvDebug")) {
+      (window as unknown as { __pcvRenderer?: unknown }).__pcvRenderer = renderer;
+    }
     sourceRef.current = source;
     renderer.setDataSource(source);
 

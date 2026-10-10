@@ -15,11 +15,25 @@ import { intersectRayAabb, type NodeAabb, type Ray } from "./raycast";
  * 箱の面は点の代理でしかないので、ズームのように繰り返し寄る用途ではなく、
  * 視点を一度移すだけのこの用途に限って使う。
  */
-export function pickFlyToPoint(ray: Ray, nodes: readonly NodeAabb[]): [number, number, number] | null {
+export function pickFlyToPoint(
+  ray: Ray,
+  nodes: readonly NodeAabb[],
+  clip?: NodeAabb,
+): [number, number, number] | null {
   let bestSize = Infinity;
   let bestT: number | null = null;
   for (const node of nodes) {
-    const t = intersectRayAabb(ray, node.boundsMin, node.boundsMax);
+    // clipがあれば、箱を実データの範囲（LASヘッダーのmin/max）と重なる部分だけにして判定する。
+    // COPCのoctreeの箱は立方体で、実データよりずっと高い（広い）ことがあり、そのままだと
+    // 何もない空中の面に寄ってしまう（autzenで、データの上端615に対し箱の面が1570だった）。
+    let lo = node.boundsMin;
+    let hi = node.boundsMax;
+    if (clip) {
+      lo = [Math.max(lo[0], clip.boundsMin[0]), Math.max(lo[1], clip.boundsMin[1]), Math.max(lo[2], clip.boundsMin[2])];
+      hi = [Math.min(hi[0], clip.boundsMax[0]), Math.min(hi[1], clip.boundsMax[1]), Math.min(hi[2], clip.boundsMax[2])];
+      if (lo[0] > hi[0] || lo[1] > hi[1] || lo[2] > hi[2]) continue;
+    }
+    const t = intersectRayAabb(ray, lo, hi);
     if (t === null) continue;
     const size = Math.max(
       node.boundsMax[0] - node.boundsMin[0],

@@ -128,6 +128,15 @@ describe("ダブルクリックで寄る行き先", () => {
     expect(pickFlyToPoint(ray, [parent, child])).toEqual([40, 0, 0]);
   });
 
+  it("実データの範囲(clip)で箱を切り、空中の面ではなくデータの上端に寄る", () => {
+    // 箱はx=10..110だが、実データはx=30..60だけ。切らなければ10に当たる
+    const nodes = [box([10, -50, -50], [110, 50, 50])];
+    expect(pickFlyToPoint(ray, nodes)).toEqual([10, 0, 0]);
+    expect(pickFlyToPoint(ray, nodes, box([30, -50, -50], [60, 50, 50]))).toEqual([30, 0, 0]);
+    // 実データの範囲とまったく重ならない箱は無視する
+    expect(pickFlyToPoint(ray, nodes, box([200, 0, 0], [300, 1, 1]))).toBeNull();
+  });
+
   it("何にも当たらなければnull", () => {
     expect(pickFlyToPoint(ray, [box([10, 100, 100], [20, 110, 110])])).toBeNull();
     expect(pickFlyToPoint(ray, [])).toBeNull();
