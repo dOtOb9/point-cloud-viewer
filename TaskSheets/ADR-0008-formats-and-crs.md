@@ -448,3 +448,64 @@ M4-6bと同じ構図)、UIでのファイル選択・進捗・キャンセルの
 E57/PLY/PCDはOSのファイル選択ダイアログにすら出てこない)。wasm32で
 ビルドできる見込みが高いことは確認済みなので、Webへのつなぎ込みは
 今後の課題として切り出せる状態にある。
+
+## 追記（2026-10-10）: CRSを画面まで配線した
+
+それまで`pcv-core::crs`はマージ・変換の入口でCRSの一致を確かめるためだけに使われ、
+画面には届いていなかった(UIシェルは「CRS: 不明（未配線）」と出していた。ADR-0017)。
+
+### やったこと
+
+- `pcv-core`: `crs/describe.rs`を追加。`read_crs_info`が、ファイルの**先頭のヘッダーとVLRだけ**
+  (点データ・EVLR=COPCの階層は読まない)を読み、既存の`epsg_from_wkt`と`las`クレートの
+  GeoTIFF解析で判定して`CrsInfo { epsg, name, kind, error }`を返す。パーサは新しく書いていない。
+  `CopcFile::open`/`from_reader`が`CloudInfo.crs`に入れる。
+- なぜ`copc-reader`のヘッダーを使わないか: `copc-reader`はCOPC/LASzip以外のVLRを読み捨てる
+  (`vendor/copc-reader`の`should_store_vlr`)ため、WKTが残らない。別に先頭を読む必要がある。
+  `las::Reader`は`'static`なReaderを要求し、`CopcFile::from_reader`の借用に合わないので、
+  `las::raw::Header`+`las::raw::Vlr`で読んで`las::Builder`でヘッダーに組み直している。
+- DTO(Tauri版`src-tauri/src/copc_state.rs`・Web版`crates/pcv-wasm/src/dto.rs`で同じ形):
+  `crs: { epsg?: number, name: string, kind: "plane-rectangular" | "utm" | "other" | "none", error?: string }`。
+  Tauriのserde_jsonは無い値を`null`、wasmは`undefined`で返すので、`src/datasource/copc-dto.ts`の
+  `toCrsInfo`で「キー無し」にそろえる。
+- 表示: `src/ui/shell/crs-format.ts`。左パネルは「JGD2011 / 平面直角座標系 第IX系 (EPSG:6677)」、
+  ステータスバーは「EPSG:6677」。CRS情報が無ければ「なし（ファイルに座標系情報が無い）」(ステータスバーは「なし」)。
+  対応範囲外(例: NAD83 / Oregon GIC Lambert (ft))はファイルに書かれた名前とEPSGをそのまま出す。
+- 失敗(ADR-0015): 読み取りに失敗してもファイルは開ける。画面は「読み取れなかった」、
+  エラー本文はエラーログ(`source: "crs"`、見出し「座標系の読み取りエラー」)に出す。panicしない。
+
+### 判断したこと
+
+- 空のWKT(中身が空白だけ・NULだけ)は「CRSなし」と同じに扱う。`copc-writer`が出力する合成COPCは
+  空のWKT VLRを持ち、そのまま「あり・名前なし」にすると「なし」と区別できなかった(テストで見つけた)。
+- 「CRS情報はあるが扱えない」(`other`)に、地理座標系だけのGeoTIFFも含める。名前は
+  「地理座標系または未対応の座標系」とし、EPSGは付けない(確かめていない値を出さない)。
+- `Crs`列挙型は変えていない。`Crs::Unknown`が「対応外」と「読み取れず」を兼ねるため、画面用の別の型にした。
+
+### 確かめたこと
+
+- Rust: `cargo test -p pcv-core`で、実データ`data/tokyo-shibuya/09LD2659.las`のヘッダーと
+  `data/tokyo-shibuya-merged.copc.laz`が EPSG:6677 / 平面直角座標系 第IX系になること、
+  CRSの無い合成COPCが`none`になること、壊れたバイト列が`error`になりpanicしないこと。
+  (データが無い環境では実データのテストは何もせず通る。)
+- vitest: `crs-format.test.ts`(各ケースの文字列)、`copc-dto.test.ts`(null/undefinedのそろえ)。
+- ヘッド付きChromium(Web版ビルド)で実ファイルを開き、画面を見て確かめた:
+  `tokyo-shibuya-merged.copc.laz` は左パネル「JGD2011 / 平面直角座標系 第IX系 (EPSG:6677)」・
+  ステータスバー「CRS: EPSG:6677」。`autzen-classified.copc.laz` は左パネル
+  「NAD83 / Oregon GIC Lambert (ft) (EPSG:2992)」・ステータスバー「CRS: EPSG:2992」
+  (米国オレゴンの座標系なので対応範囲外。名前とEPSGをそのまま出している)。
+
+### 確かめていないこと(所有者の確認手順)
+
+- **デスクトップ(Tauri)版・Android版の実機表示は未確認。** Rustの`open_copc`のテスト
+  (`open_copc_impl_populates_state_and_reports_summary`)でDTOの値(`none`)は確かめたが、
+  ウィンドウに出るところまでは見ていない。手順:
+  1. `npm run tauri dev`でアプリを起動する。
+  2. 「開く」で`data/tokyo-shibuya-merged.copc.laz`を選ぶ。
+  3. 左パネルの「レイヤー情報」が「CRS: JGD2011 / 平面直角座標系 第IX系 (EPSG:6677)」、
+     下のステータスバーが「CRS: EPSG:6677」になることを見る。
+  4. `data/autzen-classified.copc.laz`を開き、「NAD83 / Oregon GIC Lambert (ft) (EPSG:2992)」になることを見る。
+  5. CRSの無いCOPC(合成データなど)では「なし（ファイルに座標系情報が無い）」になることを見る。
+- Androidの`content://`経由(`open_uri_reader`→`CopcFile::from_reader`)でも、同じ`from_reader`の中でCRSを先に読む作りだが、実機では未確認。
+- 「読み取れなかった」の表示とエラーログへの出力は、単体テスト(Rust側が`error`を返す)までで、
+  画面では見ていない(壊れたVLRを持つ実ファイルが手元に無い)。

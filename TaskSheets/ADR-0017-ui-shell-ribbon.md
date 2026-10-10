@@ -285,14 +285,19 @@
 対応先とした。新しい数値調整機能を追加することは本タスクの範囲(UIシェルの
 再構築)を超えると判断し、見送った。
 
-### CRSについて(正直に)
+### CRSについて
 
-`LayerInfoSection.tsx`・`StatusBar.tsx`はどちらもCRSを「不明（未配線）」と表示する。
-`CloudInfo`(`src/datasource/DataSource.ts`)には現時点でCRSフィールドが無く、
-`crates/pcv-core/src/crs`モジュールは存在するが`CloudInfo`まで配線されていない
-(`grep -rn "crs" crates/pcv-core/src/lib.rs`で`pub mod crs;`のみ確認)。推測で
-値を出さず、配線されていないことをそのまま表示した。配線する場合は
-`pcv-core::crs`→`CloudInfo.crs`→UIの3箇所の変更が必要になる(本タスクの範囲外)。
+当初(このADRの実装時点)は、`CloudInfo`にCRSのフィールドが無く`pcv-core::crs`も画面まで
+つながっていなかったため、`LayerInfoSection.tsx`・`StatusBar.tsx`は「CRS: 不明（未配線）」と
+出していた(推測で値を出さないための措置)。
+
+**2026-10-10に配線した。** `CloudInfo.crs`(`{ epsg?, name, kind, error? }`)を
+`pcv-core`→Tauri/Web共通のDTO→`src/datasource/copc-dto.ts`→UIの順に通した。
+左パネルは長い形(例「JGD2011 / 平面直角座標系 第IX系 (EPSG:6677)」)、
+ステータスバーは短い形(例「EPSG:6677」)。無いときは「なし（ファイルに座標系情報が無い）」、
+読めなかったときは「読み取れなかった」(本文はエラーログへ)。
+詳細・確かめたこと・確かめていないこと(デスクトップ実機の手順)は
+[ADR-0008](./ADR-0008-formats-and-crs.md)の「追記（2026-10-10）」にある。
 
 ## 他社製品を模倣しないことについて
 
