@@ -36,6 +36,11 @@ import { formatConversionBreakdown, type ConversionBreakdownMeta } from "../data
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
+import {
+  applyMotionAttribute,
+  readStoredAnimationEnabled,
+  storeAnimationEnabled,
+} from "./motion-setting";
 import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
 import { DEFAULT_COLOR_MODE, resolveColorMode, type ColorMode } from "../renderer/colormap";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "../renderer/device-profile";
@@ -136,6 +141,15 @@ export interface OpfsStorageInfo {
   usageBytes: number;
   persisted: boolean;
   breakdown: OpfsUsageBreakdown;
+}
+
+/** localStorageが無い環境(vitestのnode等)ではundefined。 */
+function getLocalStorage(): Storage | undefined {
+  try {
+    return typeof localStorage === "undefined" ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 function readStoredTempDir(): string | null {
@@ -361,7 +375,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
   const [edlEnabled, setEdlEnabledState] = useState(deviceProfileDefaults.edlEnabled);
-  const [animationEnabled, setAnimationEnabledState] = useState(true);
+  const [animationEnabled, setAnimationEnabledState] = useState(() => readStoredAnimationEnabled(getLocalStorage()));
   const [renderScale, setRenderScaleState] = useState(deviceProfileDefaults.renderScale);
   const [pointShape, setPointShapeState] = useState<PointShape>(deviceProfileDefaults.pointShape);
   const [centerPriorityStrength, setCenterPriorityStrengthState] = useState(DEFAULT_CENTER_PRIORITY_STRENGTH);
@@ -501,6 +515,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     const renderer = new PointCloudRenderer(canvas);
     const source: DataSource = isTauriEnvironment() ? new TauriSource() : new WebSource();
     rendererRef.current = renderer;
+    // 保存済みのアニメーション設定をrendererへ反映する(未保存ならオン)。
+    renderer.setAnimationEnabled(readStoredAnimationEnabled(getLocalStorage()));
     // 実ブラウザでの計測・確認用（AN-1/AN-2）。URLに?pcvDebugが付いたときだけ、
     // rendererを window.__pcvRenderer に出す。付けなければ何も起きない。
     if (typeof location !== "undefined" && new URLSearchParams(location.search).has("pcvDebug")) {
@@ -1048,9 +1064,15 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setGridEnabled(enabled);
   }, []);
 
+  // UIのCSSアニメーション(AN-3)も同じ設定で止める: <html data-motion="off">(index.css)。
+  useEffect(() => {
+    applyMotionAttribute(document.documentElement, animationEnabled);
+  }, [animationEnabled]);
+
   const setAnimationEnabled = useCallback((enabled: boolean) => {
     setAnimationEnabledState(enabled);
     rendererRef.current?.setAnimationEnabled(enabled);
+    storeAnimationEnabled(getLocalStorage(), enabled);
   }, []);
 
   const resetView = useCallback(() => {

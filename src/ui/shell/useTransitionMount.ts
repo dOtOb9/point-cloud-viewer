@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { shouldSkipExitWait } from "../../state/motion-setting";
 
 /**
  * ADR-0017 (AN-3): 出る/消えるときのCSS transitionを、アニメーションライブラリ無しで
@@ -13,7 +14,7 @@ import { useEffect, useState } from "react";
  *
  * - 最初から開いている(`open`の初期値がtrue)ときは、アニメーション無しでそのまま表示する
  *   (起動直後に左パネルが滑り込んだりしないように)。
- * - OSの「視差効果を減らす」(prefers-reduced-motion)が有効なら、待たずに即座に消す
+ * - OSの「視差効果を減らす」(prefers-reduced-motion)か、設定の「アニメーション」オフ(<html data-motion="off">)なら、待たずに即座に消す
  *   (CSS側もtransition時間を0にしている。index.cssの`--motion-*`)。
  */
 export function useTransitionMount(open: boolean, exitMs: number): { mounted: boolean; shown: boolean } {
@@ -40,7 +41,8 @@ export function useTransitionMount(open: boolean, exitMs: number): { mounted: bo
   useEffect(() => {
     if (open || !mounted) return;
     const reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const timer = setTimeout(() => setMounted(false), reduce ? 0 : exitMs);
+    const skip = shouldSkipExitWait(typeof document === "undefined" ? undefined : document.documentElement, reduce);
+    const timer = setTimeout(() => setMounted(false), skip ? 0 : exitMs);
     return () => clearTimeout(timer);
   }, [open, mounted, exitMs]);
 

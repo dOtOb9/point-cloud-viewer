@@ -102,6 +102,23 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
         </section>
 
         <section className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold opacity-70">アニメーション</h3>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              data-testid="animation-toggle"
+              checked={viewer.animationEnabled}
+              onChange={(e) => viewer.setAnimationEnabled(e.target.checked)}
+            />
+            アニメーションを使う
+          </label>
+          <p className="text-xs opacity-60">
+            ノードのフェードイン・カメラの動き・画面の開閉などの動きをまとめて切り替える。
+            OSの「視差効果を減らす」(動きを減らす)が有効な場合は、この設定に関わらず常に動きを止める。
+          </p>
+        </section>
+
+        <section className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold opacity-70">更新の確認</h3>
           <label className="flex items-center gap-2 text-sm">
             <input

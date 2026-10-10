@@ -67,6 +67,15 @@
     --motion-pulse: 0ms;
   }
 }
+/* 設定の「アニメーション」をオフにしたとき(`src/state/motion-setting.ts`が<html>に付ける)。上と同じ0ms。 */
+:root[data-motion="off"] {
+  --motion-dialog-in: 0ms;
+  --motion-dialog-out: 0ms;
+  --motion-panel: 0ms;
+  --motion-press: 0ms;
+  --motion-progress: 0ms;
+  --motion-pulse: 0ms;
+}
 /* エラーが新しく届いたときに1回だけ脈打つ(ステータスバーのエラーログボタン)。 */
 @keyframes pcv-pulse {
   0% {
