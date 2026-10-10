@@ -44,6 +44,7 @@ function makeCache(cachedKeys: string[]): NodeSelectionCache {
     vertexBuffer: {} as GPUBuffer,
     uniformBuffer: {} as GPUBuffer,
     bindGroup: {} as GPUBindGroup,
+    firstDrawnAtMs: null,
   });
   return {
     get(key: string): CachedNode | undefined {

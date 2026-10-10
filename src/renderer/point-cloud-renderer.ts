@@ -38,6 +38,7 @@ import { DEFAULT_COLOR_MODE, extendRange, type ColorMode, type ValueRange } from
 import { computeSceneBounds, elevationRangeFromCloudBounds } from "./scene-bounds";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "./device-profile";
 import { computeCanvasBackingSize } from "./render-scale";
+import { prefersReducedMotion, resolveMotionEnabled } from "./animation";
 
 // WebGPUのエラーを画面に出す仕組み(ADR-0011)。蓄積・重複抑制のロジック自体は
 // GPUに依存しないgpu-error-log.tsに切り出してあり、このファイルはWebGPUの
@@ -168,6 +169,10 @@ export class PointCloudRenderer {
   private refreshIntervalEstimate: RefreshIntervalEstimate | null = null;
   private rafHandle = 0;
   private disposed = false;
+
+  /** AN: アニメーション（ノードのフェードイン・カメラの動き）の設定。既定はオン。
+   *  実際に動かすかは、これとOSの`prefers-reduced-motion`の両方で決める（`motionEnabled()`）。 */
+  private animationEnabled = true;
 
   private onStats: ((stats: RenderStats) => void) | null = null;
   private lastStatsEmitAt = 0;
@@ -411,6 +416,20 @@ export class PointCloudRenderer {
 
   getAutoPointBudgetEnabled(): boolean {
     return this.autoPointBudgetEnabled;
+  }
+
+  /** AN: アニメーションのオン/オフ（設定）。OSが「視差効果を減らす」ならオンでも動かさない。 */
+  setAnimationEnabled(enabled: boolean): void {
+    this.animationEnabled = enabled;
+  }
+
+  getAnimationEnabled(): boolean {
+    return this.animationEnabled;
+  }
+
+  /** 設定オン かつ OSが動きを減らす指定をしていない。毎フレーム問い合わせるので、OS設定の変更にも追従する。 */
+  private motionEnabled(): boolean {
+    return resolveMotionEnabled(this.animationEnabled, prefersReducedMotion());
   }
 
   /** 背景モード（M2-0c）: 空 / 単色(暗) / 単色(明)。既定は単色(暗)。 */
@@ -724,7 +743,14 @@ export class PointCloudRenderer {
       this.loader.setWanted(selection.wanted, (key) => this.cache.has(key));
     }
 
+    // AN-1: 初めて描画対象になったノードに時刻を刻む（フェードインの起点）。
+    for (const node of selection.toDraw) {
+      if (node.firstDrawnAtMs === null) node.firstDrawnAtMs = time;
+    }
+
     this.gpu.drawFrame(viewProj, width, height, selection.toDraw, {
+      nowMs: time,
+      fadeEnabled: this.motionEnabled(),
       backgroundMode: this.backgroundMode,
       gridEnabled: this.gridEnabled,
       gridCellSize: this.gridCellSize,

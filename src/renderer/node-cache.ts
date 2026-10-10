@@ -10,6 +10,9 @@ export interface CachedNode {
   vertexBuffer: GPUBuffer;
   uniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
+  /** AN-1: 初めて描画対象になった時刻(ms)。nullはまだ一度も描いていない。
+   *  フェードイン係数の起点で、キャッシュから捨てて読み直せば新しいエントリになり再びnullから始まる。 */
+  firstDrawnAtMs: number | null;
 }
 
 export class NodeCache {

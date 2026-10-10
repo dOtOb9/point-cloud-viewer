@@ -19,6 +19,7 @@ import { clearColorForMode, SkyBackground, type BackgroundMode } from "./sky";
 import { floorMod, GroundGrid } from "./ground-grid";
 import { horizontalBasis, type Vec3 } from "./up-axis";
 import { EdlPass } from "./edl";
+import { nodeFadeFactor } from "./animation";
 import { ELEVATION_INTENSITY_RAMP, rampToWgslFunction, type ColorMode, type ValueRange } from "./colormap";
 import type { PointShape } from "./device-profile";
 import {
@@ -57,7 +58,9 @@ const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
  */
 const OFFSCREEN_COLOR_FORMAT: GPUTextureFormat = "rgba8unorm";
 
-const UNIFORM_BUFFER_SIZE = 80; // mat4(64) + pointSizePx(4) + viewportWidth(4) + viewportHeight(4) + originZ(4)
+// mat4(64) + pointSizePx(4) + viewportWidth(4) + viewportHeight(4) + originZ(4) + fade(4) = 84。
+// WGSLのstructは最大アライメント16の倍数に切り上がるので、バッファは96バイト必要（AN-1）。
+const UNIFORM_BUFFER_SIZE = 96;
 
 /**
  * M2-2: 着色モードの数値対応。`ColorSettings.mode`（f32）にこの値を書き込み、
@@ -102,6 +105,8 @@ struct Uniforms {
   // mvpの平行移動にも同じ値が畳み込まれているが、行列からは単独で取り出せない
   // ため、標高計算専用にここへ別途渡す。
   originZ: f32,
+  // AN-1: このノードのフェードイン係数(0〜1)。fs_*_fadeだけが使う。
+  fade: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -147,6 +152,8 @@ struct VertexOut {
   @builtin(position) clipPosition: vec4<f32>,
   @location(0) color: vec4<f32>,
   @location(1) uv: vec2<f32>,
+  // AN-1: ノード単位の値なので補間しない(flat)。
+  @location(2) @interpolate(flat) fade: f32,
 };
 
 // 標高・強度で共有する色ランプ(青→緑→黄→赤、CloudCompare風)。
@@ -237,6 +244,7 @@ fn vs_main(in: VertexIn) -> VertexOut {
   out.clipPosition = vec4<f32>(clip.xy + corner * ndcHalf * clip.w, clip.z, clip.w);
   out.color = colorForVertex(in);
   out.uv = corner;
+  out.fade = u.fade;
   return out;
 }
 
@@ -266,6 +274,46 @@ fn fs_main_round(in: VertexOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_main_square(in: VertexOut) -> @location(0) vec4<f32> {
+  return in.color;
+}
+
+// AN-1: フェードイン中のノード専用のフラグメントシェーダ。画面上の位置から
+// Bayer 4x4 のしきい値(0〜1)を求め、ノードのfadeがそれ以下のピクセルを捨てる。
+// アルファブレンドではなく「描く/捨てる」の二択なので、点の描画順に依存せず、
+// 深度テストもEDLもそのまま使える。
+//
+// discardを含むので、これを通常のfs_main_*に足さず、別のエントリポイント(=別の
+// パイプライン)にした。フェードが終わったノードは今までどおりdiscardの無い
+// パイプラインで描くため、Adreno等でのEarly-Zの最適化(上のM3-8のコメント)を
+// 落ち着いた状態では損なわない。
+fn bayer4(p: vec2<u32>) -> f32 {
+  // 4x4のBayer行列(0〜15)。しきい値は (値 + 0.5) / 16 で、0より大きく1より小さい。
+  var m = array<f32, 16>(
+     0.0,  8.0,  2.0, 10.0,
+    12.0,  4.0, 14.0,  6.0,
+     3.0, 11.0,  1.0,  9.0,
+    15.0,  7.0, 13.0,  5.0,
+  );
+  let i = (p.y & 3u) * 4u + (p.x & 3u);
+  return (m[i] + 0.5) / 16.0;
+}
+
+@fragment
+fn fs_main_round_fade(in: VertexOut) -> @location(0) vec4<f32> {
+  if (dot(in.uv, in.uv) > 1.0) {
+    discard;
+  }
+  if (in.fade <= bayer4(vec2<u32>(in.clipPosition.xy))) {
+    discard;
+  }
+  return in.color;
+}
+
+@fragment
+fn fs_main_square_fade(in: VertexOut) -> @location(0) vec4<f32> {
+  if (in.fade <= bayer4(vec2<u32>(in.clipPosition.xy))) {
+    discard;
+  }
   return in.color;
 }
 `;
@@ -306,6 +354,10 @@ export interface DrawFrameOptions {
   colorMode: ColorMode;
   elevationRange: ValueRange;
   intensityRange: ValueRange;
+  /** AN-1: 現在時刻(ms、requestAnimationFrameのタイムスタンプ)。ノードごとのフェード係数の計算に使う。 */
+  nowMs: number;
+  /** AN-1: フェードインを使うか。falseなら全ノードが最初から係数1(設定オフ・reduced-motion)。 */
+  fadeEnabled: boolean;
 }
 
 export class GpuResources {
@@ -329,6 +381,13 @@ export class GpuResources {
   private pipelineOffscreenSquare: GPURenderPipeline | null = null;
   private pipelineSwapchainRound: GPURenderPipeline | null = null;
   private pipelineSwapchainSquare: GPURenderPipeline | null = null;
+  /** AN-1: フェードイン中のノード専用(discardでディザする)。通常の4つと同じ組み合わせ。 */
+  private pipelineOffscreenRoundFade: GPURenderPipeline | null = null;
+  private pipelineOffscreenSquareFade: GPURenderPipeline | null = null;
+  private pipelineSwapchainRoundFade: GPURenderPipeline | null = null;
+  private pipelineSwapchainSquareFade: GPURenderPipeline | null = null;
+  /** drawPoints()がフレームごとに配列を作らないための使い回し。 */
+  private readonly fadingScratch: CachedNode[] = [];
   private uniformLayout: GPUBindGroupLayout | null = null;
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
@@ -520,6 +579,11 @@ export class GpuResources {
       // M3-8: EDLオフ(1パス)のときは、点群をスワップチェーンへ直接描く。
       this.pipelineSwapchainRound = buildPointsPipeline("fs_main_round", this.format);
       this.pipelineSwapchainSquare = buildPointsPipeline("fs_main_square", this.format);
+      // AN-1: フェードイン中のノード用(同じ4通り)。
+      this.pipelineOffscreenRoundFade = buildPointsPipeline("fs_main_round_fade", OFFSCREEN_COLOR_FORMAT);
+      this.pipelineOffscreenSquareFade = buildPointsPipeline("fs_main_square_fade", OFFSCREEN_COLOR_FORMAT);
+      this.pipelineSwapchainRoundFade = buildPointsPipeline("fs_main_round_fade", this.format);
+      this.pipelineSwapchainSquareFade = buildPointsPipeline("fs_main_square_fade", this.format);
 
       // M2-2: 着色設定の共有uniformバッファ。全ノードのbindGroup(binding 1)が
       // 同じバッファを参照する。内容は`drawFrame()`が毎フレーム`writeBuffer`で
@@ -734,6 +798,7 @@ export class GpuResources {
       vertexBuffer,
       uniformBuffer,
       bindGroup,
+      firstDrawnAtMs: null,
     };
   }
 
@@ -780,7 +845,11 @@ export class GpuResources {
       !this.pipelineOffscreenRound ||
       !this.pipelineOffscreenSquare ||
       !this.pipelineSwapchainRound ||
-      !this.pipelineSwapchainSquare
+      !this.pipelineSwapchainSquare ||
+      !this.pipelineOffscreenRoundFade ||
+      !this.pipelineOffscreenSquareFade ||
+      !this.pipelineSwapchainRoundFade ||
+      !this.pipelineSwapchainSquareFade
     ) {
       return;
     }
@@ -820,8 +889,10 @@ export class GpuResources {
           depthStoreOp: "store",
         },
       });
-      const pointsPipeline = options.pointShape === "square" ? this.pipelineOffscreenSquare : this.pipelineOffscreenRound;
-      this.drawPoints(device, pointsPass, pointsPipeline, viewProj, width, height, nodes, options.renderScale);
+      const square = options.pointShape === "square";
+      const pointsPipeline = square ? this.pipelineOffscreenSquare : this.pipelineOffscreenRound;
+      const fadePipeline = square ? this.pipelineOffscreenSquareFade : this.pipelineOffscreenRoundFade;
+      this.drawPoints(device, pointsPass, pointsPipeline, fadePipeline, viewProj, width, height, nodes, options);
       pointsPass.end();
 
       // --- パス2: 背景(空/グリッド/単色)を描いてから、EDL陰影付きの点群を合成する ---
@@ -883,8 +954,10 @@ export class GpuResources {
         },
       });
       this.drawBackground(device, pass, options, width, height);
-      const pointsPipeline = options.pointShape === "square" ? this.pipelineSwapchainSquare : this.pipelineSwapchainRound;
-      this.drawPoints(device, pass, pointsPipeline, viewProj, width, height, nodes, options.renderScale);
+      const square = options.pointShape === "square";
+      const pointsPipeline = square ? this.pipelineSwapchainSquare : this.pipelineSwapchainRound;
+      const fadePipeline = square ? this.pipelineSwapchainSquareFade : this.pipelineSwapchainRoundFade;
+      this.drawPoints(device, pass, pointsPipeline, fadePipeline, viewProj, width, height, nodes, options);
       pass.end();
     }
 
@@ -984,37 +1057,69 @@ export class GpuResources {
     device: GPUDevice,
     pass: GPURenderPassEncoder,
     pipeline: GPURenderPipeline,
+    fadePipeline: GPURenderPipeline,
     viewProj: Mat4,
     width: number,
     height: number,
     nodes: CachedNode[],
-    renderScale: number,
+    options: DrawFrameOptions,
   ): void {
-    pass.setPipeline(pipeline);
-    const scaledPointSizePx = POINT_SIZE_PX * renderScale;
+    const scaledPointSizePx = POINT_SIZE_PX * options.renderScale;
     const uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
-    for (const node of nodes) {
-      const model = translation(node.origin[0], node.origin[1], node.origin[2]);
-      const mvp = multiply(viewProj, model);
-      uniformData.set(mvp, 0);
-      uniformData[16] = scaledPointSizePx;
-      uniformData[17] = width;
-      uniformData[18] = height;
-      // M2-2: 標高着色のため、ノード原点のワールドZをそのまま渡す
-      // (SHADER_SRCのUniforms.originZ、colorForVertex()参照)。
-      uniformData[19] = node.origin[2];
-      device.queue.writeBuffer(
-        node.uniformBuffer,
-        0,
-        uniformData.buffer,
-        uniformData.byteOffset,
-        uniformData.byteLength,
-      );
+    const fading = this.fadingScratch;
+    fading.length = 0;
 
-      pass.setBindGroup(0, node.bindGroup);
-      pass.setVertexBuffer(0, node.vertexBuffer);
-      pass.draw(6, node.pointCount);
+    // AN-1: フェードが終わったノードを先に通常のパイプライン(discardなし)で描き、
+    // フェード中のノードは後でディザ用パイプラインでまとめて描く。
+    // 係数は「ノードのuniformバッファ(draw前にwriteBufferで書いている、今までと同じ
+    // ノードごとのバッファ)」の最後のf32に入れるだけなので、追加のバッファも
+    // バインド切り替えも増えない。1フレームの追加CPUコストはノードあたり引き算1回。
+    pass.setPipeline(pipeline);
+    for (const node of nodes) {
+      const fade = nodeFadeFactor(node.firstDrawnAtMs, options.nowMs, options.fadeEnabled);
+      if (fade < 1) {
+        fading.push(node);
+        continue;
+      }
+      this.drawNode(device, pass, node, viewProj, width, height, scaledPointSizePx, 1, uniformData);
     }
+    if (fading.length > 0) {
+      pass.setPipeline(fadePipeline);
+      for (const node of fading) {
+        const fade = nodeFadeFactor(node.firstDrawnAtMs, options.nowMs, options.fadeEnabled);
+        this.drawNode(device, pass, node, viewProj, width, height, scaledPointSizePx, fade, uniformData);
+      }
+      fading.length = 0;
+    }
+  }
+
+  private drawNode(
+    device: GPUDevice,
+    pass: GPURenderPassEncoder,
+    node: CachedNode,
+    viewProj: Mat4,
+    width: number,
+    height: number,
+    scaledPointSizePx: number,
+    fade: number,
+    uniformData: Float32Array,
+  ): void {
+    const model = translation(node.origin[0], node.origin[1], node.origin[2]);
+    const mvp = multiply(viewProj, model);
+    uniformData.set(mvp, 0);
+    uniformData[16] = scaledPointSizePx;
+    uniformData[17] = width;
+    uniformData[18] = height;
+    // M2-2: 標高着色のため、ノード原点のワールドZをそのまま渡す
+    // (SHADER_SRCのUniforms.originZ、colorForVertex()参照)。
+    uniformData[19] = node.origin[2];
+    // AN-1: フェードイン係数(SHADER_SRCのUniforms.fade)。
+    uniformData[20] = fade;
+    device.queue.writeBuffer(node.uniformBuffer, 0, uniformData.buffer, uniformData.byteOffset, uniformData.byteLength);
+
+    pass.setBindGroup(0, node.bindGroup);
+    pass.setVertexBuffer(0, node.vertexBuffer);
+    pass.draw(6, node.pointCount);
   }
 
   dispose(): void {
