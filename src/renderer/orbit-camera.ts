@@ -8,12 +8,43 @@ import { computeTwoPointerGesture, type TouchPoint } from "./touch-gesture";
 import {
   INERTIA_STOP_PAN_PX_PER_SEC,
   INERTIA_STOP_ROTATE_RAD_PER_SEC,
+  DOUBLE_TAP_MAX_DISTANCE_PX,
+  DOUBLE_TAP_MAX_INTERVAL_MS,
   INERTIA_TAU_MS,
+  TRANSITION_DURATION_MS,
   ZOOM_SMOOTH_STOP_LOG,
   ZOOM_SMOOTH_TAU_MS,
   VelocityTracker,
+  easeInOut,
   expApproachFraction,
+  shortestAngleDelta,
 } from "./animation";
+
+/** 初期の仰角。視点のリセット(全体表示)がここへ戻す。 */
+export const DEFAULT_PITCH = 0.3;
+
+/** 進行中の視点移動。from→toをeaseInOutで補間する。 */
+interface Transition {
+  elapsedMs: number;
+  durationMs: number;
+  fromTarget: [number, number, number];
+  toTarget: [number, number, number];
+  fromDistance: number;
+  toDistance: number;
+  fromYaw: number;
+  /** 回す量（最短経路）。toYaw = fromYaw + yawDelta。 */
+  yawDelta: number;
+  fromPitch: number;
+  toPitch: number;
+}
+
+/** 視点移動の行き先。yaw/pitchを省くと、今の向きのまま移動する。 */
+export interface CameraGoal {
+  target: readonly [number, number, number];
+  distance: number;
+  yaw?: number;
+  pitch?: number;
+}
 
 const MIN_DISTANCE = 0.01;
 const MAX_DISTANCE = 1e9; // COPCの世界座標は大きいことがあるので、上限は緩くしておく
@@ -35,7 +66,7 @@ export class OrbitCamera {
    * 上方向のバグが直った結果としてこの角度が正しく機能するようになったので、
    * 値そのものは変えていない。`up-axis.ts`のDEFAULT_UP_AXISのコメント参照）。
    */
-  pitch = 0.3;
+  pitch = DEFAULT_PITCH;
 
   /**
    * パン速度の下限を決めるための基準距離（シーン全体のスケール由来）。
@@ -71,6 +102,8 @@ export class OrbitCamera {
   private pendingZoomLog = 0;
   /** 残りのズームを適用するときのカーソル方向（最後のホイールのもの）。 */
   private pendingZoomDirection: readonly [number, number, number] | undefined;
+  /** 進行中の視点移動（全体表示・ダブルクリックで寄る）。nullなら無し。 */
+  private transition: Transition | null = null;
   /** 慣性のパン速度（画面ピクセル/秒）。 */
   private inertiaPanX = 0;
   private inertiaPanY = 0;
@@ -152,8 +185,70 @@ export class OrbitCamera {
     this.inertiaPanY = vyPxPerSec;
   }
 
-  /** 慣性・ズームの残りを、すべて即座に止める（動きを無効にしたとき用）。 */
+  /**
+   * AN-2: 視点をgoalへ、ease-in-outで動かす。動きが無効なら即座に移す（今までのリセットと同じ）。
+   * 始めると、慣性・ズームの残りは捨てる（視点移動が主導権を持つ）。
+   */
+  animateTo(goal: CameraGoal, durationMs: number = TRANSITION_DURATION_MS): void {
+    this.cancelMotion();
+    const toYaw = goal.yaw ?? this.yaw;
+    const toPitch = clamp(goal.pitch ?? this.pitch, MIN_PITCH, MAX_PITCH);
+    const toDistance = clamp(goal.distance, MIN_DISTANCE, MAX_DISTANCE);
+    if (!this.motionEnabled || !(durationMs > 0)) {
+      this.target = [goal.target[0], goal.target[1], goal.target[2]];
+      this.distance = toDistance;
+      this.yaw = toYaw;
+      this.pitch = toPitch;
+      return;
+    }
+    this.transition = {
+      elapsedMs: 0,
+      durationMs,
+      fromTarget: [this.target[0], this.target[1], this.target[2]],
+      toTarget: [goal.target[0], goal.target[1], goal.target[2]],
+      fromDistance: this.distance,
+      toDistance,
+      fromYaw: this.yaw,
+      yawDelta: shortestAngleDelta(this.yaw, toYaw),
+      fromPitch: this.pitch,
+      toPitch,
+    };
+  }
+
+  /** 視点移動だけを止める（その場に留まる）。ユーザーの新しい操作で呼ぶ。 */
+  cancelTransition(): void {
+    this.transition = null;
+  }
+
+  private updateTransition(dtMs: number): void {
+    const tr = this.transition;
+    if (!tr) return;
+    tr.elapsedMs += dtMs;
+    const t = tr.elapsedMs / tr.durationMs;
+    if (t >= 1) {
+      // 終点はちょうどの値に置く（誤差を残さない）
+      this.target = tr.toTarget;
+      this.distance = tr.toDistance;
+      this.yaw = tr.fromYaw + tr.yawDelta;
+      this.pitch = tr.toPitch;
+      this.transition = null;
+      return;
+    }
+    const s = easeInOut(t);
+    this.target = [
+      tr.fromTarget[0] + (tr.toTarget[0] - tr.fromTarget[0]) * s,
+      tr.fromTarget[1] + (tr.toTarget[1] - tr.fromTarget[1]) * s,
+      tr.fromTarget[2] + (tr.toTarget[2] - tr.fromTarget[2]) * s,
+    ];
+    // 距離は対数で補間する（遠くから近くへ寄るとき、見た目の速さが一定に感じられる）
+    this.distance = Math.exp(Math.log(tr.fromDistance) + (Math.log(tr.toDistance) - Math.log(tr.fromDistance)) * s);
+    this.yaw = tr.fromYaw + tr.yawDelta * s;
+    this.pitch = tr.fromPitch + (tr.toPitch - tr.fromPitch) * s;
+  }
+
+  /** 慣性・ズームの残り・視点移動を、すべて即座に止める（動きを無効にしたとき用）。 */
   cancelMotion(): void {
+    this.transition = null;
     this.cancelInertia();
     this.pendingZoomLog = 0;
     this.pendingZoomDirection = undefined;
@@ -194,6 +289,10 @@ export class OrbitCamera {
    */
   update(dtMs: number): void {
     if (!(dtMs > 0)) return;
+    if (this.transition) {
+      this.updateTransition(dtMs);
+      return;
+    }
     if (this.hasInertia()) this.updateInertia(dtMs);
     if (this.pendingZoomLog !== 0) this.updateSmoothZoom(dtMs);
   }
@@ -211,7 +310,7 @@ export class OrbitCamera {
 
   /** カメラがアニメーションで動いている（または動く予定の）間true。点予算の調整やHQ-2の「止まった」判定に使う。 */
   isAnimating(): boolean {
-    return this.hasInertia() || this.pendingZoomLog !== 0;
+    return this.transition !== null || this.hasInertia() || this.pendingZoomLog !== 0;
   }
 
   private updateInertia(dtMs: number): void {
@@ -349,6 +448,12 @@ export interface OrbitControlsOptions {
    * 返せばよい。
    */
   getCursorDirection?: (screenX: number, screenY: number) => [number, number, number] | null;
+  /**
+   * AN-2: ダブルクリック（マウス）/ダブルタップ（タッチ）されたときに呼ばれる。
+   * 座標はキャンバス上のCSSピクセル（左上原点）。呼び出し側がレイキャストして
+   * `camera.animateTo()`で寄る。
+   */
+  onFlyTo?: (screenX: number, screenY: number) => void;
 }
 
 /** 追跡中の1ポインタの状態。マウスもタッチも同じ形で扱う。 */
@@ -387,10 +492,16 @@ export function attachOrbitControls(
   const pointers = new Map<number, TrackedPointer>();
   // AN-2: 1本指/1ボタンのドラッグの速度を求めるための、ポインタ位置の履歴。
   const velocity = new VelocityTracker();
+  // AN-2: ダブルタップ判定用。直近のタップ（短く、ほぼ動かさずに離した指）と、押した位置・時刻。
+  let tapDown: { t: number; x: number; y: number } | null = null;
+  let lastTap: { t: number; x: number; y: number } | null = null;
+  let lastTouchFlyAt = -Infinity;
 
   const onPointerDown = (e: PointerEvent) => {
     // AN-2: 新しい操作は、慣性を即座に止める
     camera.cancelInertia();
+    camera.cancelTransition();
+    tapDown = pointers.size === 0 && e.pointerType === "touch" ? { t: e.timeStamp, x: e.clientX, y: e.clientY } : null;
     // 2本目が置かれたら、1本のドラッグの履歴は捨てる（慣性は1本ドラッグだけ）
     velocity.reset();
     if (pointers.size === 0) velocity.add(e.timeStamp, e.clientX, e.clientY);
@@ -453,6 +564,37 @@ export function attachOrbitControls(
       }
     }
     velocity.reset();
+
+    // AN-2: ダブルタップ（タッチ）。短く・ほぼ動かさず離したタップが2回、近くで続いたら寄る。
+    if (wasOnlyPointer && e.type === "pointerup" && e.pointerType === "touch" && tapDown) {
+      const moved = Math.hypot(e.clientX - tapDown.x, e.clientY - tapDown.y);
+      if (moved < 10 && e.timeStamp - tapDown.t < DOUBLE_TAP_MAX_INTERVAL_MS) {
+        const prev = lastTap;
+        if (
+          prev &&
+          e.timeStamp - prev.t < DOUBLE_TAP_MAX_INTERVAL_MS &&
+          Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < DOUBLE_TAP_MAX_DISTANCE_PX
+        ) {
+          lastTap = null;
+          lastTouchFlyAt = e.timeStamp;
+          const rect = canvas.getBoundingClientRect();
+          options.onFlyTo?.(e.clientX - rect.left, e.clientY - rect.top);
+        } else {
+          lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+        }
+      } else {
+        lastTap = null;
+      }
+    }
+    tapDown = null;
+  };
+
+  // AN-2: マウスのダブルクリック。タッチのダブルタップで同時にdblclickが来るブラウザがあるため、
+  // タッチで寄った直後のdblclickは無視する。
+  const onDoubleClick = (e: MouseEvent) => {
+    if (e.timeStamp - lastTouchFlyAt < 600) return;
+    const rect = canvas.getBoundingClientRect();
+    options.onFlyTo?.(e.clientX - rect.left, e.clientY - rect.top);
   };
 
   const onWheel = (e: WheelEvent) => {
@@ -464,6 +606,7 @@ export function attachOrbitControls(
     const screenY = e.clientY - rect.top;
     const cursorDirection = options.getCursorDirection?.(screenX, screenY) ?? undefined;
 
+    camera.cancelTransition();
     camera.zoomSmooth(factor, cursorDirection);
   };
 
@@ -480,6 +623,7 @@ export function attachOrbitControls(
   // 「遷移で操作が破綻する」原因になる。
   canvas.addEventListener("pointercancel", onPointerUp);
   canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("dblclick", onDoubleClick);
   canvas.addEventListener("contextmenu", onContextMenu);
 
   return () => {
@@ -488,6 +632,7 @@ export function attachOrbitControls(
     canvas.removeEventListener("pointerup", onPointerUp);
     canvas.removeEventListener("pointercancel", onPointerUp);
     canvas.removeEventListener("wheel", onWheel);
+    canvas.removeEventListener("dblclick", onDoubleClick);
     canvas.removeEventListener("contextmenu", onContextMenu);
   };
 }

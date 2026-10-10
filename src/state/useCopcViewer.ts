@@ -172,6 +172,8 @@ export interface CopcViewerState {
    *  M2-1参照）。強さは所有者が実機で確認して0.05に固定したため、UIから
    *  調整する手段は無い（`src/renderer/edl.ts`の`DEFAULT_EDL_STRENGTH`参照）。 */
   edlEnabled: boolean;
+  /** AN: アニメーション（フェードイン・慣性・視点移動）のオン/オフ。UIのトグルは未実装（UIの作り直し後）。 */
+  animationEnabled: boolean;
   /**
    * M3-8: モバイル最適化。`isMobile`/`deviceMemoryGiB`/`pointerCoarse`/
    * `pointBudgetMax`は端末プロファイル(`device-profile.ts`)から一度だけ決まる、
@@ -311,6 +313,9 @@ export interface CopcViewerState {
   setBackgroundMode: (mode: BackgroundMode) => void;
   setGridEnabled: (enabled: boolean) => void;
   setEdlEnabled: (enabled: boolean) => void;
+  setAnimationEnabled: (enabled: boolean) => void;
+  /** AN-2: 「全体を表示」。アニメーションで初期の位置・向きに戻る。 */
+  resetView: () => void;
   setRenderScale: (scale: number) => void;
   setPointShape: (shape: PointShape) => void;
   setCenterPriorityStrength: (strength: number) => void;
@@ -356,6 +361,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
   const [edlEnabled, setEdlEnabledState] = useState(deviceProfileDefaults.edlEnabled);
+  const [animationEnabled, setAnimationEnabledState] = useState(true);
   const [renderScale, setRenderScaleState] = useState(deviceProfileDefaults.renderScale);
   const [pointShape, setPointShapeState] = useState<PointShape>(deviceProfileDefaults.pointShape);
   const [centerPriorityStrength, setCenterPriorityStrengthState] = useState(DEFAULT_CENTER_PRIORITY_STRENGTH);
@@ -1031,6 +1037,15 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setGridEnabled(enabled);
   }, []);
 
+  const setAnimationEnabled = useCallback((enabled: boolean) => {
+    setAnimationEnabledState(enabled);
+    rendererRef.current?.setAnimationEnabled(enabled);
+  }, []);
+
+  const resetView = useCallback(() => {
+    rendererRef.current?.resetView();
+  }, []);
+
   const setEdlEnabled = useCallback((enabled: boolean) => {
     setEdlEnabledState(enabled);
     rendererRef.current?.setEdlEnabled(enabled);
@@ -1122,6 +1137,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     backgroundMode,
     gridEnabled,
     edlEnabled,
+    animationEnabled,
     isMobile: deviceProfileDefaults.isMobile,
     deviceMemoryGiB: deviceProfileInput.deviceMemoryGiB,
     pointerCoarse: deviceProfileInput.pointerCoarse,
@@ -1160,6 +1176,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setBackgroundMode,
     setGridEnabled,
     setEdlEnabled,
+    setAnimationEnabled,
+    resetView,
     setRenderScale,
     setPointShape,
     setCenterPriorityStrength,

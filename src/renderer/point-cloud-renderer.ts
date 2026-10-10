@@ -14,7 +14,8 @@
 
 import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
 import { computeIntensityRange, type ParsedNode } from "../datasource/node-format";
-import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
+import { attachOrbitControls, DEFAULT_PITCH, OrbitCamera } from "./orbit-camera";
+import { flyToGoal, pickFlyToPoint } from "./fly-to";
 import { multiply, perspective, type Mat4 } from "./mat4";
 import { frustumPlanes } from "./frustum";
 import {
@@ -143,6 +144,11 @@ export class PointCloudRenderer {
   /** 直近フレームのviewProj。ホイールイベント（フレームの外で起きる）でカーソル位置の
    *  レイを作るために、フレームをまたいで持っておく（M1-5）。 */
   private lastViewProj: Mat4 | null = null;
+  /** AN-2: ダブルクリックで寄るときのレイキャスト対象。直近フレームで実際に描いたノード。 */
+  private lastDrawn: CachedNode[] = [];
+  private hierarchyByKey = new Map<string, HierarchyNodeInfo>();
+  /** AN-2: 「全体を表示」の行き先（setHierarchyで更新）。 */
+  private fitGoal: { target: [number, number, number]; distance: number } | null = null;
 
   /** M3-8: コンストラクタで`defaultRenderSettings()`の`pointBudgetStart`から
    *  設定する（デスクトップは変更前と同じ値、モバイルはdeviceMemoryから算出）。 */
@@ -297,6 +303,7 @@ export class PointCloudRenderer {
     this.resize(this.canvas.clientWidth || this.canvas.width, this.canvas.clientHeight || this.canvas.height);
     this.detachControls = attachOrbitControls(this.canvas, this.camera, {
       getCursorDirection: (screenX, screenY) => this.getCursorDirection(screenX, screenY),
+      onFlyTo: (screenX, screenY) => this.flyToScreenPoint(screenX, screenY),
     });
   }
 
@@ -316,6 +323,39 @@ export class PointCloudRenderer {
     return ray?.direction ?? null;
   }
 
+  /**
+   * AN-2: 画面上の点（キャンバスのCSSピクセル）へ視点を寄せる。直近フレームのレイと
+   * 描画中ノードのAABBとの交点（fly-to.tsの`pickFlyToPoint`）を新しい注視点にし、
+   * 距離を縮める。当たらなければ何もしない。
+   *
+   * 座標はCSS px。内部バッファはレンダースケールで縮んでいるので、バッファの解像度へ
+   * 換算してからレイを作る（ホイールの`getCursorDirection`はこの換算をしていない。
+   * そちらは既存の挙動なので触らない）。
+   */
+  private flyToScreenPoint(screenX: number, screenY: number): void {
+    if (!this.lastViewProj) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const px = (screenX / Math.max(rect.width, 1)) * this.canvas.width;
+    const py = (screenY / Math.max(rect.height, 1)) * this.canvas.height;
+    const ray = screenPointToWorldRay(this.lastViewProj, px, py, this.canvas.width, this.canvas.height);
+    if (!ray) return;
+    const boxes: HierarchyNodeInfo[] = [];
+    for (const node of this.lastDrawn) {
+      const info = this.hierarchyByKey.get(node.key);
+      if (info) boxes.push(info);
+    }
+    const hit = pickFlyToPoint(ray, boxes);
+    if (!hit) return;
+    const goal = flyToGoal(hit, this.camera.distance);
+    this.camera.animateTo(goal);
+  }
+
+  /** AN-2: 「全体を表示」。点群を開いたときの位置・向きへ、アニメーションで戻る。 */
+  resetView(): void {
+    if (!this.fitGoal) return;
+    this.camera.animateTo({ ...this.fitGoal, yaw: 0, pitch: DEFAULT_PITCH });
+  }
+
   setDataSource(dataSource: DataSource): void {
     this.loader = new NodeLoader(
       dataSource,
@@ -333,6 +373,8 @@ export class PointCloudRenderer {
    *  （`elevationRange`フィールドのコメント、`scene-bounds.ts`参照）。 */
   setHierarchy(nodes: HierarchyNodeInfo[]): void {
     this.hierarchy = nodes;
+    this.hierarchyByKey = new Map(nodes.map((n) => [n.key, n]));
+    this.camera.cancelMotion();
 
     // M2-2: 強度のレンジは実データからノードを読み込むたびに広げていく方式
     // (colorMode.private.intensityRangeのコメント参照)。新しいファイルを開いたら、
@@ -348,6 +390,7 @@ export class PointCloudRenderer {
       this.camera.target = bounds.center;
       this.camera.distance = bounds.diagonal;
       this.camera.setSceneScale(bounds.diagonal);
+      this.fitGoal = { target: [bounds.center[0], bounds.center[1], bounds.center[2]], distance: bounds.diagonal };
 
       // M2-0c補強B: グリッドの間隔・フェード距離・高さをシーンのスケールから
       // 決め直す（固定値にしないため、タスクシートの要求）。高さは上方向(upAxis)
@@ -762,6 +805,8 @@ export class PointCloudRenderer {
     if (this.loader) {
       this.loader.setWanted(selection.wanted, (key) => this.cache.has(key));
     }
+
+    this.lastDrawn = selection.toDraw;
 
     // AN-1: 初めて描画対象になったノードに時刻を刻む（フェードインの起点）。
     for (const node of selection.toDraw) {
