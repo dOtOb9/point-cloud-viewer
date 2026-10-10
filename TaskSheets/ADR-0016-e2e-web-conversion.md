@@ -358,3 +358,25 @@ $ npx tsc --noEmit && npx eslint . && npm run ui:check && npx vitest run
 ```
 
 CI(`ci.yml`、`e2e`ジョブ、修正後): <!-- push後に実行結果のrun idをここに追記する -->
+
+## ポートの方針: 古いpreviewサーバーを使い回さない（2026-10-10）
+
+- **問題:** 複数のエージェントが同じポート4173で`vite preview`を長く動かしたままにし、後から走らせた
+  `npx playwright test`がそれを(`reuseExistingServer: !CI`のため)黙って使い回して、
+  **古いビルドをテストしてしまう**ことが起きた。
+- **決めたこと(`playwright.config.ts`):**
+  - `webServer.reuseExistingServer: false`(CIでもローカルでも常に自分でビルドして自分で立てる)。
+  - ポートは環境変数`PCV_E2E_PORT`で変えられる(既定4173。整数1〜65535以外は設定読み込み時にエラー)。
+    `baseURL`・`webServer.url`・`vite preview --port`が同じ値を使う。
+  - ポートが使用中なら**黙って使い回さず、失敗する**。
+- **Playwrightの挙動(実行した出力):** 他のセッションが4173で`vite preview`を動かしている状態で`npx playwright test`を
+  走らせると、ビルドもテストも始まらず次のエラーで即座に失敗した:
+  `Error: http://127.0.0.1:4173/point-cloud-viewer/ is already used, make sure that nothing is running on the port/url or set reuseExistingServer:true in config.webServer.`
+  (Playwrightは起動前に`url`へ接続を試み、応答があれば`reuseExistingServer: false`のときこのエラーにする。)
+  `--strictPort`も付けてあるので、競合の隙間に別プロセスがポートを取った場合はvite側が失敗する。
+- **使い方:** 他の誰かが4173を使っているなら、空いているポートを渡す。
+  `PCV_E2E_PORT=4391 npx playwright test`(PowerShellなら`$env:PCV_E2E_PORT=4391; npx playwright test`)。
+  終わったら自分が立てたプロセスだけを止める(コマンドラインを確かめてから。CLAUDE.mdの手順に追記済み)。
+  Playwrightの`webServer`が立てたものはテスト終了時にPlaywrightが止める。手で`vite preview`を立てた場合だけ自分で止める。
+- **確認(実行した出力):** 4173が使用中のとき上のエラーで失敗した。`PCV_E2E_PORT=4391 npx playwright test`は
+  `2 passed (8.4s)`(web-conversion・web-multi-conversion)。

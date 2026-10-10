@@ -42,6 +42,17 @@ import { defineConfig, devices } from "@playwright/test";
 // `http://127.0.0.1`(127.0.0.1はブラウザがセキュアコンテキスト扱いする特例)で
 // 配信される`vite preview`はこの点で問題ないが、`page.goto("data:...")`のような
 // opaque originのページでは`navigator.gpu`自体が無くなる(実機で確認済み)。
+// ポート(ADR-0016「ポートの方針」): 既定は4173。`PCV_E2E_PORT`で変えられる。
+// 他のエージェント/セッションが立てた古い`vite preview`を黙って使い回して、古いビルドを
+// テストしてしまう事故を防ぐため、webServerは`reuseExistingServer: false`にしてある。
+// そのポートが使用中なら、Playwrightは「http://127.0.0.1:PORT/... is already used」と
+// エラーで失敗する(使い回さない)。並行して走らせるときは空いているポートを`PCV_E2E_PORT`で渡す。
+const port = Number(process.env.PCV_E2E_PORT ?? "4173");
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error(`PCV_E2E_PORT が不正です: ${process.env.PCV_E2E_PORT}`);
+}
+const baseUrl = `http://127.0.0.1:${port}/point-cloud-viewer/`;
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 60_000,
@@ -50,7 +61,7 @@ export default defineConfig({
   reporter: process.env.CI ? "github" : "list",
 
   use: {
-    baseURL: "http://127.0.0.1:4173/point-cloud-viewer/",
+    baseURL: baseUrl,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -75,10 +86,10 @@ export default defineConfig({
     // `127.0.0.1`への接続が拒否され、`localhost`表示だけでは気づけなかった)、
     // 下の`url`/`baseURL`(`127.0.0.1`)に接続できずwebServerの起動待ちが
     // タイムアウトする。
-    command: "npm run build && npm run preview -- --port 4173 --strictPort --host 127.0.0.1",
-    url: "http://127.0.0.1:4173/point-cloud-viewer/",
+    command: `npm run build && npm run preview -- --port ${port} --strictPort --host 127.0.0.1`,
+    url: baseUrl,
     env: { GITHUB_PAGES_BUILD: "true" },
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });
