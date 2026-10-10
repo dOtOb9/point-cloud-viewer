@@ -228,14 +228,35 @@
   ステータスバーのエラーログボタンは、新しいエラー(履歴の件数が増えたとき)に1回だけ脈打つ。
   点数・fpsなどの数値には動きをつけない。
 - **やっていないこと:** (1) 「スイッチのつまみ」の動き: UIにスイッチ部品が無く、チェックボックスはブラウザ標準のため。
-  (2) AN-animation.mdの「設定にアニメーション: オン/オフ」: ユーザー設定を増やさない方針(ガラスの設定廃止と同じ)で
-  見送り、OSの`prefers-reduced-motion`にだけ従う。
+  (2) ~~AN-animation.mdの「設定にアニメーション: オン/オフ」を見送り~~ → 後で設ける方針に変えた(下の「アニメーションのオン/オフ」)。
 - **確認(実行した出力):** headed Chromiumでrequest​AnimationFrameごとにcomputed styleを標本化した。設定ダイアログの
   開くとき: opacityが0.00→0.49→0.75→0.87→…→1.00、scaleが0.96→0.9795→0.9899→…→1.0に推移(中間フレームあり)。
   閉じるとき: 約120msでopacity 1→0・scale 1→0.96に推移した後、DOMから消えた。左パネルの畳む/開くも
   translateXが0↔-316.8pxを中間値を通って推移した。E2E(`web-conversion`・`web-multi-conversion`)は通る
   (`viewer-error`は左パネルにありダイアログのアニメーションの影響を受けない)。
   未確認: 見た目の心地よさ(所有者が画面で調整)、デスクトップ(Tauri)・Android実機での滑らかさ。
+
+### アニメーションのオン/オフ（設定ダイアログ）
+
+- **何をしたか:** 設定ダイアログに「アニメーションを使う」のチェックボックス(`data-testid="animation-toggle"`)を追加した。
+  既定はオン。点群側(AN-1/AN-2のノードのフェードイン・カメラの動き)はstateの`animationEnabled`→rendererの
+  `setAnimationEnabled`で止まる(既にあった配線)。UI側(AN-3)は、オフのとき`<html data-motion="off">`を付け、
+  `src/index.css`の`:root[data-motion="off"]`が`--motion-*`を0msにする(`prefers-reduced-motion`の規則と同じ値)。
+  閉じるアニメーションを待つタイマーも、オフのときは待たずに0msで外す(`useTransitionMount.ts`)。
+- **保存:** テーマ・更新確認と同じ`localStorage`(キー`pcv-animation-enabled`)。読めない環境ではオン。
+- **OSの設定が優先:** OSの`prefers-reduced-motion`が有効なら、このトグルがオンでも常に動かない
+  (CSSの@media・rendererの`resolveMotionEnabled`・フックの待ち省略)。設定画面の説明文にもそう書いた。
+- **なぜ見送りをやめたか:** AN-3では「ユーザー設定を増やさない」として見送ったが、点群の動き(AN-1/AN-2)に
+  既にstateのオン/オフがあり、UIが無いのは中途半端なため。
+- **コード:** 保存・属性の付け外し・待ち省略の判定は`src/state/motion-setting.ts`の小さな関数に切り出し、
+  `motion-setting.test.ts`で検証(保存と読み出し、storage例外、属性の付け外し、待ち省略)。
+- **確認(実行した出力):** headed ではなくheadless Chromium(`vite`のdevサーバー)で、設定ダイアログを開き
+  既定でチェックあり・属性なし → チェックを外すと`data-motion="off"`・`--motion-dialog-in`が`0ms`・
+  localStorageが`false` → リロード後もオフのまま、を確認した。スクリーンショットでダイアログの見た目も確認した。
+  `npx vitest run`: 41ファイル・371テスト成功。未確認: OSの`prefers-reduced-motion`との組み合わせを実画面で、
+  デスクトップ(Tauri)・Android実機。
+- **所有者の確認手順:** 設定を開く → 「アニメーションを使う」を外す → ダイアログ・左パネルの開閉が即座になる /
+  点群を読み込んでノードが徐々に現れず一度に出る → 再起動しても外れたまま。
 
 ## ファイルの開き方（所有者の追加要件）: パスを人に打たせない
 
