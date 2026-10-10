@@ -2,6 +2,18 @@
 // レンダラ・state・UI はこのインターフェースだけを見る。Web版はこれを実装する
 // HttpSource を差し替えるだけで動く想定（M0時点ではまだ存在しない）。
 
+/**
+ * ファイルのCRS（`pcv_core::crs::CrsInfo`に対応）。デスクトップ・Webで同じ形。
+ * `kind`が`"none"`ならファイルにCRS情報が無い。`error`があれば読み取りに失敗
+ * （ファイルは開ける。本文はエラーログに出す。ADR-0015）。
+ */
+export interface CrsInfo {
+  epsg?: number;
+  name: string;
+  kind: "plane-rectangular" | "utm" | "other" | "none";
+  error?: string;
+}
+
 /** 点群全体のサマリ（M1-1の `pcv_core::CloudInfo` に対応）。 */
 export interface CloudInfo {
   pointCount: number;
@@ -10,6 +22,7 @@ export interface CloudInfo {
   scale: readonly [number, number, number];
   offset: readonly [number, number, number];
   hasColor: boolean;
+  crs: CrsInfo;
 }
 
 /** octreeの1ノード分のメタデータ。点データそのものは含まない（`readNode`で別途取得）。 */

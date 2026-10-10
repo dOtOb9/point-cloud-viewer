@@ -871,6 +871,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // `setElevationRange`のコメント、`src/renderer/scene-bounds.ts`参照）。
       renderer.setElevationRange(opened.info.min, opened.info.max);
       setCloudInfo(opened.info);
+      // CRSの読み取り失敗はファイルを開くことを止めない(ADR-0015)。本文はエラーログへ。
+      if (opened.info.crs.error) {
+        gpuErrorLogRef.current.report(`座標系(CRS)を読み取れませんでした: ${opened.info.crs.error}`, undefined, "crs");
+        setGpuErrors(gpuErrorLogRef.current.list());
+        recordErrorHistory(gpuErrorLogRef.current.list());
+      }
       setNodeCount(opened.nodes.length);
       setStatus("ready");
       // UIシェル再構築(ADR-0017): 左パネルのレイヤー情報に出すファイル名。

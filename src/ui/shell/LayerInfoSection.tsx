@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { BackgroundMode, CopcViewerState } from "../../state/useCopcViewer";
+import { formatCrsLong } from "./crs-format";
 
 // 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
 function fmt3(v: readonly [number, number, number]): string {
@@ -56,16 +57,8 @@ function ConversionBreakdownPanel({ text, onCopy }: { text: string; onCopy: () =
  * 背景・グリッド・変換進捗・エラー・ダウンロード・内訳)と`InfoPanel.tsx`
  * (cloudInfoの先頭部分)に分かれていた表示をここへまとめた。
  *
- * **CRSについて(正直に書く):** このファイルは`CloudInfo`(`DataSource.ts`)の
- * `crs`フィールドを表示する想定だが、**現時点でCRSはバックエンドから
- * フロントエンドまで配線されていない**(`crates/pcv-core/src/crs`モジュールは
- * 存在するが、`CloudInfo`には`min`/`max`/`scale`/`offset`/`hasColor`/
- * `pointCount`しか無い。`grep -rn "crs" crates/pcv-core/src/lib.rs`で確認済み)。
- * 今回のタスクはUIシェルの再構築であり、新しいデータパイプラインを追加する
- * 範囲ではないと判断し、CRSは「不明（未配線）」と表示するに留めた
- * (推測で値を出さない。CLAUDE.mdの「測っていないことを確認したと書かない」
- * と同じ考え方を、表示する情報自体にも適用した)。配線する場合は
- * `pcv-core::crs`→`CloudInfo.crs`→ここの3箇所が必要になる。
+ * CRSは`CloudInfo.crs`(Rust側`pcv_core::crs::CrsInfo`)を`formatCrsLong`で
+ * 文字列にして出す(配線の経緯はADR-0017のCRSの節とADR-0008の追記を参照)。
  */
 export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
   return (
@@ -81,7 +74,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
         </p>
         <p>
           <span className="opacity-60">CRS: </span>
-          不明（未配線）
+          {viewer.cloudInfo ? formatCrsLong(viewer.cloudInfo.crs) : "―"}
         </p>
         <p>
           <span className="opacity-60">バウンディングボックス: </span>

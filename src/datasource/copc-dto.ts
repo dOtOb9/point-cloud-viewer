@@ -7,7 +7,15 @@
 // `src-tauri/src/copc_state.rs`の`open_copc`と`crates/pcv-wasm/src/dto.rs`が
 // 同じ形のJSONを返すことを前提にしている(片方だけ形を変えたら両方直すこと)。
 
-import type { CloudInfo, HierarchyNodeInfo } from "./DataSource";
+import type { CloudInfo, CrsInfo, HierarchyNodeInfo } from "./DataSource";
+
+/** Rust側の`CrsInfoDto`(Tauri・Web共通)。値が無いOptionはnull(Tauri/JSON)かundefined(Web/wasm)で来る。 */
+export interface CrsInfoDto {
+  epsg?: number | null;
+  name: string;
+  kind: CrsInfo["kind"];
+  error?: string | null;
+}
 
 export interface CloudInfoDto {
   point_count: number;
@@ -16,6 +24,7 @@ export interface CloudInfoDto {
   scale: [number, number, number];
   offset: [number, number, number];
   has_color: boolean;
+  crs: CrsInfoDto;
 }
 
 export interface HierarchyNodeDto {
@@ -23,6 +32,14 @@ export interface HierarchyNodeDto {
   point_count: number;
   bounds_min: [number, number, number];
   bounds_max: [number, number, number];
+}
+
+/** null(Tauriのserde_json)とundefined(wasmのserde-wasm-bindgen)を、どちらも「キー無し」にそろえる。 */
+export function toCrsInfo(dto: CrsInfoDto): CrsInfo {
+  const crs: CrsInfo = { name: dto.name, kind: dto.kind };
+  if (dto.epsg !== null && dto.epsg !== undefined) crs.epsg = dto.epsg;
+  if (dto.error !== null && dto.error !== undefined) crs.error = dto.error;
+  return crs;
 }
 
 export function toCloudInfo(dto: CloudInfoDto): CloudInfo {
@@ -33,6 +50,7 @@ export function toCloudInfo(dto: CloudInfoDto): CloudInfo {
     scale: dto.scale,
     offset: dto.offset,
     hasColor: dto.has_color,
+    crs: toCrsInfo(dto.crs),
   };
 }
 

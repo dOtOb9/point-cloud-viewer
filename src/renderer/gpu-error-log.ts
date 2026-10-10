@@ -36,7 +36,7 @@
 /** エラーの発生元。バナーの見出し文言を出し分けるために使う。
  *  M4-3: LAS/LAZ→COPC変換の失敗・キャンセル・容量不足も同じ仕組みに乗せる
  *  ("conversion")。ADR-0011/ADR-0013と同じ理由（専用の仕組みを増やさない）。 */
-export type GpuErrorSource = "gpu" | "node-read" | "conversion";
+export type GpuErrorSource = "gpu" | "node-read" | "conversion" | "crs";
 
 /** バナーに表示する1件分のエラー。 */
 export interface GpuErrorEntry {

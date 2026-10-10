@@ -1,4 +1,5 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
+import { formatCrsShort } from "./crs-format";
 import { glassSurfaceClass } from "./glass";
 
 /**
@@ -52,9 +53,8 @@ export function StatusBar({
         {viewer.pointBudget.toLocaleString()}
       </span>
       <span className="whitespace-nowrap">fps: {stats ? stats.fps.toFixed(0) : "―"}</span>
-      {/* CRS: LayerInfoSection.tsxと同じ理由で「不明（未配線）」。
-          CloudInfoにCRSが無いため、ここも同じ文言で揃える。狭幅では省く(詳細は左パネルで見られる)。 */}
-      <span className="hidden whitespace-nowrap md:inline">CRS: 不明（未配線）</span>
+      {/* CRS: 短い形(EPSGコード)。狭幅では省く(詳細は左パネルで見られる)。 */}
+      <span className="hidden whitespace-nowrap md:inline">CRS: {viewer.cloudInfo ? formatCrsShort(viewer.cloudInfo.crs) : "―"}</span>
       {viewer.status === "converting" ? (
         // 変換中はクリックで変換ダイアログを開き直せる(✕で閉じても変換は続くため)。
         <button type="button" onClick={onOpenConversion} className="min-h-8 min-w-0 truncate rounded bg-secondary px-2 text-on-secondary">

@@ -7,6 +7,7 @@ const SOURCE_LABEL: Record<GpuErrorEntry["source"], string> = {
   gpu: "WebGPU エラー",
   "node-read": "ノード読み出しエラー",
   conversion: "変換エラー",
+  crs: "座標系の読み取りエラー",
 };
 
 function formatTimestamp(ms: number): string {
