@@ -183,8 +183,8 @@ export interface CopcViewerState {
   /** M2-1: EDL(Eye-Dome Lighting)のオン/オフ。既定はrendererの既定(オン)に
    *  合わせている。RGBを持たない点群(sofi.copc.laz)でも形状を読めるようにする
    *  必須機能なので、既定でオフにはしていない（TaskSheets/M2-shading-and-ui.md
-   *  M2-1参照）。強さは所有者が実機で確認して0.05に固定したため、UIから
-   *  調整する手段は無い（`src/renderer/edl.ts`の`DEFAULT_EDL_STRENGTH`参照）。 */
+   *  M2-1参照）。強さはUIから調整する手段を置かず、`src/renderer/edl.ts`の
+   *  `DEFAULT_EDL_STRENGTH`で固定している（値と経緯はそちらのコメント参照）。 */
   edlEnabled: boolean;
   /** AN: アニメーション（フェードイン・慣性・視点移動）のオン/オフ。UIのトグルは未実装（UIの作り直し後）。 */
   animationEnabled: boolean;
