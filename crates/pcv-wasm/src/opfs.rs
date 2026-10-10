@@ -109,6 +109,38 @@ use wasm_bindgen::JsValue;
 use web_sys::{FileSystemReadWriteOptions, FileSystemSyncAccessHandle};
 use web_time::Instant;
 
+/// OPFSの`read`/`write`が返した「バイト数」を検証して`usize`にする。
+///
+/// ブラウザは本来`0..=buf_len`の整数を返すはずだが、実際には
+/// 4294967288(= 2^32 - 8)のような異常値を返すことがある(M4-15。Chromiumの
+/// `FILE_ERROR_NO_SPACE`=-8を符号なしにしたものと推定。未検証)。検証せずに
+/// 使うと`BufWriter`が範囲外スライスでpanicし、wasmが"unreachable"で死ぬ。
+/// そのため、有限・非負・整数・`buf_len`以下でなければエラー文字列を返す。
+/// `op`は操作名(「書き込み」か「読み出し」)、`pos`はファイル位置(診断用)。
+/// `allow_zero`は0を正常とみなすか(逐次読みのEOFは0が正常、書き込みの0は異常)。
+fn check_opfs_len(
+    op: &str,
+    raw: f64,
+    pos: u64,
+    buf_len: usize,
+    allow_zero: bool,
+) -> std::result::Result<usize, String> {
+    let valid = raw.is_finite() && raw >= 0.0 && raw.fract() == 0.0 && raw <= buf_len as f64;
+    if valid && (allow_zero || raw > 0.0) {
+        return Ok(raw as usize);
+    }
+    let hint = if op == "書き込み" {
+        "空き容量不足の可能性があります。シークレットウィンドウではブラウザの保存領域が小さく、\
+         大きな点群を変換できないことがあります"
+    } else {
+        "ブラウザの保存領域に問題がある可能性があります"
+    };
+    Err(format!(
+        "OPFSへの{op}に失敗しました（ブラウザが異常な値 {raw} を返しました。\
+         ファイル位置={pos}、バッファ長={buf_len}。{hint}）"
+    ))
+}
+
 /// M4-12(`TaskSheets/M4-import-and-conversion.md`): OPFSへの実際のJS呼び出し
 /// (read/write/flush/truncate/get_size)にかかった累積時間。所有者向けの
 /// 内訳表示で「OPFSの読み書きにまとまった時間がかかっているか」を
@@ -445,9 +477,10 @@ impl Write for OpfsTempWriter {
                 .map_err(|e| js_io_err("OPFS scratch write", e))?
         };
         self.timer.record(write_start.elapsed());
-        let written = written as u64;
-        self.pos += written;
-        Ok(written as usize)
+        let written = check_opfs_len("書き込み", written, self.pos, buf.len(), false)
+            .map_err(io::Error::other)?;
+        self.pos += written as u64;
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -569,18 +602,15 @@ impl OpfsTempReader {
         let handle = &pool.handles[self.index];
         let mut read_total = 0usize;
         while read_total < buf.len() {
+            let pos = start + read_total as u64;
+            let remaining = buf.len() - read_total;
             let n = handle
-                .read_with_u8_array_and_options(
-                    &mut buf[read_total..],
-                    &at(start + read_total as u64),
-                )
+                .read_with_u8_array_and_options(&mut buf[read_total..], &at(pos))
                 .map_err(|e| js_copc_err("OPFS scratch read", e))?;
-            if n <= 0.0 {
-                return Err(Error::InvalidData(
-                    "OPFS scratchファイルの読み出しが途中で0バイトを返した".into(),
-                ));
-            }
-            read_total += n as usize;
+            // 0バイトは「途中でEOF」なので異常扱い(allow_zero=false)。
+            let n =
+                check_opfs_len("読み出し", n, pos, remaining, false).map_err(Error::InvalidData)?;
+            read_total += n;
         }
         drop(pool);
         let elapsed = read_start.elapsed();
@@ -688,8 +718,10 @@ impl Read for OpfsSeqReader {
         let elapsed = read_start.elapsed();
         self.timer.record(elapsed);
         self.seq_read_counters.record(elapsed);
+        let n =
+            check_opfs_len("読み出し", n, self.pos, buf.len(), true).map_err(io::Error::other)?;
         self.pos += n as u64;
-        Ok(n as usize)
+        Ok(n)
     }
 }
 
@@ -717,9 +749,10 @@ impl Write for OpfsOutputWriter {
             .write_with_u8_array_and_options(buf, &at(self.pos))
             .map_err(|e| js_io_err("OPFS output write", e))?;
         self.timer.record(write_start.elapsed());
-        let written = written as u64;
-        self.pos += written;
-        Ok(written as usize)
+        let written = check_opfs_len("書き込み", written, self.pos, buf.len(), false)
+            .map_err(io::Error::other)?;
+        self.pos += written as u64;
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -832,6 +865,41 @@ fn resolve_seek(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_opfs_len_accepts_normal_value() {
+        assert_eq!(check_opfs_len("書き込み", 1024.0, 0, 1024, false), Ok(1024));
+        assert_eq!(check_opfs_len("書き込み", 10.0, 0, 1024, false), Ok(10));
+    }
+
+    #[test]
+    fn check_opfs_len_zero_depends_on_allow_zero() {
+        assert_eq!(check_opfs_len("読み出し", 0.0, 5, 16, true), Ok(0));
+        assert!(check_opfs_len("書き込み", 0.0, 5, 16, false).is_err());
+    }
+
+    #[test]
+    fn check_opfs_len_rejects_larger_than_buffer() {
+        assert!(check_opfs_len("書き込み", 1025.0, 0, 1024, false).is_err());
+    }
+
+    #[test]
+    fn check_opfs_len_rejects_2_pow_32_minus_8_with_clear_message() {
+        let err = check_opfs_len("書き込み", 4294967288.0, 100, 1048576, false).unwrap_err();
+        assert!(err.contains("4294967288"), "{err}");
+        assert!(err.contains("シークレットウィンドウ"), "{err}");
+        assert!(err.contains("1048576"), "{err}");
+    }
+
+    #[test]
+    fn check_opfs_len_rejects_nan_infinite_negative_and_fraction() {
+        for raw in [f64::NAN, f64::INFINITY, -8.0, 0.5] {
+            assert!(
+                check_opfs_len("読み出し", raw, 0, 16, true).is_err(),
+                "{raw}"
+            );
+        }
+    }
 
     /// M4-12: `OpfsIoTimer`は累積するだけ(クローンした先でも同じ合計を
     /// 共有する)。`web_sys`に触れない純粋なロジックなので、`Instant`では
