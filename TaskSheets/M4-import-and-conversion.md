@@ -5060,3 +5060,71 @@ LAS/LAZ以外(PLY/PCD/E57)が混じると、変換前にファイル名を挙げ
 2. 点フォーマットやCRSの違うファイルを混ぜるとファイル名つきのエラーがバナーに出る。
    PLY等を混ぜると「複数ファイルの選択はLAS/LAZのみ」。
 3. Web: 同様に複数選択。3タイルまでは通る。4タイル以上は上記panicの調査待ち。
+
+## M4-15: OPFSのread/write戻り値の検証(M4-14の「Web 4タイルでpanic」への対処、2026-10-10、Sonnet)
+
+### 症状
+
+Web版で4タイル(09LD2626〜2629、30,043,046点)を変換すると
+`range start index 4294967288 out of range for slice of length 1048576` のpanicで
+wasmが "unreachable" になり、変換が失敗した(M4-14の「未解決」)。
+
+### 調査で分かったこと(前の調査のデータ)
+
+- `FileSystemSyncAccessHandle.write`が、1MiBの書き込みに対して `4294967288`(= 2^32 - 8)を返すことがある。
+  `OpfsTempWriter::write`・`OpfsOutputWriter::write`は戻り値を無検査で `pos` に足して `Ok(written as usize)` を返していた。
+  `std::io::BufWriter` がその値でスライスして範囲外panicしていた。
+- 読み出し側(`OpfsSeqReader::read`、`read_opfs_exact`)にも同じ無検査のパターンがあった。
+- Playwrightの非永続コンテキスト(シークレットウィンドウ相当)では約1.9GBのOPFS使用量で再現し、
+  永続コンテキストでは再現しなかった(前の調査の値)。
+- **推定(Chromiumのソースでは未確認)**: -8 は Chromium の `base::File::Error` の `FILE_ERROR_NO_SPACE`。
+  ブラウザが負のエラーコードを符号なし32bitにして返している、という推定。
+
+### 何をしたか
+
+- `crates/pcv-wasm/src/opfs.rs` に小さな関数 `check_opfs_len` を1つ足し、OPFSの read/write の
+  全呼び出し箇所(4か所)で戻り値を検証する。有限・非負・整数・`buf.len()`以下でなければ、
+  操作名・生の戻り値・ファイル位置・バッファ長を含む日本語のエラーにする。
+  書き込みの0バイトもエラー(`BufWriter`が無限ループ/WriteZeroになるため)。逐次読みの0はEOFなので正常。
+  `read_opfs_exact`の0は従来どおり「途中でEOF」としてエラー。
+- ユニットテスト5件(正常値・0・buf長超過・2^32-8・NaN/無限大/負/小数)。
+- 容量不足の文言(`describeInsufficientSpaceWeb`、M4-9の見積り)に、永続化されていないとき
+  「シークレットウィンドウでは保存領域が小さく、大きな点群を変換できないことがあります」を添えた(テスト1件)。
+- `src/wasm/pcv-wasm/` の生成物を再生成した(`npm run build:wasm`。差分はwasm本体のみ)。
+- 採らなかった案: 異常値をリトライする(原因が空き容量不足なら同じ結果になる、推定)。
+  エラー経路自体は既存(Worker→`viewer.error`→ErrorDialog)で、新設していない。
+
+### 触ったファイル
+
+`crates/pcv-wasm/src/opfs.rs`、`src/datasource/opfs.ts`、`src/datasource/opfs.test.ts`、`src/wasm/pcv-wasm/*`
+
+### 確かめたこと(実行した結果)
+
+- 実ブラウザ(headedのChromium、`channel: "chromium"`、webビルドを`vite preview`で配信)で、
+  `data/tokyo-shibuya/09LD2626〜2629.las`の4つを一緒に選んだ。
+  - **非永続コンテキスト(Playwright既定)**: panic・"unreachable"は出ず、エラーダイアログに
+    「変換に失敗しました: write root LOD index: OPFSへの書き込みに失敗しました(ブラウザが異常な値
+    4294967288 を返しました。ファイル位置=88080384、バッファ長=1048576。空き容量不足の可能性があります。
+    シークレットウィンドウでは…)」と出て、変換はきれいに止まった(開始から約17秒)。
+    スクリーンショットを目視した。終了後のOPFSは`pcv-scratch-*`が0個(後始末済み)、`pcv-converted`は空。
+    注意: 今回の再現はファイル位置が約88MBで、前の調査の「約1.9GB」とは位置が違う
+    (この環境ではもっと早く出た。理由は未調査)。
+  - **永続コンテキスト(`launchPersistentContext`、一時プロファイル)**: 4タイルとも成功。合計77.044秒
+    (入力の読み込みと展開0.810、一時ファイルへの書き込み3.125、LOD22.831、ノード圧縮50.177、書き出し0.100)、
+    ページ表示までの経過79.5秒、点数30,043,046、入力ファイル数4、エラー無し。一時プロファイルは削除した。
+    なお`navigator.storage.persisted()`は両方とも`false`(永続コンテキストの差が何によるかは未確認)。
+- `cargo test`(pcv-wasm、ネイティブ)、pcv-wasmのfmt・wasm32 clippy(`-D warnings`)、
+  vendor/copc-writerのwasm32 clippy、`npm run typecheck`・`lint`・`test`(358件)、`npx playwright test`(2件)成功。
+
+### 未確認
+
+- **所有者の実ブラウザ(通常のプロファイル)では未確認。** 通常ウィンドウで4タイルが通るか、
+  通らない場合に新しいエラー文が出るかは、所有者の確認が必要。
+- -8 = `FILE_ERROR_NO_SPACE` は推定。異常値を返す本当の原因(クォータの種類、いつ起こるか)は未特定。
+  この修正はpanicをやめて原因の見える失敗にするもので、非永続コンテキストでの変換自体を通すものではない。
+
+### 所有者の確認手順
+
+1. Webビルドを開き、通常ウィンドウで`09LD2626〜2629.las`を4つ一緒に選ぶ。成功すれば内訳が出る。
+2. シークレットウィンドウで同じことをする。エラーダイアログに「異常な値 4294967288」の文が出て、
+   画面が固まらず、もう一度ファイルを選べることを確かめる。
