@@ -733,7 +733,7 @@ export class PointCloudRenderer {
     // AN-2: カメラのアニメーション（慣性・ズーム・視点移動）を実際の経過時間で進める。
     // 動きが無効なら、進行中のものは止めて今までどおり即時の挙動にする。
     const motionEnabled = this.motionEnabled();
-    if (!motionEnabled && this.camera.motionEnabled) this.camera.cancelInertia();
+    if (!motionEnabled && this.camera.motionEnabled) this.camera.cancelMotion();
     this.camera.motionEnabled = motionEnabled;
     if (this.previousCameraTime !== null) this.camera.update(time - this.previousCameraTime);
     this.previousCameraTime = time;

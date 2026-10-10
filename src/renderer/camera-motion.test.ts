@@ -77,6 +77,62 @@ describe("AN-2 慣性", () => {
   });
 });
 
+describe("AN-2 なめらかなズーム", () => {
+  it("目標の距離（ホイール段数ぶんの倍率の積）へ収束して止まる", () => {
+    const cam = new OrbitCamera([0, 0, 0], 100);
+    cam.zoomSmooth(1.1);
+    cam.zoomSmooth(1.1);
+    cam.zoomSmooth(1 / 1.1);
+    expect(cam.isAnimating()).toBe(true);
+    expect(cam.distance).toBe(100); // まだ動いていない
+    run(cam, 100, 60);
+    expect(cam.distance).toBeGreaterThan(100); // 途中
+    expect(cam.distance).toBeLessThan(110);
+    run(cam, 3000, 60);
+    expect(cam.distance).toBeCloseTo(110, 6);
+    expect(cam.isAnimating()).toBe(false);
+  });
+
+  it("カーソル方向つきでも収束し、targetはその方向へ動く", () => {
+    const cam = new OrbitCamera([0, 0, 0], 100);
+    cam.zoomSmooth(0.5, [1, 0, 0]);
+    run(cam, 3000, 60);
+    expect(cam.distance).toBeCloseTo(50, 6);
+    expect(cam.target[0]).toBeCloseTo(50, 6);
+    expect(cam.isAnimating()).toBe(false);
+  });
+
+  it("30fpsと144fpsで同じ終状態になる", () => {
+    const a = new OrbitCamera([0, 0, 0], 100);
+    const b = new OrbitCamera([0, 0, 0], 100);
+    a.zoomSmooth(0.7, [0, 1, 0]);
+    b.zoomSmooth(0.7, [0, 1, 0]);
+    run(a, 500, 30);
+    run(b, 500, 144);
+    expect(a.distance).toBeCloseTo(b.distance, 9);
+    expect(a.target[1]).toBeCloseTo(b.target[1], 9);
+    run(a, 5000, 30);
+    run(b, 5000, 144);
+    expect(a.distance).toBeCloseTo(70, 6);
+    expect(b.distance).toBeCloseTo(70, 6);
+  });
+
+  it("動きが無効なら即座に適用する", () => {
+    const cam = new OrbitCamera([0, 0, 0], 100);
+    cam.motionEnabled = false;
+    cam.zoomSmooth(0.5);
+    expect(cam.distance).toBe(50);
+    expect(cam.isAnimating()).toBe(false);
+  });
+
+  it("cancelMotionで残りを捨てる", () => {
+    const cam = new OrbitCamera([0, 0, 0], 100);
+    cam.zoomSmooth(0.5);
+    cam.cancelMotion();
+    expect(cam.isAnimating()).toBe(false);
+  });
+});
+
 describe("VelocityTracker", () => {
   it("直近の位置から速度を出す", () => {
     const t = new VelocityTracker();

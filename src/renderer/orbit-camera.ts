@@ -9,6 +9,8 @@ import {
   INERTIA_STOP_PAN_PX_PER_SEC,
   INERTIA_STOP_ROTATE_RAD_PER_SEC,
   INERTIA_TAU_MS,
+  ZOOM_SMOOTH_STOP_LOG,
+  ZOOM_SMOOTH_TAU_MS,
   VelocityTracker,
   expApproachFraction,
 } from "./animation";
@@ -61,6 +63,14 @@ export class OrbitCamera {
   /** 慣性の回転速度（ラジアン/秒）。0なら慣性なし。 */
   private inertiaYawRate = 0;
   private inertiaPitchRate = 0;
+  /**
+   * なめらかなズームの「まだ適用していない残り」（倍率の自然対数。縮める向きが負）。
+   * ホイール1段ごとにlog(factor)を足し、update()が指数的に0へ近づけながらzoom()に渡す。
+   * 倍率を対数で持つので、何段か重ねても「掛け合わせた倍率」がそのまま目標になる。
+   */
+  private pendingZoomLog = 0;
+  /** 残りのズームを適用するときのカーソル方向（最後のホイールのもの）。 */
+  private pendingZoomDirection: readonly [number, number, number] | undefined;
   /** 慣性のパン速度（画面ピクセル/秒）。 */
   private inertiaPanX = 0;
   private inertiaPanY = 0;
@@ -142,6 +152,26 @@ export class OrbitCamera {
     this.inertiaPanY = vyPxPerSec;
   }
 
+  /** 慣性・ズームの残りを、すべて即座に止める（動きを無効にしたとき用）。 */
+  cancelMotion(): void {
+    this.cancelInertia();
+    this.pendingZoomLog = 0;
+    this.pendingZoomDirection = undefined;
+  }
+
+  /**
+   * AN-2: ホイールのなめらかなズーム。倍率factor(zoom()と同じ向き)を目標に積み、
+   * 数フレームかけて近づける。動きが無効なら今までどおりzoom()で即座に適用する。
+   */
+  zoomSmooth(factor: number, cursorDirection?: readonly [number, number, number]): void {
+    if (!this.motionEnabled) {
+      this.zoom(factor, cursorDirection);
+      return;
+    }
+    this.pendingZoomLog += Math.log(factor);
+    this.pendingZoomDirection = cursorDirection;
+  }
+
   /** 慣性を即座に止める。新しいポインタ操作の開始（pointerdown）で呼ぶ。 */
   cancelInertia(): void {
     this.inertiaYawRate = 0;
@@ -165,11 +195,23 @@ export class OrbitCamera {
   update(dtMs: number): void {
     if (!(dtMs > 0)) return;
     if (this.hasInertia()) this.updateInertia(dtMs);
+    if (this.pendingZoomLog !== 0) this.updateSmoothZoom(dtMs);
+  }
+
+  private updateSmoothZoom(dtMs: number): void {
+    // 残りのうち、このdtで消化する割合。指数的に近づくのでdtの刻み方によらない。
+    let apply = this.pendingZoomLog * expApproachFraction(dtMs, ZOOM_SMOOTH_TAU_MS);
+    // 残りがごくわずかになったら、一度に適用して終える（いつまでも0に漸近しないように）
+    if (Math.abs(this.pendingZoomLog - apply) < ZOOM_SMOOTH_STOP_LOG) apply = this.pendingZoomLog;
+    this.pendingZoomLog -= apply;
+    if (apply === 0) this.pendingZoomLog = 0;
+    this.zoom(Math.exp(apply), this.pendingZoomDirection);
+    if (this.pendingZoomLog === 0) this.pendingZoomDirection = undefined;
   }
 
   /** カメラがアニメーションで動いている（または動く予定の）間true。点予算の調整やHQ-2の「止まった」判定に使う。 */
   isAnimating(): boolean {
-    return this.hasInertia();
+    return this.hasInertia() || this.pendingZoomLog !== 0;
   }
 
   private updateInertia(dtMs: number): void {
@@ -422,7 +464,7 @@ export function attachOrbitControls(
     const screenY = e.clientY - rect.top;
     const cursorDirection = options.getCursorDirection?.(screenX, screenY) ?? undefined;
 
-    camera.zoom(factor, cursorDirection);
+    camera.zoomSmooth(factor, cursorDirection);
   };
 
   const onContextMenu = (e: MouseEvent) => {
