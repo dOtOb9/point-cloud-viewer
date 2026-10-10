@@ -534,7 +534,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         setConversionBreakdownText(
           formatConversionBreakdown(stageTimings, {
             platform: "web",
-            format: extensionOfFileName(sourceName),
+            // M4-14: 複数ファイルのときは表示名に拡張子が無い(「<名前> ほかNファイル」)
+            // ので、デスクトップ版(src-tauriが返す文字列)と同じ表記にする。
+            format:
+              stageTimings.inputFileCount > 1
+                ? "las/laz(複数ファイル)"
+                : extensionOfFileName(sourceName),
             fileName: sourceName,
             ...currentDeviceMeta(),
           }),

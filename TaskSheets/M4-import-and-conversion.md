@@ -4960,3 +4960,103 @@ npm run lint       # 通った
    目視確認する(autzen.pcdはこのサンドボックスの画面でも明確に色付きだった)
 4. CIの`rust`/`frontend`ジョブが緑であること
 
+
+
+## M4-14: 複数のLAS/LAZを選ぶと1つのCOPCにマージして開く(2026-10-10、Sonnet)
+
+### 何をしたか
+
+ファイル選択で LAS/LAZ を複数(2件以上)選ぶと、1つのCOPCへ変換して開くようにした
+(デスクトップ・Android・Web)。元は開発者向けCLI(`TOOL-merge-las-to-copc.md`)専用だった
+`crates/pcv-convert/src/merge.rs` をアプリから呼ぶ。1件だけの選択は今までと同じ経路
+(`openFiles`が既存の`openFile`へ委譲、Rust側も`start_las_conversion`へ委譲)。
+LAS/LAZ以外(PLY/PCD/E57)が混じると、変換前にファイル名を挙げた日本語エラー。
+
+### なぜこの設計か(採らなかった案)
+
+- **新しいoctree/writerは書かない**: `merge.rs`の`MultiFileLasPoints`(複数ファイルを
+  1本のイテレータにする。同時に開くのは1ファイル)をそのまま使う。メモリが点数・
+  ファイル数に比例しない性質も同じ。
+- **事前に1本のLASへ結合する案は不採用**: 巨大な一時ファイルが増えるだけ(TOOL文書と同じ判断)。
+- **検証はヘッダーだけ**: デスクトップは`summarize_headers`(point format・CRS)、Webは
+  `inspectLasHeaderSummary`(wasm、`layout_key`/`crs_label`の文字列比較)。CRSは
+  `pcv_core::crs::detect_crs_from_las_header`の結果が違えば拒否。両方「不明」は一致扱い。
+  point formatが違うファイルは`StreamingLayout`の不一致で拒否(`copc-writer`が1回の書き出しで
+  1つのレイアウトしか扱えないため)。scale/offsetの違いは許可(`LasPointRecord`が
+  実世界座標f64を運ぶため。下記テストで確認)。
+- **キャッシュキーは選択順に依存しない**: (名前,サイズ,更新日時)をソートして1つのハッシュに
+  畳み込む(各ファイルのハッシュをXORする案は、同じファイルを2回選ぶと打ち消すので不採用)。
+  デスクトップは`cache::MultiSourceFingerprint`+サイドカー、Webは`opfs.cacheKeyForMulti`+
+  OPFSの索引(`MultiCacheMeta`)。
+- **表示名/出力名**: 「<先頭ファイル名(拡張子なし)> ほか<N-1>ファイル」。デスクトップはこれを
+  そのままキャッシュ配下のファイル名にし(`output_path::multi_output_file_name`。複数
+  ディレクトリに散らばる入力では「元ファイルの隣」が定まらないため、常にアプリの
+  キャッシュディレクトリ)、Webは`suggestedFileName`に使う。名前が衝突しても、サイドカー/索引の
+  指紋が違えば再変換されるだけで正しさは保たれる。
+- **Web**: 先頭ファイルで`WasmConverter`を作り、`setDeclaredTotals`で全入力の合計点数・サイズに
+  上書きし、`openNextFile`で読み込み元だけ次のファイルへ入れ替える(spillは1本のまま)。
+  LAZの並列展開(M4-7のpull型・背圧)はファイルごとに今までどおり動く(ファイル間は逐次)。
+  OPFSスクラッチ・Web Locks・容量見積もり(全入力の点数の合計)も単一ファイル版と同じ流れ。
+  進捗は全入力の合計点数に対する1本。
+- **Android**: マージ本体は`std::fs`/`las::Reader::from_path`のパス前提で`content://`は読めない。
+  `content://`が混じったら明確なエラーで止める。**Androidの複数選択は未対応**
+  (`File`ベースへの書き換えが必要)。
+
+### 触ったファイル
+
+- Rust: `crates/pcv-convert/src/{merge,cache,output_path,streaming}.rs`、
+  `crates/pcv-convert/examples/merge_paths_bench.rs`(新規、計測用)、
+  `src-tauri/src/{conversion,lib}.rs`(`start_multi_las_conversion`)、
+  `crates/pcv-wasm/src/{convert,dto,pcd_import}.rs`(`openNextFile`/`setDeclaredTotals`/
+  `inspectLasHeaderSummary`、`input_file_count`)、生成物`src/wasm/pcv-wasm/*`
+- TS: `src/datasource/{opfs,tauri,web,web-protocol,copc.worker,conversion-dto,conversion-breakdown}.ts`、
+  `src/state/useCopcViewer.ts`(`openFiles`)、`src/ui/shell/LayerPanel.tsx`(`multiple`・
+  `pickLocalFiles`のみ。`data-testid`は不変)
+- テスト: `scripts/make-test-las.ts`(offsetX/Y/Z)、`e2e/web-multi-conversion.spec.ts`、各`*.test.ts`
+
+### 確認したこと(実行したコマンドの結果)
+
+- Rustテスト: `merging_with_different_scale_and_offset_keeps_real_world_coordinates`
+  (scale0.001/offset0 と scale0.01/offset100000 の入力で実世界座標が一致。tile-bの値は
+  自身のscale(0.01)で表せる123.46を使った。123.456だと入力ファイルへ書く時点で丸まる)、
+  `merging_rejects_mismatched_crs`、`merging_rejects_mismatched_layouts`、
+  `merging_three_small_files_yields_correct_count_bounds_and_points`(点数・bounds)、
+  `merge_paths_and_timings_reports_progress_and_correct_metadata`、キャッシュ/出力名の順序非依存。
+  `cargo test -p pcv-convert --lib`: 60件成功。pcv-wasm(ネイティブ)31件成功
+  (`check_layout_and_crs_match_*`を含む)。
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、
+  pcv-wasmのwasm32 clippy、`npm run typecheck`・`lint`、`npx vitest run`(329件)成功。
+- **Web E2E(実Chromium)**: `npx playwright test`で2件成功(新規: offsetの異なる合成LAS3つ
+  合計1500点を一緒に選び、内訳に「入力ファイル数: 3」、エラー・panic無し、点数=1500)。
+- **Web実データ(ヘッド付き(headed)のChromium、`data/tokyo-shibuya/`)**:
+  - 09LD2626〜2628の3タイル: 変換+表示まで約171秒(別の回160秒・208秒など回ごとに差あり)、
+    点数21,791,996(デスクトップのTOOL文書の3タイルと一致)、入力ファイル数3、合計706.6MiB、
+    エラー無し。内訳: LOD78.2秒・ノード圧縮83.9秒(OPFS読み書き合計134秒)。
+    ズームしたスクリーンショットを目視した: 色付きの街区が3タイルにまたがって途切れず表示され、
+    継ぎ目の隙間は見えなかった(厳密な継ぎ目検証ではなく、あくまで目視)。
+    2タイル(12,463,699点)97秒、09LD2627〜2629の3タイル(24,276,716点)208秒も成功。
+  - **4タイル(09LD2626〜2629、30,043,046点)はWebで失敗した**(下記「未解決」)。
+- **デスクトップ変換経路(Tauri GUI抜き、`merge_paths_and_timings`を直接呼ぶexample)**:
+  同じ4タイル、30,043,046点、15.21秒、ピークプライベートメモリ308.3MiB
+  (`PrivateMemorySize64`を500msごとにポーリング)、出力約405MB。進捗の最後の値=点数。
+
+### 未解決・未確認
+
+- **Web: 約30M点で`range start index 4294967288 out of range for slice of length 1048576`
+  のpanic→「unreachable」で失敗する。マルチファイル固有ではない**: 4タイルを連結した単一の
+  LAS(30,043,046点、一時ファイル、削除済み)を既存の単一ファイル経路で開いても同じpanicが出た。
+  24.3M点までは成功。原因箇所は未特定(1MiBバッファ=`copc-writer`の`INDEX_IO_BUFFER_BYTES`
+  周辺か、M4-13のBufReader修正の影響かは**未検証**)。別タスクで調査が必要。
+  このため受け入れ条件「Webで4タイル」は満たせず、3タイルで代替した。
+- 内訳の「形式」: Web複数ファイルは「las/laz(複数ファイル)」。
+- **デスクトップ・AndroidのGUIは未確認**。Androidの複数選択は未対応(上記)。
+- 並行して進むUI再構築との衝突は、UI側の変更を`multiple`と`pickLocalFiles`に限って避けた。
+
+### 所有者の確認手順
+
+1. デスクトップ: `npm run tauri dev`→「ファイルを選ぶ…」で`data\tokyo-shibuya\09LD2626〜2629.las`を
+   複数選択→進捗バーが全体の点数に対して進み、「09LD2626 ほか3ファイル」が開く。内訳に入力ファイル数4。
+   もう一度同じ選択(順序を変えてもよい)で即座に開く(キャッシュ)。
+2. 点フォーマットやCRSの違うファイルを混ぜるとファイル名つきのエラーがバナーに出る。
+   PLY等を混ぜると「複数ファイルの選択はLAS/LAZのみ」。
+3. Web: 同様に複数選択。3タイルまでは通る。4タイル以上は上記panicの調査待ち。
