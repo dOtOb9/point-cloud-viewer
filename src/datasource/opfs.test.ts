@@ -356,6 +356,11 @@ describe("describeInsufficientSpaceWeb", () => {
     expect(message).not.toContain("永続的な保存を許可する");
   });
 
+  it("永続化されていなければ、シークレットウィンドウでは大きな変換ができないことがある旨を添える(M4-15)", () => {
+    expect(describeInsufficientSpaceWeb({ ...base, persisted: false })).toContain("シークレットウィンドウ");
+    expect(describeInsufficientSpaceWeb({ ...base, persisted: true })).not.toContain("シークレットウィンドウ");
+  });
+
   it("常にデスクトップ版での変換を案内する", () => {
     const message = describeInsufficientSpaceWeb(base);
     expect(message).toContain("デスクトップ版でCOPC(.copc.laz)に変換してから開く");

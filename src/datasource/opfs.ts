@@ -216,7 +216,13 @@ export function describeInsufficientSpaceWeb(details: InsufficientSpaceWebDetail
   }
   actions.push("デスクトップ版でCOPC(.copc.laz)に変換してから開く");
 
-  return `${summary} 空けるには、${actions.join("、")}、のいずれかを試してください。`;
+  // M4-15: 永続化されていない（シークレットウィンドウなど）と保存領域が小さく、
+  // 大きな点群の変換が途中で失敗することがある。
+  const privateNote = details.persisted
+    ? ""
+    : " 永続的な保存が許可されていません。シークレットウィンドウでは保存領域が小さく、大きな点群を変換できないことがあります。";
+
+  return `${summary} 空けるには、${actions.join("、")}、のいずれかを試してください。${privateNote}`;
 }
 
 /**
