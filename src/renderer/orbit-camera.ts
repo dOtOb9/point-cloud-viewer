@@ -5,6 +5,13 @@
 import { lookAt, type Mat4 } from "./mat4";
 import { DEFAULT_UP_AXIS, horizontalBasis, type Vec3 } from "./up-axis";
 import { computeTwoPointerGesture, type TouchPoint } from "./touch-gesture";
+import {
+  INERTIA_STOP_PAN_PX_PER_SEC,
+  INERTIA_STOP_ROTATE_RAD_PER_SEC,
+  INERTIA_TAU_MS,
+  VelocityTracker,
+  expApproachFraction,
+} from "./animation";
 
 const MIN_DISTANCE = 0.01;
 const MAX_DISTANCE = 1e9; // COPCの世界座標は大きいことがあるので、上限は緩くしておく
@@ -43,6 +50,20 @@ export class OrbitCamera {
    * `[0, 1, 0]`や`[0, 0, 1]`をここ以外に書かないこと。
    */
   private upAxis: Vec3 = DEFAULT_UP_AXIS;
+
+  /**
+   * AN-2: 動き（慣性・なめらかなズーム・視点の移動）を使うか。falseなら今までどおり
+   * 操作に即座に反応する。設定オフ・prefers-reduced-motionのときはfalseにする
+   * （point-cloud-renderer.tsが毎フレーム設定する）。
+   */
+  motionEnabled = true;
+
+  /** 慣性の回転速度（ラジアン/秒）。0なら慣性なし。 */
+  private inertiaYawRate = 0;
+  private inertiaPitchRate = 0;
+  /** 慣性のパン速度（画面ピクセル/秒）。 */
+  private inertiaPanX = 0;
+  private inertiaPanY = 0;
 
   constructor(target: [number, number, number], distance: number) {
     this.target = target;
@@ -98,6 +119,84 @@ export class OrbitCamera {
 
   viewMatrix(): Mat4 {
     return lookAt(this.eye(), this.target, this.upAxis);
+  }
+
+  /**
+   * AN-2: ドラッグを離した後の回転の慣性を始める。速度は離す直前のポインタ位置から
+   * 求めた値（ラジアン/秒）。動きが無効、または遅すぎるときは何もしない。
+   */
+  startRotateInertia(yawRate: number, pitchRate: number): void {
+    this.cancelInertia();
+    if (!this.motionEnabled) return;
+    if (Math.hypot(yawRate, pitchRate) < INERTIA_STOP_ROTATE_RAD_PER_SEC) return;
+    this.inertiaYawRate = yawRate;
+    this.inertiaPitchRate = pitchRate;
+  }
+
+  /** AN-2: パンの慣性を始める。速度は画面ピクセル/秒（pan()の引数と同じ単位）。 */
+  startPanInertia(vxPxPerSec: number, vyPxPerSec: number): void {
+    this.cancelInertia();
+    if (!this.motionEnabled) return;
+    if (Math.hypot(vxPxPerSec, vyPxPerSec) < INERTIA_STOP_PAN_PX_PER_SEC) return;
+    this.inertiaPanX = vxPxPerSec;
+    this.inertiaPanY = vyPxPerSec;
+  }
+
+  /** 慣性を即座に止める。新しいポインタ操作の開始（pointerdown）で呼ぶ。 */
+  cancelInertia(): void {
+    this.inertiaYawRate = 0;
+    this.inertiaPitchRate = 0;
+    this.inertiaPanX = 0;
+    this.inertiaPanY = 0;
+  }
+
+  /** 慣性で動いているか。 */
+  private hasInertia(): boolean {
+    return this.inertiaYawRate !== 0 || this.inertiaPitchRate !== 0 || this.inertiaPanX !== 0 || this.inertiaPanY !== 0;
+  }
+
+  /**
+   * AN-2: 実際の経過時間dt(ms)ぶんだけ、カメラのアニメーションを進める。毎フレーム1回呼ぶ。
+   *
+   * 慣性は速度が v(t) = v0 * exp(-t/tau) で減る。dtの間の移動量は積分して
+   * v * tau * (1 - exp(-dt/tau)) で、これは1フレームでも小刻みでも合計が同じになる
+   * （フレームレートに依存しない）。
+   */
+  update(dtMs: number): void {
+    if (!(dtMs > 0)) return;
+    if (this.hasInertia()) this.updateInertia(dtMs);
+  }
+
+  /** カメラがアニメーションで動いている（または動く予定の）間true。点予算の調整やHQ-2の「止まった」判定に使う。 */
+  isAnimating(): boolean {
+    return this.hasInertia();
+  }
+
+  private updateInertia(dtMs: number): void {
+    const tauSec = INERTIA_TAU_MS / 1000;
+    const move = tauSec * expApproachFraction(dtMs, INERTIA_TAU_MS);
+    const keep = Math.exp(-dtMs / INERTIA_TAU_MS);
+
+    if (this.inertiaYawRate !== 0 || this.inertiaPitchRate !== 0) {
+      this.rotate(this.inertiaYawRate * move, this.inertiaPitchRate * move);
+      // 仰角の端に当たったら、その方向の慣性は止める（端に押し付け続けない）
+      if (this.pitch === MIN_PITCH || this.pitch === MAX_PITCH) this.inertiaPitchRate = 0;
+      this.inertiaYawRate *= keep;
+      this.inertiaPitchRate *= keep;
+      if (Math.hypot(this.inertiaYawRate, this.inertiaPitchRate) < INERTIA_STOP_ROTATE_RAD_PER_SEC) {
+        this.inertiaYawRate = 0;
+        this.inertiaPitchRate = 0;
+      }
+    }
+    if (this.inertiaPanX !== 0 || this.inertiaPanY !== 0) {
+      this.pan(this.inertiaPanX * move, this.inertiaPanY * move);
+      this.inertiaPanX *= keep;
+      this.inertiaPanY *= keep;
+      if (Math.hypot(this.inertiaPanX, this.inertiaPanY) < INERTIA_STOP_PAN_PX_PER_SEC) {
+        this.inertiaPanX = 0;
+        this.inertiaPanY = 0;
+      }
+    }
   }
 
   rotate(dYaw: number, dPitch: number): void {
@@ -244,8 +343,15 @@ export function attachOrbitControls(
   canvas.style.touchAction = "none";
 
   const pointers = new Map<number, TrackedPointer>();
+  // AN-2: 1本指/1ボタンのドラッグの速度を求めるための、ポインタ位置の履歴。
+  const velocity = new VelocityTracker();
 
   const onPointerDown = (e: PointerEvent) => {
+    // AN-2: 新しい操作は、慣性を即座に止める
+    camera.cancelInertia();
+    // 2本目が置かれたら、1本のドラッグの履歴は捨てる（慣性は1本ドラッグだけ）
+    velocity.reset();
+    if (pointers.size === 0) velocity.add(e.timeStamp, e.clientX, e.clientY);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button });
     canvas.setPointerCapture(e.pointerId);
   };
@@ -260,9 +366,11 @@ export function attachOrbitControls(
       if (prevPoint.button === 0) {
         // 左ドラッグ or 指1本: 回転
         camera.rotate(-dx * ROTATE_SPEED, dy * ROTATE_SPEED);
+        velocity.add(e.timeStamp, e.clientX, e.clientY);
       } else if (prevPoint.button === 1) {
         // 中ドラッグ: パン
         camera.pan(dx, dy);
+        velocity.add(e.timeStamp, e.clientX, e.clientY);
       }
     } else if (pointers.size === 2) {
       const otherId = [...pointers.keys()].find((id) => id !== e.pointerId);
@@ -288,8 +396,21 @@ export function attachOrbitControls(
   };
 
   const onPointerUp = (e: PointerEvent) => {
+    const released = pointers.get(e.pointerId);
+    const wasOnlyPointer = pointers.size === 1 && released !== undefined;
     pointers.delete(e.pointerId);
     canvas.releasePointerCapture(e.pointerId);
+
+    // AN-2: 1本のドラッグを離したら、直前の速度で慣性を始める（pointercancelでは始めない）
+    if (wasOnlyPointer && e.type === "pointerup") {
+      const [vx, vy] = velocity.velocity(e.timeStamp);
+      if (released.button === 0) {
+        camera.startRotateInertia(-vx * ROTATE_SPEED, vy * ROTATE_SPEED);
+      } else if (released.button === 1) {
+        camera.startPanInertia(vx, vy);
+      }
+    }
+    velocity.reset();
   };
 
   const onWheel = (e: WheelEvent) => {

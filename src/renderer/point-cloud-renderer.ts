@@ -104,6 +104,8 @@ export interface RenderStats {
   cameraYaw: number;
   cameraUpAxis: [number, number, number];
   cameraEye: [number, number, number];
+  /** AN-2: カメラが慣性・ズーム・視点移動で動いている間true。 */
+  cameraAnimating: boolean;
   /** M2-1: EDLのオン/オフと強さ。GUIを目視できなくても、UIの操作がrendererまで
    *  届いているかをstdoutで確認できるようにする（陰影が実際に効いているかどうか
    *  自体は目視でしか確認できないが、状態が正しく伝わっているかは機械的に見える）。 */
@@ -169,6 +171,8 @@ export class PointCloudRenderer {
   private refreshIntervalEstimate: RefreshIntervalEstimate | null = null;
   private rafHandle = 0;
   private disposed = false;
+  /** AN-2: 前フレームの時刻。カメラのアニメーションを実時間で進めるため。 */
+  private previousCameraTime: number | null = null;
 
   /** AN: アニメーション（ノードのフェードイン・カメラの動き）の設定。既定はオン。
    *  実際に動かすかは、これとOSの`prefers-reduced-motion`の両方で決める（`motionEnabled()`）。 */
@@ -419,6 +423,14 @@ export class PointCloudRenderer {
   }
 
   /** AN: アニメーションのオン/オフ（設定）。OSが「視差効果を減らす」ならオンでも動かさない。 */
+  /**
+   * AN-2: カメラが慣性・なめらかなズーム・視点移動のいずれかで動いている間true。
+   * 点予算の調整や、将来のHQ-2（止まったら最大画質）の「動いているか」の判定は、これを使う。
+   */
+  isCameraAnimating(): boolean {
+    return this.camera.isAnimating();
+  }
+
   setAnimationEnabled(enabled: boolean): void {
     this.animationEnabled = enabled;
   }
@@ -718,6 +730,14 @@ export class PointCloudRenderer {
     this.recordFrameDelta(time);
     this.autoAdjustPointBudget(time);
 
+    // AN-2: カメラのアニメーション（慣性・ズーム・視点移動）を実際の経過時間で進める。
+    // 動きが無効なら、進行中のものは止めて今までどおり即時の挙動にする。
+    const motionEnabled = this.motionEnabled();
+    if (!motionEnabled && this.camera.motionEnabled) this.camera.cancelInertia();
+    this.camera.motionEnabled = motionEnabled;
+    if (this.previousCameraTime !== null) this.camera.update(time - this.previousCameraTime);
+    this.previousCameraTime = time;
+
     const width = this.canvas.width;
     const height = this.canvas.height;
     const aspect = width / Math.max(height, 1);
@@ -800,6 +820,7 @@ export class PointCloudRenderer {
       cameraYaw: this.camera.yaw,
       cameraUpAxis: [...this.camera.getUpAxis()],
       cameraEye: this.camera.eye(),
+      cameraAnimating: this.camera.isAnimating(),
       autoPointBudgetEnabled: this.autoPointBudgetEnabled,
       edlEnabled: this.edlEnabled,
       edlStrength: this.edlStrength,
