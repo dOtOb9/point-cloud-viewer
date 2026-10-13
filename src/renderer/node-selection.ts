@@ -16,6 +16,42 @@ import { centerPriorityWeight, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "./cent
 import type { CachedNode } from "./node-cache";
 
 /**
+ * LOD A: 「点間隔がこのピクセル数を下回った親」の子孫は、候補に入れない。
+ * 点が画素より細かくなると、さらに細かいレベルを読んでも見た目は変わらず、
+ * 点数と読み込み・描画のコストだけが増えるため（HQ-0 で、全体を見下ろすと
+ * 1画素に約170点を描いていた）。
+ *
+ * **未検証の初期値**。1.0 は「点間隔が1画素」という素直な値で、実機の見た目と
+ * fps で決めたものではない（測定結果は TaskSheets/HQ-high-quality-mode.md の LOD A）。
+ * 設定画面には出していない。
+ */
+export const MIN_NODE_SPACING_PIXELS = 1.0;
+
+/**
+ * COPC のキー `d-x-y-z` から親のキーを返す。ルート（`0-0-0-0`）や、この形式で
+ * ないキー（テスト用の任意の文字列など）には null を返す。
+ */
+export function parentKey(key: string): string | null {
+  const parts = key.split("-");
+  if (parts.length !== 4) return null;
+  const [d, x, y, z] = parts.map(Number);
+  if (![d, x, y, z].every(Number.isInteger) || d <= 0) return null;
+  return `${d - 1}-${x >> 1}-${y >> 1}-${z >> 1}`;
+}
+
+/** 階層ごとの「キー→ノード」表。毎フレーム作り直さないよう、配列の同一性で覚える。 */
+const nodeMapCache = new WeakMap<readonly HierarchyNodeInfo[], Map<string, HierarchyNodeInfo>>();
+
+function nodeMapOf(hierarchy: readonly HierarchyNodeInfo[]): Map<string, HierarchyNodeInfo> {
+  let map = nodeMapCache.get(hierarchy);
+  if (!map) {
+    map = new Map(hierarchy.map((n) => [n.key, n]));
+    nodeMapCache.set(hierarchy, map);
+  }
+  return map;
+}
+
+/**
  * `NodeCache` のうち、この判定が必要とする最小限の操作（`get`のみ）。
  * 本物の `NodeCache`（GPUバッファを保持する）は構造的にこれを満たすので
  * そのまま渡せるが、テストではWebGPUを使わない軽量なダブルに差し替えられる。
@@ -62,7 +98,37 @@ export function selectNodesForFrame(
   cache: NodeSelectionCache,
   centerPriorityStrength: number = 0,
   minCenterPriorityWeight: number = DEFAULT_MIN_CENTER_PRIORITY_WEIGHT,
+  minSpacingPixels: number = MIN_NODE_SPACING_PIXELS,
 ): NodeSelectionResult {
+  // LOD A: 先祖のどれかの点間隔が閾値を下回っているか（キー→真偽、このフレーム内だけ有効）。
+  // 純粋に画素サイズで決める。中央優先度の重みは掛けない。
+  // 親の誤差は視錐台と独立に計算する（親が階層に無いときは、さらに上の先祖で判定する）。
+  const nodeMap = nodeMapOf(hierarchy);
+  const refinementStopped = new Map<string, boolean>();
+  const stoppedAbove = (key: string): boolean => {
+    const pk = parentKey(key);
+    if (pk === null) return false;
+    const memo = refinementStopped.get(key);
+    if (memo !== undefined) return memo;
+    const parent = nodeMap.get(pk);
+    let stopped: boolean;
+    if (!parent) {
+      stopped = stoppedAbove(pk);
+    } else {
+      const parentError = screenSpaceError(
+        viewProj,
+        parent.boundsMin,
+        parent.boundsMax,
+        parent.pointCount,
+        canvasWidth,
+        canvasHeight,
+      );
+      stopped = parentError < minSpacingPixels || stoppedAbove(pk);
+    }
+    refinementStopped.set(key, stopped);
+    return stopped;
+  };
+
   const candidates: {
     key: string;
     priority: number;
@@ -71,6 +137,7 @@ export function selectNodesForFrame(
 
   for (const node of hierarchy) {
     if (!aabbIntersectsFrustum(planes, node.boundsMin, node.boundsMax)) continue;
+    if (stoppedAbove(node.key)) continue;
     const error = screenSpaceError(
       viewProj,
       node.boundsMin,
