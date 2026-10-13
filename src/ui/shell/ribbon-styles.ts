@@ -26,7 +26,3 @@ export const RIBBON_BUTTON_PRIMARY_CLASS =
 
 /** グループ1つの外枠。縦に見出し+横並びの操作、を並べる。 */
 export const RIBBON_GROUP_CLASS = "flex flex-col gap-1 border-r border-black/10 pr-3 last:border-r-0 dark:border-white/10";
-
-/** 入力欄(select)の共通見た目。 */
-export const RIBBON_INPUT_CLASS =
-  "min-h-9 rounded border border-black/10 bg-white/60 px-2 py-1 text-xs text-inherit dark:border-white/10 dark:bg-black/30";

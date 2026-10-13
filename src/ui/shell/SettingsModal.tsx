@@ -231,7 +231,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
           </div>
 
           {/* ADR-0017: 点の形（点のサイズ）・EDLはトップリボンの「表示」グループ
-              (`RibbonViewGroup.tsx`)へ移した。タスクシートのレイアウト指定
+              のボタンから開くダイアログ(`ViewDialogs.tsx`)へ移した。タスクシートのレイアウト指定
               (着色モード・EDL・点のサイズ・中央優先度の強さと下限はリボンへ)
               に従った。設定画面にはここでは置かない(二重管理を避けるため)。 */}
 
@@ -249,7 +249,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
         </section>
 
         {/* ADR-0017: LODの中央優先度(強さ・下限)はトップリボンの「表示」グループ
-            (`RibbonViewGroup.tsx`)へ移した。タスクシートのレイアウト指定通り。
+            のボタンから開くダイアログ(`ViewDialogs.tsx`)へ移した。タスクシートのレイアウト指定通り。
             詳しい式・既定値の根拠はTaskSheets/ADR-0010-lod-priority-and-point-budget.md
             に変わらず残っている。 */}
 
