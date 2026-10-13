@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// ADR-0017: 共通Dialogの振る舞い(Escで閉じる・フォーカスが中に移り、閉じると戻る・
+// ADR-0017: 共通Dialogの振る舞い(Esc・暗幕クリックで閉じる・✕は無い・フォーカスが中に移り、閉じると戻る・
 // 閉じているときは何も描画しない)を確かめる。
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -47,17 +47,52 @@ describe("Dialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("✕ボタンでonCloseが呼ばれ、閉じるとフォーカスが元の要素へ戻る", () => {
-    const onClose = vi.fn();
+  it("✕ボタンは無い", () => {
+    const { container } = setup(true, () => {});
+    expect(container.querySelector('button[aria-label="閉じる"]')).toBeNull();
+  });
+
+  it("閉じるとフォーカスが元の要素へ戻る", () => {
     const opener = document.createElement("button");
     document.body.appendChild(opener);
     opener.focus();
-    const { container, render } = setup(false, onClose);
+    const { render } = setup(false, () => {});
     render(true);
-    const closeButton = container.querySelector('button[aria-label="閉じる"]') as HTMLButtonElement;
-    act(() => closeButton.click());
-    expect(onClose).toHaveBeenCalledTimes(1);
     render(false);
     expect(document.activeElement).toBe(opener);
+  });
+
+  // mousedown→clickの順でイベントを流す。暗幕=role="dialog"の親要素。
+  const press = (down: Element, up: Element) => {
+    act(() => {
+      down.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      up.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  };
+
+  it("暗幕クリック(押すのも離すのも暗幕)でonCloseが呼ばれる", () => {
+    const onClose = vi.fn();
+    const { container } = setup(true, onClose);
+    const backdrop = container.querySelector('[role="dialog"]')?.parentElement as Element;
+    press(backdrop, backdrop);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("パネル内のクリックでは閉じない", () => {
+    const onClose = vi.fn();
+    const { container } = setup(true, onClose);
+    const panel = container.querySelector('[role="dialog"]') as Element;
+    press(panel, panel);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("パネル内で押して暗幕で離しても閉じない", () => {
+    const onClose = vi.fn();
+    const { container } = setup(true, onClose);
+    const panel = container.querySelector('[role="dialog"]') as Element;
+    const backdrop = panel.parentElement as Element;
+    // 実ブラウザでは共通の祖先(暗幕)にclickが届き、targetは暗幕になる。
+    press(panel, backdrop);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

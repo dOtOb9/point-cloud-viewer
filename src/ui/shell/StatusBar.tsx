@@ -56,7 +56,7 @@ export function StatusBar({
       {/* CRS: 短い形(EPSGコード)。狭幅では省く(詳細は左パネルで見られる)。 */}
       <span className="hidden whitespace-nowrap md:inline">CRS: {viewer.cloudInfo ? formatCrsShort(viewer.cloudInfo.crs) : "―"}</span>
       {viewer.status === "converting" ? (
-        // 変換中はクリックで変換ダイアログを開き直せる(✕で閉じても変換は続くため)。
+        // 変換中はクリックで変換ダイアログを開き直せる(外側クリック・Escで閉じても変換は続くため)。
         <button type="button" onClick={onOpenConversion} className="min-h-8 min-w-0 truncate rounded bg-secondary px-2 text-on-secondary">
           {loadProgressLabel}
         </button>
