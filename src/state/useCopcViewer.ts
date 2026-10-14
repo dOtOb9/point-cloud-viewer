@@ -31,7 +31,6 @@ import {
 import { detectSourceFormatByName } from "../datasource/source-format";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { CloudInfo, DataSource } from "../datasource/DataSource";
-import { StaleNodeRequestError } from "../datasource/stale-node-error";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import { formatConversionBreakdown, type ConversionBreakdownMeta } from "../datasource/conversion-breakdown";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
@@ -69,6 +68,9 @@ export type { ColorMode };
 export type { ConversionProgress };
 
 const TEMP_DIR_STORAGE_KEY = "pcv-conversion-temp-dir";
+
+/** L1-C: 今は「1ファイルを開くと置き換わる」ので、レイヤーは常にこの id の1つだけ。L1-Dで複数にする。 */
+const CURRENT_LAYER_ID = "current";
 
 /** M4-12(`TaskSheets/M4-import-and-conversion.md`): `path`(Tauri版の
  *  `\`/`/`どちらも使える文字列パス)の最後の区切り以降をファイル名として
@@ -527,15 +529,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       (window as unknown as { __pcvRenderer?: unknown }).__pcvRenderer = renderer;
     }
     sourceRef.current = source;
-    // renderer は cloudId を知らない。いまの cloudId を読む窓口だけを渡す。
-    // 無い（まだ開いていない）ときは、閉じたファイル宛てと同じ扱いで黙って捨てさせる。
-    renderer.setDataSource({
-      readNode: (key) => {
-        const cloudId = currentCloudIdRef.current;
-        if (cloudId === null) return Promise.reject(new StaleNodeRequestError(key));
-        return source.readNode(cloudId, key);
-      },
-    });
 
     // M4-3/M4-6b: 変換の進捗・完了・失敗イベントの購読。Tauri版は
     // `src/datasource/tauri.ts`のイベント(Rustのbackendから`listen`)、Web版は
@@ -664,9 +657,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         // M2-1: EDLのオン/オフ・強さの切り替えがrendererまで届いているかを、
         // 陰影の見た目を目視する前にstdoutだけでも確認できるようにする。
         `edlEnabled=${s.edlEnabled} edlStrength=${s.edlStrength.toFixed(2)} ` +
-        // M2-2: 着色モードの切り替えがrendererまで届いているかを、色の見た目を
-        // 目視する前にstdoutだけでも確認できるようにする。
-        `colorMode=${s.colorMode} ` +
+        // 複数レイヤー(L1-C): 着色はレイヤーごとになったので、統計にはレイヤー数を出す。
+        `layers=${s.visibleLayerCount}/${s.layerCount} ` +
         // M3-8: モバイル最適化の各手段の現在値。所有者が実機で1つずつ切り替えて
         // 効果を確かめる際、GUIの設定画面と同じ値をstdout(logcat経由も含む)からも
         // 確認できるようにする。
@@ -891,13 +883,28 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       }
 
       const opened = await source.open(path);
-      // 置き換え動作: 新しいファイルが開けてから、前のファイルを閉じる
-      // （開けなかったときは前のファイルをそのまま見せ続ける）。cloudId の差し替えと
-      // resetForNewFile は同じ同期ブロックで行い、古い階層のまま新しい cloudId で
-      // 読む隙間を作らない。
+      // M2-2: 開いたファイルがRGBを持たない場合、現在"rgb"を選んでいれば
+      // 自動的に標高へ落とす（colormap.tsの`resolveColorMode`/
+      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。rendererは`resolveColorMode`を
+      // 知らず、渡された値をそのまま使うだけの設計。この関数は`colorMode`に依存する
+      // ため、下の`useCallback`の依存配列に`colorMode`を含めている。
+      const resolvedColorMode = resolveColorMode(colorMode, opened.info.hasColor);
+      // 置き換え動作: 新しいファイルが開けてから、前のレイヤーを消して前のファイルを閉じる
+      // （開けなかったときは前のファイルをそのまま見せ続ける）。
+      // L1-C: renderer は cloudId を知らない。レイヤーごとに cloudId を閉じ込めた readNode を渡す。
+      // 複数レイヤーの状態の作り直しはL1-Dでやる。標高の範囲はCloudInfo.min/max（実データ範囲）を渡す
+      // （ノードのbounds=立方体ではない。renderer側の`addLayer`のコメント参照）。
       const previousCloudId = currentCloudIdRef.current;
       currentCloudIdRef.current = opened.cloudId;
-      renderer.resetForNewFile();
+      renderer.removeLayer(CURRENT_LAYER_ID);
+      renderer.addLayer(CURRENT_LAYER_ID, {
+        hierarchy: opened.nodes,
+        readNode: (key) => source.readNode(opened.cloudId, key),
+        boundsMin: opened.info.min,
+        boundsMax: opened.info.max,
+        colorMode: resolvedColorMode,
+        visible: true,
+      });
       if (previousCloudId !== null) {
         source.close(previousCloudId).catch((e: unknown) => {
           gpuErrorLogRef.current.report(`前のファイルを閉じられませんでした: ${String(e)}`, undefined, "node-read");
@@ -905,12 +912,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
           recordErrorHistory(gpuErrorLogRef.current.list());
         });
       }
-      renderer.setHierarchy(opened.nodes);
-      // M2-2実機不具合の修正: 標高の正規化レンジは、ノードのbounds(octreeセル、
-      // 立方体でZ範囲が水平方向に引き伸ばされる)ではなく、LASヘッダーの
-      // 実データ範囲(CloudInfo.min/max)から設定する（renderer側の
-      // `setElevationRange`のコメント、`src/renderer/scene-bounds.ts`参照）。
-      renderer.setElevationRange(opened.info.min, opened.info.max);
       setCloudInfo(opened.info);
       // CRSの読み取り失敗はファイルを開くことを止めない(ADR-0015)。本文はエラーログへ。
       if (opened.info.crs.error) {
@@ -924,16 +925,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // Tauri版のパス・Web版のURLはbasenameOfPathで最後の区切り以降だけにし、
       // 選択したFileはそのままname（既にファイル名そのもの）を使う。
       setOpenedFileName(typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name);
-      // M2-2: 開いたファイルがRGBを持たない場合、現在"rgb"を選んでいれば
-      // 自動的に標高へ落とす（colormap.tsの`resolveColorMode`/
-      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。renderer側にも同じ解決結果を
-      // 伝える（rendererは`resolveColorMode`を知らず、渡された値をそのまま
-      // 使うだけの設計にしてある。point-cloud-renderer.tsのcolorModeフィールド
-      // コメント参照）。この関数は`colorMode`に依存するため、下の`useCallback`の
-      // 依存配列に`colorMode`を含めている。
-      const resolvedColorMode = resolveColorMode(colorMode, opened.info.hasColor);
       setColorModeState(resolvedColorMode);
-      renderer.setColorMode(resolvedColorMode);
 
       const label = typeof pathOrFile === "string" ? pathOrFile : pathOrFile.name;
       const summary = `[M1] opened ${label}: points=${opened.info.pointCount} nodes=${opened.nodes.length}`;
@@ -1138,7 +1130,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // 二重の安全策として関数側でも解決する。
       const resolved = resolveColorMode(mode, cloudInfo?.hasColor ?? false);
       setColorModeState(resolved);
-      rendererRef.current?.setColorMode(resolved);
+      rendererRef.current?.setLayerColorMode(CURRENT_LAYER_ID, resolved);
     },
     [cloudInfo],
   );

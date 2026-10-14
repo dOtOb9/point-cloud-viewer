@@ -12,8 +12,9 @@
 // 規約3（ARCHITECTURE.md）: このファイルはReactを知らない。canvasと`DataSource`だけを
 // 受け取る。UIから触るときは `src/state/` を経由すること。
 
-import type { NodeReader, HierarchyNodeInfo } from "../datasource/DataSource";
+import type { HierarchyNodeInfo } from "../datasource/DataSource";
 import { computeIntensityRange, type ParsedNode } from "../datasource/node-format";
+import { StaleNodeRequestError } from "../datasource/stale-node-error";
 import { attachOrbitControls, DEFAULT_PITCH, OrbitCamera } from "./orbit-camera";
 import { flyToGoal, pickFlyToPoint } from "./fly-to";
 import { multiply, perspective, type Mat4 } from "./mat4";
@@ -35,15 +36,22 @@ import {
 import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
+import { layerKeyPrefix, parseLayerNodeKey } from "./layer-key";
 import { formatNodeLoadErrorMessage } from "./node-load-error";
-import { selectNodesForFrame } from "./node-selection";
+import { selectNodesForLayers, type SelectionLayer } from "./node-selection";
 import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "./center-priority";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
 import { FAR, FOV_Y_RADIANS, GpuResources, NEAR } from "./gpu-resources";
-import { DEFAULT_COLOR_MODE, extendRange, type ColorMode, type ValueRange } from "./colormap";
-import { computeSceneBounds, elevationRangeFromCloudBounds } from "./scene-bounds";
+import { extendRange, type ColorMode, type ValueRange } from "./colormap";
+import {
+  computeSceneBounds,
+  elevationRangeFromCloudBounds,
+  mergeSceneBounds,
+  mergeValueRanges,
+  type SceneBounds,
+} from "./scene-bounds";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "./device-profile";
 import { computeCanvasBackingSize } from "./render-scale";
 import { prefersReducedMotion, resolveMotionEnabled } from "./animation";
@@ -121,9 +129,11 @@ export interface RenderStats {
    *  自体は目視でしか確認できないが、状態が正しく伝わっているかは機械的に見える）。 */
   edlEnabled: boolean;
   edlStrength: number;
-  /** M2-2: 現在の着色モード。EDLと同じく、UIの操作がrendererまで届いているかを
-   *  stdoutで機械的に確認できるようにする。 */
-  colorMode: ColorMode;
+  /** 複数レイヤー（L1-C）: 持っているレイヤーの数。着色はレイヤーごとになったので、
+   *  以前ここにあった画面全体の`colorMode`はやめた（`getLayerColorMode`で個別に読める）。 */
+  layerCount: number;
+  /** 複数レイヤー（L1-C）: そのうち見えているレイヤーの数。 */
+  visibleLayerCount: number;
   /** M3-8: モバイル最適化の各手段の現在値。GUIを目視できなくても
    *  `npm run tauri dev`のstdoutから確認できるようにする(既存のedlEnabled等と
    *  同じ狙い)。`isMobile`/`pointBudgetMax`は端末プロファイルから決まる値で、
@@ -138,6 +148,41 @@ export interface RenderStats {
   minCenterPriorityWeight: number;
 }
 
+/** `addLayer`に渡すもの。renderer は DataSource を知らない（呼び出し側が cloudId などを閉じ込めた `readNode` を渡す）。 */
+export interface LayerInput {
+  hierarchy: HierarchyNodeInfo[];
+  readNode: (key: string) => Promise<ArrayBuffer>;
+  /** CloudInfo.min / max（標高の範囲と、ダブルクリックで寄る先の切り取りに使う）。 */
+  boundsMin: readonly [number, number, number];
+  boundsMax: readonly [number, number, number];
+  colorMode: ColorMode;
+  visible: boolean;
+}
+
+/** レイヤー1つ分の状態。外には出さない。 */
+interface Layer {
+  /** 呼び出し側が付けた id。 */
+  id: string;
+  /** 内部の通し番号。キャッシュ・ローダーのキーの前置きに使う（layer-key.ts）。 */
+  serial: number;
+  keyPrefix: string;
+  hierarchy: HierarchyNodeInfo[];
+  hierarchyByKey: Map<string, HierarchyNodeInfo>;
+  readNode: (key: string) => Promise<ArrayBuffer>;
+  boundsMin: [number, number, number];
+  boundsMax: [number, number, number];
+  /** ノードの bounds（octree セル）の和集合。カメラ・グリッド用（標高には使わない）。 */
+  sceneBounds: SceneBounds | null;
+  /** 標高の範囲（LAS ヘッダーの実データ範囲から）。 */
+  elevationRange: ValueRange;
+  /** 強度の範囲。ノードが届くたびに広げる。レイヤーごと（計測機が違うと幅が違うため）。 */
+  intensityRange: ValueRange | null;
+  colorMode: ColorMode;
+  visible: boolean;
+  /** このレイヤーの着色設定の uniform。デバイス復帰で作り直すため、無いときは null。 */
+  colorBuffer: GPUBuffer | null;
+}
+
 export class PointCloudRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly camera: OrbitCamera;
@@ -147,7 +192,11 @@ export class PointCloudRenderer {
    *  WebGPUのAPIを直接叩くのはgpu-resources.tsだけにする（ARCHITECTURE.md）。 */
   private readonly gpu: GpuResources;
 
-  private hierarchy: HierarchyNodeInfo[] = [];
+  /** 複数レイヤー（L1-C）: id → レイヤー。Map は挿入順を保つので、これが「レイヤーの並び順」。 */
+  private readonly layers = new Map<string, Layer>();
+  /** 通し番号 → レイヤー。読み込み結果が届いたとき、キーの前置きからレイヤーを引く。 */
+  private readonly layersBySerial = new Map<number, Layer>();
+  private nextLayerSerial = 1;
   private cache: NodeCache;
   private loader: NodeLoader | null = null;
   /** 直近フレームのviewProj。ホイールイベント（フレームの外で起きる）でカーソル位置の
@@ -155,11 +204,6 @@ export class PointCloudRenderer {
   private lastViewProj: Mat4 | null = null;
   /** AN-2: ダブルクリックで寄るときのレイキャスト対象。直近フレームで実際に描いたノード。 */
   private lastDrawn: CachedNode[] = [];
-  private hierarchyByKey = new Map<string, HierarchyNodeInfo>();
-  /** LASヘッダーの実データ範囲（setElevationRangeで受け取る）。未設定ならnull。 */
-  private cloudBounds: { boundsMin: [number, number, number]; boundsMax: [number, number, number] } | null = null;
-  /** AN-2: 「全体を表示」の行き先（setHierarchyで更新）。 */
-  private fitGoal: { target: [number, number, number]; distance: number } | null = null;
 
   /** M3-8: コンストラクタで`defaultRenderSettings()`の`pointBudgetStart`から
    *  設定する（デスクトップは変更前と同じ値、モバイルはdeviceMemoryから算出）。 */
@@ -210,7 +254,7 @@ export class PointCloudRenderer {
   private onGpuError: ((message: string) => void) | null = null;
 
   /** M3(ADR-0013): `pcv://`のノード読み出しが失敗するたびに呼ばれる
-   *  （`NodeLoader`の`onFailed`から。`setDataSource()`参照）。`onGpuError`と
+   *  （`NodeLoader`の`onFailed`から。`addLayer()`のreadNode参照）。`onGpuError`と
    *  同じ形で、呼び出し側が同じ`GpuErrorLog`にsource="node-read"で報告する。 */
   private onNodeLoadError: ((message: string) => void) | null = null;
 
@@ -220,7 +264,7 @@ export class PointCloudRenderer {
   /** 地面のグリッド（M2-0c補強B）。既定はオフ（空と同じく既定で強制しない）。 */
   private gridEnabled = DEFAULT_GRID_ENABLED;
   /** シーンのバウンディングボックスから決める、グリッドの間隔・フェード距離・高さ。
-   *  `setHierarchy()`で点群を開くたびに更新する（固定値にしないため）。 */
+   *  `addLayer()`/`removeLayer()`/`setLayerVisible()`のたびに更新する（固定値にしないため）。 */
   private gridCellSize = 1;
   private gridFadeDistance = 100;
   private gridGroundHeight = 0;
@@ -266,26 +310,13 @@ export class PointCloudRenderer {
   private lastDisplayWidthCss = 1;
   private lastDisplayHeightCss = 1;
 
-  /** M2-2: 着色モード。既定はRGB。RGBを持たないファイルへのフォールバックは
-   *  呼び出し側（`src/state/useCopcViewer.ts`）が`colormap.ts`の
-   *  `resolveColorMode`で行う。ここでは渡された値をそのまま使うだけにする
-   *  （所有者が実装を追えるよう、フォールバックの判断を1箇所に閉じるため）。 */
-  private colorMode: ColorMode = DEFAULT_COLOR_MODE;
-  /** M2-2: 標高の正規化に使うレンジ。**ノードのbounds(octreeセル、立方体)
-   *  ではなく、LASヘッダーの実データ範囲(`CloudInfo.min`/`max`)から決める。**
-   *  `setHierarchy()`が受け取る`HierarchyNodeInfo[]`のboundsMin/boundsMaxを
-   *  誤って使うと、COPCのoctreeが立方体であるためZ範囲が水平方向の広さまで
-   *  引き伸ばされ、標高の色がほぼ一色に潰れる不具合になる
-   *  （実機不具合の詳細は`scene-bounds.ts`ファイル冒頭のコメント、
-   *  TaskSheets/M2-shading-and-ui.md M2-2参照）。呼び出し側`useCopcViewer.ts`が
-   *  `openFile`成功後に`setElevationRange()`でCloudInfoの値を渡す。 */
-  private elevationRange: ValueRange = { min: 0, max: 0 };
-  /** M2-2: 強度の正規化に使うレンジ。標高と違い、開いた時点では分からない
-   *  （`CloudInfo`は強度のレンジを持たない）。ノードが届くたびに
-   *  `computeIntensityRange`でそのノード内のmin/maxを求め、`extendRange`で
-   *  少しずつ広げていく（colormap.tsのコメント参照）。まだ1件もノードが
-   *  届いていない間は`null`（`renderOnce`で`{min:0,max:0}`にフォールバックする）。 */
-  private intensityRange: ValueRange | null = null;
+  // 着色モード・標高の範囲・強度の範囲は、レイヤーごとの`Layer`に持つ（L1-C）。
+  // 元の説明（単一ファイルだった頃）の要点は`Layer`と`addLayer`のコメントに移した:
+  //  - 着色モードのRGB→標高フォールバックは呼び出し側（resolveColorMode）が行い、ここでは
+  //    渡された値をそのまま使う
+  //  - 標高の範囲はノードのbounds（立方体）ではなくLASヘッダーの実データ範囲から決める
+  //    （scene-bounds.ts冒頭参照）
+  //  - 強度の範囲はノードが届くたびに広げる（colormap.tsのextendRange）
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -306,6 +337,12 @@ export class PointCloudRenderer {
     this.pointBudget = deviceProfile.pointBudgetStart;
 
     this.cache = new NodeCache(this.pointBudget * CACHE_BUDGET_MULTIPLIER);
+    // ローダーは1つで全レイヤーを扱う。どのレイヤーの`readNode`を呼ぶかは、キーの前置きで決める。
+    this.loader = new NodeLoader(
+      { readNode: (key) => this.readLayerNode(key) },
+      (key, node) => this.handleNodeLoaded(key, node),
+      (key, error) => this.reportNodeLoadError(key, error),
+    );
     this.gpu = new GpuResources(
       (message) => this.reportGpuError(message),
       () => this.handleDeviceRecovered(),
@@ -356,101 +393,178 @@ export class PointCloudRenderer {
     if (!ray) return;
     const boxes: HierarchyNodeInfo[] = [];
     for (const node of this.lastDrawn) {
-      const info = this.hierarchyByKey.get(node.key);
+      const parsed = parseLayerNodeKey(node.key);
+      const info = parsed ? this.layersBySerial.get(parsed.serial)?.hierarchyByKey.get(parsed.nodeKey) : undefined;
       if (info) boxes.push(info);
     }
-    const hit = pickFlyToPoint(ray, boxes, this.cloudBounds ?? undefined);
+    // 実データの範囲で箱を切る（fly-to.ts）。複数レイヤーのときは見えているレイヤーの和集合。
+    const hit = pickFlyToPoint(ray, boxes, this.visibleCloudBounds() ?? undefined);
     if (!hit) return;
     const goal = flyToGoal(hit, this.camera.distance);
     this.camera.animateTo(goal);
   }
 
-  /** AN-2: 「全体を表示」。点群を開いたときの位置・向きへ、アニメーションで戻る。 */
-  resetView(): void {
-    if (!this.fitGoal) return;
-    this.camera.animateTo({ ...this.fitGoal, yaw: 0, pitch: DEFAULT_PITCH });
-  }
+  // ===== 複数レイヤー（L1-C） =====
+  //
+  // 方針（TaskSheets/L1-multi-layer.md「決めたこと」）:
+  //  - 点予算は全レイヤーで1つを分け合う。ノード選択は見えている全レイヤーのノードを
+  //    同じ優先度（画面上の大きさ）で比べる（node-selection.ts の selectNodesForLayers）
+  //  - キャッシュ・ローダーのキーは "<通し番号>:<ノードキー>" でレイヤーごとに分ける（layer-key.ts）
+  //  - 標高の範囲は見えている全レイヤーの合併、強度の範囲はレイヤーごと
+  //  - 非表示のレイヤーは選択・描画の対象外（ロードも、選ばれないので要求されない）
 
-  setDataSource(dataSource: NodeReader): void {
-    this.loader = new NodeLoader(
-      dataSource,
-      (key, node) => this.handleNodeLoaded(key, node),
-      (key, error) => this.reportNodeLoadError(key, error),
-    );
-  }
-
-  /** octreeのノード一覧をセットする。データ点群を開き直したら呼ぶ。
+  /**
+   * レイヤーを足す。足したら、見えている全レイヤーが入るように視点を合わせる
+   * （遠くのファイルを足したとき、見えないままにならないように）。
+   * 同じ`layerId`が既にあれば、先にそれを`removeLayer`してから足す。
    *
-   *  **標高の正規化レンジはここでは設定しない。** ノードのbounds由来の値
-   *  （このメソッドが使うのは、あくまでカメラ位置・グリッド尺度決めのため）を
-   *  標高に転用すると実機不具合になるため、`setElevationRange()`を別に設け、
-   *  呼び出し側がLASヘッダーの実データ範囲を明示的に渡す設計にした
-   *  （`elevationRange`フィールドのコメント、`scene-bounds.ts`参照）。 */
-  setHierarchy(nodes: HierarchyNodeInfo[]): void {
-    this.hierarchy = nodes;
-    this.hierarchyByKey = new Map(nodes.map((n) => [n.key, n]));
-    this.camera.cancelMotion();
+   * 標高の範囲は、ノードのbounds（octreeセル、立方体でZが水平方向に引き伸ばされる）ではなく、
+   * `boundsMin`/`boundsMax`（LASヘッダーの実データ範囲）から決める
+   * （実機不具合の経緯は`scene-bounds.ts`冒頭のコメント）。
+   */
+  addLayer(layerId: string, input: LayerInput): void {
+    if (this.layers.has(layerId)) this.removeLayer(layerId);
+    const serial = this.nextLayerSerial++;
+    const layer: Layer = {
+      id: layerId,
+      serial,
+      keyPrefix: layerKeyPrefix(serial),
+      hierarchy: input.hierarchy,
+      hierarchyByKey: new Map(input.hierarchy.map((n) => [n.key, n])),
+      readNode: input.readNode,
+      boundsMin: [input.boundsMin[0], input.boundsMin[1], input.boundsMin[2]],
+      boundsMax: [input.boundsMax[0], input.boundsMax[1], input.boundsMax[2]],
+      sceneBounds: computeSceneBounds(input.hierarchy),
+      elevationRange: elevationRangeFromCloudBounds(input.boundsMin, input.boundsMax),
+      intensityRange: null,
+      colorMode: input.colorMode,
+      visible: input.visible,
+      colorBuffer: this.gpu.createColorSettingsBuffer(),
+    };
+    this.layers.set(layerId, layer);
+    this.layersBySerial.set(serial, layer);
 
-    // M2-2: 強度のレンジは実データからノードを読み込むたびに広げていく方式
-    // (colorMode.private.intensityRangeのコメント参照)。新しいファイルを開いたら、
-    // 前のファイルの観測値を引きずらないようリセットする。
-    this.intensityRange = null;
-
-    // カメラの初期位置・グリッドの尺度決めに使うシーンのバウンディングボックス。
-    // **この`bounds`は標高カラーマップには使わない**（ノードのbounds=octreeセルは
-    // 立方体で、Z範囲が水平方向の広さまで引き伸ばされているため。
-    // scene-bounds.tsファイル冒頭のコメント参照）。
-    const bounds = computeSceneBounds(nodes);
-    if (bounds) {
-      this.camera.target = bounds.center;
-      this.camera.distance = bounds.diagonal;
-      this.camera.setSceneScale(bounds.diagonal);
-      this.fitGoal = { target: [bounds.center[0], bounds.center[1], bounds.center[2]], distance: bounds.diagonal };
-
-      // M2-0c補強B: グリッドの間隔・フェード距離・高さをシーンのスケールから
-      // 決め直す（固定値にしないため、タスクシートの要求）。高さは上方向(upAxis)
-      // 成分でのバウンディングボックス底面（点群の一番下）に置く。
-      const upAxis = this.camera.getUpAxis();
-      this.gridGroundHeight = bounds.min[0] * upAxis[0] + bounds.min[1] * upAxis[1] + bounds.min[2] * upAxis[2];
-      this.gridCellSize = niceGridCellSize(bounds.diagonal);
-      this.gridFadeDistance = gridFadeDistance(bounds.diagonal);
+    if (layer.visible) {
+      this.camera.cancelMotion();
+      this.fitCameraToVisibleLayers();
     }
   }
 
   /**
-   * M2-2: 標高カラーマップの正規化レンジを、LASヘッダーの実データ範囲
-   * (`CloudInfo.min`/`max`)から設定する。**`setHierarchy()`のノードbounds
-   * (octreeセル、立方体)は使わないこと。** COPCのoctreeはルートが立方体な
-   * ため、ノードのZ範囲は水平方向の広さまで引き伸ばされており、これを
-   * 標高に使うと実機で「標高が全部紫になる」不具合になる（詳細は
-   * `scene-bounds.ts`ファイル冒頭のコメント、TaskSheets/M2-shading-and-ui.md
-   * M2-2参照）。呼び出し側(`useCopcViewer.ts`)が`openFile`成功直後、
-   * `CloudInfo.min`/`max`をそのまま渡す。
+   * レイヤーを消す。そのレイヤーのノードをGPUバッファごとキャッシュから捨てる。
+   * 読み込み中のノードが後から届いても、通し番号がもう無いので`handleNodeLoaded`が捨てる。
+   * 視点は動かさない（グリッドの高さ・大きさだけ、残りのレイヤーに合わせ直す）。
    */
-  setElevationRange(cloudMin: readonly [number, number, number], cloudMax: readonly [number, number, number]): void {
-    this.elevationRange = elevationRangeFromCloudBounds(cloudMin, cloudMax);
-    // AN-2: ダブルクリックで寄るときに、octreeの立方体の箱を実データの範囲で切るために覚えておく。
-    this.cloudBounds = { boundsMin: [cloudMin[0], cloudMin[1], cloudMin[2]], boundsMax: [cloudMax[0], cloudMax[1], cloudMax[2]] };
+  removeLayer(layerId: string): void {
+    const layer = this.layers.get(layerId);
+    if (!layer) return;
+    this.layers.delete(layerId);
+    this.layersBySerial.delete(layer.serial);
+    this.cache.removeByPrefix(layer.keyPrefix);
+    layer.colorBuffer?.destroy();
+    layer.colorBuffer = null;
+    this.updateGridFromVisibleLayers();
+  }
+
+  /** 表示・非表示。非表示のレイヤーは、ノード選択・読み込み・描画のどれの対象にもならない。視点は動かさない。 */
+  setLayerVisible(layerId: string, visible: boolean): void {
+    const layer = this.layers.get(layerId);
+    if (!layer) return;
+    layer.visible = visible;
+    this.updateGridFromVisibleLayers();
   }
 
   /**
-   * 別のファイルを開いたときに呼ぶ（`useCopcViewer.ts`の`openFile`参照）。
-   * キャッシュをすべて捨てる（GPUバッファの`destroy`込み。`NodeCache.dispose()`
-   * 参照）のに加え、`NodeLoader`も`reset()`する。
-   *
-   * **不具合修正（TaskSheets/M4-import-and-conversion.md）**: 以前はキャッシュだけ
-   * 空にしていたが、`NodeLoader`の`pending`/`inFlight`（前のファイルに対する
-   * ロード待ち・取得中のノード）がそのまま残っていた。`readNode(key)`はキーだけを
-   * 送り、裏側（Tauriの`pcv://`、Webの`Worker`）は「今開いているファイル」に
-   * 対して処理するため、切り替え前に欲しがっていたノードの取得が新しいファイルに
-   * 対して処理され、(1) 存在しないキーで読み出しエラーが出る、(2) 運悪くキーが
-   * 両方のファイルに存在すると前のファイルの点が新しいファイルのキャッシュに
-   * 紛れ込む、という2つの不具合になっていた。`NodeLoader.reset()`で世代を進め、
-   * 古い世代の結果を黙って捨てるようにして直した（`node-loader.ts`参照）。
+   * そのレイヤーの着色モードを変える。RGBを持たないファイルでの`"rgb"`のフォールバックは
+   * ここでは行わない（呼び出し側の`resolveColorMode`が解決した値を渡す前提。判断を1箇所に閉じるため）。
    */
-  resetForNewFile(): void {
-    this.loader?.reset();
-    this.cache.dispose();
+  setLayerColorMode(layerId: string, mode: ColorMode): void {
+    const layer = this.layers.get(layerId);
+    if (layer) layer.colorMode = mode;
+  }
+
+  getLayerColorMode(layerId: string): ColorMode | undefined {
+    return this.layers.get(layerId)?.colorMode;
+  }
+
+  /** AN-2: 「全体を表示」。見えている全レイヤーが入る位置・向きへ、アニメーションで戻る。 */
+  resetView(): void {
+    const bounds = this.visibleSceneBounds();
+    if (!bounds) return;
+    this.camera.animateTo({
+      target: [bounds.center[0], bounds.center[1], bounds.center[2]],
+      distance: bounds.diagonal,
+      yaw: 0,
+      pitch: DEFAULT_PITCH,
+    });
+  }
+
+  private visibleLayers(): Layer[] {
+    const result: Layer[] = [];
+    for (const layer of this.layers.values()) if (layer.visible) result.push(layer);
+    return result;
+  }
+
+  /** 見えているレイヤーの、ノードのbounds（octreeセル）の和集合。カメラ・グリッド用。 */
+  private visibleSceneBounds(): SceneBounds | null {
+    const list: SceneBounds[] = [];
+    for (const layer of this.layers.values()) {
+      if (layer.visible && layer.sceneBounds) list.push(layer.sceneBounds);
+    }
+    return mergeSceneBounds(list);
+  }
+
+  /** 見えているレイヤーの、LASヘッダーの実データ範囲の和集合。ダブルクリックで寄る先の切り取り用。 */
+  private visibleCloudBounds(): { boundsMin: [number, number, number]; boundsMax: [number, number, number] } | null {
+    const visible = this.visibleLayers();
+    if (visible.length === 0) return null;
+    const boundsMin: [number, number, number] = [Infinity, Infinity, Infinity];
+    const boundsMax: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (const layer of visible) {
+      for (let axis = 0; axis < 3; axis++) {
+        boundsMin[axis] = Math.min(boundsMin[axis], layer.boundsMin[axis]);
+        boundsMax[axis] = Math.max(boundsMax[axis], layer.boundsMax[axis]);
+      }
+    }
+    return { boundsMin, boundsMax };
+  }
+
+  /** カメラを見えている全レイヤーが入る位置に合わせ、グリッドも合わせ直す（`addLayer`から）。 */
+  private fitCameraToVisibleLayers(): void {
+    const bounds = this.visibleSceneBounds();
+    if (!bounds) return;
+    this.camera.target = bounds.center;
+    this.camera.distance = bounds.diagonal;
+    this.camera.setSceneScale(bounds.diagonal);
+    this.applyGridBounds(bounds);
+  }
+
+  private updateGridFromVisibleLayers(): void {
+    const bounds = this.visibleSceneBounds();
+    if (bounds) this.applyGridBounds(bounds);
+  }
+
+  /**
+   * M2-0c補強B: グリッドの間隔・フェード距離・高さをシーンのスケールから決め直す
+   * （固定値にしないため、タスクシートの要求）。高さは上方向(upAxis)成分での
+   * バウンディングボックス底面（点群の一番下）に置く。
+   */
+  private applyGridBounds(bounds: SceneBounds): void {
+    const upAxis = this.camera.getUpAxis();
+    this.gridGroundHeight = bounds.min[0] * upAxis[0] + bounds.min[1] * upAxis[1] + bounds.min[2] * upAxis[2];
+    this.gridCellSize = niceGridCellSize(bounds.diagonal);
+    this.gridFadeDistance = gridFadeDistance(bounds.diagonal);
+  }
+
+  /**
+   * ローダーから呼ばれる。"<通し番号>:<ノードキー>" から、そのレイヤーの`readNode`を引いて読む。
+   * レイヤーがもう無ければ`StaleNodeRequestError`にして、ローダーに黙って捨てさせる。
+   */
+  private readLayerNode(key: string): Promise<ArrayBuffer> {
+    const parsed = parseLayerNodeKey(key);
+    const layer = parsed ? this.layersBySerial.get(parsed.serial) : undefined;
+    if (!parsed || !layer) return Promise.reject(new StaleNodeRequestError(key));
+    return layer.readNode(parsed.nodeKey);
   }
 
   /**
@@ -631,20 +745,6 @@ export class PointCloudRenderer {
     return this.autoPointBudgetMax;
   }
 
-  /**
-   * M2-2: 着色モードを切り替える。RGBを持たないファイルでの`"rgb"`の
-   * フォールバックはここでは行わない（呼び出し側`useCopcViewer.ts`の
-   * `resolveColorMode`が既に解決した値を渡してくる前提。理由は
-   * `colorMode`フィールドのコメント参照）。
-   */
-  setColorMode(mode: ColorMode): void {
-    this.colorMode = mode;
-  }
-
-  getColorMode(): ColorMode {
-    return this.colorMode;
-  }
-
   /** 統計（描画点数・ロード中ノード数・fpsなど）が更新されるたびに呼ばれる。 */
   onStatsUpdate(callback: (stats: RenderStats) => void): void {
     this.onStats = callback;
@@ -674,13 +774,22 @@ export class PointCloudRenderer {
    * ことで次のフレームから`selectNodesForFrame`が改めて必要なノードを
    * `wanted`に含め、自然に読み込み直される。
    *
-   * **`resetForNewFile()`とは違い、`loader.reset()`は呼ばない。** デバイス消失は
+   * **レイヤーの入れ替えとは違い、`loader.reset()`は呼ばない。** デバイス消失は
    * 開いているファイルが変わるわけではない（同じファイル・同じ世代のまま）ので、
    * 取得中のノードは無効化する必要が無く、キャッシュだけ空にすれば十分
-   * （ファイル切り替え時の不具合修正、`resetForNewFile()`のコメント参照）。
+   * （ファイル切り替え時の不具合修正、レイヤーの入れ替えのコメント参照）。
    */
   private handleDeviceRecovered(): void {
     this.cache.dispose();
+    // レイヤーの着色設定のバッファも古いデバイスのものなので使えない。
+    // 次に使うとき（`ensureColorBuffer`）に新しいデバイスで作り直す。
+    for (const layer of this.layers.values()) layer.colorBuffer = null;
+  }
+
+  /** レイヤーの着色設定のバッファを返す。無ければ（デバイス復帰の直後など）作る。デバイスが無ければnull。 */
+  private ensureColorBuffer(layer: Layer): GPUBuffer | null {
+    if (!layer.colorBuffer) layer.colorBuffer = this.gpu.createColorSettingsBuffer();
+    return layer.colorBuffer;
   }
 
   /** M3(ADR-0013): ノード読み出し失敗が起きるたびに呼ばれる。`onGpuErrorReported`と同じ形。 */
@@ -695,7 +804,14 @@ export class PointCloudRenderer {
    * （GPUにもReactにも依存しない純粋関数、node-load-error.ts）に任せる。
    */
   private reportNodeLoadError(key: string, error: unknown): void {
-    const message = formatNodeLoadErrorMessage(key, error);
+    // キーは "<通し番号>:<ノードキー>"。メッセージには人が読めるよう レイヤーid/ノードキー にする。
+    const parsed = parseLayerNodeKey(key);
+    const layerId = parsed ? this.layersBySerial.get(parsed.serial)?.id : undefined;
+    // 読み込み中に消されたレイヤーの失敗は、エラーとして報告しない（結果を捨てるのと同じ扱い。
+    // ファイルを開き直したとき、前のファイル宛ての読み出しが失敗してもバナーに出さない）。
+    if (parsed && layerId === undefined) return;
+    const label = parsed && layerId !== undefined ? `${layerId}/${parsed.nodeKey}` : key;
+    const message = formatNodeLoadErrorMessage(label, error);
     console.error(`[renderer] ${message}`);
     this.onNodeLoadError?.(message);
   }
@@ -777,17 +893,23 @@ export class PointCloudRenderer {
 
   private handleNodeLoaded(key: string, node: ParsedNode): void {
     if (this.disposed) return;
-    const cached = this.gpu.createCachedNode(key, node);
+    // 読み込み中に`removeLayer`されたレイヤーのノードは、ここで捨てる。
+    const parsed = parseLayerNodeKey(key);
+    const layer = parsed ? this.layersBySerial.get(parsed.serial) : undefined;
+    if (!layer) return;
+    const colorBuffer = this.ensureColorBuffer(layer);
+    if (!colorBuffer) return;
+    const cached = this.gpu.createCachedNode(key, node, colorBuffer);
     if (!cached) return;
     this.cache.set(cached);
 
-    // M2-2: 強度のレンジを実データから広げていく（colorMode.private.intensityRangeの
-    // コメント、colormap.tsの`extendRange`参照）。ノードが届くたびにそのノード内の
-    // min/maxを求め、既知のレンジをその2値ぶんだけ広げる（狭まることはない）。
+    // M2-2: 強度のレンジを実データから広げていく（colormap.tsの`extendRange`参照）。
+    // ノードが届くたびにそのノード内のmin/maxを求め、既知のレンジをその2値ぶんだけ広げる
+    // （狭まることはない）。複数レイヤー: 計測機が違うと幅が違うので、レイヤーごとに持つ。
     const nodeIntensityRange = computeIntensityRange(node);
     if (nodeIntensityRange) {
-      this.intensityRange = extendRange(this.intensityRange, nodeIntensityRange.min);
-      this.intensityRange = extendRange(this.intensityRange, nodeIntensityRange.max);
+      layer.intensityRange = extendRange(layer.intensityRange, nodeIntensityRange.min);
+      layer.intensityRange = extendRange(layer.intensityRange, nodeIntensityRange.max);
     }
   }
 
@@ -823,8 +945,14 @@ export class PointCloudRenderer {
     this.lastViewProj = viewProj;
     const planes = frustumPlanes(viewProj);
 
-    const selection = selectNodesForFrame(
-      this.hierarchy,
+    // 見えているレイヤーだけを選択の対象にする（非表示のノードは選ばれず、ロードも要求されない）。
+    const visibleLayers = this.visibleLayers();
+    const selectionLayers: SelectionLayer[] = visibleLayers.map((l) => ({
+      keyPrefix: l.keyPrefix,
+      hierarchy: l.hierarchy,
+    }));
+    const selection = selectNodesForLayers(
+      selectionLayers,
       planes,
       viewProj,
       width,
@@ -846,6 +974,22 @@ export class PointCloudRenderer {
       if (node.firstDrawnAtMs === null) node.firstDrawnAtMs = time;
     }
 
+    // 着色の設定はレイヤーごとのバッファに書く。標高の範囲は見えている全レイヤーの合併
+    // （隣り合うタイルを別レイヤーで開いたとき、境目で色がずれないように）、強度の範囲はレイヤーごと。
+    const elevationRange = mergeValueRanges(visibleLayers.map((l) => l.elevationRange));
+    for (const layer of visibleLayers) {
+      const buffer = this.ensureColorBuffer(layer);
+      if (!buffer) continue;
+      // まだ1件もノードが届いていない間の強度の範囲はnull。0..0の縮退レンジを渡せば
+      // gpu-resources.tsのcolorForVertex()側で「レンジ無し→常にt=0」に安全にフォールバックする。
+      this.gpu.writeColorSettings(
+        buffer,
+        layer.colorMode,
+        elevationRange,
+        layer.intensityRange ?? { min: 0, max: 0 },
+      );
+    }
+
     this.gpu.drawFrame(viewProj, width, height, selection.toDraw, {
       nowMs: time,
       fadeEnabled: this.motionEnabled(),
@@ -862,18 +1006,12 @@ export class PointCloudRenderer {
       cameraEye: this.camera.eye(),
       cameraTarget: this.camera.target,
       upAxis: this.camera.getUpAxis(),
-      colorMode: this.colorMode,
-      elevationRange: this.elevationRange,
-      // まだ1件もノードが届いていない間はnull。0..0の縮退レンジを渡せば
-      // gpu-resources.tsのcolorForVertex()側で「レンジ無し→常にt=0」に
-      // 安全にフォールバックする（colormap.tsのnormalizeValueと同じ契約）。
-      intensityRange: this.intensityRange ?? { min: 0, max: 0 },
     });
 
-    this.updateStats(selection.toDraw, time);
+    this.updateStats(selection.toDraw, time, visibleLayers.length);
   }
 
-  private updateStats(drawn: CachedNode[], time: number): void {
+  private updateStats(drawn: CachedNode[], time: number, visibleLayerCount: number): void {
     if (!this.onStats) return;
     if (time - this.lastStatsEmitAt < STATS_INTERVAL_MS) return;
     this.lastStatsEmitAt = time;
@@ -903,7 +1041,8 @@ export class PointCloudRenderer {
       autoPointBudgetEnabled: this.autoPointBudgetEnabled,
       edlEnabled: this.edlEnabled,
       edlStrength: this.edlStrength,
-      colorMode: this.colorMode,
+      layerCount: this.layers.size,
+      visibleLayerCount,
       renderScale: this.renderScale,
       pointShape: this.pointShape,
       isMobile: this.isMobileProfile,

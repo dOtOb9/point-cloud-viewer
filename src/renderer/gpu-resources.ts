@@ -348,12 +348,6 @@ export interface DrawFrameOptions {
   cameraEye: readonly [number, number, number];
   cameraTarget: readonly [number, number, number];
   upAxis: Vec3;
-  /** M2-2: 着色モードと、標高/強度を正規化するための実データレンジ。
-   *  レンジの決め方はcolormap.tsのコメント参照(標高はCloudInfoのバウンディング
-   *  ボックス、強度はノード読み込み時に動的に広げていく)。 */
-  colorMode: ColorMode;
-  elevationRange: ValueRange;
-  intensityRange: ValueRange;
   /** AN-1: 現在時刻(ms、requestAnimationFrameのタイムスタンプ)。ノードごとのフェード係数の計算に使う。 */
   nowMs: number;
   /** AN-1: フェードインを使うか。falseなら全ノードが最初から係数1(設定オフ・reduced-motion)。 */
@@ -391,13 +385,6 @@ export class GpuResources {
   private uniformLayout: GPUBindGroupLayout | null = null;
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
-
-  /** M2-2: 着色モードの設定(mode/elevationRange/intensityRange)。ノードごとではなく
-   *  フレームごとに1つで全ノード共通のため、点群パイプラインのbinding(1)として
-   *  ノードのuniform(binding 0)とは別に持つ。`drawFrame()`が毎フレーム内容を
-   *  書き換える(バッファそのものは作り直さない。既存の各ノードのbindGroupは
-   *  このバッファを固定で参照しているため、作り直すと参照が壊れる)。 */
-  private colorSettingsBuffer: GPUBuffer | null = null;
 
   /** 空の背景（M2-0c）。既定は単色(暗)のままで、"sky"を選んだときだけ描く。 */
   private readonly sky = new SkyBackground();
@@ -585,14 +572,6 @@ export class GpuResources {
       this.pipelineSwapchainRoundFade = buildPointsPipeline("fs_main_round_fade", this.format);
       this.pipelineSwapchainSquareFade = buildPointsPipeline("fs_main_square_fade", this.format);
 
-      // M2-2: 着色設定の共有uniformバッファ。全ノードのbindGroup(binding 1)が
-      // 同じバッファを参照する。内容は`drawFrame()`が毎フレーム`writeBuffer`で
-      // 書き換える(バッファそのものの再生成はしない。既存ノードのbindGroupが
-      // このバッファを固定で参照しているため、作り直すと参照が壊れる)。
-      this.colorSettingsBuffer = device.createBuffer({
-        size: COLOR_SETTINGS_UNIFORM_BYTES,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
     });
 
     await this.initWithErrorScope(device, "空の背景(sky)の初期化", () => {
@@ -711,8 +690,7 @@ export class GpuResources {
       this.pipelineOffscreenSquare &&
       this.pipelineSwapchainRound &&
       this.pipelineSwapchainSquare &&
-      this.depthView &&
-      this.colorSettingsBuffer
+      this.depthView
     );
   }
 
@@ -755,11 +733,44 @@ export class GpuResources {
     this.edl.updateInputTextures(this.device, this.offscreenColorView, this.offscreenDepthView);
   }
 
+  /**
+   * 複数レイヤー（L1-C）: 1レイヤー分の着色設定のuniformバッファを作る。
+   * 着色の設定（モード・標高の範囲・強度の範囲）をレイヤーごとに変えるため、
+   * 以前の「全ノード共有で1つ」をやめてレイヤーごとに持つ。
+   * 他の案（ノード自身のuniformに色の設定を入れる）はWGSLの構造体を変える必要があり、
+   * GPUで確かめられない今は危険なので採らなかった。シェーダーは変えていない。
+   * deviceが無ければnull。
+   */
+  createColorSettingsBuffer(): GPUBuffer | null {
+    if (!this.device) return null;
+    return this.device.createBuffer({
+      size: COLOR_SETTINGS_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  /** レイヤーの着色設定を書き込む。そのフレームの`drawFrame()`より前に呼ぶこと。 */
+  writeColorSettings(
+    buffer: GPUBuffer,
+    colorMode: ColorMode,
+    elevationRange: ValueRange,
+    intensityRange: ValueRange,
+  ): void {
+    if (!this.device) return;
+    const data = new Float32Array(COLOR_SETTINGS_UNIFORM_FLOATS);
+    data[0] = COLOR_MODE_INDEX[colorMode];
+    data[1] = elevationRange.min;
+    data[2] = elevationRange.max;
+    data[3] = intensityRange.min;
+    data[4] = intensityRange.max;
+    this.device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
+  }
+
   /** ノードの点データが届いたときに、GPUバッファ一式（頂点・uniform・bindGroup）を
    *  作って`CachedNode`として返す。device/uniformLayoutがまだ無い（初期化前・
    *  破棄後）場合はnullを返す。キャッシュへ格納するかどうかは呼び出し側の責務。 */
-  createCachedNode(key: string, node: ParsedNode): CachedNode | null {
-    if (!this.device || !this.uniformLayout || !this.colorSettingsBuffer) return null;
+  createCachedNode(key: string, node: ParsedNode, colorSettingsBuffer: GPUBuffer): CachedNode | null {
+    if (!this.device || !this.uniformLayout) return null;
     const device = this.device;
 
     const vertexBuffer = device.createBuffer({
@@ -784,10 +795,10 @@ export class GpuResources {
       layout: this.uniformLayout,
       entries: [
         { binding: 0, resource: { buffer: uniformBuffer } },
-        // M2-2: 着色設定は全ノード共有の1つのバッファ(binding 1)を参照する
-        // (このバッファ自体はGpuResourcesが1つだけ持ち、内容はdrawFrame()が
-        // 毎フレーム書き換える。上のcolorSettingsBufferのコメント参照)。
-        { binding: 1, resource: { buffer: this.colorSettingsBuffer } },
+        // M2-2: 着色設定のバッファ(binding 1)。複数レイヤー対応(L1-C)で、
+        // 「全ノード共有で1つ」から「レイヤーごとに1つ」に変えた。同じレイヤーの
+        // ノードは同じバッファを参照し、内容は`writeColorSettings()`が毎フレーム書き換える。
+        { binding: 1, resource: { buffer: colorSettingsBuffer } },
       ],
     });
 
@@ -834,14 +845,12 @@ export class GpuResources {
     const depthView = this.depthView;
     const offscreenColorView = this.offscreenColorView;
     const offscreenDepthView = this.offscreenDepthView;
-    const colorSettingsBuffer = this.colorSettingsBuffer;
     if (
       !device ||
       !context ||
       !depthView ||
       !offscreenColorView ||
       !offscreenDepthView ||
-      !colorSettingsBuffer ||
       !this.pipelineOffscreenRound ||
       !this.pipelineOffscreenSquare ||
       !this.pipelineSwapchainRound ||
@@ -854,16 +863,8 @@ export class GpuResources {
       return;
     }
 
-    // M2-2: 着色設定は全ノード共通で1フレームに1回だけ書けばよい(ノードごとの
-    // uniform=binding 0とは違い、こちらはbinding 1として全ノードのbindGroupが
-    // 同じバッファを参照している)。
-    const colorSettingsData = new Float32Array(COLOR_SETTINGS_UNIFORM_FLOATS);
-    colorSettingsData[0] = COLOR_MODE_INDEX[options.colorMode];
-    colorSettingsData[1] = options.elevationRange.min;
-    colorSettingsData[2] = options.elevationRange.max;
-    colorSettingsData[3] = options.intensityRange.min;
-    colorSettingsData[4] = options.intensityRange.max;
-    device.queue.writeBuffer(colorSettingsBuffer, 0, colorSettingsData.buffer, colorSettingsData.byteOffset, colorSettingsData.byteLength);
+    // 着色設定はレイヤーごとのバッファ(binding 1)に、呼び出し側が描画の前に
+    // `writeColorSettings()`で書いておく(複数レイヤー対応、L1-C)。ここでは書かない。
 
     const encoder = device.createCommandEncoder();
 
@@ -1129,6 +1130,5 @@ export class GpuResources {
     this.depthTexture?.destroy();
     this.offscreenColorTexture?.destroy();
     this.offscreenDepthTexture?.destroy();
-    this.colorSettingsBuffer?.destroy();
   }
 }

@@ -94,6 +94,16 @@ export interface WantedNode {
   priority: number;
 }
 
+/**
+ * 複数レイヤー（L1-C）: 1つのレイヤー分の入力。`keyPrefix`は、キャッシュとローダーの
+ * キーをレイヤーで分けるための前置き（`layer-key.ts`の`layerKeyPrefix`）。
+ * `cache.get`に渡すキーと、返す`wanted`のキーは `keyPrefix + ノードキー` になる。
+ */
+export interface SelectionLayer {
+  keyPrefix: string;
+  hierarchy: readonly HierarchyNodeInfo[];
+}
+
 export interface NodeSelectionResult {
   toDraw: CachedNode[];
   wanted: WantedNode[];
@@ -128,6 +138,45 @@ export function selectNodesForFrame(
   minCenterPriorityWeight: number = DEFAULT_MIN_CENTER_PRIORITY_WEIGHT,
   minSpacingPixels: number = MIN_NODE_SPACING_PIXELS,
 ): NodeSelectionResult {
+  return selectNodesForLayers(
+    [{ keyPrefix: "", hierarchy }],
+    planes,
+    viewProj,
+    canvasWidth,
+    canvasHeight,
+    pointBudget,
+    cache,
+    centerPriorityStrength,
+    minCenterPriorityWeight,
+    minSpacingPixels,
+  );
+}
+
+/**
+ * 複数レイヤー（L1-C）: 見えている全レイヤーのノードを、**同じ優先度（画面上の大きさ）で
+ * 1つの候補リストに入れて並べ、点予算を1つだけ共有して**選ぶ。レイヤーごとに予算を
+ * 分けると、画面に小さくしか映らないレイヤーにも同じだけ点を割いてしまうため。
+ *
+ * 計算量は1レイヤーのときと同じ考え方のまま「根から子へたどる」ので、全ノードの
+ * 走査にはならない（レイヤーごとに根から降りて、視錐台の外・LOD A で打ち切る）。
+ * 1レイヤー（keyPrefix が空）のときの結果は、上の`selectNodesForFrame`（従来の関数）と同じ。
+ * 優先度が同じときは、レイヤーの並び順 → hierarchy の添字の順に先にする。
+ * 見えていないレイヤーは、呼び出し側が`layers`に入れないことで対象外にする。
+ *
+ * 他の引数の説明は`selectNodesForFrame`のコメントと同じ。
+ */
+export function selectNodesForLayers(
+  layers: readonly SelectionLayer[],
+  planes: Plane[],
+  viewProj: Mat4,
+  canvasWidth: number,
+  canvasHeight: number,
+  pointBudget: number,
+  cache: NodeSelectionCache,
+  centerPriorityStrength: number = 0,
+  minCenterPriorityWeight: number = DEFAULT_MIN_CENTER_PRIORITY_WEIGHT,
+  minSpacingPixels: number = MIN_NODE_SPACING_PIXELS,
+): NodeSelectionResult {
   // 根から子へたどる。次の部分木には降りない（降りても旧実装の結果は変わらないため）。
   //  (1) 視錐台の外のノードの部分木。
   //      子の AABB は親の AABB に含まれる（COPC は親の立方体を8等分する）。視錐台判定は
@@ -140,7 +189,8 @@ export function selectNodesForFrame(
   //      子孫は全員その先祖を持つので、判定は同じになる（点間隔は視錐台と無関係に計算）。
   // 優先度が同じノードの並びを旧実装（hierarchy 順の安定ソート）と同じにするため、
   // 候補には hierarchy の添字を持たせ、同順位は添字の小さい方を先にする。
-  const tree = treeOf(hierarchy);
+  // 複数レイヤー: 添字は全レイヤーを通した番号（レイヤーの順 → hierarchy の添字）にする。
+  // 1レイヤーなら offset=0 で、従来の hierarchy の添字そのまま。
   const candidates: {
     key: string;
     priority: number;
@@ -148,7 +198,13 @@ export function selectNodesForFrame(
     index: number;
   }[] = [];
 
-  const visit = (i: number): void => {
+  const visit = (
+    hierarchy: readonly HierarchyNodeInfo[],
+    tree: HierarchyTree,
+    keyPrefix: string,
+    offset: number,
+    i: number,
+  ): void => {
     const node = hierarchy[i];
     if (!aabbIntersectsFrustum(planes, node.boundsMin, node.boundsMax)) return;
     const error = screenSpaceError(
@@ -169,10 +225,10 @@ export function selectNodesForFrame(
       minCenterPriorityWeight,
     );
     candidates.push({
-      key: node.key,
+      key: keyPrefix + node.key,
       priority: error * weight,
       pointCount: node.pointCount,
-      index: i,
+      index: offset + i,
     });
 
     const kids = tree.children[i];
@@ -187,9 +243,14 @@ export function selectNodesForFrame(
       canvasHeight,
     );
     if (spacing < minSpacingPixels) return;
-    for (const k of kids) visit(k);
+    for (const k of kids) visit(hierarchy, tree, keyPrefix, offset, k);
   };
-  for (const r of tree.roots) visit(r);
+  let offset = 0;
+  for (const layer of layers) {
+    const tree = treeOf(layer.hierarchy);
+    for (const r of tree.roots) visit(layer.hierarchy, tree, layer.keyPrefix, offset, r);
+    offset += layer.hierarchy.length;
+  }
 
   candidates.sort((x, y) => y.priority - x.priority || x.index - y.index);
 

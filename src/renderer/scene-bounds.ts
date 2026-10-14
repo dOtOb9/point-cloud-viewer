@@ -69,6 +69,42 @@ export function computeSceneBounds(nodes: readonly HierarchyNodeInfo[]): SceneBo
 }
 
 /**
+ * 複数レイヤー（L1-C）: 複数のバウンディングボックスの和集合。カメラを全レイヤーが
+ * 入る位置に合わせたり、グリッドの高さ・大きさを決めたりするのに使う。
+ * 空なら`null`。1つだけなら中身は同じ（対角線が0のときの100へのフォールバックも保たれる）。
+ */
+export function mergeSceneBounds(list: readonly SceneBounds[]): SceneBounds | null {
+  if (list.length === 0) return null;
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const b of list) {
+    for (let axis = 0; axis < 3; axis++) {
+      min[axis] = Math.min(min[axis], b.min[axis]);
+      max[axis] = Math.max(max[axis], b.max[axis]);
+    }
+  }
+  const center: [number, number, number] = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+  const diagonal = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 100;
+  return { min, max, center, diagonal };
+}
+
+/**
+ * 複数レイヤー（L1-C）: 標高の色の範囲を、複数レイヤーの範囲の和集合にする。
+ * 隣り合うタイルを別レイヤーで開いたとき、境目で色がずれないようにするため。
+ * 空なら`{min:0,max:0}`（範囲なし。colormap.tsの`normalizeValue`が常にt=0にする）。
+ */
+export function mergeValueRanges(ranges: readonly ValueRange[]): ValueRange {
+  if (ranges.length === 0) return { min: 0, max: 0 };
+  let min = Infinity;
+  let max = -Infinity;
+  for (const r of ranges) {
+    min = Math.min(min, r.min);
+    max = Math.max(max, r.max);
+  }
+  return { min, max };
+}
+
+/**
  * 標高カラーマップ(M2-2)の正規化に使うレンジを、LASヘッダーの実データ範囲
  * (`CloudInfo.min`/`max`のZ成分)から作る。
  *

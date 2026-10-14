@@ -61,6 +61,21 @@ export class NodeCache {
     }
   }
 
+  /**
+   * 複数レイヤー（L1-C）: キーが`prefix`で始まるノード（=1つのレイヤーのノード）を
+   * すべて捨て、GPUバッファも解放する。`removeLayer`から呼ぶ。
+   * キャッシュ全体を一度なめるが、レイヤーを消すときだけなので問題ない。
+   */
+  removeByPrefix(prefix: string): void {
+    for (const [key, entry] of this.entries) {
+      if (!key.startsWith(prefix)) continue;
+      this.entries.delete(key);
+      this.totalPoints -= entry.pointCount;
+      entry.vertexBuffer.destroy();
+      entry.uniformBuffer.destroy();
+    }
+  }
+
   values(): IterableIterator<CachedNode> {
     return this.entries.values();
   }
