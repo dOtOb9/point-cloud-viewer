@@ -17,6 +17,7 @@
 mod alloc_guard;
 mod convert;
 mod dto;
+mod extract;
 mod file_reader;
 mod http_reader;
 mod opfs;
@@ -36,6 +37,8 @@ use web_sys::File;
 
 // M4-6b: Web版の変換(WasmConverter)。`src/datasource/copc.worker.ts`が使う。
 pub use convert::WasmConverter;
+// L2-C: Web版の抽出(点の選択・断面)。`src/datasource/copc.worker.ts`が使う。
+pub use extract::WasmExtractor;
 // M4-6/M4-9追記: Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`が使う。
 pub use pcd_import::WasmPcdConverter;
 

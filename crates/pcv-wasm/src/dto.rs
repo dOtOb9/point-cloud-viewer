@@ -112,6 +112,8 @@ pub struct FeedResultDto {
 pub struct FinishResultDto {
     pub point_count: u64,
     pub stage_timings: ConversionStageBreakdownDto,
+    /// L2-C: エラーログに出す警告(CRSの無いファイルを通した、など)。無ければ空。
+    pub warnings: Vec<String>,
 }
 
 /// M4-12: 変換完了後、所有者に「どこで時間を使っているか」をそのまま

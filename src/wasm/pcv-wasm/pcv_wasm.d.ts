@@ -184,6 +184,24 @@ export class WasmCopcFile {
     totalSize(): number;
 }
 
+export class WasmExtractor {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * 最大`batch_size`点を取り出してspillへ書く。`done`になったら`finish`へ。
+     */
+    feed(batch_size: number): any;
+    /**
+     * octreeを構築してOPFSの出力へ書く。0点ならエラー(何も書かない)。
+     */
+    finish(): any;
+    /**
+     * `file`は元のCOPC、`filter`は`ExtractFilter`のJSON(`src/datasource/tools.ts`の形)。
+     * 一時ファイルのプールと出力ハンドルは変換(`WasmConverter`)と同じもの。
+     */
+    constructor(file: File, filter: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+}
+
 /**
  * Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`の
  * `handlePcdConvertStart`が使う。メソッド構成は`convert.rs`の
@@ -266,6 +284,7 @@ export interface InitOutput {
     readonly __wbg_lazrangedecompressor_free: (a: number, b: number) => void;
     readonly __wbg_wasmconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
+    readonly __wbg_wasmextractor_free: (a: number, b: number) => void;
     readonly __wbg_wasmpcdconverter_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
     readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
@@ -288,6 +307,9 @@ export interface InitOutput {
     readonly wasmcopcfile_openUrl: (a: number, b: number) => [number, number, number];
     readonly wasmcopcfile_readNode: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmcopcfile_totalSize: (a: number) => number;
+    readonly wasmextractor_feed: (a: number, b: number) => [number, number, number];
+    readonly wasmextractor_finish: (a: number) => [number, number, number];
+    readonly wasmextractor_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly wasmpcdconverter_feed: (a: number, b: number) => [number, number, number];
     readonly wasmpcdconverter_finish: (a: number) => [number, number, number];
     readonly wasmpcdconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];

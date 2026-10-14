@@ -301,6 +301,7 @@ dependencies = [
  "copc-core",
  "copc-reader",
  "las",
+ "serde",
  "thiserror 2.0.20",
 ]
 
@@ -310,6 +311,7 @@ version = "0.1.0"
 dependencies = [
  "byteorder",
  "copc-core",
+ "copc-reader",
  "copc-writer",
  "js-sys",
  "las",

@@ -204,18 +204,55 @@ fn check_layout_and_crs_match(
     new_layout: &StreamingLayout,
     current_crs: Crs,
     new_crs: Crs,
-) -> Result<(), String> {
+) -> Result<CrsOutcome, String> {
     if new_layout != current_layout {
         return Err(format!(
             "入力ファイルの点フォーマットが一致しない({new_layout:?} != {current_layout:?})"
         ));
+    }
+    // L2-C: CRSの無いファイルは止めずに通す(警告は呼び出し側が記録する)。
+    // CRSのあるファイル同士の食い違いだけを止める。
+    if new_crs == Crs::Unknown {
+        return Ok(CrsOutcome::NewFileHasNoCrs);
+    }
+    if current_crs == Crs::Unknown {
+        return Ok(CrsOutcome::AdoptNewFileCrs);
     }
     if new_crs != current_crs {
         return Err(format!(
             "入力ファイルのCRSが一致しない({new_crs:?} != {current_crs:?})"
         ));
     }
-    Ok(())
+    Ok(CrsOutcome::Same)
+}
+
+/// L2-C: `check_layout_and_crs_match`の結果(CRSについて呼び出し側がすること)。
+#[derive(Debug, PartialEq, Eq)]
+enum CrsOutcome {
+    /// 何もしない(CRSが一致)。
+    Same,
+    /// 新しいファイルにCRSが無い。通して、警告用に名前を記録する。
+    NewFileHasNoCrs,
+    /// ここまでCRSが無く、新しいファイルが最初のCRS付き。出力のCRSをこのファイルから取る。
+    AdoptNewFileCrs,
+}
+
+/// L2-C: 結合で、CRSの無いファイルを通したときの警告文(デスクトップの
+/// `HeaderSummary::crs_warnings`と同じ本文)。
+fn missing_crs_warnings(names: &[String], result_crs: Crs) -> Vec<String> {
+    let result = if result_crs == Crs::Unknown {
+        "どのファイルにもCRSが無いので、結果にもCRSはありません"
+    } else {
+        "結果のCRSはCRSのあるファイルのものにしました"
+    };
+    names
+        .iter()
+        .map(|name| {
+            format!(
+                "{name}: CRS(座標系)の情報がありません。他のファイルと同じ座標系とみなして結合しました({result})"
+            )
+        })
+        .collect()
 }
 
 /// M4-14: 複数ファイル選択時の事前確認。`file`の**ヘッダーだけ**を読み
@@ -295,6 +332,8 @@ pub struct WasmConverter {
     /// M4-14: これまでに`open_next_file`で開いたファイル数(先頭の1を含む)。
     /// 内訳の「入力ファイル数」表示に使う。
     input_file_count: u64,
+    /// L2-C: CRSの無いまま通したファイルの名前(結合のときだけ警告にする)。
+    missing_crs_names: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -315,6 +354,7 @@ impl WasmConverter {
         // M4-12: 内訳のコピー用テキストに入れるファイルサイズ。`file`は
         // 直後に`FileRangeReader::new`へ所有権が渡るため、先に読んでおく。
         let file_size_bytes = file.size() as u64;
+        let file_name = file.name();
         let stats = Stats::new();
         let source = FileRangeReader::new(file, stats);
         // 読み込みのバッファリング(モジュール冒頭のドキュメント参照):
@@ -352,6 +392,11 @@ impl WasmConverter {
             file_size_bytes,
             crs,
             input_file_count: 1,
+            missing_crs_names: if crs == Crs::Unknown {
+                vec![file_name]
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -388,6 +433,7 @@ impl WasmConverter {
     /// 確認漏れ・不整合があっても、ここで明確なエラーとして止まる)。
     #[wasm_bindgen(js_name = openNextFile)]
     pub fn open_next_file(&mut self, file: File) -> Result<(), JsValue> {
+        let file_name = file.name();
         let stats = Stats::new();
         let source = FileRangeReader::new(file, stats);
         let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
@@ -395,8 +441,17 @@ impl WasmConverter {
 
         let layout = StreamingLayout::from_las_header(reader.header());
         let crs = detect_crs_from_las_header(reader.header());
-        check_layout_and_crs_match(&self.layout, &layout, self.crs, crs)
+        let outcome = check_layout_and_crs_match(&self.layout, &layout, self.crs, crs)
             .map_err(|e| JsValue::from_str(&e))?;
+        match outcome {
+            CrsOutcome::Same => {}
+            CrsOutcome::NewFileHasNoCrs => self.missing_crs_names.push(file_name),
+            CrsOutcome::AdoptNewFileCrs => {
+                // 出力のCRS(WKT)を、最初のCRS付きファイルから取る。
+                self.metadata.wkt_crs = copc_write_metadata_from_source_header(reader.header()).wkt_crs;
+                self.crs = crs;
+            }
+        }
 
         let point_data = las::PointDataBuilder::new()
             .for_header(reader.header())
@@ -555,6 +610,12 @@ impl WasmConverter {
                 Some(self.fs.seq_read_stats()),
                 self.input_file_count,
             ),
+            // 1ファイルだけの変換では、CRSが無いことは警告にしない(結合のときだけ)。
+            warnings: if self.input_file_count > 1 {
+                missing_crs_warnings(&self.missing_crs_names, self.crs)
+            } else {
+                Vec::new()
+            },
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }
@@ -757,6 +818,37 @@ mod tests {
     fn check_layout_and_crs_match_allows_matching_layout_and_unknown_crs() {
         let layout = layout_for_point_format(3);
         assert!(check_layout_and_crs_match(&layout, &layout, Crs::Unknown, Crs::Unknown).is_ok());
+    }
+
+    /// L2-C: CRSの無いファイルは止めずに通す。最初のCRS付きファイルが来たらそのCRSを採る。
+    /// CRSのあるファイル同士の食い違いだけを止める(上のテスト)。
+    #[test]
+    fn check_layout_and_crs_match_passes_missing_crs_and_adopts_first_known() {
+        let layout = layout_for_point_format(3);
+        let known = Crs::from_epsg(6677);
+        assert_eq!(
+            check_layout_and_crs_match(&layout, &layout, known, Crs::Unknown),
+            Ok(CrsOutcome::NewFileHasNoCrs)
+        );
+        assert_eq!(
+            check_layout_and_crs_match(&layout, &layout, Crs::Unknown, known),
+            Ok(CrsOutcome::AdoptNewFileCrs)
+        );
+        assert_eq!(
+            check_layout_and_crs_match(&layout, &layout, known, known),
+            Ok(CrsOutcome::Same)
+        );
+    }
+
+    #[test]
+    fn missing_crs_warnings_name_each_file_and_the_result() {
+        let names = vec!["a.laz".to_string(), "c.laz".to_string()];
+        let w = missing_crs_warnings(&names, Crs::from_epsg(6677));
+        assert_eq!(w.len(), 2);
+        assert!(w[0].starts_with("a.laz: CRS"));
+        assert!(w[1].contains("CRSのあるファイルのもの"));
+        let none = missing_crs_warnings(&names, Crs::Unknown);
+        assert!(none[0].contains("どのファイルにもCRSが無い"));
     }
 
     /// 複数チャンク(LAZの既定チャンクサイズはおよそ5万点)にまたがる

@@ -38,6 +38,7 @@ serde-wasm-bindgen = "0.6"
 # copc-core/las はpcv-coreの読み込み側・pcv-convertのネイティブ変換経路と同じ版
 # (ADR-0003/ADR-0006)なので、依存解決が衝突しない。
 copc-core = "0.9.0"
+copc-reader = "0.9.0"
 las = { version = "0.10", features = ["laz"] }
 # native-fsフィーチャ(既定)を切り、tempfile/memmap2への依存自体を外す
 # (wasm32-unknown-unknownには実行時に使えないため。vendor/copc-writer/PATCH.md参照)。
