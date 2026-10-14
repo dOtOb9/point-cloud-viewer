@@ -380,6 +380,10 @@ pub struct CrsInfoDto {
     pub kind: &'static str,
     /// 読み取りに失敗したときのエラー文言(失敗してもファイルは開ける。ADR-0015)。
     pub error: Option<String>,
+    /// Meters per horizontal coordinate unit (None = unknown; do not convert).
+    pub horizontal_unit_to_meter: Option<f64>,
+    /// Meters per vertical (elevation) unit. May differ from the horizontal one.
+    pub vertical_unit_to_meter: Option<f64>,
 }
 
 impl From<&pcv_core::crs::CrsInfo> for CrsInfoDto {
@@ -389,6 +393,8 @@ impl From<&pcv_core::crs::CrsInfo> for CrsInfoDto {
             name: crs.name.clone(),
             kind: crs.kind.as_str(),
             error: crs.error.clone(),
+            horizontal_unit_to_meter: crs.horizontal_unit_to_meter,
+            vertical_unit_to_meter: crs.vertical_unit_to_meter,
         }
     }
 }

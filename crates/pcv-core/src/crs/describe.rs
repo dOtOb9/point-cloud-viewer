@@ -45,6 +45,12 @@ pub struct CrsInfo {
     pub kind: CrsKind,
     /// 読み取りに失敗したときのエラー文言。成功なら`None`。
     pub error: Option<String>,
+    /// Length of one horizontal coordinate unit in meters (1.0 = meters, 0.3048 = international
+    /// foot, ...). `None` when the unit is unknown; callers must then not convert.
+    pub horizontal_unit_to_meter: Option<f64>,
+    /// Same for the vertical axis (elevation). It can differ from the horizontal unit
+    /// (for example a horizontal foot with a vertical US survey foot).
+    pub vertical_unit_to_meter: Option<f64>,
 }
 
 impl CrsInfo {
@@ -54,6 +60,8 @@ impl CrsInfo {
             name: String::new(),
             kind: CrsKind::None,
             error: None,
+            horizontal_unit_to_meter: None,
+            vertical_unit_to_meter: None,
         }
     }
 
@@ -63,6 +71,8 @@ impl CrsInfo {
             name: String::new(),
             kind: CrsKind::Other,
             error: Some(message),
+            horizontal_unit_to_meter: None,
+            vertical_unit_to_meter: None,
         }
     }
 }
@@ -116,8 +126,80 @@ fn wkt_name(bytes: &[u8]) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Reads the length unit factor of `UNIT["name",factor,...]` that sits directly inside the
+/// element opened by `keyword` (for example `PROJCS[`), not inside a nested element such as
+/// the `GEOGCS[` (whose unit is degrees). WKT1 only; WKT2 (`PROJCRS[`) returns `None`,
+/// which callers treat as "unknown" (no conversion) rather than guessing.
+fn direct_unit_factor(wkt: &str, keyword: &str) -> Option<f64> {
+    let start = wkt.find(keyword)? + keyword.len();
+    let bytes = wkt.as_bytes();
+    let mut depth = 1usize;
+    let mut in_quote = false;
+    let mut i = start;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'"' {
+            in_quote = !in_quote;
+        } else if !in_quote {
+            match c {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return None;
+                    }
+                }
+                b'U' if depth == 1 && i > 0 && bytes[i - 1] == b',' && wkt[i..].starts_with("UNIT[") => {
+                    return parse_unit_factor(&wkt[i + "UNIT[".len()..]);
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parses `"name",factor...` (the text after `UNIT[`).
+fn parse_unit_factor(rest: &str) -> Option<f64> {
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    let after = rest[end + 1..].trim_start_matches(',').trim_start();
+    let number: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
+        .collect();
+    let factor: f64 = number.parse().ok()?;
+    (factor.is_finite() && factor > 0.0).then_some(factor)
+}
+
+/// (horizontal, vertical) unit factors in meters from a WKT1 string.
+fn wkt_units(bytes: &[u8]) -> (Option<f64>, Option<f64>) {
+    let wkt = String::from_utf8_lossy(bytes);
+    (direct_unit_factor(&wkt, "PROJCS["), direct_unit_factor(&wkt, "VERT_CS["))
+}
+
 /// `las::Header`のCRS(WKT優先、なければGeoTIFFキー)を説明にする。
+/// The name/kind come from `describe_names`; the length units are added here.
 pub fn describe_crs_from_las_header(header: &las::Header) -> CrsInfo {
+    let mut info = describe_names(header);
+    let wkt_bytes = header
+        .get_wkt_crs_bytes()
+        .filter(|b| b.iter().any(|c| !c.is_ascii_whitespace() && *c != 0));
+    let (horizontal_wkt, vertical_wkt) = wkt_bytes.map(wkt_units).unwrap_or((None, None));
+    // The systems this app recognizes (JGD plane rectangular, UTM) are metric by definition.
+    let horizontal = match info.kind {
+        CrsKind::PlaneRectangular | CrsKind::Utm => Some(1.0),
+        _ => horizontal_wkt,
+    };
+    info.horizontal_unit_to_meter = horizontal;
+    // Without a vertical CS in the WKT the vertical unit is assumed to equal the horizontal one
+    // (an assumption; it stays None when the horizontal unit is unknown too).
+    info.vertical_unit_to_meter = vertical_wkt.or(horizontal);
+    info
+}
+
+fn describe_names(header: &las::Header) -> CrsInfo {
     // 空のWKT(書き出し側が「CRSなし」を空のVLRで表すことがある)は「無い」と同じ扱い。
     let wkt_bytes = header
         .get_wkt_crs_bytes()
@@ -131,6 +213,8 @@ pub fn describe_crs_from_las_header(header: &las::Header) -> CrsInfo {
                 name,
                 kind,
                 error: None,
+                horizontal_unit_to_meter: None,
+                vertical_unit_to_meter: None,
             },
             None => CrsInfo {
                 epsg,
@@ -139,6 +223,8 @@ pub fn describe_crs_from_las_header(header: &las::Header) -> CrsInfo {
                     .unwrap_or_else(|| "（名前なし）".to_string()),
                 kind: CrsKind::Other,
                 error: None,
+                horizontal_unit_to_meter: None,
+                vertical_unit_to_meter: None,
             },
         };
     }
@@ -152,12 +238,16 @@ pub fn describe_crs_from_las_header(header: &las::Header) -> CrsInfo {
                         name,
                         kind,
                         error: None,
+                        horizontal_unit_to_meter: None,
+                        vertical_unit_to_meter: None,
                     },
                     None => CrsInfo {
                         epsg: Some(epsg),
                         name: format!("EPSG:{epsg}"),
                         kind: CrsKind::Other,
                         error: None,
+                        horizontal_unit_to_meter: None,
+                        vertical_unit_to_meter: None,
                     },
                 }
             }
@@ -167,6 +257,8 @@ pub fn describe_crs_from_las_header(header: &las::Header) -> CrsInfo {
                 name: "地理座標系または未対応の座標系".to_string(),
                 kind: CrsKind::Other,
                 error: None,
+                horizontal_unit_to_meter: None,
+                vertical_unit_to_meter: None,
             },
         },
         Ok(None) => CrsInfo::none(),
@@ -257,6 +349,36 @@ mod tests {
         assert_eq!(info.epsg, None);
         assert_eq!(info.kind, CrsKind::Other);
         assert_eq!(info.name, "Local grid");
+    }
+
+    /// The real autzen WKT: horizontal international foot, vertical US survey foot.
+    const AUTZEN_WKT: &str = "COMPD_CS[\"NAD83 / Oregon GIC Lambert (ft) + NAVD88 height (ftUS)\",PROJCS[\"NAD83 / Oregon GIC Lambert (ft)\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"false_northing\",0],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"2992\"]],VERT_CS[\"NAVD88 height (ftUS)\",VERT_DATUM[\"North American Vertical Datum 1988\",2005,AUTHORITY[\"EPSG\",\"5103\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"6360\"]]]";
+
+    #[test]
+    fn autzen_units_are_foot_horizontal_and_us_survey_foot_vertical() {
+        let info = describe_crs_from_las_header(&header_with_wkt(AUTZEN_WKT));
+        assert_eq!(info.epsg, Some(2992));
+        assert_eq!(info.horizontal_unit_to_meter, Some(0.3048));
+        assert_eq!(info.vertical_unit_to_meter, Some(0.304800609601219));
+    }
+
+    #[test]
+    fn projcs_unit_is_not_confused_with_the_geogcs_degree_unit() {
+        // PROJCS without its own UNIT: the only UNIT is the nested GEOGCS degree, which must be ignored.
+        let wkt = "PROJCS[\"x\",GEOGCS[\"g\",UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"p\"]]";
+        assert_eq!(wkt_units(wkt.as_bytes()), (None, None));
+    }
+
+    #[test]
+    fn recognized_systems_are_metric_and_unknown_stays_unknown() {
+        let jgd = describe_crs_from_las_header(&header_with_wkt(
+            "PROJCS[\"JGD2011 / Japan Plane Rectangular CS IX\",AUTHORITY[\"EPSG\",\"6677\"]]",
+        ));
+        assert_eq!(jgd.horizontal_unit_to_meter, Some(1.0));
+        assert_eq!(jgd.vertical_unit_to_meter, Some(1.0));
+        let unknown = describe_crs_from_las_header(&header_with_wkt("PROJCS[\"Local grid\"]"));
+        assert_eq!(unknown.horizontal_unit_to_meter, None);
+        assert_eq!(unknown.vertical_unit_to_meter, None);
     }
 
     #[test]
