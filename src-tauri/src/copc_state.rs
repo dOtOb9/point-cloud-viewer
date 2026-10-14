@@ -99,12 +99,12 @@
 //! Mutex自体がpoisonされることは無い（poisonされるのは、ロックを保持した
 //! ままpanicした場合だけ）。
 
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use pcv_core::{CloudInfo, CopcFile, HierarchyNode, NodeKey};
