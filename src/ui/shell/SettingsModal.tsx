@@ -8,6 +8,7 @@ import {
   Monitor,
   Palette,
   RefreshCw,
+  Ruler,
   Zap,
   X,
   type LucideIcon,
@@ -24,6 +25,7 @@ import {
   AnimationDialog,
   BackgroundDialog,
   EdlDialog,
+  UnitDialog,
   LoadPriorityDialog,
   PointBudgetDialog,
   RenderScaleDialog,
@@ -53,6 +55,7 @@ const PAGE_BUTTONS: Record<SettingsPageId, { icon: LucideIcon; label: string }> 
   storage: { icon: HardDrive, label: "保存領域" },
   loadPriority: { icon: Target, label: "読み込み優先" },
   edl: { icon: Sun, label: "陰影（EDL）" },
+  unit: { icon: Ruler, label: "単位" },
 };
 
 /**
@@ -123,6 +126,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
       {pages.includes("storage") && <StorageDialog {...pageProps("storage")} viewer={viewer} />}
       <LoadPriorityDialog {...pageProps("loadPriority")} viewer={viewer} />
       <EdlDialog {...pageProps("edl")} viewer={viewer} />
+      <UnitDialog {...pageProps("unit")} />
     </>
   );
 }

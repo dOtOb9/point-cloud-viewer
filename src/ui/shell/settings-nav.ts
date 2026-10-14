@@ -11,7 +11,8 @@ export type SettingsPageId =
   | "background"
   | "pointBudget"
   | "loadPriority"
-  | "edl";
+  | "edl"
+  | "unit";
 
 /** "list" は設定の一覧(ボタンの集合)。それ以外は専用ダイアログ。 */
 export type SettingsPage = "list" | SettingsPageId;
@@ -36,7 +37,7 @@ export interface SettingsAvailability {
 
 /** 一覧に出す項目(出す順)。条件を満たさない項目は含めない(ボタンを出さない)。 */
 export function visibleSettingsPages(a: SettingsAvailability): SettingsPageId[] {
-  const pages: SettingsPageId[] = ["theme", "animation", "background", "pointBudget", "loadPriority", "edl", "renderScale", "update"];
+  const pages: SettingsPageId[] = ["theme", "animation", "background", "pointBudget", "loadPriority", "edl", "unit", "renderScale", "update"];
   // 一時フォルダはデスクトップだけ(Android・Webでは選べない。従来と同じ条件)。
   if (!a.isBrowser && a.supportsCustomTempDir) pages.push("tempDir");
   // ブラウザの保存領域(OPFS)はWebだけ。

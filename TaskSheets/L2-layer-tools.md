@@ -210,9 +210,18 @@ L2-A はボタン列の部品（`LayerActions.tsx`）を作り、「移動」は
 - **Click vs drag**: remember the canvas pointerdown position and treat it as a click only if it moved 5 px or less by `click`. Canvas events are not stopped
   (we only listen alongside orbit-camera.ts). Only `dblclick` is stopped (in the capture phase, so closing an area does not also trigger the fly-to).
   A double click delivers two clicks, so the second (`detail >= 2`) is ignored. Picking is asynchronous, so work is chained on a single Promise and runs in order.
-- **Units**: the CRS has no unit field, so decide from the name (`lengthUnitLabel`). Name contains ft/feet/foot/US survey -> "ft"; Japanese plane rectangular and UTM -> "m";
-  unknown, no CRS or unreadable -> "座標の単位" (never assert m, because a foot-based file would be 30% off without anyone noticing). Area is "ft²" or "座標の単位²".
-  A measurement layer inherits the CRS of the source point-cloud layer (the selection if it is a point cloud, otherwise the first point-cloud layer).
+- **Units (revised 2026-10-15, owner request: always show meters by default)**. The earlier guess from the CRS name was replaced. Rust now reads the real unit factors from the WKT
+  (`crates/pcv-core/src/crs/describe.rs`: `horizontal_unit_to_meter` from the `UNIT[...]` directly inside `PROJCS[`, ignoring the GEOGCS degree unit; `vertical_unit_to_meter` from `VERT_CS[`),
+  carried in `CrsInfo` and both DTOs (`CrsInfoDto`, snake_case) to `CrsInfo.horizontalUnitToMeter` / `verticalUnitToMeter` in TypeScript. Recognized systems (JGD plane rectangular, UTM) are metric by definition (1.0).
+  **Horizontal and vertical units can differ**: the real autzen WKT has horizontal international foot 0.3048 and vertical US survey foot 0.304800609601219 (tested with that exact WKT). So each quantity is
+  converted with the factor of its axis: horizontal distance, area and perimeter with the horizontal factor, height with the vertical factor, and the 3D distance as hypot of the two converted parts (`units.ts`).
+  If the WKT has no vertical CS the vertical unit is assumed equal to the horizontal one (an assumption, recorded here). WKT2 (`PROJCRS[`) and GeoTIFF-key-only files give no factor (unknown), because guessing would be worse.
+  Unknown factor: never converted; the raw number is shown with "座標の単位（m かどうか不明）".
+  A measurement layer inherits the CRS (so the factors) of the source point-cloud layer (the selection if it is a point cloud, otherwise the first point-cloud layer).
+- **Display unit setting**: a "単位" button in the settings list opens a page with radios "メートル" (default) and "フィート" (international foot, exactly 0.3048 m). It is stored in localStorage
+  (every read and write in try/catch) by a tiny module-level store (`useDisplayUnit.ts`, `useSyncExternalStore`) so the settings page, the measurement overlay and the layer info read it without prop threading.
+  It switches the measurement results and the bounding box in the layer info (coordinates are converted from the file unit to meters, then to the chosen unit; x/y use the horizontal factor and z the vertical one).
+  Conversion and formatting are pure functions with unit tests (`units.ts`, `units.test.ts`). The page footer is only "戻る" (L2-A rule). wasm was regenerated for the new DTO fields.
 - The layer kind is expressed by `ViewerLayer.measurement?` (measurement if present) rather than a `kind` enum, because L2-A and L2-B touch the same type and a new required field would conflict.
 
 ### Files touched
@@ -226,7 +235,10 @@ Changed: `src/renderer/gpu-resources.ts` (one line for the depth texture usage, 
 - `npx tsc --noEmit`, `npm run lint` and `npx vitest run` pass (counts are in the report).
 - Real GPU: headed Edge (NVIDIA, adapter vendor=nvidia / lovelace, not SwiftShader), vite dev server, opened `autzen-classified.copc.laz`, and measured one distance, one height and one area
   with EDL on and off. The results were identical (distance 3,537.98 ft, horizontal 3,537.97 ft, height difference 7.85 ft; height 20.19 ft; area 2,810,323 ft^2, perimeter 7,222 ft).
-  The elevations of the area vertices are 462 to 588 (inside the data range 406 to 615). Clicking the background shows "点がありません". Esc ends measuring.
+  After the unit change (default meters): distance 1,078.38 m (horizontal 1,078.37 m, height difference 2.39 m), height 6.15 m, area 261,087.58 m², perimeter 2,201.33 m; the layer-info bounding box
+  became min=[193,724.11, 258,739.28, 123.79] / max=[194,768.34, 260,158.28, 187.53] m (width 1,044.2 m = 3,426 ft). Switching the setting to feet gave the earlier ft values (3,537.98 ft, 20.19 ft,
+  2,810,323.35 ft²; bounding box back to 635,577.79 ... 615.26 ft), and back to meters restored the m values (screenshots `l2d-units-meter.png`, `l2d-units-foot.png`).
+  The elevations of the area vertices are 462 to 588 ft (inside the data range 406 to 615 ft). Clicking the background shows "点がありません". Esc ends measuring.
   The measurement layer checkbox toggles visibility (the label disappears) and the context-menu delete removes it from the list. Screenshots are `l2d-*.png` in the scratchpad.
 - Whether the values are "correct" was judged by eye; they were not compared with surveyed ground values. Verified only that distances and areas follow the formulas from the picked positions (unit tests) and that elevations are in range.
 

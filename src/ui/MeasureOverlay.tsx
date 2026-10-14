@@ -4,13 +4,15 @@ import type { MeasureToolState } from "../state/useMeasureTool";
 import { isMeasureLayer } from "../state/layers";
 import {
   labelAnchor,
-  lengthUnitLabel,
+
   measurementLabelLines,
   measurementSegments,
   MEASURE_KIND_NAME,
   type Measurement,
 } from "../state/measure";
 import { projectPoint, projectSegment } from "../renderer/screen-project";
+import { lengthUnitsFor, type LengthUnits } from "../state/units";
+import { useDisplayUnit } from "../state/useDisplayUnit";
 
 // L2-D: an SVG laid over the 3D view that draws measurement lines, vertices and labels.
 //
@@ -65,14 +67,14 @@ function Label({ lines, x, y }: { lines: string[]; x: number; y: number }) {
 
 function MeasurementShape({
   measurement,
-  unit,
+  units,
   frame,
   selected,
   closed,
   withLabel,
 }: {
   measurement: Measurement;
-  unit: string;
+  units: LengthUnits;
   frame: Frame;
   selected: boolean;
   closed: boolean;
@@ -101,7 +103,7 @@ function MeasurementShape({
     return s ? <circle key={i} cx={s.x} cy={s.y} r={4} fill={stroke} stroke="#000" strokeWidth={1.5} /> : null;
   });
   const anchor = withLabel ? projectPoint(frame.viewProj, labelAnchor(measurement), frame.width, frame.height) : null;
-  const text = withLabel ? measurementLabelLines(measurement, unit) : [];
+  const text = withLabel ? measurementLabelLines(measurement, units) : [];
   return (
     <g>
       {lines}
@@ -164,6 +166,7 @@ export function MeasureOverlay({
   const active = measureLayers.length > 0 || measure.mode !== null;
   const [frame, setFrame] = useState<Frame | null>(null);
   const getViewSnapshot = viewer.getViewSnapshot;
+  const [displayUnit] = useDisplayUnit();
 
   // Only while a measurement is on screen, read viewProj every frame. Update state only when it changed.
   useEffect(() => {
@@ -185,7 +188,7 @@ export function MeasureOverlay({
   if (!active || !frame) return null;
 
   const draft: Measurement | null = measure.mode !== null && measure.points.length > 0 ? { kind: measure.mode, points: [...measure.points], up: frame.up } : null;
-  const draftUnit = lengthUnitLabel((viewer.selectedLayer ?? viewer.layers[0])?.info.crs);
+  const draftUnits = lengthUnitsFor((viewer.selectedLayer ?? viewer.layers[0])?.info.crs, displayUnit);
 
   return (
     <svg
@@ -199,7 +202,7 @@ export function MeasureOverlay({
           <MeasurementShape
             key={layer.id}
             measurement={layer.measurement}
-            unit={lengthUnitLabel(layer.info.crs)}
+            units={lengthUnitsFor(layer.info.crs, displayUnit)}
             frame={frame}
             selected={layer.id === viewer.selectedLayerId}
             closed
@@ -207,7 +210,7 @@ export function MeasureOverlay({
           />
         ) : null,
       )}
-      {draft && <MeasurementShape measurement={draft} unit={draftUnit} frame={frame} selected={false} closed={false} withLabel={false} />}
+      {draft && <MeasurementShape measurement={draft} units={draftUnits} frame={frame} selected={false} closed={false} withLabel={false} />}
     </svg>
   );
 }

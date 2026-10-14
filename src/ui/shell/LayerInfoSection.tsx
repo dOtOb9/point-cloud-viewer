@@ -1,11 +1,10 @@
 import { useState } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
+import { coordinateUnitLabel, formatCoordinate, lengthUnitsFor } from "../../state/units";
+import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { formatCrsLong } from "./crs-format";
 
 // 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
-function fmt3(v: readonly [number, number, number]): string {
-  return `[${v.map((x) => x.toFixed(2)).join(", ")}]`;
-}
 
 /**
  * M4-12(`TaskSheets/M4-import-and-conversion.md`): 変換完了後、段階ごとの
@@ -59,6 +58,9 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
   // 選んでいるときだけ出る（変換直後はそのレイヤーが選択になる）。
   const layer = viewer.selectedLayer;
   const cloudInfo = layer?.info ?? null;
+  // L2-D: the bounding box is shown in the chosen display unit (converted from the file unit).
+  const [displayUnit] = useDisplayUnit();
+  const units = lengthUnitsFor(cloudInfo?.crs, displayUnit);
   return (
     <div className="flex flex-col gap-3 pl-[11px]">
       <div className="flex flex-col gap-0.5 text-xs">
@@ -78,7 +80,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
           <span className="opacity-60">バウンディングボックス: </span>
           {cloudInfo ? (
             <span className="font-mono">
-              min={fmt3(cloudInfo.min)} / max={fmt3(cloudInfo.max)}
+              min={formatCoordinate(cloudInfo.min, units)} / max={formatCoordinate(cloudInfo.max, units)} {coordinateUnitLabel(units)}
             </span>
           ) : (
             "―"

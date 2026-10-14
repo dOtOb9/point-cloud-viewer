@@ -12,6 +12,10 @@ export interface CrsInfo {
   name: string;
   kind: "plane-rectangular" | "utm" | "other" | "none";
   error?: string;
+  /** Meters per horizontal coordinate unit (1 = meters, 0.3048 = international foot). Absent = unknown: do not convert. */
+  horizontalUnitToMeter?: number;
+  /** Meters per vertical (elevation) unit. May differ from the horizontal one. Absent = unknown. */
+  verticalUnitToMeter?: number;
 }
 
 /** 点群全体のサマリ（M1-1の `pcv_core::CloudInfo` に対応）。 */

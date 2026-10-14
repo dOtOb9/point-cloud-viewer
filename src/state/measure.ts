@@ -7,7 +7,7 @@
 // "Horizontal" and "vertical" follow the camera's up axis (`up`, default Z). This lets data
 // whose up is not Z (PLY/PCD) be measured along the viewed up/down (same idea as renderer/up-axis.ts).
 
-import type { CrsInfo } from "../datasource/DataSource";
+import { formatArea, formatDistance3d, formatLength, type LengthUnits } from "./units";
 import { horizontalBasis } from "../renderer/up-axis";
 
 export type Vec3 = readonly [number, number, number];
@@ -97,49 +97,31 @@ export function polygonStats(points: readonly Vec3[], up: Vec3): PolygonStats {
   return { area: Math.abs(twiceArea) / 2, perimeter };
 }
 
-// ---- Units ----
+// ---- Labels ----
 
 /**
- * Display name of the length unit from the CRS. The CRS has no unit field, so decide from the name:
- *  - name contains ft / feet / foot / US survey -> "ft"
- *  - Japanese plane rectangular and UTM -> m (by definition)
- *  - anything else or unknown -> "座標の単位" (coordinate unit; never assert m)
- * Writing "m" by guess would hide a 30% error for foot-based files.
+ * The measurement result as label lines (shown top to bottom), in the display unit of `units`
+ * (meters by default). The raw numbers are in file units; each quantity is converted with the
+ * factor of its axis (horizontal quantities with the horizontal factor, vertical ones with the
+ * vertical factor; they can differ). An unknown factor leaves the number unconverted and
+ * annotated (see units.ts).
  */
-export function lengthUnitLabel(crs: CrsInfo | null | undefined): string {
-  if (!crs || crs.error || crs.kind === "none") return "座標の単位";
-  if (/\b(ft|feet|foot)\b|ftUS|us[ -]?survey/i.test(crs.name)) return "ft";
-  if (crs.kind === "plane-rectangular" || crs.kind === "utm") return "m";
-  return "座標の単位";
-}
-
-// ---- Labels and lines ----
-
-function fmt(value: number, digits = 2): string {
-  return value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-
-/** The area unit is the square of the length unit ("座標の単位²" when the unit is unknown). */
-function areaUnit(unit: string): string {
-  return `${unit}²`;
-}
-
-/** The measurement result as label lines (shown top to bottom). */
-export function measurementLabelLines(m: Measurement, unit: string): string[] {
+export function measurementLabelLines(m: Measurement, units: LengthUnits): string[] {
+  const { horizontalToMeter: h, verticalToMeter: v, display } = units;
   if (m.kind === "distance" && m.points.length >= 2) {
     const s = distanceStats(m.points[0], m.points[1], m.up);
     return [
-      `距離 ${fmt(s.distance)} ${unit}`,
-      `水平 ${fmt(s.horizontal)} ${unit} / 高さ差 ${fmt(Math.abs(s.vertical))} ${unit}`,
+      `距離 ${formatDistance3d(s.horizontal, s.vertical, units)}`,
+      `水平 ${formatLength(s.horizontal, h, display)} / 高さ差 ${formatLength(Math.abs(s.vertical), v, display)}`,
     ];
   }
   if (m.kind === "height" && m.points.length >= 2) {
     const s = distanceStats(m.points[0], m.points[1], m.up);
-    return [`高さ ${fmt(Math.abs(s.vertical))} ${unit}`];
+    return [`高さ ${formatLength(Math.abs(s.vertical), v, display)}`];
   }
   if (m.kind === "area" && m.points.length >= 3) {
     const s = polygonStats(m.points, m.up);
-    return [`面積 ${fmt(s.area)} ${areaUnit(unit)}`, `周長 ${fmt(s.perimeter)} ${unit}`];
+    return [`面積 ${formatArea(s.area, h, display)}`, `周長 ${formatLength(s.perimeter, h, display)}`];
   }
   return [];
 }

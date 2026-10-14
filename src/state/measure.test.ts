@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   distanceStats,
   labelAnchor,
-  lengthUnitLabel,
   measurementLabelLines,
   measurementSegments,
   pointsBounds,
@@ -10,8 +9,11 @@ import {
   type Measurement,
   type Vec3,
 } from "./measure";
+import type { LengthUnits } from "./units";
 
 const UP: Vec3 = [0, 0, 1];
+const M: LengthUnits = { horizontalToMeter: 1, verticalToMeter: 1, display: "meter" };
+const UNKNOWN: LengthUnits = { horizontalToMeter: null, verticalToMeter: null, display: "meter" };
 const BASE: Vec3 = [637000, 850000, 500];
 const at = (dx: number, dy: number, dz: number): Vec3 => [BASE[0] + dx, BASE[1] + dy, BASE[2] + dz];
 
@@ -60,21 +62,20 @@ describe("polygonStats", () => {
   });
 });
 
-describe("lengthUnitLabel", () => {
-  const crs = (name: string, kind: "plane-rectangular" | "utm" | "other" | "none", extra = {}) => ({ name, kind, ...extra });
-  it("名前にフィートがあれば ft", () => {
-    expect(lengthUnitLabel(crs("NAD83 / Oregon GIC Lambert (ft)", "other"))).toBe("ft");
-    expect(lengthUnitLabel(crs("NAD83 / UTM zone 10N (US survey feet)", "utm"))).toBe("ft");
+describe("units in labels (autzen: horizontal foot, vertical US survey foot)", () => {
+  const autzen: LengthUnits = { horizontalToMeter: 0.3048, verticalToMeter: 0.304800609601219, display: "meter" };
+  const dist: Measurement = { kind: "distance", points: [at(0, 0, 0), at(3000, 4000, 100)], up: UP };
+  it("converts horizontal and vertical with their own factors", () => {
+    const horizontal = 5000 * 0.3048;
+    const vertical = 100 * 0.304800609601219;
+    const lines = measurementLabelLines(dist, autzen);
+    expect(lines[0]).toBe(`距離 ${Math.hypot(horizontal, vertical).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} m`);
+    expect(lines[1]).toContain("水平 1,524.00 m");
+    expect(lines[1]).toContain("高さ差 30.48 m");
   });
-  it("平面直角・UTM は m", () => {
-    expect(lengthUnitLabel(crs("JGD2011 / 平面直角座標系 第IX系", "plane-rectangular"))).toBe("m");
-    expect(lengthUnitLabel(crs("WGS 84 / UTM zone 54N", "utm"))).toBe("m");
-  });
-  it("分からない・CRS なし・読めなかったら「座標の単位」", () => {
-    expect(lengthUnitLabel(crs("something", "other"))).toBe("座標の単位");
-    expect(lengthUnitLabel(crs("", "none"))).toBe("座標の単位");
-    expect(lengthUnitLabel(crs("x", "utm", { error: "bad" }))).toBe("座標の単位");
-    expect(lengthUnitLabel(null)).toBe("座標の単位");
+  it("shows feet when chosen, unconverted-with-note when unknown", () => {
+    expect(measurementLabelLines(dist, { ...autzen, display: "foot" })[1]).toContain("水平 5,000.00 ft");
+    expect(measurementLabelLines(dist, UNKNOWN)[0]).toContain("座標の単位（m かどうか不明）");
   });
 });
 
@@ -84,17 +85,17 @@ describe("ラベル・線", () => {
   const area: Measurement = { kind: "area", points: [at(0, 0, 0), at(10, 0, 0), at(10, 20, 0), at(0, 20, 0)], up: UP };
 
   it("距離のラベルは距離・水平・高さ差を含む", () => {
-    expect(measurementLabelLines(dist, "m")).toEqual(["距離 13.00 m", "水平 5.00 m / 高さ差 12.00 m"]);
+    expect(measurementLabelLines(dist, M)).toEqual(["距離 13.00 m", "水平 5.00 m / 高さ差 12.00 m"]);
   });
   it("高さのラベルは鉛直差の絶対値", () => {
-    expect(measurementLabelLines(height, "ft")).toEqual(["高さ 12.00 ft"]);
+    expect(measurementLabelLines(height, { ...M, display: "foot" })).toEqual(["高さ 39.37 ft"]);
   });
   it("面積のラベルは単位の二乗と周長", () => {
-    expect(measurementLabelLines(area, "m")).toEqual(["面積 200.00 m²", "周長 60.00 m"]);
-    expect(measurementLabelLines(area, "座標の単位")[0]).toBe("面積 200.00 座標の単位²");
+    expect(measurementLabelLines(area, M)).toEqual(["面積 200.00 m²", "周長 60.00 m"]);
+    expect(measurementLabelLines(area, UNKNOWN)[0]).toBe("面積 200.00 座標の単位（m かどうか不明）²");
   });
   it("点が足りなければラベル無し", () => {
-    expect(measurementLabelLines({ kind: "area", points: [BASE, BASE], up: UP }, "m")).toEqual([]);
+    expect(measurementLabelLines({ kind: "area", points: [BASE, BASE], up: UP }, M)).toEqual([]);
   });
   it("線: 距離は1本、高さは鉛直の実線+水平の破線、面積は閉じる辺つき", () => {
     expect(measurementSegments(dist)).toHaveLength(1);

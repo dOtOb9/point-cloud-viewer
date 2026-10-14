@@ -36,6 +36,24 @@ describe("toCloudInfo", () => {
     expect(fromWeb.crs).toEqual(fromTauri.crs);
   });
 
+  it("length unit factors: kept when present, absent (not 0 or null) when unknown", () => {
+    const base = { point_count: 1, min: [0, 0, 0], max: [1, 1, 1], scale: [1, 1, 1], offset: [0, 0, 0], has_color: false } as const;
+    const known = toCloudInfo({
+      ...base,
+      min: [0, 0, 0], max: [1, 1, 1], scale: [1, 1, 1], offset: [0, 0, 0],
+      crs: { name: "x", kind: "other", horizontal_unit_to_meter: 0.3048, vertical_unit_to_meter: 0.304800609601219 },
+    });
+    expect(known.crs.horizontalUnitToMeter).toBe(0.3048);
+    expect(known.crs.verticalUnitToMeter).toBe(0.304800609601219);
+    const unknown = toCloudInfo({
+      ...base,
+      min: [0, 0, 0], max: [1, 1, 1], scale: [1, 1, 1], offset: [0, 0, 0],
+      crs: { name: "x", kind: "other", horizontal_unit_to_meter: null },
+    });
+    expect("horizontalUnitToMeter" in unknown.crs).toBe(false);
+    expect("verticalUnitToMeter" in unknown.crs).toBe(false);
+  });
+
   it("読み取りエラーはそのまま保持する", () => {
     const base = { point_count: 1, min: [0, 0, 0], max: [1, 1, 1], scale: [1, 1, 1], offset: [0, 0, 0], has_color: false } as const;
     const info = toCloudInfo({ ...base, min: [0, 0, 0], max: [1, 1, 1], scale: [1, 1, 1], offset: [0, 0, 0], crs: { name: "", kind: "other", error: "VLRを読めなかった" } });

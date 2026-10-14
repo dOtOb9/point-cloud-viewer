@@ -12,6 +12,9 @@ describe("settingsNavReducer", () => {
 });
 
 describe("visibleSettingsPages", () => {
+  it("単位の項目が出る", () => {
+    expect(visibleSettingsPages({ isBrowser: false, supportsCustomTempDir: true })).toContain("unit");
+  });
   it("診断は出さず、読み込み優先と陰影(EDL)を出す", () => {
     const p = visibleSettingsPages({ isBrowser: false, supportsCustomTempDir: true });
     expect(p).not.toContain("diagnostics" as never);

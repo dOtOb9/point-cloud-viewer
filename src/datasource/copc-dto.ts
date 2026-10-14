@@ -15,6 +15,8 @@ export interface CrsInfoDto {
   name: string;
   kind: CrsInfo["kind"];
   error?: string | null;
+  horizontal_unit_to_meter?: number | null;
+  vertical_unit_to_meter?: number | null;
 }
 
 export interface CloudInfoDto {
@@ -39,6 +41,8 @@ export function toCrsInfo(dto: CrsInfoDto): CrsInfo {
   const crs: CrsInfo = { name: dto.name, kind: dto.kind };
   if (dto.epsg !== null && dto.epsg !== undefined) crs.epsg = dto.epsg;
   if (dto.error !== null && dto.error !== undefined) crs.error = dto.error;
+  if (dto.horizontal_unit_to_meter !== null && dto.horizontal_unit_to_meter !== undefined) crs.horizontalUnitToMeter = dto.horizontal_unit_to_meter;
+  if (dto.vertical_unit_to_meter !== null && dto.vertical_unit_to_meter !== undefined) crs.verticalUnitToMeter = dto.vertical_unit_to_meter;
   return crs;
 }
 
