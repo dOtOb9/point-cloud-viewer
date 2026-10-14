@@ -43,6 +43,7 @@ import {
 } from "./motion-setting";
 import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
 import type { ColorMode } from "../renderer/colormap";
+import { DEFAULT_POINT_SIZE_PX } from "../renderer/layer-focus";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "../renderer/device-profile";
 import {
   EMPTY_LAYERS,
@@ -53,6 +54,8 @@ import {
   resolveLayerColorMode,
   selectLayerInState,
   setLayerColorModeInList,
+  setLayerPointShapeInList,
+  setLayerPointSizeInList,
   setLayerVisibleInList,
   type LayerDownload,
   type LayersState,
@@ -186,6 +189,12 @@ export interface CopcViewerState {
   setLayerVisible: (id: string, visible: boolean) => void;
   /** そのレイヤーの着色を変える。RGB を持たないレイヤーで "rgb" を選んだら標高に落ちる。 */
   setLayerColorMode: (id: string, mode: ColorMode) => void;
+  /** L2-B: そのレイヤーの点の形（丸/四角）。 */
+  setLayerPointShape: (id: string, shape: PointShape) => void;
+  /** L2-B: そのレイヤーの点の大きさ（直径px、1〜32に丸める）。 */
+  setLayerPointSize: (id: string, px: number) => void;
+  /** L2-B: そのレイヤーへカメラを移す（アニメーション無効なら即時）。 */
+  focusLayer: (id: string) => void;
   /** レイヤーを消す（renderer から外し、DataSource のファイルも閉じる）。 */
   removeLayer: (id: string) => void;
   pointBudget: number;
@@ -856,6 +865,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         boundsMax: opened.info.max,
         colorMode,
         visible: true,
+        pointShape: deviceProfileDefaults.pointShape,
+        pointSizePx: DEFAULT_POINT_SIZE_PX,
       });
       // レイヤー欄に出す名前: 変換結果ならその名前、Tauri版のパス・Web版のURLは最後の区切り以降、
       // 選択したFileはそのままname。
@@ -868,6 +879,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
           nodeCount: opened.nodes.length,
           visible: true,
           colorMode,
+          pointShape: deviceProfileDefaults.pointShape,
+          pointSize: DEFAULT_POINT_SIZE_PX,
           cloudId: opened.cloudId,
           conversionBreakdownText: pending?.breakdownText ?? null,
           download: pending?.download ?? null,
@@ -889,7 +902,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, [tempDir, commitLayers, deviceProfileDefaults.isMobile, refreshOpfsStorageInfo]);
+  }, [tempDir, commitLayers, deviceProfileDefaults.isMobile, deviceProfileDefaults.pointShape, refreshOpfsStorageInfo]);
 
   /**
    * M4-14: 複数ファイル選択時の入口。`openFile`とほぼ同じ判断
@@ -1044,8 +1057,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     storeAnimationEnabled(getLocalStorage(), enabled);
   }, []);
 
+  // 選択中のレイヤーへ戻る（別々の場所のファイルでは、全レイヤーの合併は意味を成さないため。renderer の resetView 参照）。
   const resetView = useCallback(() => {
-    rendererRef.current?.resetView();
+    rendererRef.current?.resetView(layersStateRef.current.selectedLayerId ?? undefined);
   }, []);
 
   const setEdlEnabled = useCallback((enabled: boolean) => {
@@ -1105,6 +1119,30 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     },
     [commitLayers],
   );
+
+  const setLayerPointShape = useCallback(
+    (id: string, shape: PointShape) => {
+      const current = layersStateRef.current;
+      if (!findLayer(current.layers, id)) return;
+      rendererRef.current?.setLayerPointShape(id, shape);
+      commitLayers({ ...current, layers: setLayerPointShapeInList(current.layers, id, shape) });
+    },
+    [commitLayers],
+  );
+
+  const setLayerPointSize = useCallback(
+    (id: string, px: number) => {
+      const current = layersStateRef.current;
+      if (!findLayer(current.layers, id)) return;
+      rendererRef.current?.setLayerPointSize(id, px);
+      commitLayers({ ...current, layers: setLayerPointSizeInList(current.layers, id, px) });
+    },
+    [commitLayers],
+  );
+
+  const focusLayer = useCallback((id: string) => {
+    rendererRef.current?.focusLayer(id);
+  }, []);
 
   const removeLayer = useCallback(
     (id: string) => {
@@ -1178,6 +1216,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     selectLayer,
     setLayerVisible,
     setLayerColorMode,
+    setLayerPointShape,
+    setLayerPointSize,
+    focusLayer,
     removeLayer,
     pointBudget,
     autoPointBudgetEnabled,

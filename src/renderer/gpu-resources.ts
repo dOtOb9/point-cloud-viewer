@@ -29,7 +29,12 @@ import {
   type DeviceRecoveryAttempt,
 } from "./device-recovery";
 
-const POINT_SIZE_PX = 4;
+/** 1ノード分の点の見た目。レイヤーごとの設定を、描画のときにノードから引く（L2-B）。 */
+export interface NodePointStyle {
+  shape: PointShape;
+  /** 直径（ピクセル）。renderScale は drawPoints で掛ける。 */
+  sizePx: number;
+}
 /** WebGPUのFOV/near/far。orchestrator側（point-cloud-renderer.ts）が投影行列を
  *  組み立てる際にも同じ値が要るため、ここからexportする。 */
 export const FOV_Y_RADIANS = Math.PI / 3;
@@ -342,9 +347,10 @@ export interface DrawFrameOptions {
    * 参照)。デスクトップの既定値1.0では、この補正は実質何もしない(変更前と同じ)。
    */
   renderScale: number;
-  /** M3-8: 点の形（丸/四角）。どちらのパイプラインを使うかをここで選ぶだけで、
-   *  パイプライン自体はinit()で両方作成済み(切り替えのたびに再作成しない)。 */
-  pointShape: PointShape;
+  /** L2-B: ノードごとの点の形・大きさ。レイヤーごとの設定を引く関数を呼び出し側が渡す。
+   *  パイプラインはinit()で丸・四角の両方を作成済みなので、切り替えに再作成は要らない。
+   *  （以前は全体で1つの`pointShape`だった） */
+  nodeStyle: (node: CachedNode) => NodePointStyle;
   cameraEye: readonly [number, number, number];
   cameraTarget: readonly [number, number, number];
   upAxis: Vec3;
@@ -381,7 +387,8 @@ export class GpuResources {
   private pipelineSwapchainRoundFade: GPURenderPipeline | null = null;
   private pipelineSwapchainSquareFade: GPURenderPipeline | null = null;
   /** drawPoints()がフレームごとに配列を作らないための使い回し。 */
-  private readonly fadingScratch: CachedNode[] = [];
+  /** drawPoints の作業用。[丸, 四角, 丸フェード中, 四角フェード中]（groupIndex）。毎フレーム作り直さない。 */
+  private readonly pointGroupsScratch: CachedNode[][] = [[], [], [], []];
   private uniformLayout: GPUBindGroupLayout | null = null;
   private depthTexture: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
@@ -890,10 +897,13 @@ export class GpuResources {
           depthStoreOp: "store",
         },
       });
-      const square = options.pointShape === "square";
-      const pointsPipeline = square ? this.pipelineOffscreenSquare : this.pipelineOffscreenRound;
-      const fadePipeline = square ? this.pipelineOffscreenSquareFade : this.pipelineOffscreenRoundFade;
-      this.drawPoints(device, pointsPass, pointsPipeline, fadePipeline, viewProj, width, height, nodes, options);
+      const pipelines: PointPipelines = {
+        round: this.pipelineOffscreenRound,
+        square: this.pipelineOffscreenSquare,
+        roundFade: this.pipelineOffscreenRoundFade,
+        squareFade: this.pipelineOffscreenSquareFade,
+      };
+      this.drawPoints(device, pointsPass, pipelines, viewProj, width, height, nodes, options);
       pointsPass.end();
 
       // --- パス2: 背景(空/グリッド/単色)を描いてから、EDL陰影付きの点群を合成する ---
@@ -955,10 +965,13 @@ export class GpuResources {
         },
       });
       this.drawBackground(device, pass, options, width, height);
-      const square = options.pointShape === "square";
-      const pointsPipeline = square ? this.pipelineSwapchainSquare : this.pipelineSwapchainRound;
-      const fadePipeline = square ? this.pipelineSwapchainSquareFade : this.pipelineSwapchainRoundFade;
-      this.drawPoints(device, pass, pointsPipeline, fadePipeline, viewProj, width, height, nodes, options);
+      const pipelines: PointPipelines = {
+        round: this.pipelineSwapchainRound,
+        square: this.pipelineSwapchainSquare,
+        roundFade: this.pipelineSwapchainRoundFade,
+        squareFade: this.pipelineSwapchainSquareFade,
+      };
+      this.drawPoints(device, pass, pipelines, viewProj, width, height, nodes, options);
       pass.end();
     }
 
@@ -1044,53 +1057,59 @@ export class GpuResources {
    * EDLオフ(1パス、M3-8)のどちらからも呼べるよう共通化してある（元は
    * drawFrame()に直書きだった。ノードの描画ロジック自体は変えていない）。
    *
-   * `renderScale`で`POINT_SIZE_PX`を補正する理由（M3-8）: 頂点シェーダは
+   * `renderScale`でレイヤーの点の大きさ(既定 DEFAULT_POINT_SIZE_PX)を補正する理由（M3-8）: 頂点シェーダは
    * `pointSizePx / viewportWidth`でNDC上の半径を決める(SHADER_SRCのvs_main
    * 参照)。`viewportWidth`はここでは内部バッファの解像度(width引数、
-   * `renderScale`だけ縮小済み)なので、`POINT_SIZE_PX`をそのまま渡すと、
+   * `renderScale`だけ縮小済み)なので、レイヤーの点の大きさ(既定 DEFAULT_POINT_SIZE_PX)をそのまま渡すと、
    * CSSで表示サイズへ引き伸ばされたときに`1/renderScale`倍だけ大きく見えて
    * しまう(バッファを半分に縮小すると、引き伸ばし倍率が2倍になるため)。
-   * `POINT_SIZE_PX * renderScale`を渡せば、引き伸ばし後の見た目のピクセル
+   * `点の大きさ * renderScale`を渡せば、引き伸ばし後の見た目のピクセル
    * サイズが`renderScale`の値によらず一定になる。デスクトップの既定値
-   * renderScale=1.0では`POINT_SIZE_PX`のまま、つまり変更前と同じになる。
+   * renderScale=1.0ではレイヤーの点の大きさ(既定 DEFAULT_POINT_SIZE_PX)のまま、つまり変更前と同じになる。
    */
   private drawPoints(
     device: GPUDevice,
     pass: GPURenderPassEncoder,
-    pipeline: GPURenderPipeline,
-    fadePipeline: GPURenderPipeline,
+    pipelines: PointPipelines,
     viewProj: Mat4,
     width: number,
     height: number,
     nodes: CachedNode[],
     options: DrawFrameOptions,
   ): void {
-    const scaledPointSizePx = POINT_SIZE_PX * options.renderScale;
     const uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
-    const fading = this.fadingScratch;
-    fading.length = 0;
+    // L2-B: 点の形・大きさはレイヤーごと。ノードを「形 × フェード中か」の4組に分けてから、
+    // パイプラインを組ごとに1回だけ切り替えて描く（ノードごとには切り替えない）。
+    const groups = this.pointGroupsScratch;
+    for (const g of groups) g.length = 0;
 
     // AN-1: フェードが終わったノードを先に通常のパイプライン(discardなし)で描き、
     // フェード中のノードは後でディザ用パイプラインでまとめて描く。
     // 係数は「ノードのuniformバッファ(draw前にwriteBufferで書いている、今までと同じ
     // ノードごとのバッファ)」の最後のf32に入れるだけなので、追加のバッファも
     // バインド切り替えも増えない。1フレームの追加CPUコストはノードあたり引き算1回。
-    pass.setPipeline(pipeline);
     for (const node of nodes) {
-      const fade = nodeFadeFactor(node.firstDrawnAtMs, options.nowMs, options.fadeEnabled);
-      if (fade < 1) {
-        fading.push(node);
-        continue;
-      }
-      this.drawNode(device, pass, node, viewProj, width, height, scaledPointSizePx, 1, uniformData);
+      const square = options.nodeStyle(node).shape === "square";
+      const fading = nodeFadeFactor(node.firstDrawnAtMs, options.nowMs, options.fadeEnabled) < 1;
+      groups[groupIndex(square, fading)].push(node);
     }
-    if (fading.length > 0) {
-      pass.setPipeline(fadePipeline);
-      for (const node of fading) {
-        const fade = nodeFadeFactor(node.firstDrawnAtMs, options.nowMs, options.fadeEnabled);
+    const order: Array<[boolean, boolean, GPURenderPipeline]> = [
+      [false, false, pipelines.round],
+      [true, false, pipelines.square],
+      [false, true, pipelines.roundFade],
+      [true, true, pipelines.squareFade],
+    ];
+    for (const [square, fading, pipeline] of order) {
+      const list = groups[groupIndex(square, fading)];
+      if (list.length === 0) continue;
+      pass.setPipeline(pipeline);
+      for (const node of list) {
+        const fade = fading ? nodeFadeFactor(node.firstDrawnAtMs, options.nowMs, options.fadeEnabled) : 1;
+        // 大きさに renderScale を掛け、引き伸ばし後の見た目の大きさを一定にする（上のコメント）。
+        const scaledPointSizePx = options.nodeStyle(node).sizePx * options.renderScale;
         this.drawNode(device, pass, node, viewProj, width, height, scaledPointSizePx, fade, uniformData);
       }
-      fading.length = 0;
+      list.length = 0;
     }
   }
 
@@ -1131,4 +1150,17 @@ export class GpuResources {
     this.offscreenColorTexture?.destroy();
     this.offscreenDepthTexture?.destroy();
   }
+}
+
+/** 点群パイプライン4つ（丸/四角 × 通常/フェード中）。描画先（オフスクリーン/スワップチェーン）ごとに1組。 */
+interface PointPipelines {
+  round: GPURenderPipeline;
+  square: GPURenderPipeline;
+  roundFade: GPURenderPipeline;
+  squareFade: GPURenderPipeline;
+}
+
+/** `pointGroupsScratch` の添字。0=丸 1=四角 2=丸フェード中 3=四角フェード中。 */
+function groupIndex(square: boolean, fading: boolean): number {
+  return (fading ? 2 : 0) + (square ? 1 : 0);
 }

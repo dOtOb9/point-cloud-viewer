@@ -43,7 +43,8 @@ import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } 
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
-import { FAR, FOV_Y_RADIANS, GpuResources, NEAR } from "./gpu-resources";
+import { FAR, FOV_Y_RADIANS, GpuResources, NEAR, type NodePointStyle } from "./gpu-resources";
+import { DEFAULT_POINT_SIZE_PX, focusGoalFor, layerFocusBounds, sanitizePointSize } from "./layer-focus";
 import { extendRange, type ColorMode, type ValueRange } from "./colormap";
 import {
   computeSceneBounds,
@@ -157,6 +158,9 @@ export interface LayerInput {
   boundsMax: readonly [number, number, number];
   colorMode: ColorMode;
   visible: boolean;
+  /** 点の形・大きさ（直径px）。省くと、形は`setPointShape`の既定値、大きさは`DEFAULT_POINT_SIZE_PX`。 */
+  pointShape?: PointShape;
+  pointSizePx?: number;
 }
 
 /** レイヤー1つ分の状態。外には出さない。 */
@@ -179,6 +183,8 @@ interface Layer {
   intensityRange: ValueRange | null;
   colorMode: ColorMode;
   visible: boolean;
+  /** 点の形・大きさ。レイヤーごと（L2-B）。描画のとき`nodeStyleOf`がノードのキーから引く。 */
+  style: NodePointStyle;
   /** このレイヤーの着色設定の uniform。デバイス復帰で作り直すため、無いときは null。 */
   colorBuffer: GPUBuffer | null;
 }
@@ -197,6 +203,8 @@ export class PointCloudRenderer {
   /** 通し番号 → レイヤー。読み込み結果が届いたとき、キーの前置きからレイヤーを引く。 */
   private readonly layersBySerial = new Map<number, Layer>();
   private nextLayerSerial = 1;
+  /** 最後に`focusLayer`（足したときを含む）で移動したレイヤーの id。グリッドの高さ・大きさはこのレイヤーに合わせる。 */
+  private focusedLayerId: string | null = null;
   private cache: NodeCache;
   private loader: NodeLoader | null = null;
   /** 直近フレームのviewProj。ホイールイベント（フレームの外で起きる）でカーソル位置の
@@ -439,15 +447,16 @@ export class PointCloudRenderer {
       intensityRange: null,
       colorMode: input.colorMode,
       visible: input.visible,
+      style: { shape: input.pointShape ?? this.pointShape, sizePx: sanitizePointSize(input.pointSizePx) },
       colorBuffer: this.gpu.createColorSettingsBuffer(),
     };
+    const hadVisibleLayer = this.visibleLayers().length > 0;
     this.layers.set(layerId, layer);
     this.layersBySerial.set(serial, layer);
 
-    if (layer.visible) {
-      this.camera.cancelMotion();
-      this.fitCameraToVisibleLayers();
-    }
+    // 足したレイヤーへカメラを移す（L2-B）。最初のレイヤーは、まだ見ているものが無いので即座に置く
+    // （原点から数km先へ飛ぶ動きを見せない）。2つ目以降は視点移動のアニメーションで飛ぶ。
+    if (layer.visible) this.moveCameraToLayer(layer, !hadVisibleLayer);
   }
 
   /**
@@ -463,6 +472,7 @@ export class PointCloudRenderer {
     this.cache.removeByPrefix(layer.keyPrefix);
     layer.colorBuffer?.destroy();
     layer.colorBuffer = null;
+    if (this.focusedLayerId === layerId) this.focusedLayerId = null;
     this.updateGridFromVisibleLayers();
   }
 
@@ -487,16 +497,93 @@ export class PointCloudRenderer {
     return this.layers.get(layerId)?.colorMode;
   }
 
-  /** AN-2: 「全体を表示」。見えている全レイヤーが入る位置・向きへ、アニメーションで戻る。 */
-  resetView(): void {
+  /**
+   * そのレイヤーの点の形・大きさを変える（L2-B）。次のフレームから反映される。
+   * 形は丸/四角のパイプラインが起動時に両方あるので、作り直しは要らない。
+   * 大きさは直径（内部バッファのピクセル）。範囲外・NaN は`sanitizePointSize`で丸める。
+   */
+  setLayerPointShape(layerId: string, shape: PointShape): void {
+    const layer = this.layers.get(layerId);
+    if (layer) layer.style = { ...layer.style, shape };
+  }
+
+  setLayerPointSize(layerId: string, px: number): void {
+    const layer = this.layers.get(layerId);
+    if (layer) layer.style = { ...layer.style, sizePx: sanitizePointSize(px) };
+  }
+
+  getLayerPointShape(layerId: string): PointShape | undefined {
+    return this.layers.get(layerId)?.style.shape;
+  }
+
+  getLayerPointSize(layerId: string): number | undefined {
+    return this.layers.get(layerId)?.style.sizePx;
+  }
+
+  /** 描画のとき、ノードのキー（"<通し番号>:<ノードキー>"）からそのレイヤーの点の見た目を引く。 */
+  private nodeStyleOf(node: CachedNode): NodePointStyle {
+    const parsed = parseLayerNodeKey(node.key);
+    return (parsed && this.layersBySerial.get(parsed.serial)?.style) || this.defaultNodeStyle();
+  }
+
+  private defaultNodeStyle(): NodePointStyle {
+    return { shape: this.pointShape, sizePx: DEFAULT_POINT_SIZE_PX };
+  }
+
+  /**
+   * そのレイヤーへカメラを移す（L2-B）。視点移動のアニメーションで（アニメーション無効なら即時）。
+   * 向き（yaw/pitch）は今のまま、注視点と距離だけ変える。グリッドもこのレイヤーに合わせる。
+   * レイヤーが無ければ何もせず`false`。非表示のレイヤーにも移れる（見たければ表示すればよい）。
+   */
+  focusLayer(layerId: string): boolean {
+    const layer = this.layers.get(layerId);
+    if (!layer) return false;
+    this.moveCameraToLayer(layer, false);
+    return true;
+  }
+
+  /**
+   * AN-2: 「視点のリセット」。向きも初期（yaw 0・仰角の既定）に戻したうえで、
+   * `layerId`のレイヤー（省くと最後に移動したレイヤー、それも無ければ見えている全レイヤーの合併）が収まる位置へ戻る。
+   *
+   * 以前は常に「見えている全レイヤーの合併」だったが、別々の場所のファイルでは合併が巨大になって
+   * どれも見えなくなる（`layer-focus.ts`冒頭）ので、1つのレイヤーを基準にした。
+   */
+  resetView(layerId?: string): void {
+    const layer = (layerId !== undefined ? this.layers.get(layerId) : undefined) ?? this.focusedLayer();
+    if (layer) {
+      this.moveCameraToLayer(layer, false, { yaw: 0, pitch: DEFAULT_PITCH });
+      return;
+    }
     const bounds = this.visibleSceneBounds();
     if (!bounds) return;
-    this.camera.animateTo({
-      target: [bounds.center[0], bounds.center[1], bounds.center[2]],
-      distance: bounds.diagonal,
-      yaw: 0,
-      pitch: DEFAULT_PITCH,
-    });
+    this.camera.setSceneScale(bounds.diagonal);
+    this.camera.animateTo(focusGoalFor(bounds, { yaw: 0, pitch: DEFAULT_PITCH }));
+  }
+
+  private focusedLayer(): Layer | undefined {
+    return this.focusedLayerId !== null ? this.layers.get(this.focusedLayerId) : undefined;
+  }
+
+  /**
+   * カメラをレイヤーに合わせ、グリッドもそのレイヤーに合わせる。
+   * `immediate`なら即座に置く（最初のレイヤー用）。そうでなければ視点移動のアニメーション。
+   */
+  private moveCameraToLayer(layer: Layer, immediate: boolean, orientation?: { yaw: number; pitch: number }): void {
+    const bounds = layerFocusBounds(layer.sceneBounds, layer.boundsMin, layer.boundsMax);
+    this.focusedLayerId = layer.id;
+    this.camera.setSceneScale(bounds.diagonal);
+    this.applyGridBounds(bounds);
+    const goal = focusGoalFor(bounds, orientation);
+    if (immediate) {
+      this.camera.cancelMotion();
+      this.camera.target = goal.target;
+      this.camera.distance = goal.distance;
+      if (goal.yaw !== undefined) this.camera.yaw = goal.yaw;
+      if (goal.pitch !== undefined) this.camera.pitch = goal.pitch;
+    } else {
+      this.camera.animateTo(goal);
+    }
   }
 
   private visibleLayers(): Layer[] {
@@ -529,18 +616,16 @@ export class PointCloudRenderer {
     return { boundsMin, boundsMax };
   }
 
-  /** カメラを見えている全レイヤーが入る位置に合わせ、グリッドも合わせ直す（`addLayer`から）。 */
-  private fitCameraToVisibleLayers(): void {
-    const bounds = this.visibleSceneBounds();
-    if (!bounds) return;
-    this.camera.target = bounds.center;
-    this.camera.distance = bounds.diagonal;
-    this.camera.setSceneScale(bounds.diagonal);
-    this.applyGridBounds(bounds);
-  }
-
+  /**
+   * グリッドの高さ・大きさを決め直す。最後に移動したレイヤー（見えていれば）に合わせる。
+   * それが無い・非表示なら、見えているレイヤーの合併（従来と同じ）。
+   */
   private updateGridFromVisibleLayers(): void {
-    const bounds = this.visibleSceneBounds();
+    const focused = this.focusedLayer();
+    const bounds =
+      focused && focused.visible
+        ? layerFocusBounds(focused.sceneBounds, focused.boundsMin, focused.boundsMax)
+        : this.visibleSceneBounds();
     if (bounds) this.applyGridBounds(bounds);
   }
 
@@ -723,9 +808,11 @@ export class PointCloudRenderer {
   }
 
   /**
-   * M3-8: 点の形（丸/四角）。gpu-resources.tsが起動時に丸・四角の両方の
-   * パイプラインを作成済みなので、ここではフィールドを書き換えるだけで
-   * リソースの作り直しは不要（次のdrawFrame()呼び出しから反映される）。
+   * M3-8: 点の形（丸/四角）の既定値。L2-B以降は形がレイヤーごとなので、これは
+   * 「これから足すレイヤーの初期値」（`LayerInput.pointShape`を省いたとき）と統計表示にだけ効き、
+   * 既にあるレイヤーは変えない。既存レイヤーは`setLayerPointShape`で変える。
+   * gpu-resources.tsが起動時に丸・四角の両方のパイプラインを作成済みなので、
+   * リソースの作り直しは不要。
    */
   setPointShape(shape: PointShape): void {
     this.pointShape = shape;
@@ -1002,7 +1089,7 @@ export class PointCloudRenderer {
       edlStrength: this.edlStrength,
       edlRadiusPx: this.edlRadiusPx,
       renderScale: this.renderScale,
-      pointShape: this.pointShape,
+      nodeStyle: (node) => this.nodeStyleOf(node),
       cameraEye: this.camera.eye(),
       cameraTarget: this.camera.target,
       upAxis: this.camera.getUpAxis(),

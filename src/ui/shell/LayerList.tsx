@@ -6,7 +6,8 @@ import { OPAQUE_GLASS_SURFACE } from "./glass";
 // L1-D: レイヤー欄の一覧。各行は「表示チェック + 名前」。
 // - チェックボックス: 表示・非表示
 // - 行クリック: 選択（選択中は左の緑線）
-// - 右クリック（タッチ端末では長押し）: 小さなメニュー「削除」
+// - ダブルクリック: そのレイヤーへカメラを移す（L2-B）
+// - 右クリック（タッチ端末では長押し）: 小さなメニュー「移動」「削除」
 
 /** 長押しとみなすまでの時間(ms)。タッチ端末で右クリックの代わりにメニューを出す（未検証の初期値）。 */
 const LONG_PRESS_MS = 500;
@@ -24,7 +25,17 @@ interface MenuState {
  * レイヤーパネルは transform を持つ（滑って出入りする）ため、`position: fixed` がパネル基準になってしまう。
  * それを避けるため `document.body` へ portal で出す。
  */
-function LayerContextMenu({ menu, onDelete, onClose }: { menu: MenuState; onDelete: () => void; onClose: () => void }) {
+function LayerContextMenu({
+  menu,
+  onFocus,
+  onDelete,
+  onClose,
+}: {
+  menu: MenuState;
+  onFocus: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -59,6 +70,14 @@ function LayerContextMenu({ menu, onDelete, onClose }: { menu: MenuState; onDele
         type="button"
         role="menuitem"
         autoFocus
+        onClick={onFocus}
+        className="flex min-h-11 w-full items-center rounded px-3 text-left hover:bg-black/5 dark:hover:bg-white/10"
+      >
+        移動
+      </button>
+      <button
+        type="button"
+        role="menuitem"
         onClick={onDelete}
         className="flex min-h-11 w-full items-center rounded px-3 text-left hover:bg-black/5 dark:hover:bg-white/10"
       >
@@ -100,6 +119,8 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
               aria-selected={selected}
               data-testid="layer-row"
               onClick={() => viewer.selectLayer(layer.id)}
+              // ダブルクリックでそのレイヤーへカメラを移す（1回目のクリックで選択も済んでいる）。
+              onDoubleClick={() => viewer.focusLayer(layer.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 cancelPress();
@@ -157,6 +178,10 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
         <LayerContextMenu
           menu={menu}
           onClose={() => setMenu(null)}
+          onFocus={() => {
+            viewer.focusLayer(menu.layerId);
+            setMenu(null);
+          }}
           onDelete={() => {
             viewer.removeLayer(menu.layerId);
             setMenu(null);

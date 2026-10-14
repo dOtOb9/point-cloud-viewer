@@ -13,7 +13,7 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 function fakeViewer(status: string = "ready") {
-  const fns = { selectLayer: vi.fn(), setLayerVisible: vi.fn(), removeLayer: vi.fn() };
+  const fns = { selectLayer: vi.fn(), setLayerVisible: vi.fn(), removeLayer: vi.fn(), focusLayer: vi.fn() };
   const viewer = {
     status,
     layers: [
@@ -67,10 +67,27 @@ describe("LayerList", () => {
     act(() => {
       rows[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 20 }));
     });
-    const item = document.querySelector<HTMLElement>('[data-testid="layer-context-menu"] button');
-    expect(item?.textContent).toBe("削除");
-    act(() => item?.click());
+    const items = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="layer-context-menu"] button'));
+    expect(items.map((i) => i.textContent)).toEqual(["移動", "削除"]);
+    act(() => items[1].click());
     expect(fns.removeLayer).toHaveBeenCalledWith("layer-2");
+    expect(document.querySelector('[data-testid="layer-context-menu"]')).toBeNull();
+    cleanup();
+  });
+
+  it("ダブルクリックと、メニューの「移動」でfocusLayerが呼ばれる", () => {
+    const { viewer, fns } = fakeViewer();
+    const cleanup = mount(<LayerList viewer={viewer} />);
+    const rows = document.querySelectorAll<HTMLElement>('[data-testid="layer-row"]');
+    act(() => {
+      rows[1].dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+    expect(fns.focusLayer).toHaveBeenCalledWith("layer-2");
+    act(() => {
+      rows[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    act(() => document.querySelector<HTMLElement>('[data-testid="layer-context-menu"] button')?.click());
+    expect(fns.focusLayer).toHaveBeenLastCalledWith("layer-1");
     expect(document.querySelector('[data-testid="layer-context-menu"]')).toBeNull();
     cleanup();
   });

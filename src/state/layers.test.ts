@@ -9,9 +9,24 @@ import {
   resolveLayerColorMode,
   selectLayerInState,
   setLayerColorModeInList,
+  setLayerPointShapeInList,
+  setLayerPointSizeInList,
   setLayerVisibleInList,
   type ViewerLayer,
 } from "./layers";
+
+describe("点の形・大きさ（L2-B）", () => {
+  it("指定したレイヤーだけが変わる", () => {
+    const layers = [layer("a"), layer("b")];
+    expect(setLayerPointShapeInList(layers, "a", "square").map((l) => l.pointShape)).toEqual(["square", "round"]);
+    expect(setLayerPointSizeInList(layers, "b", 8).map((l) => l.pointSize)).toEqual([4, 8]);
+  });
+
+  it("大きさは範囲に丸める", () => {
+    expect(setLayerPointSizeInList([layer("a")], "a", 1000)[0].pointSize).toBe(32);
+    expect(setLayerPointSizeInList([layer("a")], "a", 0)[0].pointSize).toBe(1);
+  });
+});
 
 function info(hasColor: boolean): CloudInfo {
   return { hasColor } as CloudInfo;
@@ -25,6 +40,8 @@ function layer(id: string, hasColor = true): ViewerLayer {
     nodeCount: 1,
     visible: true,
     colorMode: hasColor ? "rgb" : "elevation",
+    pointShape: "round",
+    pointSize: 4,
     cloudId: 1,
     conversionBreakdownText: null,
     download: null,

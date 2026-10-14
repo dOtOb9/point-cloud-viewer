@@ -6,6 +6,8 @@
 
 import type { CloudInfo } from "../datasource/DataSource";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
+import type { PointShape } from "../renderer/device-profile";
+import { sanitizePointSize } from "../renderer/layer-focus";
 
 /** 変換で作ったレイヤーに付く、Web 版のダウンロード用 URL。 */
 export interface LayerDownload {
@@ -22,6 +24,9 @@ export interface ViewerLayer {
   nodeCount: number;
   visible: boolean;
   colorMode: ColorMode;
+  /** 点の形・大きさ（直径px）。レイヤーごと（L2-B）。 */
+  pointShape: PointShape;
+  pointSize: number;
   /** DataSource 側のファイル番号。`close` と `readNode` に使う。 */
   cloudId: number;
   /** このレイヤーを変換で作ったときだけ入る（内訳テキスト・ダウンロード）。 */
@@ -77,6 +82,16 @@ export function resolveLayerColorMode(layers: ViewerLayer[], id: string, mode: C
 /** レイヤーの着色を更新する。RGB を持たないレイヤーで "rgb" を選んだら標高に落とす。 */
 export function setLayerColorModeInList(layers: ViewerLayer[], id: string, mode: ColorMode): ViewerLayer[] {
   return layers.map((l) => (l.id === id ? { ...l, colorMode: resolveColorMode(mode, l.info.hasColor) } : l));
+}
+
+/** レイヤーの点の形を更新する（L2-B）。 */
+export function setLayerPointShapeInList(layers: ViewerLayer[], id: string, shape: PointShape): ViewerLayer[] {
+  return layers.map((l) => (l.id === id ? { ...l, pointShape: shape } : l));
+}
+
+/** レイヤーの点の大きさを更新する。範囲外・NaN は丸める（renderer と同じ`sanitizePointSize`）。 */
+export function setLayerPointSizeInList(layers: ViewerLayer[], id: string, px: number): ViewerLayer[] {
+  return layers.map((l) => (l.id === id ? { ...l, pointSize: sanitizePointSize(px) } : l));
 }
 
 export function findLayer(layers: ViewerLayer[], id: string | null): ViewerLayer | null {

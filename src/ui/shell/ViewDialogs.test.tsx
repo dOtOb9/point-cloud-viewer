@@ -16,17 +16,18 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 function fakeViewer(hasColor = true, layerName: string | null = "a.copc.laz") {
   const setters = {
     setLayerColorMode: vi.fn(),
-    setEdlEnabled: vi.fn(),
-    setPointShape: vi.fn(),
+    setLayerPointShape: vi.fn(),
+    setLayerPointSize: vi.fn(),
     setCenterPriorityStrength: vi.fn(),
     setMinCenterPriorityWeight: vi.fn(),
   };
   const viewer = {
-    edlEnabled: true,
-    pointShape: "round",
     centerPriorityStrength: 4,
     minCenterPriorityWeight: 0.2,
-    selectedLayer: layerName === null ? null : { id: "layer-1", name: layerName, info: { hasColor }, colorMode: "rgb" },
+    selectedLayer:
+      layerName === null
+        ? null
+        : { id: "layer-1", name: layerName, info: { hasColor }, colorMode: "rgb", pointShape: "round", pointSize: 4 },
     ...setters,
   } as unknown as CopcViewerState;
   return { viewer, setters };
@@ -67,13 +68,38 @@ describe("ViewDialogs", () => {
     unmount(m);
   });
 
-  it("見た目: EDLのチェックと点の形でsetterが呼ばれる", () => {
+  it("見た目: 選択中のレイヤーの点の形でsetLayerPointShapeが呼ばれ、レイヤー名が出る。EDLの操作は無い", () => {
     const { viewer, setters } = fakeViewer();
     const m = mount(<AppearanceDialog viewer={viewer} open onClose={() => {}} />);
-    act(() => document.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click());
-    expect(setters.setEdlEnabled).toHaveBeenCalledWith(false);
+    expect(document.body.textContent).toContain("a.copc.laz");
+    expect(document.querySelector('input[type="checkbox"]')).toBeNull();
     act(() => document.querySelector<HTMLInputElement>('input[name="point-shape"][value="square"]')?.click());
-    expect(setters.setPointShape).toHaveBeenCalledWith("square");
+    expect(setters.setLayerPointShape).toHaveBeenCalledWith("layer-1", "square");
+    unmount(m);
+  });
+
+  it("見た目: 点の大きさのスライダーでsetLayerPointSizeが数値で呼ばれる", () => {
+    const { viewer, setters } = fakeViewer();
+    const m = mount(<AppearanceDialog viewer={viewer} open onClose={() => {}} />);
+    const slider = document.querySelector<HTMLInputElement>('input[name="point-size"]');
+    expect(slider?.value).toBe("4");
+    act(() => {
+      if (!slider) return;
+      // React は value のネイティブ setter 経由でないと onChange を拾わない。
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(slider, "9");
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(setters.setLayerPointSize).toHaveBeenCalledWith("layer-1", 9);
+    unmount(m);
+  });
+
+  it("見た目: レイヤーが無いときは操作できず、その旨が出る", () => {
+    const { viewer } = fakeViewer(true, null);
+    const m = mount(<AppearanceDialog viewer={viewer} open onClose={() => {}} />);
+    const inputs = Array.from(document.querySelectorAll<HTMLInputElement>("input"));
+    expect(inputs.length).toBeGreaterThan(0);
+    expect(inputs.every((i) => i.disabled)).toBe(true);
+    expect(document.body.textContent).toContain("見た目を変えるレイヤーがありません");
     unmount(m);
   });
 
