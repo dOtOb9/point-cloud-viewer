@@ -95,10 +95,8 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
             ))}
           </div>
           <p className="text-xs opacity-60">
-            既定は「OSに合わせる」(ADR-0005の決定通り)。実機ではOSの明暗を切り替えずに
-            両テーマを確認できるよう、ここから手動固定もできる。
+            画面の明るさ。「OSに合わせる」はOSの設定に従う。現在の表示: {theme.theme === "dark" ? "ダーク" : "ライト"}。
           </p>
-          <p className="text-xs opacity-60">現在の表示: {theme.theme === "dark" ? "ダーク" : "ライト"}</p>
         </section>
 
         <section className="flex flex-col gap-2">
@@ -113,8 +111,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
             アニメーションを使う
           </label>
           <p className="text-xs opacity-60">
-            ノードのフェードイン・カメラの動き・画面の開閉などの動きをまとめて切り替える。
-            OSの「視差効果を減らす」(動きを減らす)が有効な場合は、この設定に関わらず常に動きを止める。
+            画面の動きをまとめて切り替える。OSで「動きを減らす」が有効なときは常に止まる。
           </p>
         </section>
 
@@ -129,9 +126,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
             起動時に新しいバージョンを確認する
           </label>
           <p className="text-xs opacity-60">
-            確認するだけで、ダウンロードとインストールは常に利用者の手作業
-            （GitHub Releasesの最新版と比較し、リリースページを開くところまで）。
-            開発中(`tauri dev`)はこの設定に関わらず確認しない。
+            新しい版があるか確認するだけで、ダウンロードとインストールは自分で行う。
           </p>
           {update.currentVersion && (
             <p className="text-xs opacity-60">現在のバージョン: {update.currentVersion}</p>
@@ -149,11 +144,9 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
             この設定行自体が意味を持たない）。`viewer.isBrowser`で先に弾く）。 */}
         {!viewer.isBrowser && viewer.supportsCustomTempDir && (
           <section className="flex flex-col gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
-            <h3 className="text-sm font-semibold opacity-70">変換の一時ファイル (M4-3)</h3>
+            <h3 className="text-sm font-semibold opacity-70">変換の一時ファイル</h3>
             <p className="text-xs opacity-60">
-              生のLAS/LAZをCOPCに変換する際、入力サイズの約11倍の一時ディスク容量を使う
-              （ADR-0006の実測）。既定はOSの一時ディレクトリ。空き容量が足りない場合は、
-              空きのあるドライブ・フォルダを指定する。
+              変換中に使う一時フォルダ（入力サイズの約11倍の空きが要る）。足りないときは空きのある場所を選ぶ。
             </p>
             <div className="flex items-center gap-2">
               {/* 選んだフォルダの表示だけ(入力欄ではない。変更は「選ぶ…」のOSダイアログから。ADR-0017) */}
@@ -180,78 +173,30 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
           </section>
         )}
 
-        <section className="flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
-          <h3 className="text-sm font-semibold opacity-70">モバイル最適化 (M3-8)</h3>
-          <p className="text-xs opacity-60">
-            所有者の実機(OPPO Pad Air)で点予算を大きく下げないと落ちる問題を受け、GPU負荷を下げる手段を
-            個別に切り替えられるようにしたもの。実機で1つずつ切り替えて、落ちずに扱える点数が変わるかを
-            確かめる目的も兼ねる（詳細はTaskSheets/M3-release-and-update.md M3-8参照）。
-          </p>
 
-          <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
-            <p className="font-semibold opacity-70">端末プロファイル判定</p>
-            <p>
-              判定結果: <span className="font-mono">{viewer.isMobile ? "モバイル" : "デスクトップ"}</span>
-            </p>
-            <p>
-              deviceMemory:{" "}
-              <span className="font-mono">
-                {viewer.deviceMemoryGiB !== undefined ? `${viewer.deviceMemoryGiB} GiB` : "取得不可"}
-              </span>{" "}
-              / pointer:coarse: <span className="font-mono">{String(viewer.pointerCoarse)}</span>
-            </p>
-            <p className="mt-1 opacity-60">
-              以下5つの既定値は、この判定が「モバイル」なら軽い側、「デスクトップ」なら変更前と同じ値になる。
-              モバイル側の具体的な数値は未検証の初期値(TaskSheets/M3-release-and-update.md M3-8参照)。
-            </p>
+        {/* 描画の解像度(M3-8)。端末の判定・点予算の上限の表示は利用者に要らないので出さない(L1-A)。
+            点の形・EDLはリボンの「表示」、LODの中央優先度もリボンの「読み込み優先」(ViewDialogs.tsx)にある
+            (ADR-0017。式と既定値の根拠はADR-0010)。 */}
+        <section className="flex flex-col gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
+          <h3 className="text-sm font-semibold opacity-70">描画の解像度</h3>
+          <div className="flex gap-2">
+            {RENDER_SCALE_OPTIONS.map((scale) => (
+              <button
+                key={scale}
+                type="button"
+                onClick={() => viewer.setRenderScale(scale)}
+                className={`rounded px-3 py-1.5 text-sm ${
+                  viewer.renderScale === scale
+                    ? "bg-primary text-on-primary"
+                    : "border border-slate-300 dark:border-slate-600"
+                }`}
+              >
+                {scale}
+              </button>
+            ))}
           </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-xs opacity-70">
-              レンダースケール（内部解像度 = 表示サイズ(CSS px)×この値。devicePixelRatioは含まない。
-              既定: モバイル0.5 / デスクトップ1.0）
-            </label>
-            <div className="flex gap-2">
-              {RENDER_SCALE_OPTIONS.map((scale) => (
-                <button
-                  key={scale}
-                  type="button"
-                  onClick={() => viewer.setRenderScale(scale)}
-                  className={`rounded px-3 py-1.5 text-sm ${
-                    viewer.renderScale === scale
-                      ? "bg-primary text-on-primary"
-                      : "border border-slate-300 dark:border-slate-600"
-                  }`}
-                >
-                  {scale}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs opacity-60">現在値: {viewer.renderScale}（再起動なしで反映される）</p>
-          </div>
-
-          {/* ADR-0017: 点の形（点のサイズ）・EDLはトップリボンの「表示」グループ
-              のボタンから開くダイアログ(`ViewDialogs.tsx`)へ移した。タスクシートのレイアウト指定
-              (着色モード・EDL・点のサイズ・中央優先度の強さと下限はリボンへ)
-              に従った。設定画面にはここでは置かない(二重管理を避けるため)。 */}
-
-          <div className="rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700">
-            <p className="font-semibold opacity-70">点予算の上限（端末のメモリから算出。既定: デスクトップ1GiB固定）</p>
-            <p>
-              現在の上限: <span className="font-mono">{viewer.pointBudgetMax.toLocaleString()}</span> 点
-            </p>
-            <p className="mt-1 opacity-60">
-              モバイルではnavigator.deviceMemoryから逆算する（未検証の初期値）。この上限自体を
-              手動で切り替える手段は設けていない。点予算そのものはレイヤーパネルから手動変更・自動調整の
-              on/offができる。
-            </p>
-          </div>
+          <p className="text-xs opacity-60">画面サイズに対する描画の細かさ。小さいほど軽く、大きいほど鮮明。</p>
         </section>
-
-        {/* ADR-0017: LODの中央優先度(強さ・下限)はトップリボンの「表示」グループ
-            のボタンから開くダイアログ(`ViewDialogs.tsx`)へ移した。タスクシートのレイアウト指定通り。
-            詳しい式・既定値の根拠はTaskSheets/ADR-0010-lod-priority-and-point-budget.md
-            に変わらず残っている。 */}
 
         {/* M4-6追記: Web版だけ(OPFSという概念がTauri版には無いため`viewer.isBrowser`
             で弾く)。所有者の実機不具合「空き容量が足りません」の対処として、
@@ -263,12 +208,9 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
             `useCopcViewer.ts`の`describeInsufficientSpaceWeb`参照)。 */}
         {viewer.isBrowser && (
           <section className="flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
-            <h3 className="text-sm font-semibold opacity-70">ブラウザの保存領域 (OPFS, M4-6)</h3>
+            <h3 className="text-sm font-semibold opacity-70">ブラウザの保存領域</h3>
             <p className="text-xs opacity-60">
-              Web版の変換はブラウザのOPFS(オリジン専用ファイルシステム)に変換済みキャッシュと一時ファイルを置く。
-              上限(quota)はブラウザとディスクの空き容量で決まり、変換前に自動で変わることがある。
-              「空き容量が足りません」が出たときは、ここでキャッシュ・一時ファイルを消すか、
-              永続的な保存を許可すると空く場合がある。
+              変換したデータと一時ファイルをブラウザに保存している。「空き容量が足りません」が出たら、ここで消すと空く。
             </p>
 
             {viewer.opfsStorageInfo === null ? (
