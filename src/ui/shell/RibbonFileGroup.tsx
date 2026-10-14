@@ -1,4 +1,4 @@
-import { Box, FolderOpen, Link2 } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 // 規約2: Tauriのダイアログのパッケージを直接importしない。DataSource側の関数
 // (`pickLocalFiles`。M4-14で複数選択に対応)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
@@ -6,14 +6,8 @@ import { pickLocalFiles } from "../../datasource/tauri";
 import { RibbonButton } from "./RibbonButton";
 import { RIBBON_BUTTON_CLASS, RIBBON_BUTTON_PRIMARY_CLASS, RIBBON_GROUP_CLASS, RIBBON_GROUP_LABEL_CLASS } from "./ribbon-styles";
 
-// CORSとHTTP Rangeに対応した公開COPCのサンプル(TaskSheets/TEST-DATA.mdのautzen)。
-const SAMPLE_COPC_URL = "https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz";
-
 interface Props {
   viewer: CopcViewerState;
-  /** 「URLから開く」ダイアログを開く(ダイアログ本体はAppShellが持つ。リボンの
-   *  重ね順(z-20)の内側に出すと他の面に隠れるため)。 */
-  onOpenUrlDialog: () => void;
 }
 
 /**
@@ -22,14 +16,15 @@ interface Props {
  * **ファイルはOSのファイル選択ダイアログからだけ開く**(所有者の要件: パスを
  * 人に打たせない)。Web版は隠した`<input type="file">`、デスクトップ・Androidは
  * Tauriのダイアログ(`pickLocalFiles`)。ドラッグ&ドロップは`useFileDrop.ts`。
- * リモートCOPCのURLは「URLから開く」ボタンで`UrlDialog`(1つの入力欄)を開く。
+ * 所有者の決定(2026-10-14): 読み込みのボタンは「開く」だけにする。以前あった
+ * 「URLから開く」「サンプル」のボタンと`UrlDialog`は削除した(L1-multi-layer.md)。
  *
  * どの経路も`viewer.openFiles()`/`viewer.openFile()`を呼ぶだけの薄い呼び出し
  * (並行して別のエージェントが複数ファイル選択の対応をしているため、ロジックは
  * ここに増やさない)。`data-testid="file-input"`は`e2e/web-conversion.spec.ts`が
  * `setInputFiles`で駆動するために必須(CLAUDE.md参照)。
  */
-export function RibbonFileGroup({ viewer, onOpenUrlDialog }: Props) {
+export function RibbonFileGroup({ viewer }: Props) {
   const busy = viewer.status === "opening" || viewer.status === "converting";
 
   return (
@@ -64,8 +59,6 @@ export function RibbonFileGroup({ viewer, onOpenUrlDialog }: Props) {
                 className="sr-only"
               />
             </label>
-            <RibbonButton icon={Link2} label="URLから開く" onClick={onOpenUrlDialog} disabled={busy} />
-            <RibbonButton icon={Box} label="サンプル" onClick={() => void viewer.openFile(SAMPLE_COPC_URL)} disabled={busy} />
           </>
         ) : (
           <RibbonButton

@@ -14,7 +14,6 @@ import { SettingsModal } from "./SettingsModal";
 import { StatusBar } from "./StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 import { UpdateNotice } from "./UpdateNotice";
-import { UrlDialog } from "./UrlDialog";
 
 /**
  * ADR-0017 (UIシェル再構築): UIシェルの組み立て役。
@@ -38,7 +37,6 @@ export function AppShell() {
   // デスクトップ幅では開いていることが必要)。
   const [layerOpen, setLayerOpen] = useState(() => !(typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [urlDialogOpen, setUrlDialogOpen] = useState(false);
   // ファイルのドラッグ&ドロップで開く(ADR-0017)。ドラッグ中は案内を重ねて出す。
   const dragging = useFileDrop(viewer.isBrowser, viewer.openFiles);
   const [conversionDialogOpen, setConversionDialogOpen] = useState(false);
@@ -91,7 +89,6 @@ export function AppShell() {
         viewer={viewer}
         glassEnabled={glassEnabled}
         onOpenSettings={() => setSettingsOpen(true)}
-        onOpenUrlDialog={() => setUrlDialogOpen(true)}
       />
 
       <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
@@ -110,8 +107,6 @@ export function AppShell() {
         update={update}
         viewer={viewer}
       />
-
-      <UrlDialog open={urlDialogOpen} onClose={() => setUrlDialogOpen(false)} onSubmit={(url) => void viewer.openFile(url)} />
 
       {dragging && (
         // ファイルをドラッグしている間だけ出す案内(操作は受けない。ドロップはuseFileDrop.tsが受ける)。

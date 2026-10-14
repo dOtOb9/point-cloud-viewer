@@ -13,7 +13,6 @@ interface Props {
   viewer: CopcViewerState;
   glassEnabled: boolean;
   onOpenSettings: () => void;
-  onOpenUrlDialog: () => void;
 }
 
 /**
@@ -31,7 +30,7 @@ interface Props {
  * 『メニュー』ボタンで縦に開く」形はやめた。768px未満(`useNarrowViewport`)では
  * 端まで広げて角丸をやめるだけ。タッチ領域は44px以上(ボタンは`min-h-14`=56px)。
  */
-export function Ribbon({ viewer, glassEnabled, onOpenSettings, onOpenUrlDialog }: Props) {
+export function Ribbon({ viewer, glassEnabled, onOpenSettings }: Props) {
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useRibbonDragScroll();
   // 表示グループのダイアログ。ガラス(backdrop-filter)の中に置くとfixedの基準がずれるため、
@@ -50,7 +49,7 @@ export function Ribbon({ viewer, glassEnabled, onOpenSettings, onOpenUrlDialog }
         data-testid="ribbon"
         className={`pointer-events-auto absolute ${placement} z-20 flex flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden overscroll-x-contain border-t-[3px] border-t-primary px-3 py-2 shadow-lg select-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${glassSurfaceClass(glassEnabled)}`}
       >
-        <RibbonFileGroup viewer={viewer} onOpenUrlDialog={onOpenUrlDialog} />
+        <RibbonFileGroup viewer={viewer} />
         <RibbonViewGroup
           onOpenColorMode={() => setViewDialog("color")}
           onOpenAppearance={() => setViewDialog("appearance")}
