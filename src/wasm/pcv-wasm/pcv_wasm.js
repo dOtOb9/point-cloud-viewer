@@ -503,7 +503,7 @@ export function init_panic_hook() {
  * ドキュメントと同じ理由)、point format・CRS・申告点数・ファイルサイズを
  * 返す。
  *
- * `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::Crs`の`Debug`
+ * `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::CrsId`の`Debug`
  * 表示そのまま。呼び出し側(`src/datasource/copc.worker.ts`)は文字列として
  * `===`比較するだけで、中身の構造は解釈しない(デスクトップ版の
  * `MergeError::LayoutMismatch`/`CrsMismatch`のエラー文言と同じく`{:?}`を使う。

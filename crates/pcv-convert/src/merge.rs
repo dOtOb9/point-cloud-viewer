@@ -57,7 +57,7 @@ use std::path::{Path, PathBuf};
 
 use copc_core::{CancelCheck, LasPointRecord, StreamingLayout};
 use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriteMetadata, CopcWriterParams};
-use pcv_core::crs::{detect_crs_from_las_header, Crs};
+use pcv_core::crs::{crs_id_from_las_header, CrsId};
 
 use crate::stage_timings::ConversionStageTimings;
 use crate::streaming::{ReadProgress, PROGRESS_REPORT_STRIDE};
@@ -102,8 +102,8 @@ pub enum MergeError {
         first: PathBuf,
         // `Crs`は128バイトあり(`clippy::result_large_err`)、`LayoutMismatch`の
         // `StreamingLayout`と同じ理由でBoxに入れる。
-        got: Box<Crs>,
-        expected: Box<Crs>,
+        got: Box<CrsId>,
+        expected: Box<CrsId>,
     },
     #[error("COPC書き出しに失敗した: {0}")]
     Write(#[source] copc_core::Error),
@@ -178,7 +178,7 @@ pub struct HeaderSummary {
     /// M4-14: 先頭ファイルから判定したCRS。以降の全ファイルがこれと一致する
     /// ことを`summarize_headers`が確認済み。
     /// L2-C: in lenient mode (`summarize_headers_lenient`) this is the CRS of the first file that has one.
-    pub crs: Crs,
+    pub crs: CrsId,
     /// `assume_missing_crs_is_first`で、CRS不明なのに先頭ファイルのCRSと
     /// みなして通したファイル(フラグ無しなら常に空)。
     pub assumed_crs_paths: Vec<PathBuf>,
@@ -190,7 +190,7 @@ impl HeaderSummary {
     /// L2-C: warning text that can go straight to the on-screen error log (ADR-0011).
     /// One per file without a CRS, with a note on what CRS the result got.
     pub fn crs_warnings(&self) -> Vec<String> {
-        let result = if self.crs == Crs::Unknown {
+        let result = if self.crs.is_missing() {
             "どのファイルにもCRSが無いので、結果にもCRSはありません"
         } else {
             "結果のCRSはCRSのあるファイルのものにしました"
@@ -262,7 +262,7 @@ fn summarize_headers_inner(
     let mut assumed_crs_paths: Vec<PathBuf> = Vec::new();
     let mut missing_crs_paths: Vec<PathBuf> = Vec::new();
     let mut layout: Option<StreamingLayout> = None;
-    let mut crs: Option<Crs> = None;
+    let mut crs: Option<CrsId> = None;
     // Where the result's CRS came from (used as the "first file" in the error text).
     let mut crs_source: Option<PathBuf> = None;
     let mut declared_points_total: u64 = 0u64;
@@ -275,11 +275,11 @@ fn summarize_headers_inner(
         })?;
         let header = reader.header();
         let this_layout = StreamingLayout::from_las_header(header);
-        let this_crs = detect_crs_from_las_header(header);
-        if mode == MissingCrs::Allow && this_crs == Crs::Unknown {
+        let this_crs = crs_id_from_las_header(header);
+        if mode == MissingCrs::Allow && this_crs.is_missing() {
             missing_crs_paths.push(path.clone());
         }
-        match (&layout, crs, metadata.as_mut()) {
+        match (&layout, crs.clone(), metadata.as_mut()) {
             (Some(expected_layout), Some(expected_crs), Some(metadata)) => {
                 if expected_layout != &this_layout {
                     return Err(MergeError::LayoutMismatch {
@@ -289,17 +289,18 @@ fn summarize_headers_inner(
                         expected: Box::new(expected_layout.clone()),
                     });
                 }
-                // M4-14: two `Crs::Unknown` values compare as "equal" (the derived
-                // `PartialEq` treats data-less variants as equal), so two inputs that both
-                // lack a CRS are not rejected by mistake.
+                // L2-G: `CrsId::Missing` means "no CRS information" only. A CRS outside the range of
+                // `Crs` (for example EPSG:2992) is `CrsId::Epsg(2992)`, so it is neither mistaken for a
+                // missing CRS nor reported as different when both files have it. Two files that both
+                // lack a CRS compare equal and are not rejected.
                 if mode == MissingCrs::AssumeFirst
-                    && this_crs == Crs::Unknown
-                    && expected_crs != Crs::Unknown
+                    && this_crs.is_missing()
+                    && !expected_crs.is_missing()
                 {
                     assumed_crs_paths.push(path.clone());
-                } else if mode == MissingCrs::Allow && this_crs == Crs::Unknown {
+                } else if mode == MissingCrs::Allow && this_crs.is_missing() {
                     // Unknown files are let through (already recorded above).
-                } else if mode == MissingCrs::Allow && expected_crs == Crs::Unknown {
+                } else if mode == MissingCrs::Allow && expected_crs.is_missing() {
                     // The output CRS was unknown so far. This is the first file with a CRS, so
                     // take the result's CRS (WKT) from this file.
                     crs = Some(this_crs);
@@ -795,6 +796,27 @@ mod tests {
         writer.close().expect("close las writer");
     }
 
+    /// L2-G: a CRS outside the range of `Crs` (EPSG:2992, as in autzen) is a CRS, not a missing one:
+    /// two such files merge without a "no CRS" warning, and the result keeps the EPSG code.
+    #[test]
+    fn crs_outside_supported_range_is_not_reported_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = ["a.las", "b.las"].iter().map(|n| dir.path().join(n)).collect();
+        for p in &paths {
+            write_single_point_las_with_geotiff_crs(p, 2992);
+        }
+        let summary = summarize_headers_lenient(&paths).expect("same CRS merges");
+        assert_eq!(summary.crs, CrsId::Epsg(2992));
+        assert!(summary.crs_warnings().is_empty(), "{:?}", summary.crs_warnings());
+
+        // 2992 against a different known CRS is still a mismatch.
+        write_single_point_las_with_geotiff_crs(&paths[1], 6677);
+        assert!(matches!(
+            summarize_headers_lenient(&paths),
+            Err(MergeError::CrsMismatch { .. })
+        ));
+    }
+
     /// 受け入れ条件: CRSが異なる入力は、名前付きの明確なエラーで拒否する。
     /// `summarize_headers`単体で確認する(書き出しまで進めると実害が出る前に
     /// 検出できることを示す)。
@@ -827,7 +849,7 @@ mod tests {
 
         let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
         let summary = summarize_headers(&paths).expect("CRSが無い入力どうしは一致するはず");
-        assert_eq!(summary.crs, Crs::Unknown);
+        assert!(summary.crs.is_missing());
     }
 
     /// 先頭がCRSあり、後ろがCRSなし: 既定ではエラー、フラグがあるときだけ通り、
@@ -844,7 +866,7 @@ mod tests {
             Err(MergeError::CrsMismatch { .. })
         ));
         let summary = summarize_headers_with_options(&paths, true).expect("フラグ有りなら通る");
-        assert_ne!(summary.crs, Crs::Unknown);
+        assert!(!summary.crs.is_missing());
         let names: Vec<_> = summary
             .assumed_crs_paths
             .iter()
@@ -884,9 +906,8 @@ mod tests {
         ));
 
         let summary = summarize_headers_lenient(&paths).expect("寛容モードは通る");
-        assert_ne!(
-            summary.crs,
-            Crs::Unknown,
+        assert!(
+            !summary.crs.is_missing(),
             "結果のCRSはCRSのあるファイルのもの"
         );
         assert!(

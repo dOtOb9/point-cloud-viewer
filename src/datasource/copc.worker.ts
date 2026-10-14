@@ -840,9 +840,9 @@ async function runMultiConversion(
       (file) => inspectLasHeaderSummary(file) as HeaderSummaryDto,
     );
     const first = summaries[0];
-    // L2-C: files without a CRS ("Unknown", the Debug text of `pcv_core::crs::Crs::Unknown`) are
+    // L2-G: files without a CRS ("Missing", the Debug text of `pcv_core::crs::CrsId::Missing`) are
     // let through (Rust `finish` returns the warning). Only a mismatch between files that have a CRS stops.
-    const NO_CRS = "Unknown";
+    const NO_CRS = "Missing";
     const firstKnownCrs = summaries.findIndex((s) => s.crs_label !== NO_CRS);
     for (let i = 1; i < summaries.length; i++) {
       if (summaries[i].layout_key !== first.layout_key) {
@@ -932,7 +932,10 @@ async function runMultiConversion(
             return;
           }
           const result = converter.feed(CONVERT_BATCH_SIZE) as FeedResultDto;
-          reportReadingProgress(result.points_read);
+          // L2-G: `points_read` counts points over all files so far (the converter's spill counter).
+          // `reportReadingProgress` wants the count inside the current file, so subtract the finished
+          // files. Without this the bar counted the earlier files twice (6,250,115 / 3,126,520).
+          reportReadingProgress(result.points_read - pointsCompletedBeforeCurrentFile);
           if (result.done) break;
           await yieldToEventLoop();
         }

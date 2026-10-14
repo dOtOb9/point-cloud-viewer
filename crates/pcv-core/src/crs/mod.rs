@@ -116,6 +116,59 @@ pub fn detect_crs_from_las_header(header: &las::Header) -> Crs {
     }
 }
 
+/// L2-G: what a file says about its CRS, for **comparing files** (merge). `Crs` cannot be used for
+/// this: it has no value for a CRS outside our supported range (for example EPSG:2992), so such
+/// a file looked the same as a file with no CRS at all, and merging two such files warned
+/// "no CRS information".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CrsId {
+    /// The file has no CRS information.
+    Missing,
+    /// The file names an EPSG code (supported by this crate or not).
+    Epsg(u32),
+    /// The file has a CRS that names no EPSG code (its WKT text, or a note for GeoTIFF keys we
+    /// cannot read). Two files are the same CRS only if this text is the same.
+    Other(String),
+}
+
+impl CrsId {
+    /// `true` when the file has no CRS information at all (not "has a CRS we do not know").
+    pub fn is_missing(&self) -> bool {
+        *self == CrsId::Missing
+    }
+}
+
+/// L2-G: the `CrsId` of a LAS/LAZ header. Reads the same VLRs as `detect_crs_from_las_header`
+/// (WKT first, then GeoTIFF keys), but keeps the EPSG code / WKT text when the CRS is outside
+/// the range of `Crs`.
+pub fn crs_id_from_las_header(header: &las::Header) -> CrsId {
+    if let Some(wkt) = header.get_wkt_crs_bytes() {
+        let text = String::from_utf8_lossy(wkt);
+        let text = text.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+        // A WKT record with no text (beer.copc.laz has a 1-byte one) says nothing: no CRS.
+        if text.is_empty() {
+            return CrsId::Missing;
+        }
+        return match epsg_from_wkt(wkt) {
+            Some(code) => CrsId::Epsg(code),
+            None => CrsId::Other(text.to_string()),
+        };
+    }
+    match header.get_geotiff_crs() {
+        Ok(Some(geotiff)) => {
+            let code = geotiff
+                .get_projected_crs_geo_key_value()
+                .or_else(|| geotiff.get_geodetic_crs_geo_key_value());
+            match code {
+                Some(code) if (1..=32766).contains(&code) => CrsId::Epsg(u32::from(code)),
+                _ => CrsId::Other("GeoTIFF keys without an EPSG code".to_string()),
+            }
+        }
+        Ok(None) => CrsId::Missing,
+        Err(e) => CrsId::Other(format!("unreadable GeoTIFF keys: {e}")),
+    }
+}
+
 /// WKT文字列(バイト列)からEPSGコードを取り出す。
 ///
 /// WKTは `...GEOGCS[...,AUTHORITY["EPSG","6668"]],...,AUTHORITY["EPSG","6677"]]`
@@ -492,6 +545,35 @@ mod tests {
             Crs::PlaneRectangular(crs) => assert_eq!(crs.zone.number, 9),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// L2-G: `CrsId` keeps the EPSG code of a CRS that `Crs` does not know (autzen: 2992), and tells
+    /// "no CRS" (also an empty WKT record) from "a CRS without an EPSG code".
+    #[test]
+    fn crs_id_separates_missing_unsupported_and_unnamed() {
+        let no_crs = las::Builder::from((1, 4)).into_header().expect("valid header");
+        assert_eq!(crs_id_from_las_header(&no_crs), CrsId::Missing);
+
+        let empty_wkt = header_with_wkt_crs("\0");
+        assert_eq!(crs_id_from_las_header(&empty_wkt), CrsId::Missing);
+
+        let wkt_2992 = "PROJCS[\"NAD83 / Oregon GIC Lambert (ft)\",AUTHORITY[\"EPSG\",\"2992\"]]";
+        let id = crs_id_from_las_header(&header_with_wkt_crs(wkt_2992));
+        assert_eq!(id, CrsId::Epsg(2992));
+        assert!(matches!(
+            detect_crs_from_las_header(&header_with_wkt_crs(wkt_2992)),
+            Crs::Unknown
+        ));
+        assert_eq!(
+            crs_id_from_las_header(&header_with_geotiff_projected_crs(2992)),
+            CrsId::Epsg(2992)
+        );
+
+        let unnamed = header_with_wkt_crs("PROJCS[\"local grid\"]");
+        assert_eq!(
+            crs_id_from_las_header(&unnamed),
+            CrsId::Other("PROJCS[\"local grid\"]".to_string())
+        );
     }
 
     #[test]

@@ -162,7 +162,7 @@ use std::time::Duration;
 use copc_core::{deserialize_le, serialize_le, LasPointRecord, NeverCancel, StreamingLayout};
 use copc_writer::{write_copc_from_spill_with_fs_and_timings, CopcWriterParams, SpillWriter};
 use js_sys::Array;
-use pcv_core::crs::{detect_crs_from_las_header, Crs};
+use pcv_core::crs::{crs_id_from_las_header, CrsId};
 use wasm_bindgen::prelude::*;
 use web_sys::{File, FileSystemSyncAccessHandle};
 use web_time::Instant;
@@ -202,8 +202,8 @@ pub(crate) fn handles_from_js_array(
 fn check_layout_and_crs_match(
     current_layout: &StreamingLayout,
     new_layout: &StreamingLayout,
-    current_crs: Crs,
-    new_crs: Crs,
+    current_crs: &CrsId,
+    new_crs: &CrsId,
 ) -> Result<CrsOutcome, String> {
     if new_layout != current_layout {
         return Err(format!(
@@ -212,10 +212,10 @@ fn check_layout_and_crs_match(
     }
     // L2-C: files without a CRS are let through (the caller records a warning).
     // Only a mismatch between files that both have a CRS stops the merge.
-    if new_crs == Crs::Unknown {
+    if new_crs.is_missing() {
         return Ok(CrsOutcome::NewFileHasNoCrs);
     }
-    if current_crs == Crs::Unknown {
+    if current_crs.is_missing() {
         return Ok(CrsOutcome::AdoptNewFileCrs);
     }
     if new_crs != current_crs {
@@ -239,8 +239,8 @@ enum CrsOutcome {
 
 /// L2-C: warning text for files let through without a CRS in a merge (same text as the desktop
 /// `HeaderSummary::crs_warnings`).
-fn missing_crs_warnings(names: &[String], result_crs: Crs) -> Vec<String> {
-    let result = if result_crs == Crs::Unknown {
+fn missing_crs_warnings(names: &[String], result_crs: &CrsId) -> Vec<String> {
+    let result = if result_crs.is_missing() {
         "どのファイルにもCRSが無いので、結果にもCRSはありません"
     } else {
         "結果のCRSはCRSのあるファイルのものにしました"
@@ -261,7 +261,7 @@ fn missing_crs_warnings(names: &[String], result_crs: Crs) -> Vec<String> {
 /// ドキュメントと同じ理由)、point format・CRS・申告点数・ファイルサイズを
 /// 返す。
 ///
-/// `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::Crs`の`Debug`
+/// `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::CrsId`の`Debug`
 /// 表示そのまま。呼び出し側(`src/datasource/copc.worker.ts`)は文字列として
 /// `===`比較するだけで、中身の構造は解釈しない(デスクトップ版の
 /// `MergeError::LayoutMismatch`/`CrsMismatch`のエラー文言と同じく`{:?}`を使う。
@@ -275,7 +275,7 @@ pub fn inspect_las_header_summary(file: File) -> Result<JsValue, JsValue> {
     let reader = las::Reader::new(buffered).map_err(to_js_error)?;
 
     let layout = StreamingLayout::from_las_header(reader.header());
-    let crs = detect_crs_from_las_header(reader.header());
+    let crs = crs_id_from_las_header(reader.header());
     let declared_points = reader.header().number_of_points();
 
     let dto = crate::dto::HeaderSummaryDto {
@@ -328,7 +328,7 @@ pub struct WasmConverter {
     /// ファイルがこれと一致することを確認する(デスクトップ版
     /// `pcv_convert::merge::summarize_headers`と同じ確認を複数ファイル選択の
     /// Web経路でも行う)。
-    crs: Crs,
+    crs: CrsId,
     /// M4-14: これまでに`open_next_file`で開いたファイル数(先頭の1を含む)。
     /// 内訳の「入力ファイル数」表示に使う。
     input_file_count: u64,
@@ -365,7 +365,8 @@ impl WasmConverter {
         let reader = las::Reader::new(buffered).map_err(to_js_error)?;
 
         let layout = StreamingLayout::from_las_header(reader.header());
-        let crs = detect_crs_from_las_header(reader.header());
+        let crs = crs_id_from_las_header(reader.header());
+        let crs_is_missing = crs.is_missing();
         let metadata = copc_write_metadata_from_source_header(reader.header());
         let total_points = reader.header().number_of_points();
         let point_data = las::PointDataBuilder::new()
@@ -392,7 +393,7 @@ impl WasmConverter {
             file_size_bytes,
             crs,
             input_file_count: 1,
-            missing_crs_names: if crs == Crs::Unknown {
+            missing_crs_names: if crs_is_missing {
                 vec![file_name]
             } else {
                 Vec::new()
@@ -440,8 +441,8 @@ impl WasmConverter {
         let reader = las::Reader::new(buffered).map_err(to_js_error)?;
 
         let layout = StreamingLayout::from_las_header(reader.header());
-        let crs = detect_crs_from_las_header(reader.header());
-        let outcome = check_layout_and_crs_match(&self.layout, &layout, self.crs, crs)
+        let crs = crs_id_from_las_header(reader.header());
+        let outcome = check_layout_and_crs_match(&self.layout, &layout, &self.crs, &crs)
             .map_err(|e| JsValue::from_str(&e))?;
         match outcome {
             CrsOutcome::Same => {}
@@ -612,7 +613,7 @@ impl WasmConverter {
             ),
             // A missing CRS is not a warning for a single-file conversion (merges only).
             warnings: if self.input_file_count > 1 {
-                missing_crs_warnings(&self.missing_crs_names, self.crs)
+                missing_crs_warnings(&self.missing_crs_names, &self.crs)
             } else {
                 Vec::new()
             },
@@ -779,6 +780,7 @@ impl RangeDecompressorCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use copc_writer::{write_copc_from_spill_with_fs, CopcWriteMetadata, MemoryScratchFs};
     use std::io::Cursor;
 
     fn layout_for_point_format(format: u8) -> StreamingLayout {
@@ -796,7 +798,7 @@ mod tests {
         let layout3 = layout_for_point_format(3);
         let layout0 = layout_for_point_format(0);
 
-        let err = check_layout_and_crs_match(&layout3, &layout0, Crs::Unknown, Crs::Unknown);
+        let err = check_layout_and_crs_match(&layout3, &layout0, &CrsId::Missing, &CrsId::Missing);
         assert!(err.is_err());
     }
 
@@ -805,19 +807,32 @@ mod tests {
     #[test]
     fn check_layout_and_crs_match_rejects_different_crs() {
         let layout = layout_for_point_format(3);
-        let crs_a = Crs::from_epsg(6677); // JGD2011 平面直角座標系IX系
-        let crs_b = Crs::from_epsg(32654); // UTM54N
+        let crs_a = CrsId::Epsg(6677); // JGD2011 平面直角座標系IX系
+        let crs_b = CrsId::Epsg(32654); // UTM54N
 
-        let err = check_layout_and_crs_match(&layout, &layout, crs_a, crs_b);
+        let err = check_layout_and_crs_match(&layout, &layout, &crs_a, &crs_b);
         assert!(err.is_err());
     }
 
-    /// 両方`Crs::Unknown`(CRS情報が無い)どうしは一致として扱う
+    /// 両方`&CrsId::Missing`(CRS情報が無い)どうしは一致として扱う
     /// (デスクトップ版と同じ方針。モジュール冒頭のドキュメント参照)。
     #[test]
     fn check_layout_and_crs_match_allows_matching_layout_and_unknown_crs() {
         let layout = layout_for_point_format(3);
-        assert!(check_layout_and_crs_match(&layout, &layout, Crs::Unknown, Crs::Unknown).is_ok());
+        assert!(check_layout_and_crs_match(&layout, &layout, &CrsId::Missing, &CrsId::Missing).is_ok());
+    }
+
+    /// L2-G: a CRS outside the range of `Crs` (EPSG:2992) is compared by its EPSG code: two such
+    /// files are the same CRS (no "no CRS" warning), and 2992 against another code is a mismatch.
+    #[test]
+    fn check_layout_and_crs_match_compares_unsupported_crs_by_epsg_code() {
+        let layout = layout_for_point_format(3);
+        let a = CrsId::Epsg(2992);
+        assert_eq!(
+            check_layout_and_crs_match(&layout, &layout, &a, &a),
+            Ok(CrsOutcome::Same)
+        );
+        assert!(check_layout_and_crs_match(&layout, &layout, &a, &CrsId::Epsg(6677)).is_err());
     }
 
     /// L2-C: files without a CRS are let through; the CRS of the first file that has one is adopted.
@@ -825,17 +840,17 @@ mod tests {
     #[test]
     fn check_layout_and_crs_match_passes_missing_crs_and_adopts_first_known() {
         let layout = layout_for_point_format(3);
-        let known = Crs::from_epsg(6677);
+        let known = CrsId::Epsg(6677);
         assert_eq!(
-            check_layout_and_crs_match(&layout, &layout, known, Crs::Unknown),
+            check_layout_and_crs_match(&layout, &layout, &known, &CrsId::Missing),
             Ok(CrsOutcome::NewFileHasNoCrs)
         );
         assert_eq!(
-            check_layout_and_crs_match(&layout, &layout, Crs::Unknown, known),
+            check_layout_and_crs_match(&layout, &layout, &CrsId::Missing, &known),
             Ok(CrsOutcome::AdoptNewFileCrs)
         );
         assert_eq!(
-            check_layout_and_crs_match(&layout, &layout, known, known),
+            check_layout_and_crs_match(&layout, &layout, &known, &known),
             Ok(CrsOutcome::Same)
         );
     }
@@ -843,11 +858,11 @@ mod tests {
     #[test]
     fn missing_crs_warnings_name_each_file_and_the_result() {
         let names = vec!["a.laz".to_string(), "c.laz".to_string()];
-        let w = missing_crs_warnings(&names, Crs::from_epsg(6677));
+        let w = missing_crs_warnings(&names, &CrsId::Epsg(6677));
         assert_eq!(w.len(), 2);
         assert!(w[0].starts_with("a.laz: CRS"));
         assert!(w[1].contains("CRSのあるファイルのもの"));
-        let none = missing_crs_warnings(&names, Crs::Unknown);
+        let none = missing_crs_warnings(&names, &CrsId::Missing);
         assert!(none[0].contains("どのファイルにもCRSが無い"));
     }
 
@@ -1007,6 +1022,89 @@ mod tests {
             // 10倍の点数でも、1回のfeedが確保する最大バイト数(max_seen)は
             // batch_sizeで決まる上限と同じ(=点数に比例しない)。
             assert!(max_seen <= max_batch_bytes);
+        }
+    }
+
+    /// L2-G: builds a small COPC in memory. A COPC has one LAZ chunk per octree node, so the chunks
+    /// have different point counts (the laszip VLR says chunk_size = u32::MAX = "variable").
+    /// Scattered points and a small `max_points_per_node` make many nodes of different sizes.
+    fn synthetic_copc_bytes(point_count: u32) -> Vec<u8> {
+        let mut builder = las::Builder::from((1, 4));
+        builder.point_format = las::point::Format::new(6).expect("format 6");
+        let header = builder.into_header().expect("valid header");
+        let layout = StreamingLayout::from_las_header(&header);
+
+        let fs = MemoryScratchFs::new();
+        let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+        for i in 0..point_count {
+            let point = las::Point {
+                x: f64::from((i * 37) % 500) * 0.1,
+                y: f64::from((i * 53) % 500) * 0.1,
+                z: f64::from((i * 13) % 200) * 0.1,
+                intensity: (i % 1000) as u16,
+                gps_time: Some(f64::from(i)),
+                ..Default::default()
+            };
+            spill
+                .push(&LasPointRecord::from_las_point(&point))
+                .expect("spill.push");
+        }
+        let reader = spill.finalize().expect("spill.finalize");
+        let output_path = std::path::Path::new("synthetic.copc.laz");
+        write_copc_from_spill_with_fs(
+            &fs,
+            output_path,
+            reader,
+            &CopcWriterParams::new(50),
+            &NeverCancel,
+            &CopcWriteMetadata::default(),
+        )
+        .expect("write_copc_from_spill_with_fs");
+        fs.take_output(output_path).expect("output recorded")
+    }
+
+    /// L2-G: reading a range of a COPC (variable-size chunks) must return exactly the same bytes as
+    /// the same slice of a read from the start. This failed on the Web for autzen: the `seek` of
+    /// laz 0.12.2 used `point_idx % chunk_point_count` as the offset inside a chunk, which is only
+    /// right for fixed-size chunks, so ranges started at the wrong point (and sometimes ran into
+    /// the next chunk's bytes: "capacity overflow" in wasm32). `vendor/laz/PATCH.md` has the fix.
+    #[test]
+    fn range_of_variable_chunk_copc_matches_the_same_slice_of_a_full_read() {
+        const POINT_COUNT: u32 = 5_000;
+        let bytes = synthetic_copc_bytes(POINT_COUNT);
+        let width = {
+            let mut builder = las::Builder::from((1, 4));
+            builder.point_format = las::point::Format::new(6).expect("format 6");
+            let header = builder.into_header().expect("valid header");
+            StreamingLayout::from_las_header(&header).record_width()
+        };
+
+        let full = decompress_range_in_batches(
+            Cursor::new(bytes.clone()),
+            0,
+            u64::from(POINT_COUNT),
+            700,
+        )
+        .expect("full read");
+        assert_eq!(
+            full.len(),
+            POINT_COUNT as usize * width,
+            "full read returns every point"
+        );
+
+        // Eight equal ranges, as `pointRangesFor` makes them, plus awkward starts.
+        let mut ranges: Vec<(u64, u64)> = (0..8u64).map(|i| (i * 625, 625)).collect();
+        ranges.extend([(1, 10), (49, 3), (50, 100), (777, 1), (4_990, 10), (4_999, 1)]);
+        for (start, count) in ranges {
+            let part = decompress_range_in_batches(Cursor::new(bytes.clone()), start, count, 300)
+                .unwrap_or_else(|e| panic!("range [{start}, +{count}) failed: {e}"));
+            let from = start as usize * width;
+            let to = from + count as usize * width;
+            assert_eq!(
+                part,
+                full[from..to],
+                "range [{start}, +{count}) differs from the full read"
+            );
         }
     }
 }
