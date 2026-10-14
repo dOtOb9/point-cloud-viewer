@@ -142,3 +142,35 @@ L2-A はボタン列の部品（`LayerActions.tsx`）を作り、「移動」は
 2. レイヤー欄の1つ目の行をダブルクリック → 1つ目へ戻る。右クリックのメニューの「移動」でも同じ。
 3. 1つ目を選び、「見た目」で大きさ・形を変える → 1つ目の点だけが変わる。2つ目へ移動して、2つ目は変わっていないこと。
 4. 「リセット」（全体を表示）→ 選択中のレイヤーが収まる位置・向きに戻る。
+
+## L2-A の記録（レイヤー欄の整え、操作ボタン列、リボンの表示グループ撤去、設定の整理）
+
+### 何をしたか
+1. **レイヤー欄のパディング**: 選択中の行だけ `border-l-[3px]` が付いて、選択していない行より文字・チェックが3pxずれていた。全行に `border-l-[3px]` を付け、非選択は `border-l-transparent` にした。見出し（`レイヤー`・`レイヤー情報`）も左線を3pxにし、レイヤー情報の本文は `pl-[11px]`（3px+行の px-2=8px）で行の文字と揃えた。
+2. **`LayerActions.tsx`（新規）**: レイヤー情報の下に `RibbonButton` で「着色」「見た目」「削除」。レイヤーが無いと全部無効。ダイアログ（着色・見た目）の開閉はここが持ち、パネルが transform を持つため `document.body` へ portal で出す。「移動」は置いていない（L2-B が足す）。
+3. **Delete キー**: 判定は純粋関数 `layer-delete-key.ts`（入力欄・テキストエリア・選択欄・編集可能要素にフォーカスがあるとき、修飾キーつきは消さない）。右クリック・長押しのメニューは残した。
+4. **リボンの「表示」グループ撤去**（`RibbonViewGroup.tsx` 削除、`Ribbon.tsx` からダイアログ状態も除去）。
+5. **設定**: 「診断」を削除（`DiagnosticsDialog`、そこでしか使われていなかった `IpcBenchPanel`・`NodeConcurrencyBenchPanel`・`WebGpuProbePanel` も削除。datasource 側の計測 API は残してある）。「読み込み優先」（`LoadPriorityDialog` を `ViewDialogs.tsx` から `SettingsPages.tsx` へ移動）と「陰影（EDL）」（`EdlDialog`。viewer に強さの setter が無いのでオン/オフだけ）を専用ページに追加。`settings-nav.ts`・テスト更新。
+6. **所有者の追加要望（2026-10-15）**: ダイアログの暗幕を全部ぼかしに統一（`backdrop` プロパティ廃止。モバイルは薄い半透明）。「戻る」があるダイアログから「閉じる」を外した。詳細は ADR-0017 の追記。
+7. 閉じる・戻るは灰色（`DIALOG_TERTIARY_BUTTON_CLASS`）のまま。E2E の data-testid は触っていない。
+
+### 他の案
+- 各行の右端に「⋯」: 行が狭いため見送り（コーディネーターの決定どおりボタン列）。
+- ダイアログの状態を AppShell に置く: ボタンと同じ場所（LayerActions）に閉じたほうが追いやすい。portal で fixed の基準ずれも避けられる。
+- EDL の強さのスライダー: viewer に setter が無く、renderer（L2-B の領分）に手を入れることになるため、オン/オフだけ。
+
+### 触ったファイル
+`src/ui/shell/`: `LayerActions.tsx`(+test)、`layer-delete-key.ts`(+test)、`LayerList.tsx`、`LayerPanel.tsx`、`LayerInfoSection.tsx`、`Ribbon.tsx`、`RibbonViewGroup.tsx`(削除)、`SettingsModal.tsx`、`SettingsPages.tsx`(+test)、`settings-nav.ts`(+test)、`ViewDialogs.tsx`(+test)、`Dialog.tsx`(+test)。`src/ui/` の3つの診断パネル（削除）。
+
+### 確認したこと（実行した結果）
+- `npx tsc --noEmit`: エラーなし。`npm run lint`: エラーなし。`npx vitest run`: 52ファイル・452テスト合格。
+- `PCV_E2E_PORT=4871 npx playwright test`: 2 passed（ぼかし統一の前の状態で実行。統一後の再実行はしていない）。
+- 実 Edge（headed、adapter.info は vendor=nvidia, architecture=lovelace。SwiftShader ではない）で `autzen-classified.copc.laz` を2回開き、スクリーンショット `l2a-1-layers.png`（レイヤー欄）・`l2a-2-color-dialog.png`・`l2a-3-settings.png`・`l2a-4-edl.png`・`l2a-5-loadpriority.png` を自分で見た。行の実測: 2行とも高さ44px、チェックX=40px、文字X=68px で、選択・非選択で同じ。Delete キーで2→1行、削除ボタンで1→0行になった。
+- 所見: 行とチェック・見出し・レイヤー情報の左端が揃った。ボタン列は情報の下、「詳細統計」の上に3つ並ぶ。設定の一覧は9項目（診断なし、読み込み優先・陰影（EDL）あり）。ダイアログの後ろはぼけ、暗くなりすぎない。専用ページのフッターは「戻る」のみ。
+
+### 確認していないこと
+- ぼかし統一後の Playwright E2E の再実行。モバイル（glassEnabled=false）でぼかしが薄い半透明に落ちる実機確認。ぼかしの開閉アニメーションの滑らかさ。Tauri・Android 実機。Chrome（Edge のみ使用）。
+- 見た目ダイアログの中身（L2-B が変更）。
+
+### 所有者の確認手順
+点群を2つ開く → レイヤー欄の行の文字位置が選択で動かないこと、見出しと揃うことを見る → 行を選んで「着色」「見た目」「削除」と Delete キーを試す（レイヤーが無いとボタンがグレー）→ 設定を開き、診断が無く、読み込み優先・陰影（EDL）があること、専用ページに「戻る」だけがあること、後ろがぼけることを見る。
