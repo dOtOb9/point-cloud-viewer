@@ -1,4 +1,4 @@
-import { Eye, Palette, Trash2 } from "lucide-react";
+import { Crosshair, Eye, Palette, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CopcViewerState } from "../../state/useCopcViewer";
@@ -15,13 +15,13 @@ import { AppearanceDialog, ColorModeDialog } from "./ViewDialogs";
  * ダイアログ(着色・見た目)の開閉状態はここが持つ。レイヤーパネルは transform で滑って出入りし、
  * その中に置くと `position: fixed` の基準がパネルになってしまうため、`document.body` へ portal で出す。
  *
- * 「移動」(そのレイヤーへカメラを移す)は L2-B が後でここに足す。
+ * 「移動」はそのレイヤーへカメラを移す(`viewer.focusLayer`。L2-B)。並びは着色・見た目・移動・削除。
  */
 export function LayerActions({ viewer }: { viewer: CopcViewerState }) {
   const [dialog, setDialog] = useState<"color" | "appearance" | null>(null);
   const layer = viewer.selectedLayer;
   const hasLayer = layer !== null;
-  const { removeLayer } = viewer;
+  const { removeLayer, focusLayer } = viewer;
   const selectedId = layer?.id ?? null;
 
   // Delete キーで選択中のレイヤーを消す。入力欄にフォーカスがあるときは効かない。
@@ -43,6 +43,13 @@ export function LayerActions({ viewer }: { viewer: CopcViewerState }) {
       <div className="flex flex-nowrap items-center gap-1 pl-[11px]" data-testid="layer-actions">
         <RibbonButton icon={Palette} label="着色" title="選んだレイヤーの色の付け方" disabled={!hasLayer} onClick={() => setDialog("color")} />
         <RibbonButton icon={Eye} label="見た目" title="選んだレイヤーの見た目" disabled={!hasLayer} onClick={() => setDialog("appearance")} />
+        <RibbonButton
+          icon={Crosshair}
+          label="移動"
+          title="選んだレイヤーへカメラを移す"
+          disabled={!hasLayer}
+          onClick={() => selectedId !== null && focusLayer(selectedId)}
+        />
         <RibbonButton
           icon={Trash2}
           label="削除"

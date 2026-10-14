@@ -14,16 +14,18 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 function fakeViewer(hasLayer: boolean) {
   const removeLayer = vi.fn();
+  const focusLayer = vi.fn();
   const viewer = {
     selectedLayer: hasLayer ? { id: "layer-1", name: "a.copc.laz", colorMode: "rgb", info: { hasColor: true } } : null,
     removeLayer,
+    focusLayer,
     setLayerColorMode: vi.fn(),
     edlEnabled: true,
     pointShape: "round",
     setEdlEnabled: vi.fn(),
     setPointShape: vi.fn(),
   } as unknown as CopcViewerState;
-  return { viewer, removeLayer };
+  return { viewer, removeLayer, focusLayer };
 }
 
 function mount(node: React.ReactNode) {
@@ -43,7 +45,7 @@ describe("LayerActions", () => {
   it("レイヤーが無いときは着色・見た目・削除が全部無効", () => {
     const { viewer } = fakeViewer(false);
     const cleanup = mount(<LayerActions viewer={viewer} />);
-    expect(buttons().map((b) => b.textContent)).toEqual(["着色", "見た目", "削除"]);
+    expect(buttons().map((b) => b.textContent)).toEqual(["着色", "見た目", "移動", "削除"]);
     expect(buttons().every((b) => b.disabled)).toBe(true);
     cleanup();
   });
@@ -55,6 +57,14 @@ describe("LayerActions", () => {
     expect(del?.disabled).toBe(false);
     act(() => del?.click());
     expect(removeLayer).toHaveBeenCalledWith("layer-1");
+    cleanup();
+  });
+
+  it("移動ボタンで選択中のレイヤーのfocusLayerが呼ばれる", () => {
+    const { viewer, focusLayer } = fakeViewer(true);
+    const cleanup = mount(<LayerActions viewer={viewer} />);
+    act(() => buttons().find((b) => b.textContent === "移動")?.click());
+    expect(focusLayer).toHaveBeenCalledWith("layer-1");
     cleanup();
   });
 
