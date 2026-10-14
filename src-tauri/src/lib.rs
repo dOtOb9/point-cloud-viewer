@@ -358,6 +358,7 @@ pub fn run() {
             bench_invoke,
             default_bench_data_path,
             copc_state::open_copc,
+            copc_state::close_copc,
             conversion::start_las_conversion,
             conversion::start_multi_las_conversion,
             conversion::cancel_las_conversion,

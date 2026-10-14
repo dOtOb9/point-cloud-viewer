@@ -104,7 +104,8 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use pcv_core::{CloudInfo, CopcFile, HierarchyNode, NodeKey};
 use tauri::{AppHandle, Runtime, State};
@@ -326,20 +327,33 @@ fn open_uri_reader<R: Runtime>(app: &AppHandle<R>, uri: &str) -> Result<CopcFile
 /// その窓をサーバ側で塞ぐためのもので、`read_node_bytes`はリクエストが指定した
 /// 世代と`CopcState`の現在の世代を比較し、一致しなければ`ReadNodeError::Stale`
 /// として（`Normal`/`Panicked`とは別の、エラーではない結果として）拒否する。
-struct OpenedFile {
-    generation: u64,
-    pool: Arc<CopcPool>,
-}
+///
+/// ## 複数ファイル（L1-B）
+///
+/// 開いているファイルは1つではなく、`generation`(=フロントの`cloudId`)から
+/// プールを引く表（`HashMap`）で持つ。`open_copc`は他のファイルを閉じない。
+/// 閉じるのは`close_copc`だけ。表に無い（閉じた、または知らない）世代への
+/// 読み出しは、切り替え後の古いリクエストと同じ`Stale`として扱う。
+type OpenedFiles = HashMap<u64, Arc<CopcPool>>;
 
-/// 現在開いているCOPCファイル。同時に1つしか開けない前提（M1時点ではタブ等は無い）。
+/// 現在開いているCOPCファイルの表（世代番号 → プール）。
 /// `Arc<CopcPool>`にしているのは、`read_node_bytes`が`CopcState`のロックを
 /// プールの参照を取り出す一瞬だけに留め、実際の読み出しはロックの外で行うため
 /// （`Arc::clone`してすぐロックを手放す）。`next_generation`は`open_copc`が
 /// 呼ばれるたびに1ずつ進む通し番号（`OpenedFile`のドキュメント参照）。
 #[derive(Default)]
 pub struct CopcState {
-    opened: Mutex<Option<OpenedFile>>,
+    opened: Mutex<OpenedFiles>,
     next_generation: AtomicU64,
+}
+
+impl CopcState {
+    /// 表のロック。poisonされていてもpanicせず、エラー文字列にする（ADR-0015）。
+    fn lock_opened(&self) -> Result<MutexGuard<'_, OpenedFiles>, String> {
+        self.opened
+            .lock()
+            .map_err(|_| "CopcState mutex poisoned".to_string())
+    }
 }
 
 /// `open_copc` がフロントに返す、点群全体のサマリ。`CloudInfo`をそのままJSONにできる
@@ -490,10 +504,8 @@ fn open_copc_impl(
         pool.pool_size
     );
 
-    *state.opened.lock().expect("CopcState mutex poisoned") = Some(OpenedFile {
-        generation,
-        pool: Arc::new(pool),
-    });
+    // 他に開いているファイルは閉じない（表に足すだけ）。
+    state.lock_opened()?.insert(generation, Arc::new(pool));
 
     Ok(OpenCopcResponse {
         info,
@@ -546,6 +558,22 @@ thread_local! {
     static PANIC_ON_NEXT_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// 指定した世代のファイルを閉じる（プールを表から外す）。読み出し中のリクエストが
+/// `Arc`を持っていれば、その読み出しが終わった時点でファイルハンドルが解放される。
+/// 既に閉じている・知らない世代でもエラーにしない（閉じるのは冪等）。
+#[tauri::command]
+pub fn close_copc(generation: u64, state: State<CopcState>) -> Result<(), String> {
+    close_copc_impl(generation, &state)
+}
+
+fn close_copc_impl(generation: u64, state: &CopcState) -> Result<(), String> {
+    let removed = state.lock_opened()?.remove(&generation);
+    if removed.is_some() {
+        println!("[pcv] closed generation {generation}");
+    }
+    Ok(())
+}
+
 /// `handle_pcv_protocol` から呼ばれる、実際のノード読み出し。
 ///
 /// `CopcState`のロックは`Arc<CopcPool>`を複製する一瞬だけ持ち、すぐ手放す。
@@ -569,14 +597,12 @@ pub fn read_node_bytes(
     key: NodeKey,
 ) -> Result<Vec<u8>, ReadNodeError> {
     let pool = {
-        let guard = state.opened.lock().expect("CopcState mutex poisoned");
-        let opened = guard.as_ref().ok_or_else(|| {
-            ReadNodeError::Normal("no COPC file is open (call open_copc first)".to_string())
-        })?;
-        if opened.generation != requested_generation {
-            return Err(ReadNodeError::Stale);
-        }
-        opened.pool.clone()
+        let guard = state.lock_opened().map_err(ReadNodeError::Normal)?;
+        // 表に無い世代（閉じた・知らない・切り替え前の古い世代）はStale。
+        guard
+            .get(&requested_generation)
+            .cloned()
+            .ok_or(ReadNodeError::Stale)?
     };
 
     let mut file = pool.checkout();
@@ -713,7 +739,11 @@ mod tests {
         assert_eq!(response.info.crs.kind, "none");
         assert_eq!(response.info.crs.epsg, None);
         assert!(!response.nodes.is_empty());
-        assert!(state.opened.lock().unwrap().is_some());
+        assert!(state
+            .opened
+            .lock()
+            .unwrap()
+            .contains_key(&response.generation));
     }
 
     /// 受け入れ条件: パスから`CopcPool`が組めること。明示的なプールサイズが
@@ -805,13 +835,39 @@ mod tests {
     }
 
     #[test]
-    fn read_node_bytes_fails_before_any_file_is_open() {
+    fn read_node_bytes_is_stale_before_any_file_is_open() {
         let state = CopcState::default();
         let err = read_node_bytes(&state, 0, NodeKey::root()).unwrap_err();
-        match err {
-            ReadNodeError::Normal(message) => assert!(message.contains("no COPC file is open")),
-            other => panic!("Normalになるはずが別の結果だった: {other:?}"),
-        }
+        assert!(matches!(err, ReadNodeError::Stale), "{err:?}");
+    }
+
+    /// L1-B: 2つ開いて両方読める。片方を閉じるとそれはStale、もう片方は読める。
+    #[test]
+    fn two_files_open_at_once_and_close_independently() {
+        let (_dir, path) = synthetic_copc_file();
+        let state = CopcState::default();
+        let open = || {
+            let pool = CopcPool::open_path(&path, default_pool_size()).unwrap();
+            open_copc_impl(pool, path.to_str().unwrap(), &state).unwrap()
+        };
+        let a = open();
+        let b = open();
+        assert_ne!(a.generation, b.generation);
+        let key = NodeKey::from_str(&a.nodes[0].key).unwrap();
+
+        // 2つ目を開いても1つ目は閉じない。
+        assert!(read_node_bytes(&state, a.generation, key).is_ok());
+        assert!(read_node_bytes(&state, b.generation, key).is_ok());
+
+        close_copc_impl(a.generation, &state).unwrap();
+        assert!(matches!(
+            read_node_bytes(&state, a.generation, key),
+            Err(ReadNodeError::Stale)
+        ));
+        assert!(read_node_bytes(&state, b.generation, key).is_ok());
+        // 閉じたものをもう一度閉じてもエラーにならない。
+        close_copc_impl(a.generation, &state).unwrap();
+        assert_eq!(state.opened.lock().unwrap().len(), 1);
     }
 
     /// 受け入れ条件（ファイル切り替え時の不具合の修正）: 同じ`CopcState`で
@@ -845,7 +901,9 @@ mod tests {
             "開き直すたびに世代が進むこと"
         );
 
-        // (a) 古い世代（response1）を指定した読み出しはStaleで拒否される。
+        // (a) 古い世代（response1）を閉じると、それを指定した読み出しはStaleで拒否される
+        // （L1-B: 開き直しでは自動で閉じない。呼び出し側が`close_copc`する）。
+        close_copc_impl(response1.generation, &state).unwrap();
         let err = read_node_bytes(&state, response1.generation, key).unwrap_err();
         match err {
             ReadNodeError::Stale => {}
