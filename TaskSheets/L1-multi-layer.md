@@ -85,3 +85,42 @@ renderer.resetView(): void                                     // 見えてい�
 3. 片方を選んで「着色」を標高にする → そのレイヤーだけ色が変わる
 4. 行を右クリック →「削除」→ 行も点も消える。もう一方は残る
 5. ウィンドウを狭くする → リボンは1列のまま、左ボタンで押したまま横に引くと動く。ボタンのクリックは今までどおり効く
+
+## L1-B の記録（裏側で複数の COPC を同時に開く）
+
+### 何をしたか
+
+- `DataSource`: `OpenedCloud.cloudId` を足し、`readNode(cloudId, key)`・`close(cloudId)` にした。`open` は他のファイルを閉じない。
+  - 取り決めに無い `NodeReader`（`readNode(key)` だけの型）を `DataSource.ts` に足した。理由は下の「他の案」。
+- Tauri（`src-tauri/src/copc_state.rs`）: `Mutex<Option<OpenedFile>>` を `Mutex<HashMap<u64, Arc<CopcPool>>>`（キーは generation = cloudId）にした。
+  `pcv://<generation>/<key>` の形は変えていない。`close_copc(generation)` コマンドを足し `lib.rs` に登録。
+  表に無い generation（閉じた・知らない）への読み出しは今までの `Stale`（HTTP 409）。閉じるのは冪等（二重に閉じてもエラーにしない）。
+  触った関数の `lock().expect(...)` は `Result` に直した（ADR-0015）。
+- Web（`copc.worker.ts`）: `let openFile` を `Map<世代番号, WasmCopcFile>` にした。`close` リクエスト（`web-protocol.ts` に追加）で
+  表から外して `free()` する（wasm 側のリーダーを手放す）。表に無い世代の `readNode` は `readNode-stale`。
+  メモリは開いているファイル数にだけ比例し、閉じれば戻る。wasm（Rust）側の変更は無し（`free()` は wasm-bindgen が元から出している）。
+- `StaleNodeRequestError` の説明を「閉じた／知らない cloudId」に直した。
+- `useCopcViewer.ts`（最小限）: `currentCloudIdRef` を持ち、renderer には `{ readNode: key => source.readNode(cloudId, key) }` を渡す。
+  開く流れは「新しいファイルを開く → cloudId を差し替えて `resetForNewFile` → 前の cloudId を `close`」（置き換え動作のまま）。
+  先に閉じず後で閉じるのは、開けなかったときに前のファイルを見せ続けるため。`useNodeConcurrencyBench.ts` も合わせた。
+
+### 他の案と採らなかった理由
+
+- renderer を一切触らない案: `NodeLoader` が型として `DataSource`（`readNode(key)`）を取っているので、`DataSource` を変えると型が通らない。
+  アダプタを `as unknown as DataSource` で渡すのは型を嘘にするので避け、renderer 側は型の差し替えだけ
+  （`node-loader.ts`・`point-cloud-renderer.ts` の `DataSource` → `NodeReader`、`node-loader.test.ts` の偽物）にした。
+  動作は変えていない。L1-C が `addLayer({ readNode })` に作り直すとき、この3行は自然に消える（衝突したら L1-C 側を採ってよい）。
+- Tauri で generation を別のカウンタにする案: 取り決めで「世代番号をそのまま cloudId」と決まっているので採らない。
+- Worker をファイルごとに起こす案: メモリ・起動コストが増える。表で足りる。
+
+### 触ったファイル
+
+`src/datasource/{DataSource,tauri,web,web-protocol,copc.worker,stale-node-error}.ts`、`src/datasource/web.test.ts`、
+`src-tauri/src/{copc_state,lib}.rs`、`src/state/{useCopcViewer,useNodeConcurrencyBench}.ts`、
+`src/renderer/{node-loader,point-cloud-renderer}.ts`（型のみ）、`src/renderer/node-loader.test.ts`（偽物の型のみ）。
+
+### 確認手順
+
+1. `cd src-tauri && cargo test --lib` — 新テスト `two_files_open_at_once_and_close_independently`（2つ開いて両方読める／片方を閉じるとそれだけ Stale／二重 close は無害）
+2. `npx tsc --noEmit`・`npm run lint`・`npx vitest run`（`WebSource.close` と cloudId の送り返しのテスト）
+3. 画面: ファイルを開く → 別のファイルを開く、が今までどおり動くこと（置き換え動作）。Tauri の標準出力に `[pcv] closed generation N` が出る。

@@ -26,6 +26,7 @@ import {
 import * as opfs from "./opfs";
 import { estimatePointCountForLasFile, estimatePointCountForPcdFile } from "./point-count-estimate";
 import {
+  buildCloseRequest,
   buildConvertCancelRequest,
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
@@ -143,13 +144,6 @@ export class WebSource implements DataSource {
   private nextRequestId = 1;
   private nextFileSequence = 0;
   private lastBytesRead = 0;
-  /** ファイル切り替え時の不具合の修正: Workerが`open-result`で返した、現在
-   *  開いているファイルの世代番号。`readNode`リクエストに含めて送り返し、
-   *  Worker側（`copc.worker.ts`）が切り替え後に届いた古いリクエストを
-   *  見分けられるようにする。まだ`open`を呼んでいない間は0
-   *  （Worker側はこの値を見る前に「まだopenされていない」を検出して
-   *  エラーを投げるため実害は無い。`copc.worker.ts`参照）。 */
-  private currentGeneration = 0;
 
   // M4-6b: 変換(生LAS/LAZ→COPC)の進捗・完了・失敗を購読するリスナー。
   // open/readNodeの「1リクエスト1応答」(`pending`マップ)とは違い、1回の
@@ -211,19 +205,19 @@ export class WebSource implements DataSource {
       throw new Error(`open()に対して予期しない応答: ${response.type}`);
     }
     this.lastBytesRead = response.bytesRead;
-    this.currentGeneration = response.generation;
     return {
+      // Workerが割り当てた世代番号がそのままcloudId。readNode/closeに渡す。
+      cloudId: response.generation,
       info: toCloudInfo(response.info),
       nodes: response.nodes.map(toHierarchyNodeInfo),
     };
   }
 
-  async readNode(key: string): Promise<ArrayBuffer> {
+  async readNode(cloudId: number, key: string): Promise<ArrayBuffer> {
     const id = this.nextRequestId++;
-    const response = await this.send(buildReadNodeRequest(id, key, this.currentGeneration));
+    const response = await this.send(buildReadNodeRequest(id, key, cloudId));
     if (response.type === "readNode-stale") {
-      // ファイル切り替え時の不具合の修正: Worker側が「古い世代のリクエスト」と
-      // 判定した。エラーではなく、呼び出し側（NodeLoader）が黙って捨てるべき
+      // Worker側が「閉じた／知らないcloudId」と判定した。エラーではなく、呼び出し側（NodeLoader）が黙って捨てるべき
       // 結果なので、専用の型で伝える（stale-node-error.ts参照）。
       throw new StaleNodeRequestError(key);
     }
@@ -232,6 +226,13 @@ export class WebSource implements DataSource {
     }
     this.lastBytesRead = response.bytesRead;
     return response.buffer;
+  }
+
+  async close(cloudId: number): Promise<void> {
+    const response = await this.send(buildCloseRequest(this.nextRequestId++, cloudId));
+    if (response.type !== "close-result") {
+      throw new Error(`close()に対して予期しない応答: ${response.type}`);
+    }
   }
 
   /**

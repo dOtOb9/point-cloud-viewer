@@ -95,9 +95,17 @@ export interface ConvertCancelRequest {
   id: number;
 }
 
+/** L1-B: `cloudId`のファイルを閉じて、Worker側のリソース(wasmのリーダー)を手放す。 */
+export interface CloseRequest {
+  type: "close";
+  id: number;
+  cloudId: number;
+}
+
 export type WorkerRequest =
   | OpenRequest
   | ReadNodeRequest
+  | CloseRequest
   | ConvertStartRequest
   | ConvertMultiStartRequest
   | PcdConvertStartRequest
@@ -115,6 +123,12 @@ export interface OpenResponse {
    *  （`copc.worker.ts`の`openGeneration`）。`WebSource`が覚えておき、以後の
    *  `readNode`リクエストに含めて送り返す。 */
   generation: number;
+}
+
+export interface CloseResponse {
+  type: "close-result";
+  id: number;
+  ok: true;
 }
 
 export interface ReadNodeResponse {
@@ -182,6 +196,7 @@ export type WorkerResponse =
   | OpenResponse
   | ReadNodeResponse
   | ReadNodeStaleResponse
+  | CloseResponse
   | ErrorResponse
   | ConvertProgressResponse
   | ConvertDoneResponse
@@ -193,6 +208,10 @@ export function buildOpenFileRequest(id: number, file: File): OpenRequest {
 
 export function buildOpenUrlRequest(id: number, url: string): OpenRequest {
   return { type: "open", id, source: { kind: "url", url } };
+}
+
+export function buildCloseRequest(id: number, cloudId: number): CloseRequest {
+  return { type: "close", id, cloudId };
 }
 
 export function buildReadNodeRequest(id: number, key: string, generation: number): ReadNodeRequest {

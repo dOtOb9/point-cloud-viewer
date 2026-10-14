@@ -19,7 +19,7 @@
 // フロント自身の世代カウンタの状態に関わらず黙って捨てることを確認する。
 
 import { describe, expect, it } from "vitest";
-import type { DataSource, OpenedCloud } from "../datasource/DataSource";
+import type { NodeReader } from "../datasource/DataSource";
 import { StaleNodeRequestError } from "../datasource/stale-node-error";
 import { NODE_HEADER_BYTES, NODE_MAGIC, NODE_POINT_STRIDE, NODE_VERSION } from "../datasource/node-format";
 import { NodeLoader } from "./node-loader";
@@ -44,20 +44,12 @@ function makeEmptyNodeBuffer(): ArrayBuffer {
  * （本物のTauri/Web実装の「fetch/postMessageの応答がいつ届くか分からない」を
  * 模している）。
  */
-class FakeDataSource implements DataSource {
+class FakeDataSource implements NodeReader {
   readonly requestedKeys: string[] = [];
   private readonly pending = new Map<
     string,
     { resolve: (buffer: ArrayBuffer) => void; reject: (error: unknown) => void }
   >();
-
-  async fetchBench(): Promise<ArrayBuffer> {
-    throw new Error("このテストでは使わない");
-  }
-
-  async open(): Promise<OpenedCloud> {
-    throw new Error("このテストでは使わない");
-  }
 
   readNode(key: string): Promise<ArrayBuffer> {
     this.requestedKeys.push(key);

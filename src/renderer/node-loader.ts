@@ -1,7 +1,7 @@
 // M1-4: 優先度順にノードをキューイングし、同時リクエスト数を絞って非同期ロードする。
 // カメラが動いたら `setWanted` で欲しいノードの集合を丸ごと入れ替える。
 
-import type { DataSource } from "../datasource/DataSource";
+import type { NodeReader } from "../datasource/DataSource";
 import { parseNodeBuffer, type ParsedNode } from "../datasource/node-format";
 import { StaleNodeRequestError } from "../datasource/stale-node-error";
 
@@ -78,7 +78,7 @@ function defaultMaxConcurrent(): number {
 const DEFAULT_MAX_CONCURRENT = defaultMaxConcurrent();
 
 export class NodeLoader {
-  private readonly dataSource: DataSource;
+  private readonly dataSource: NodeReader;
   private readonly onLoaded: (key: string, node: ParsedNode) => void;
   private readonly onFailed: (key: string, error: unknown) => void;
   private readonly maxConcurrent: number;
@@ -106,7 +106,7 @@ export class NodeLoader {
   private generation = 0;
 
   constructor(
-    dataSource: DataSource,
+    dataSource: NodeReader,
     onLoaded: (key: string, node: ParsedNode) => void,
     onFailed: (key: string, error: unknown) => void,
     maxConcurrent = DEFAULT_MAX_CONCURRENT,

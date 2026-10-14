@@ -95,7 +95,7 @@ describe("WebSource.open", () => {
 describe("WebSource.readNode", () => {
   it("応答のArrayBufferをそのまま返す", async () => {
     const { source, worker } = makeSource();
-    const readPromise = source.readNode("0-0-0-0");
+    const readPromise = source.readNode(1, "0-0-0-0");
     const req = worker.sent[0];
     expect(req.type).toBe("readNode");
 
@@ -107,7 +107,7 @@ describe("WebSource.readNode", () => {
 
   it("エラー応答はErrorとしてrejectされる", async () => {
     const { source, worker } = makeSource();
-    const readPromise = source.readNode("0-0-0-0");
+    const readPromise = source.readNode(1, "0-0-0-0");
     const req = worker.sent[0];
 
     worker.respond({ type: "error", id: req.id, ok: false, message: "boom" });
@@ -115,7 +115,7 @@ describe("WebSource.readNode", () => {
     await expect(readPromise).rejects.toThrow("boom");
   });
 
-  it("openの応答で受け取った世代番号を次のreadNodeリクエストに含める(ファイル切り替え時の不具合の修正)", async () => {
+  it("openの応答のcloudId(=世代番号)を、readNodeに渡したcloudIdとしてリクエストに含める", async () => {
     const { source, worker } = makeSource();
     const file = new File([new Uint8Array([1])], "a.copc.laz");
     const key = source.registerFile(file);
@@ -131,9 +131,9 @@ describe("WebSource.readNode", () => {
       bytesRead: 0,
       generation: 7,
     });
-    await openPromise;
+    const opened = await openPromise;
 
-    void source.readNode("0-0-0-0");
+    void source.readNode(opened.cloudId, "0-0-0-0");
     const readReq = worker.sent[1];
     expect(readReq.type).toBe("readNode");
     if (readReq.type !== "readNode") throw new Error("unreachable");
@@ -142,7 +142,7 @@ describe("WebSource.readNode", () => {
 
   it("readNode-stale応答はStaleNodeRequestErrorとしてrejectされる(ファイル切り替え時の不具合の修正)", async () => {
     const { source, worker } = makeSource();
-    const readPromise = source.readNode("0-0-0-0");
+    const readPromise = source.readNode(1, "0-0-0-0");
     const req = worker.sent[0];
 
     worker.respond({ type: "readNode-stale", id: req.id });
@@ -155,8 +155,8 @@ describe("WebSource: リクエストIDの対応付け", () => {
   it("複数の呼び出しが順不同で応答してもそれぞれ正しい呼び出し元に届く", async () => {
     const { source, worker } = makeSource();
 
-    const first = source.readNode("0-0-0-0");
-    const second = source.readNode("1-0-0-0");
+    const first = source.readNode(1, "0-0-0-0");
+    const second = source.readNode(1, "1-0-0-0");
     expect(worker.sent).toHaveLength(2);
     const [firstReq, secondReq] = worker.sent;
     expect(firstReq.id).not.toBe(secondReq.id);
@@ -169,6 +169,20 @@ describe("WebSource: リクエストIDの対応付け", () => {
 
     expect(await first).toBe(bufferA);
     expect(await second).toBe(bufferB);
+  });
+});
+
+describe("WebSource.close", () => {
+  it("closeリクエストにcloudIdを乗せ、close-resultで完了する", async () => {
+    const { source, worker } = makeSource();
+    const closePromise = source.close(3);
+    const req = worker.sent[0];
+    expect(req.type).toBe("close");
+    if (req.type !== "close") throw new Error("unreachable");
+    expect(req.cloudId).toBe(3);
+
+    worker.respond({ type: "close-result", id: req.id, ok: true });
+    await closePromise;
   });
 });
 

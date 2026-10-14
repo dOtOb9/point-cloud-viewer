@@ -17,9 +17,12 @@
 // 他の読み出し失敗と区別し、**世代カウンタの状態に関わらず無条件に**
 // エラーバナーへ出さず黙って捨てる（裏側の判定のほうが「今何が開いているか」を
 // 正しく知っているため、常に信用してよい）。
+// L1-B（複数ファイル）以降の意味: 「閉じた、または知らない cloudId への読み出し」。
+// ファイルを閉じた（`DataSource.close`）あとに届いた古いリクエストが主な原因で、
+// 上の「切り替え」は「そのファイルを閉じて別のファイルを開く」ことを指す。
 export class StaleNodeRequestError extends Error {
   constructor(public readonly key: string) {
-    super(`node ${key} belongs to a stale generation (the file was switched)`);
+    super(`node ${key} belongs to a closed or unknown cloud (the file was closed)`);
     this.name = "StaleNodeRequestError";
   }
 }

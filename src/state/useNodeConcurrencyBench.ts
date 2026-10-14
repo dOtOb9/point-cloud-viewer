@@ -82,7 +82,7 @@ export function useNodeConcurrencyBench() {
           for (;;) {
             const i = nextIndex++;
             if (i >= keys.length) return;
-            const buf = await source.readNode(keys[i]);
+            const buf = await source.readNode(opened.cloudId, keys[i]);
             bytes += buf.byteLength;
           }
         };

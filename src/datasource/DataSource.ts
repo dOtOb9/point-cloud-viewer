@@ -35,8 +35,21 @@ export interface HierarchyNodeInfo {
 }
 
 export interface OpenedCloud {
+  /** 開いたファイルの識別子。`readNode`・`close`に渡す。Tauriでは`pcv://<cloudId>/<key>`の世代番号、WebではWorkerの表のキー。 */
+  cloudId: number;
   info: CloudInfo;
   nodes: HierarchyNodeInfo[];
+}
+
+/**
+ * renderer（NodeLoader）が必要とする最小の形: キーだけでノードを読む。
+ * renderer は DataSource や cloudId を知らない。呼び出し側が
+ * `{ readNode: (key) => source.readNode(cloudId, key) }` のように cloudId を
+ * 閉じ込めて渡す（L1-multi-layer.md の取り決め）。L1-C が renderer を
+ * 作り直すとき、これは `LayerInput.readNode` に置き換わる。
+ */
+export interface NodeReader {
+  readNode(key: string): Promise<ArrayBuffer>;
 }
 
 export interface DataSource {
@@ -48,6 +61,7 @@ export interface DataSource {
 
   /**
    * COPCファイルを開き、点群全体の情報とoctreeのノード一覧を取得する。
+   * 既に開いている他のファイルは閉じない（複数同時に開ける）。閉じるのは`close`。
    *
    * `readerPoolSize`は省略可能。Tauri実装では省略時にRust側が
    * `default_pool_size()`（利用可能な並列度）で決める。明示的に渡せるのは
@@ -61,5 +75,12 @@ export interface DataSource {
    * 指定したノードキーの点データを取得する。返るバイト列はM1-2で決めた
    * バイナリ形式（`src/datasource/node-format.ts`の`parseNodeBuffer`でパースする）。
    */
-  readNode(key: string): Promise<ArrayBuffer>;
+  readNode(cloudId: number, key: string): Promise<ArrayBuffer>;
+
+  /**
+   * `cloudId`のファイルを閉じ、リーダー（Tauri: ファイルハンドルのプール、
+   * Web: Workerのwasmリーダー）を手放す。閉じたあとの`readNode`は
+   * `StaleNodeRequestError`になる。既に閉じている・知らない`cloudId`でもエラーにしない。
+   */
+  close(cloudId: number): Promise<void>;
 }

@@ -12,7 +12,7 @@
 // 規約3（ARCHITECTURE.md）: このファイルはReactを知らない。canvasと`DataSource`だけを
 // 受け取る。UIから触るときは `src/state/` を経由すること。
 
-import type { DataSource, HierarchyNodeInfo } from "../datasource/DataSource";
+import type { NodeReader, HierarchyNodeInfo } from "../datasource/DataSource";
 import { computeIntensityRange, type ParsedNode } from "../datasource/node-format";
 import { attachOrbitControls, DEFAULT_PITCH, OrbitCamera } from "./orbit-camera";
 import { flyToGoal, pickFlyToPoint } from "./fly-to";
@@ -371,7 +371,7 @@ export class PointCloudRenderer {
     this.camera.animateTo({ ...this.fitGoal, yaw: 0, pitch: DEFAULT_PITCH });
   }
 
-  setDataSource(dataSource: DataSource): void {
+  setDataSource(dataSource: NodeReader): void {
     this.loader = new NodeLoader(
       dataSource,
       (key, node) => this.handleNodeLoaded(key, node),

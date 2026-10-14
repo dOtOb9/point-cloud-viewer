@@ -273,16 +273,6 @@ export async function onConversionFailed(
  * （ADR-0001）。M0時点ではベンチ用エンドポイントを叩くだけ。
  */
 export class TauriSource implements DataSource {
-  /**
-   * ファイル切り替え時の不具合の修正: `open_copc`が返した、現在開いている
-   * ファイルの世代番号（`OpenCopcResponseDto.generation`）。`readNode`の
-   * `pcv://`URLに含めて送り返し、Rust側（`copc_state::read_node_bytes`）が
-   * 切り替え後に届いた古いリクエストを見分けられるようにする。まだ`open`を
-   * 呼んでいない間は0（Rust側はこの値を見る前に「ファイルが開かれていない」を
-   * 検出してエラーを返すため実害は無い。`copc_state.rs`参照）。
-   */
-  private currentGeneration = 0;
-
   async fetchBench(sizeBytes: number): Promise<ArrayBuffer> {
     // convertFileSrc がプラットフォームごとのURL形式（Windows/Androidは
     // http://pcv.localhost/..., macOS/Linuxは pcv://localhost/...）を組み立てる。
@@ -301,14 +291,19 @@ export class TauriSource implements DataSource {
       path,
       poolSize: readerPoolSize ?? null,
     });
-    this.currentGeneration = dto.generation;
     return {
+      // Rust側の世代番号がそのままcloudId。readNode(pcv://のURL)とcloseに渡す。
+      cloudId: dto.generation,
       info: toCloudInfo(dto.info),
       nodes: dto.nodes.map(toHierarchyNodeInfo),
     };
   }
 
-  async readNode(key: string): Promise<ArrayBuffer> {
+  async close(cloudId: number): Promise<void> {
+    await invoke("close_copc", { generation: cloudId });
+  }
+
+  async readNode(cloudId: number, key: string): Promise<ArrayBuffer> {
     // パス形式: "<generation>/<level>-<x>-<y>-<z>"（`buildNodeRequestPath`、
     // `tauri-protocol.ts`参照）。generationの意味は`currentGeneration`フィールドの
     // コメント、Rust側は`src-tauri/src/lib.rs`の`parse_pcv_path`参照。
@@ -318,7 +313,7 @@ export class TauriSource implements DataSource {
     // としてURLに埋め込むため、ここに含めた"/"も"%2F"になって届く。以前は
     // 区切りに":"を使っていたが、Rust側がパーセントデコードせずに解析していた
     // ため常に失敗していた（詳細はTaskSheets/M1-point-rendering.md）。
-    const segment = buildNodeRequestPath(this.currentGeneration, key);
+    const segment = buildNodeRequestPath(cloudId, key);
     const url = convertFileSrc(segment, "pcv");
     const res = await fetch(url);
     if (res.status === STALE_GENERATION_HTTP_STATUS) {

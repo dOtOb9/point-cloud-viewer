@@ -67,7 +67,10 @@ interface WorkerScope {
 const scope = self as unknown as WorkerScope;
 
 let wasmReady: Promise<void> | null = null;
-let openFile: WasmCopcFile | null = null;
+// L1-B: 開いているファイルの表（世代番号 = cloudId → ファイル）。複数同時に持つ。
+// `close`で表から外して`free()`し、wasm側のリーダー・メモリを手放す
+// （メモリは開いているファイルの数にだけ比例する）。
+const openFiles = new Map<number, WasmCopcFile>();
 
 // ファイル切り替え時の不具合の修正（TaskSheets/M4-import-and-conversion.md参照）。
 //
@@ -153,6 +156,9 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       case "readNode":
         handleReadNode(request.id, request.key, request.generation);
         return;
+      case "close":
+        handleClose(request.id, request.cloudId);
+        return;
       case "convertStart":
         await handleConvertStart(request.id, request.file, request.maxPointsPerNode, request.isMobile);
         return;
@@ -174,13 +180,15 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
 }
 
 function handleOpen(id: number, source: OpenSource): void {
-  openFile =
+  const openFile =
     source.kind === "file" ? WasmCopcFile.openFile(source.file) : WasmCopcFile.openUrl(source.url);
   // 呼ぶたびに1つ進む通し番号。同じファイルを開き直した場合も新しい世代になる
   // （「古い世代を無効化する」という目的に対しては同じファイルかどうかを
   // 気にする必要が無いため、単純な方が良い。Tauri側`src-tauri/src/copc_state.rs`の
   // `OpenedFile`と同じ考え方）。
+  // L1-B: 他に開いているファイルは閉じず、表に足す。
   openGeneration += 1;
+  openFiles.set(openGeneration, openFile);
 
   const info = openFile.info() as CloudInfoDto;
   const nodes = openFile.hierarchy() as HierarchyNodeDto[];
@@ -196,12 +204,10 @@ function handleOpen(id: number, source: OpenSource): void {
 }
 
 function handleReadNode(id: number, key: string, generation: number): void {
+  const openFile = openFiles.get(generation);
   if (!openFile) {
-    throw new Error("readNodeが呼ばれたが、まだopenされていない");
-  }
-  if (generation !== openGeneration) {
-    // ファイル切り替え時の不具合の修正: 切り替え前に送られた、古い世代の
-    // リクエスト。実際の読み出しは行わず、専用の応答で知らせる
+    // 閉じた、または知らない世代（ファイル切り替え前に送られた古いリクエストなど）。
+    // 実際の読み出しは行わず、専用の応答で知らせる
     // （モジュール冒頭の`openGeneration`のコメント参照）。
     scope.postMessage({ type: "readNode-stale", id });
     return;
@@ -223,6 +229,16 @@ function handleReadNode(id: number, key: string, generation: number): void {
     },
     [buffer],
   );
+}
+
+/** L1-B: そのファイルを閉じる。wasm側のリーダーを`free()`で手放す。知らない世代は何もしない。 */
+function handleClose(id: number, cloudId: number): void {
+  const file = openFiles.get(cloudId);
+  if (file) {
+    openFiles.delete(cloudId);
+    file.free();
+  }
+  scope.postMessage({ type: "close-result", id, ok: true });
 }
 
 // M4-6b: `WasmConverter::feed`が返すDTO(`crates/pcv-wasm/src/dto.rs`の

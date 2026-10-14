@@ -31,6 +31,7 @@ import {
 import { detectSourceFormatByName } from "../datasource/source-format";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { CloudInfo, DataSource } from "../datasource/DataSource";
+import { StaleNodeRequestError } from "../datasource/stale-node-error";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import { formatConversionBreakdown, type ConversionBreakdownMeta } from "../datasource/conversion-breakdown";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
@@ -350,6 +351,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // TauriのwebviewかブラウザかでTauriSource/WebSourceを選ぶ（Web版はこの1箇所だけの
   // 分岐で切り替わる。TaskSheets/ADR-0012-web-worker-sync-io.md参照）。
   const sourceRef = useRef<DataSource | null>(null);
+  // L1-B: いま画面に出している（renderer に渡している）ファイルの cloudId。
+  // 今は置き換え動作（1ファイル）なので1つだけ持つ。複数レイヤー化は L1-D。
+  const currentCloudIdRef = useRef<number | null>(null);
   // GpuErrorLog自体はReactのstateではない（GPUに依存しない蓄積・重複抑制ロジックの
   // 実体、renderer/gpu-error-log.ts参照）。useRefで1個だけ持ち、reportのたびに
   // list()のスナップショットをgpuErrors stateへコピーしてReactに再描画させる。
@@ -523,7 +527,15 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       (window as unknown as { __pcvRenderer?: unknown }).__pcvRenderer = renderer;
     }
     sourceRef.current = source;
-    renderer.setDataSource(source);
+    // renderer は cloudId を知らない。いまの cloudId を読む窓口だけを渡す。
+    // 無い（まだ開いていない）ときは、閉じたファイル宛てと同じ扱いで黙って捨てさせる。
+    renderer.setDataSource({
+      readNode: (key) => {
+        const cloudId = currentCloudIdRef.current;
+        if (cloudId === null) return Promise.reject(new StaleNodeRequestError(key));
+        return source.readNode(cloudId, key);
+      },
+    });
 
     // M4-3/M4-6b: 変換の進捗・完了・失敗イベントの購読。Tauri版は
     // `src/datasource/tauri.ts`のイベント(Rustのbackendから`listen`)、Web版は
@@ -879,7 +891,20 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       }
 
       const opened = await source.open(path);
+      // 置き換え動作: 新しいファイルが開けてから、前のファイルを閉じる
+      // （開けなかったときは前のファイルをそのまま見せ続ける）。cloudId の差し替えと
+      // resetForNewFile は同じ同期ブロックで行い、古い階層のまま新しい cloudId で
+      // 読む隙間を作らない。
+      const previousCloudId = currentCloudIdRef.current;
+      currentCloudIdRef.current = opened.cloudId;
       renderer.resetForNewFile();
+      if (previousCloudId !== null) {
+        source.close(previousCloudId).catch((e: unknown) => {
+          gpuErrorLogRef.current.report(`前のファイルを閉じられませんでした: ${String(e)}`, undefined, "node-read");
+          setGpuErrors(gpuErrorLogRef.current.list());
+          recordErrorHistory(gpuErrorLogRef.current.list());
+        });
+      }
       renderer.setHierarchy(opened.nodes);
       // M2-2実機不具合の修正: 標高の正規化レンジは、ノードのbounds(octreeセル、
       // 立方体でZ範囲が水平方向に引き伸ばされる)ではなく、LASヘッダーの
