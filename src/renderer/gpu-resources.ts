@@ -19,6 +19,7 @@ import { clearColorForMode, SkyBackground, type BackgroundMode } from "./sky";
 import { floorMod, GroundGrid } from "./ground-grid";
 import { horizontalBasis, type Vec3 } from "./up-axis";
 import { EdlPass } from "./edl";
+import { DepthWindowReader } from "./depth-pick";
 import { nodeFadeFactor } from "./animation";
 import { ELEVATION_INTENSITY_RAMP, rampToWgslFunction, type ColorMode, type ValueRange } from "./colormap";
 import type { PointShape } from "./device-profile";
@@ -713,7 +714,8 @@ export class GpuResources {
     this.depthTexture = this.device.createTexture({
       size: [width, height],
       format: DEPTH_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      // L2-D: EDLオフのとき、ピック（計測）が点群の深度をここから読み戻す。
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     this.depthView = this.depthTexture.createView();
 
@@ -1140,6 +1142,64 @@ export class GpuResources {
     pass.setBindGroup(0, node.bindGroup);
     pass.setVertexBuffer(0, node.vertexBuffer);
     pass.draw(6, node.pointCount);
+  }
+
+  // ===== L2-D: ピック（計測）用の深度の読み戻し =====
+  // 数式と2段階にする理由は pick-math.ts、GPU から読む部分は depth-pick.ts。
+
+  private readonly depthReader = new DepthWindowReader();
+
+  /**
+   * 直近のフレームで描いた点群の深度を、(x0, y0) を左上とする size×size の窓で読む。
+   * EDLオンなら点群専用のオフスクリーン深度、オフならスワップチェーンの深度（空・グリッドは
+   * 深度を書かないので、どちらも点群だけの深度）。準備前は null。
+   */
+  readDepthWindow(x0: number, y0: number, size: number, edlEnabled: boolean): Promise<Float32Array | null> {
+    const device = this.device;
+    const texture = edlEnabled ? this.offscreenDepthTexture : this.depthTexture;
+    if (!device || !texture) return Promise.resolve(null);
+    return this.depthReader.read(device, texture, x0, y0, size);
+  }
+
+  /**
+   * `viewProj` で `nodes` を size×size の小さなテクスチャへ描き直し、その深度を返す（ピックの2段階目）。
+   * 画面には何も出さない。フェードインは使わない（深度が欲しいだけなので）。
+   */
+  async renderDepthWindow(
+    viewProj: Mat4,
+    size: number,
+    nodes: CachedNode[],
+    options: DrawFrameOptions,
+  ): Promise<Float32Array | null> {
+    const device = this.device;
+    const pipelineRound = this.pipelineOffscreenRound;
+    const pipelineSquare = this.pipelineOffscreenSquare;
+    const fadeRound = this.pipelineOffscreenRoundFade;
+    const fadeSquare = this.pipelineOffscreenSquareFade;
+    if (!device || !pipelineRound || !pipelineSquare || !fadeRound || !fadeSquare) return null;
+
+    const color = device.createTexture({ size: [size, size], format: OFFSCREEN_COLOR_FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    const depth = device.createTexture({
+      size: [size, size],
+      format: DEPTH_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    try {
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view: color.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "discard" }],
+        depthStencilAttachment: { view: depth.createView(), depthClearValue: 1.0, depthLoadOp: "clear", depthStoreOp: "store" },
+      });
+      const square = options.pointShape === "square";
+      const noFade = { ...options, fadeEnabled: false };
+      this.drawPoints(device, pass, square ? pipelineSquare : pipelineRound, square ? fadeSquare : fadeRound, viewProj, size, size, nodes, noFade);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      return await this.depthReader.read(device, depth, 0, 0, size);
+    } finally {
+      color.destroy();
+      depth.destroy();
+    }
   }
 
   dispose(): void {

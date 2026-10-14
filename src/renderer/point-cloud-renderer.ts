@@ -34,6 +34,15 @@ import {
   type IdleBoostState,
 } from "./idle-boost";
 import { screenPointToWorldRay } from "./raycast";
+import {
+  COARSE_HALF,
+  REFINE_HALF,
+  depthToEyeDistance,
+  nearestHit,
+  refineDepthRange,
+  unprojectWindowSample,
+  windowViewProj,
+} from "./pick-math";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
 import { layerKeyPrefix, parseLayerNodeKey } from "./layer-key";
@@ -43,7 +52,7 @@ import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } 
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
-import { FAR, FOV_Y_RADIANS, GpuResources, NEAR, type NodePointStyle } from "./gpu-resources";
+import { FAR, FOV_Y_RADIANS, GpuResources, NEAR, type DrawFrameOptions, type NodePointStyle } from "./gpu-resources";
 import { DEFAULT_POINT_SIZE_PX, focusGoalFor, layerFocusBounds, sanitizePointSize } from "./layer-focus";
 import { extendRange, type ColorMode, type ValueRange } from "./colormap";
 import {
@@ -410,6 +419,67 @@ export class PointCloudRenderer {
     if (!hit) return;
     const goal = flyToGoal(hit, this.camera.distance);
     this.camera.animateTo(goal);
+  }
+
+  // ===== L2-D: ピック（画面の点 → 3次元の点）と、計測の線を重ねるための視点の取得 =====
+
+  /** 直近フレームのview行列（ピックの2段階目で、near/farだけ変えた射影と組み直すのに使う）。 */
+  private lastView: Mat4 | null = null;
+  /** 直近フレームの描画設定（ピックの描き直しで同じ点の大きさ・形を使うため）。 */
+  private lastDrawOptions: DrawFrameOptions | null = null;
+
+  /**
+   * 計測の線・ラベルを重ねるための、直近フレームの視点。まだ描いていなければ null。
+   * `viewProj` はワールド座標→クリップ座標（f64）。`up` はカメラの上方向（水平・鉛直の分解に使う）。
+   */
+  getViewSnapshot(): { viewProj: Mat4; up: readonly [number, number, number] } | null {
+    if (!this.lastViewProj) return null;
+    return { viewProj: this.lastViewProj, up: this.camera.getUpAxis() };
+  }
+
+  /**
+   * 画面の点（キャンバスのCSSピクセル）にある点群の3次元座標（ワールド座標、f64）を返す。
+   * 点が無い所（背景）なら null。`refined` は2段階目（狭いnear/farで描き直した高精度の深度）が
+   * 使えたか。使えなかったときは1段階目の深度（遠いほど粗い、pick-math.ts冒頭）で答える。
+   *
+   * 点のデータはCPUに無いので、描いた深度をGPUから読み戻して逆投影する。EDLオン・オフどちらの
+   * 経路でも、点群だけの深度を持つテクスチャがあるので同じ手順で動く（gpu-resources.tsの
+   * `readDepthWindow`）。
+   */
+  async pickPoint(cssX: number, cssY: number): Promise<{ point: [number, number, number]; refined: boolean } | null> {
+    const viewProj = this.lastViewProj;
+    const view = this.lastView;
+    const options = this.lastDrawOptions;
+    if (!viewProj || !view || !options) return null;
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const rect = this.canvas.getBoundingClientRect();
+    const px = Math.floor((cssX / Math.max(rect.width, 1)) * width);
+    const py = Math.floor((cssY / Math.max(rect.height, 1)) * height);
+
+    // 1段階目: 描画済みの深度の、クリック位置の周りの窓から、いちばん近い点の画素を探す。
+    const coarseSize = 2 * COARSE_HALF + 1;
+    const coarse = await this.gpu.readDepthWindow(px - COARSE_HALF, py - COARSE_HALF, coarseSize, options.edlEnabled);
+    if (!coarse) return null;
+    const hit = nearestHit(coarse, coarseSize);
+    if (!hit) return null;
+    const coarseVP = windowViewProj(viewProj, px, py, coarseSize, width, height);
+    const coarsePoint = unprojectWindowSample(coarseVP, hit.ix, hit.iy, coarseSize, hit.depth);
+
+    // 2段階目: 粗い距離の前後だけを near/far にした射影で、その画素の周りを描き直して深度を読む。
+    const hx = px - COARSE_HALF + hit.ix;
+    const hy = py - COARSE_HALF + hit.iy;
+    const range = refineDepthRange(depthToEyeDistance(hit.depth, NEAR, FAR), NEAR, FAR);
+    const proj = perspective(FOV_Y_RADIANS, width / Math.max(height, 1), range.near, range.far);
+    const refineSize = 2 * REFINE_HALF + 1;
+    const refineVP = windowViewProj(multiply(proj, view), hx, hy, refineSize, width, height);
+    const fine = await this.gpu.renderDepthWindow(refineVP, refineSize, this.lastDrawn, options);
+    const fineHit = fine ? nearestHit(fine, refineSize) : null;
+    if (fineHit) {
+      const point = unprojectWindowSample(refineVP, fineHit.ix, fineHit.iy, refineSize, fineHit.depth);
+      if (point) return { point, refined: true };
+    }
+    return coarsePoint ? { point: coarsePoint, refined: false } : null;
   }
 
   // ===== 複数レイヤー（L1-C） =====
@@ -1077,7 +1147,7 @@ export class PointCloudRenderer {
       );
     }
 
-    this.gpu.drawFrame(viewProj, width, height, selection.toDraw, {
+    const drawOptions: DrawFrameOptions = {
       nowMs: time,
       fadeEnabled: this.motionEnabled(),
       backgroundMode: this.backgroundMode,
@@ -1093,7 +1163,10 @@ export class PointCloudRenderer {
       cameraEye: this.camera.eye(),
       cameraTarget: this.camera.target,
       upAxis: this.camera.getUpAxis(),
-    });
+    };
+    this.lastView = view; // L2-D: ピック（計測）用
+    this.lastDrawOptions = drawOptions;
+    this.gpu.drawFrame(viewProj, width, height, selection.toDraw, drawOptions);
 
     this.updateStats(selection.toDraw, time, visibleLayers.length);
   }
