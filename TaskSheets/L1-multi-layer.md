@@ -86,6 +86,59 @@ renderer.resetView(): void                                     // 見えてい�
 4. 行を右クリック →「削除」→ 行も点も消える。もう一方は残る
 5. ウィンドウを狭くする → リボンは1列のまま、左ボタンで押したまま横に引くと動く。ボタンのクリックは今までどおり効く
 
+## L1-C の記録（描画を複数レイヤー対応にした）
+
+### 何をしたか
+
+`PointCloudRenderer` の公開 API を、取り決めどおり `addLayer / removeLayer / setLayerVisible / setLayerColorMode / resetView` にした。
+`setDataSource / setHierarchy / resetForNewFile / setColorMode / setElevationRange` は消した。renderer は DataSource を知らず、レイヤーごとに渡される `readNode(key)` だけを使う。
+追加で `getLayerColorMode(id)` を足した。`RenderStats.colorMode`（画面全体の着色）はレイヤーごとになって意味が無くなったので消し、`layerCount` / `visibleLayerCount` に替えた（使い道はログ出力だけだった）。
+
+### 設計と理由（他の案）
+
+- **キーの名前空間**: キャッシュ・ローダーのキーを `"<通し番号>:<ノードキー>"` にした（`layer-key.ts`）。レイヤーの `id` ではなく内部の通し番号なのは、同じ id を消して付け直したとき、前のレイヤー宛ての読み込み結果が後から届いても別物として捨てられるため。
+  キャッシュ（`NodeCache`）とローダー（`NodeLoader`）は全レイヤーで1つずつ。レイヤーごとに分ける案は、キャッシュの上限（点数）と同時リクエスト数を全体で守りにくいので採らなかった。`NodeCache.removeByPrefix` でレイヤー単位に捨てる。
+- **ノード選択**（`node-selection.ts` の `selectNodesForLayers`）: 見えているレイヤーそれぞれの根から子へたどり、全部の候補を1つのリストに入れて優先度順に並べ、点予算を1つ共有して詰める。
+  「根から子へたどる」はレイヤーごとにそのまま使うので、計算量は選ばれる（視錐台に入り LOD A で切られない）ノード数程度のまま。全ノード走査には戻っていない。
+  従来の `selectNodesForFrame` は `selectNodesForLayers` を1レイヤー・前置き空で呼ぶ薄い関数にした。既存テスト（旧実装との等価性600ケースを含む）は無修正で通る。
+  同順位のときは「レイヤーの並び → hierarchy の添字」。
+- **非表示**: 見えているレイヤーだけを選択に渡す。選ばれないのでロードも要求されず、描画もされない。読み込み済みのキャッシュは残す（再表示がすぐ効く。上限を超えれば LRU で捨てられる）。
+- **removeLayer**: キャッシュからそのレイヤーのノードを捨て（GPU バッファ解放）、着色バッファも destroy。読み込み中の結果は、通し番号がもう無いので `handleNodeLoaded` が捨てる。レイヤーが消えた後に始まる読み出しは `StaleNodeRequestError` で黙って捨てる。消えたレイヤー宛ての読み出し失敗は、エラーバナーにも出さない（前のファイル宛ての失敗を報告しないのと同じ）。
+- **着色はレイヤーごとに uniform バッファを持つ**（`gpu-resources.ts` の `createColorSettingsBuffer` / `writeColorSettings`）。各ノードの bindGroup（binding 1）が、そのレイヤーのバッファを参照する。毎フレーム、見えているレイヤーのバッファに書く。
+  他の案: ノード自身の uniform（binding 0）に色の設定を入れる → WGSL の構造体を変えることになり、GPU で確かめられない今は危険なので採らなかった。**シェーダーは変えていない。** 描画をレイヤーごとに分ける案は、1つの共有バッファを1フレームの途中で書き換えられない（`writeBuffer` は submit 前にまとめて効く）ので成り立たない。
+  デバイス復帰時は、キャッシュと同様にレイヤーの着色バッファも作り直す（`ensureColorBuffer`）。
+- **標高の範囲**は見えている全レイヤーの `elevationRangeFromCloudBounds` の合併（`mergeValueRanges`）、**強度の範囲**はレイヤーごと（ノードが届くたびに広げる）。
+- **視点**: `addLayer` で見えている全レイヤーのノード bounds の和集合（`mergeSceneBounds`）に合わせる（即時、動き中のアニメーションは止める）。`removeLayer` / `setLayerVisible` は視点を動かさず、グリッドの高さ・大きさだけ残りのレイヤーに合わせ直す。`resetView` は見えているレイヤーの和集合へ。ダブルクリックで寄る先の切り取りも、見えているレイヤーの実データ範囲の和集合。
+- **呼び出し側（`useCopcViewer.ts`）は最小限**: 開く → 新しい `cloudId` に差し替え → `removeLayer("current")` → `addLayer("current", { readNode: (key) => source.readNode(opened.cloudId, key), ... })` → 前の `cloudId` を `close`。UI は変えていない。着色の変更は `setLayerColorMode("current", ...)`。
+
+### 触ったファイル
+
+`src/renderer/point-cloud-renderer.ts`・`node-selection.ts`・`node-cache.ts`・`gpu-resources.ts`・`scene-bounds.ts`・新規 `layer-key.ts`・新規 `node-selection-layers.test.ts`、`src/state/useCopcViewer.ts`（開く処理・着色・統計ログの数行）。
+
+### 確認したこと（コマンドの出力）
+
+- `npx tsc --noEmit`: エラーなし。`npm run lint`: エラーなし。
+- `npx vitest run`: 46 ファイル 415 テスト合格（追加: `node-selection-layers.test.ts`。1レイヤーが従来関数と同じ結果、予算の共有、手前のレイヤー優先、非表示（渡さない）レイヤーが出ない、キーの前置き、`removeByPrefix` がバッファを destroy し他レイヤーは残る）。
+- **ノード選択の時間**（ADR-0010 と同じ作りの合成 octree: レベル d に 4^d ノード、各10万点、範囲 4400m、1600x900、点予算 26,843,545、中央優先 4/0.2。1回あたり、vitest 内で20回平均、一時のテストで測り、コミットしていない。視点は真上から高さ h）:
+
+| 構成 | ノード数 | h=3000 | h=8000 |
+|---|---|---|---|
+| 1レイヤー | 21,845 | 1.015 ms（wanted 261） | 0.032 ms（wanted 21） |
+| 2レイヤー（横に並べた同じ形） | 合計 43,690 | 0.805 ms（wanted 268） | 0.074 ms（wanted 42） |
+
+  2レイヤーでも全ノード走査の水準（ADR-0010 の変更前 28.9 ms）には戻っていない。ADR-0010 の 0.06 ms とは視点が違う（その視点は記録に残っていない）ので、h=3000（見えるノードが多い）との直接比較はできない。
+
+### 確認していないこと（未確認）
+
+- **画面（GPU）での動作は一切確認していない。** レイヤーごとの着色バッファが実際に効くか、レイヤー削除で GPU バッファが解放されるか、デバイス消失からの復帰、2レイヤー同時描画は、テストでは確かめられない。
+- 複数レイヤーを足す UI は L1-D で入る。今の main は「開くと置き換わる」だけ（レイヤー 1 個）。
+
+### 所有者の確認手順
+
+1. 今までどおり: ファイルを開く → 点が出る（真っ黒・全ノード読み込み失敗になっていないこと）。別のファイルを開く → 置き換わって点が出る。
+2. 着色ダイアログで RGB / 標高 / 強度 / 分類を切り替えて、色が変わる。ダブルクリックで寄れる。「全体を表示」で戻る。
+3. L1-D が入った後: 2 ファイルを続けて開く → 両方見える。片方のチェックを外す → そのレイヤーだけ消える。片方だけ「標高」にする → そのレイヤーだけ色が変わる。削除 → 点が消え、もう一方が残る。何度か開閉して GPU メモリが増え続けないこと。
+
 ## L1-B の記録（裏側で複数の COPC を同時に開く）
 
 ### 何をしたか
