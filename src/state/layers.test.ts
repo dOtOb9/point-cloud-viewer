@@ -5,6 +5,8 @@ import {
   addLayerToState,
   findLayer,
   initialColorModeFor,
+  isMeasureLayer,
+  makeMeasureLayer,
   removeLayerFromState,
   resolveLayerColorMode,
   selectLayerInState,
@@ -47,6 +49,26 @@ function layer(id: string, hasColor = true): ViewerLayer {
     download: null,
   };
 }
+
+describe("計測レイヤー (L2-D)", () => {
+  const m = { kind: "distance" as const, points: [[1, 2, 3], [4, 6, 3]] as [number, number, number][], up: [0, 0, 1] as const };
+  it("元の点群の座標系を引き継ぎ、点数0・範囲は計測の点の箱", () => {
+    const src = { ...layer("a"), info: { ...info(true), scale: [0.01, 0.01, 0.01], offset: [5, 5, 5], crs: { name: "x", kind: "utm" } } as CloudInfo };
+    const ml = makeMeasureLayer("m", "距離 1", m, src);
+    expect(isMeasureLayer(ml)).toBe(true);
+    expect(isMeasureLayer(src)).toBe(false);
+    expect(ml.info.crs.kind).toBe("utm");
+    expect(ml.info.pointCount).toBe(0);
+    expect(ml.info.min).toEqual([1, 2, 3]);
+    expect(ml.info.max).toEqual([4, 6, 3]);
+    expect(ml.cloudId).toBe(-1);
+  });
+  it("元が無ければ CRS なし。着色は変えられない", () => {
+    const ml = makeMeasureLayer("m", "距離 1", m, null);
+    expect(ml.info.crs.kind).toBe("none");
+    expect(setLayerColorModeInList([ml], "m", "intensity")[0].colorMode).toBe("elevation");
+  });
+});
 
 describe("addLayerToState", () => {
   it("末尾に足し、足したレイヤーを選択にする", () => {

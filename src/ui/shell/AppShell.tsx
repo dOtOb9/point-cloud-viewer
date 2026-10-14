@@ -5,6 +5,8 @@ import { useFileDrop } from "../../state/useFileDrop";
 import { useUpdateCheck } from "../../state/useUpdateCheck";
 import { useWebGpuSupport } from "../../state/useWebGpuSupport";
 import { defaultRenderSettings, readDeviceProfileInput } from "../../renderer/device-profile";
+import { useMeasureTool } from "../../state/useMeasureTool";
+import { MeasureHud, MeasureOverlay } from "../MeasureOverlay";
 import { ViewerPanel } from "../ViewerPanel";
 import { ConversionDialog } from "./ConversionDialog";
 import { ErrorDialog } from "./ErrorDialog";
@@ -31,6 +33,7 @@ export function AppShell() {
   const theme = useTheme();
   const webGpuSupport = useWebGpuSupport();
   const update = useUpdateCheck();
+  const measure = useMeasureTool(viewer, canvasRef);
 
   // 狭幅(<768px)ではドロワーが画面を覆うため、最初は閉じて点群が見えるようにする。
   // 広い画面では従来どおり開いておく(E2Eが変換の内訳の表示を待つため、
@@ -84,11 +87,14 @@ export function AppShell() {
   return (
     <div className="fixed inset-0 overflow-hidden bg-black">
       <ViewerPanel canvasRef={canvasRef} />
+      <MeasureOverlay viewer={viewer} measure={measure} canvasRef={canvasRef} />
+      <MeasureHud measure={measure} />
 
       <Ribbon
         viewer={viewer}
         glassEnabled={glassEnabled}
         onOpenSettings={() => setSettingsOpen(true)}
+        measure={measure}
       />
 
       <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />

@@ -1190,9 +1190,9 @@ export class GpuResources {
         colorAttachments: [{ view: color.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "discard" }],
         depthStencilAttachment: { view: depth.createView(), depthClearValue: 1.0, depthLoadOp: "clear", depthStoreOp: "store" },
       });
-      const square = options.pointShape === "square";
+      const pipelines: PointPipelines = { round: pipelineRound, square: pipelineSquare, roundFade: fadeRound, squareFade: fadeSquare };
       const noFade = { ...options, fadeEnabled: false };
-      this.drawPoints(device, pass, square ? pipelineSquare : pipelineRound, square ? fadeSquare : fadeRound, viewProj, size, size, nodes, noFade);
+      this.drawPoints(device, pass, pipelines, viewProj, size, size, nodes, noFade);
       pass.end();
       device.queue.submit([encoder.finish()]);
       return await this.depthReader.read(device, depth, 0, 0, size);

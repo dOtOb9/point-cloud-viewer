@@ -7,7 +7,8 @@
 import type { CloudInfo } from "../datasource/DataSource";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
-import { sanitizePointSize } from "../renderer/layer-focus";
+import { DEFAULT_POINT_SIZE_PX, sanitizePointSize } from "../renderer/layer-focus";
+import { pointsBounds, type Measurement } from "./measure";
 
 /** 変換で作ったレイヤーに付く、Web 版のダウンロード用 URL。 */
 export interface LayerDownload {
@@ -32,6 +33,8 @@ export interface ViewerLayer {
   /** このレイヤーを変換で作ったときだけ入る（内訳テキスト・ダウンロード）。 */
   conversionBreakdownText: string | null;
   download: LayerDownload | null;
+  /** L2-D: 計測レイヤーのときだけ入る（種類「計測」）。点群レイヤーには無い。`isMeasureLayer` で判定する。 */
+  measurement?: Measurement;
 }
 
 /** 追加・削除の結果。一覧と選択中の id をひとまとめに返す（選択は常に一覧の中の id か null）。 */
@@ -81,7 +84,8 @@ export function resolveLayerColorMode(layers: ViewerLayer[], id: string, mode: C
 
 /** レイヤーの着色を更新する。RGB を持たないレイヤーで "rgb" を選んだら標高に落とす。 */
 export function setLayerColorModeInList(layers: ViewerLayer[], id: string, mode: ColorMode): ViewerLayer[] {
-  return layers.map((l) => (l.id === id ? { ...l, colorMode: resolveColorMode(mode, l.info.hasColor) } : l));
+  // 計測レイヤーに着色は無い（点群専用の操作）ので変えない。
+  return layers.map((l) => (l.id === id && !isMeasureLayer(l) ? { ...l, colorMode: resolveColorMode(mode, l.info.hasColor) } : l));
 }
 
 /** レイヤーの点の形を更新する（L2-B）。 */
@@ -97,4 +101,45 @@ export function setLayerPointSizeInList(layers: ViewerLayer[], id: string, px: n
 export function findLayer(layers: ViewerLayer[], id: string | null): ViewerLayer | null {
   if (id === null) return null;
   return layers.find((l) => l.id === id) ?? null;
+}
+
+// ---- L2-D: 計測レイヤー ----
+
+/** 計測レイヤーか（点群レイヤーと区別する。着色・見た目などの点群専用の操作は無効にする）。 */
+export function isMeasureLayer(layer: ViewerLayer): boolean {
+  return layer.measurement !== undefined;
+}
+
+/**
+ * 計測レイヤーを作る。`ViewerLayer` の形を保つため `info` も要るので、元の点群レイヤーの
+ * 座標系（CRS・scale・offset）を引き継ぎ、点数は 0、範囲は計測の点の外接箱にする。
+ * CRS を引き継ぐのは、単位の注記（m / ft）に使うため。元が無ければ CRS なし。
+ */
+export function makeMeasureLayer(id: string, name: string, measurement: Measurement, source: ViewerLayer | null): ViewerLayer {
+  const { min, max } = pointsBounds(measurement.points);
+  const info: CloudInfo = {
+    pointCount: 0,
+    min,
+    max,
+    scale: source?.info.scale ?? [1, 1, 1],
+    offset: source?.info.offset ?? [0, 0, 0],
+    hasColor: false,
+    crs: source?.info.crs ?? { name: "", kind: "none" },
+  };
+  return {
+    id,
+    name,
+    info,
+    nodeCount: 0,
+    visible: true,
+    colorMode: "elevation",
+    // 点の形・大きさは点群専用。計測レイヤーでは使わない（型を満たすだけの既定値）。
+    pointShape: "round",
+    pointSize: DEFAULT_POINT_SIZE_PX,
+    // DataSource のファイルは無い（close しない目印）。
+    cloudId: -1,
+    conversionBreakdownText: null,
+    download: null,
+    measurement,
+  };
 }

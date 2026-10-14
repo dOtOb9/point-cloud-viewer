@@ -1,0 +1,211 @@
+import { useEffect, useState, type RefObject } from "react";
+import type { CopcViewerState } from "../state/useCopcViewer";
+import type { MeasureToolState } from "../state/useMeasureTool";
+import { isMeasureLayer } from "../state/layers";
+import {
+  labelAnchor,
+  lengthUnitLabel,
+  measurementLabelLines,
+  measurementSegments,
+  MEASURE_KIND_NAME,
+  type Measurement,
+} from "../state/measure";
+import { projectPoint, projectSegment } from "../renderer/screen-project";
+
+// L2-D: 計測の線・頂点・ラベルを、3Dビューの上に重ねる SVG。
+//
+// 描き方の選択（記録は TaskSheets/L2-layer-tools.md の「L2-D の記録」）:
+//  - WebGPU のパイプラインを足さず、DOM の SVG で描く。理由: ラベル（数値）は DOM が必須で、
+//    線だけ WebGPU にすると2系統になる。計測の線は数本で、毎フレーム数十個の要素を更新しても軽い。
+//    renderer（L2-B が作業中）にも触れずに済む。
+//  - 代わりに「点群に隠れる」表現はできない（常に手前に描く）。計測では見失わないほうが大事なので許容。
+//  - 毎フレーム、renderer の直近の viewProj（f64）で3次元の点を画面へ投影し直す。カメラが
+//    止まっている間は viewProj が変わらないので、再描画しない。
+
+const STROKE = "#fbbf24";
+const STROKE_SELECTED = "#f97316";
+
+interface Frame {
+  viewProj: number[];
+  up: readonly [number, number, number];
+  width: number;
+  height: number;
+}
+
+function sameFrame(a: Frame | null, b: Frame): boolean {
+  if (!a || a.width !== b.width || a.height !== b.height) return false;
+  for (let i = 0; i < 16; i++) if (a.viewProj[i] !== b.viewProj[i]) return false;
+  return true;
+}
+
+function Label({ lines, x, y }: { lines: string[]; x: number; y: number }) {
+  return (
+    <text
+      x={x + 8}
+      y={y - 8}
+      fontSize={12}
+      fontWeight={600}
+      fill="#fff"
+      stroke="#000"
+      strokeWidth={3}
+      strokeLinejoin="round"
+      paintOrder="stroke"
+      data-testid="measure-label"
+    >
+      {lines.map((line, i) => (
+        <tspan key={i} x={x + 8} dy={i === 0 ? 0 : 15}>
+          {line}
+        </tspan>
+      ))}
+    </text>
+  );
+}
+
+function MeasurementShape({
+  measurement,
+  unit,
+  frame,
+  selected,
+  closed,
+  withLabel,
+}: {
+  measurement: Measurement;
+  unit: string;
+  frame: Frame;
+  selected: boolean;
+  closed: boolean;
+  withLabel: boolean;
+}) {
+  const stroke = selected ? STROKE_SELECTED : STROKE;
+  const lines = measurementSegments(measurement, closed).map((seg, i) => {
+    const s = projectSegment(frame.viewProj, seg.a, seg.b, frame.width, frame.height);
+    if (!s) return null;
+    return (
+      <line
+        key={i}
+        x1={s[0].x}
+        y1={s[0].y}
+        x2={s[1].x}
+        y2={s[1].y}
+        stroke={stroke}
+        strokeWidth={selected ? 3 : 2}
+        strokeDasharray={seg.dashed ? "6 5" : undefined}
+        strokeLinecap="round"
+      />
+    );
+  });
+  const dots = measurement.points.map((p, i) => {
+    const s = projectPoint(frame.viewProj, p, frame.width, frame.height);
+    return s ? <circle key={i} cx={s.x} cy={s.y} r={4} fill={stroke} stroke="#000" strokeWidth={1.5} /> : null;
+  });
+  const anchor = withLabel ? projectPoint(frame.viewProj, labelAnchor(measurement), frame.width, frame.height) : null;
+  const text = withLabel ? measurementLabelLines(measurement, unit) : [];
+  return (
+    <g>
+      {lines}
+      {dots}
+      {anchor && text.length > 0 && <Label lines={text} x={anchor.x} y={anchor.y} />}
+    </g>
+  );
+}
+
+/** 計測中の案内。いま何を測っているか、次に何をすればよいか、やめ方を出す。 */
+export function MeasureHud({ measure }: { measure: MeasureToolState }) {
+  if (measure.mode === null) return null;
+  const n = measure.points.length;
+  const kindName = MEASURE_KIND_NAME[measure.mode];
+  let guide: string;
+  if (measure.mode === "area") {
+    guide = n < 3 ? `頂点をクリック（${n}点）` : `頂点をクリック（${n}点）。ダブルクリックか Enter で閉じる`;
+  } else {
+    guide = n === 0 ? "1点目をクリック" : "2点目をクリック";
+  }
+  return (
+    <div
+      data-testid="measure-hud"
+      className="pointer-events-auto absolute bottom-14 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100"
+    >
+      <span className="font-semibold">{kindName}を計測中</span>
+      <span>{measure.notice ?? guide}</span>
+      {measure.mode === "area" && (
+        <button
+          type="button"
+          onClick={measure.finish}
+          disabled={n < 3}
+          className="min-h-9 rounded-md bg-primary px-3 text-on-primary disabled:opacity-40"
+        >
+          閉じる
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={measure.stop}
+        title="Esc でもやめられます"
+        className="min-h-9 rounded-md border border-current/30 px-3 hover:bg-black/5 dark:hover:bg-white/10"
+      >
+        やめる
+      </button>
+    </div>
+  );
+}
+
+export function MeasureOverlay({
+  viewer,
+  measure,
+  canvasRef,
+}: {
+  viewer: CopcViewerState;
+  measure: MeasureToolState;
+  canvasRef: RefObject<HTMLCanvasElement | null>;
+}) {
+  const measureLayers = viewer.layers.filter((l) => isMeasureLayer(l) && l.visible);
+  const active = measureLayers.length > 0 || measure.mode !== null;
+  const [frame, setFrame] = useState<Frame | null>(null);
+  const getViewSnapshot = viewer.getViewSnapshot;
+
+  // 計測が画面にあるあいだだけ、毎フレーム viewProj を読む。変わったときだけ state を更新する。
+  useEffect(() => {
+    if (!active) return;
+    let raf = 0;
+    const tick = () => {
+      const snapshot = getViewSnapshot();
+      const el = canvasRef.current;
+      if (snapshot && el) {
+        const next: Frame = { viewProj: snapshot.viewProj, up: snapshot.up, width: el.clientWidth, height: el.clientHeight };
+        setFrame((prev) => (sameFrame(prev, next) ? prev : next));
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active, getViewSnapshot, canvasRef]);
+
+  if (!active || !frame) return null;
+
+  const draft: Measurement | null = measure.mode !== null && measure.points.length > 0 ? { kind: measure.mode, points: [...measure.points], up: frame.up } : null;
+  const draftUnit = lengthUnitLabel((viewer.selectedLayer ?? viewer.layers[0])?.info.crs);
+
+  return (
+    <svg
+      data-testid="measure-overlay"
+      className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+      width={frame.width}
+      height={frame.height}
+    >
+      {measureLayers.map((layer) =>
+        layer.measurement ? (
+          <MeasurementShape
+            key={layer.id}
+            measurement={layer.measurement}
+            unit={lengthUnitLabel(layer.info.crs)}
+            frame={frame}
+            selected={layer.id === viewer.selectedLayerId}
+            closed
+            withLabel
+          />
+        ) : null,
+      )}
+      {draft && <MeasurementShape measurement={draft} unit={draftUnit} frame={frame} selected={false} closed={false} withLabel={false} />}
+    </svg>
+  );
+}

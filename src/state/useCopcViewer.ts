@@ -50,6 +50,8 @@ import {
   addLayerToState,
   findLayer,
   initialColorModeFor,
+  isMeasureLayer,
+  makeMeasureLayer,
   removeLayerFromState,
   resolveLayerColorMode,
   selectLayerInState,
@@ -62,6 +64,7 @@ import {
   type ViewerLayer,
 } from "./layers";
 import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "../renderer/center-priority";
+import { MEASURE_KIND_NAME, type Measurement } from "./measure";
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // PointShapeもここから再エクスポートする（M3-8）。
@@ -197,6 +200,12 @@ export interface CopcViewerState {
   focusLayer: (id: string) => void;
   /** レイヤーを消す（renderer から外し、DataSource のファイルも閉じる）。 */
   removeLayer: (id: string) => void;
+  /** L2-D: 画面の点（キャンバスのCSSピクセル）の3次元座標。点が無い所は null。renderer の `pickPoint`。 */
+  pickPoint: (cssX: number, cssY: number) => Promise<{ point: [number, number, number]; refined: boolean } | null>;
+  /** L2-D: 直近フレームの viewProj と上方向（計測の線を重ねる用）。 */
+  getViewSnapshot: () => { viewProj: number[]; up: readonly [number, number, number] } | null;
+  /** L2-D: 確定した計測を、新しい「計測」レイヤーとして足す（選択になる）。 */
+  addMeasurement: (measurement: Measurement) => void;
   pointBudget: number;
   /** タスクB(ADR-0009)の自動調整のオン/オフ。既定値はrendererの既定(true)に合わせている。 */
   autoPointBudgetEnabled: boolean;
@@ -1113,7 +1122,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // 落ちる」）。着色ダイアログでも"rgb"の選択肢自体をdisabledにしているため、通常はここに
       // 到達しないが、二重の安全策として関数側でも解決する（理由はcolormap.tsのコメント参照）。
       const resolved = resolveLayerColorMode(current.layers, id, mode);
-      if (resolved === null) return;
+      const target = findLayer(current.layers, id);
+      if (resolved === null || !target || isMeasureLayer(target)) return; // 計測レイヤーに着色は無い
       rendererRef.current?.setLayerColorMode(id, resolved);
       commitLayers({ ...current, layers: setLayerColorModeInList(current.layers, id, mode) });
     },
@@ -1157,11 +1167,49 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       if (next.layers.length === 0) {
         setStatus((prev) => (prev === "ready" ? "idle" : prev));
       }
+      // 計測レイヤーは DataSource のファイルを持たない。
+      if (isMeasureLayer(layer)) return;
       sourceRef.current?.close(layer.cloudId).catch((e: unknown) => {
         gpuErrorLogRef.current.report(`ファイルを閉じられませんでした: ${String(e)}`, undefined, "node-read");
         setGpuErrors(gpuErrorLogRef.current.list());
         recordErrorHistory(gpuErrorLogRef.current.list());
       });
+    },
+    [commitLayers],
+  );
+
+  // ===== L2-D: 計測 =====
+  // ピックと視点の取得は renderer へ素通し。計測の操作（点を集める・確定する）は
+  // useMeasureTool.ts にあり、確定した計測を addMeasurement で新しいレイヤーとして足す。
+
+  const pickPoint = useCallback(async (cssX: number, cssY: number) => {
+    try {
+      return (await rendererRef.current?.pickPoint(cssX, cssY)) ?? null;
+    } catch (e) {
+      // 深度の読み戻しに失敗したら、本文のまま既存のエラー表示（ADR-0011）へ流す。黙って捨てない。
+      gpuErrorLogRef.current.report(`計測の点を取れませんでした: ${String(e)}`);
+      setGpuErrors(gpuErrorLogRef.current.list());
+      recordErrorHistory(gpuErrorLogRef.current.list());
+      return null;
+    }
+  }, []);
+
+  const getViewSnapshot = useCallback(() => rendererRef.current?.getViewSnapshot() ?? null, []);
+
+  const measureCountersRef = useRef({ distance: 0, height: 0, area: 0 });
+
+  const addMeasurement = useCallback(
+    (measurement: Measurement) => {
+      const current = layersStateRef.current;
+      // 元にする点群レイヤー（ADR-0018: 選んだレイヤーから作る）: 選択中が点群ならそれ、
+      // 計測レイヤーを選んでいるときは最初の点群レイヤー。座標系（単位）を引き継ぐためだけに使う。
+      const selected = findLayer(current.layers, current.selectedLayerId);
+      const source = selected && !isMeasureLayer(selected) ? selected : (current.layers.find((l) => !isMeasureLayer(l)) ?? null);
+      const counters = measureCountersRef.current;
+      counters[measurement.kind] += 1;
+      const layerId = `layer-${nextLayerNumberRef.current++}`;
+      const name = `${MEASURE_KIND_NAME[measurement.kind]} ${counters[measurement.kind]}`;
+      commitLayers(addLayerToState(current, makeMeasureLayer(layerId, name, measurement, source)));
     },
     [commitLayers],
   );
@@ -1220,6 +1268,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setLayerPointSize,
     focusLayer,
     removeLayer,
+    pickPoint,
+    getViewSnapshot,
+    addMeasurement,
     pointBudget,
     autoPointBudgetEnabled,
     stats,
