@@ -2690,6 +2690,7 @@ dependencies = [
  "byteorder",
  "chrono",
  "copc-core",
+ "copc-reader",
  "copc-writer",
  "e57",
  "glob",

@@ -257,17 +257,22 @@ pub struct ExtractStats {
     pub max_buffered_points: usize,
 }
 
+/// ノードを1つ読み終えるたびに呼ばれる関数。
+pub type NodeCallback<'a> = Box<dyn FnMut(&ExtractStats) -> copc_core::Result<()> + Send + 'a>;
+
 /// COPCから条件に合う点だけを1点ずつ返すイテレータ。
-pub struct ExtractPoints<R: Read + Seek + Send> {
+pub struct ExtractPoints<'a, R: Read + Seek + Send> {
     reader: CopcReader<R>,
     filter: ExtractFilter,
     pending: VecDeque<VoxelKey>,
     /// いま読んでいるノードの、条件に合った点(読み終えたら捨てる)。
     current: VecDeque<LasPointRecord>,
     stats: ExtractStats,
+    /// ノードを1つ読み終えるたびに呼ぶ(進捗とキャンセルの確認用)。`Err`を返すと抽出を打ち切る。
+    on_node: Option<NodeCallback<'a>>,
 }
 
-impl<R: Read + Seek + Send> ExtractPoints<R> {
+impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
     /// `reader`の階層を調べ、条件と交わるノードを選ぶ。点はまだ読まない。
     pub fn new(reader: CopcReader<R>, filter: ExtractFilter) -> Result<Self, copc_core::Error> {
         filter
@@ -295,11 +300,20 @@ impl<R: Read + Seek + Send> ExtractPoints<R> {
             pending,
             current: VecDeque::new(),
             stats,
+            on_node: None,
         })
     }
 
     pub fn stats(&self) -> ExtractStats {
         self.stats
+    }
+
+    /// ノードを読み終えるたびに呼ぶ関数を設定する。進捗の通知とキャンセルの確認に使う
+    /// (条件に合う点が少ないと、書き出し側が何も受け取らないまま長く読み続けるため、
+    /// 書き出し側のキャンセル確認だけでは間に合わない)。`Err`を返すとイテレータは
+    /// そのエラーを返して終わる。
+    pub fn set_node_callback(&mut self, callback: NodeCallback<'a>) {
+        self.on_node = Some(callback);
     }
 
     /// 次のノードを読み、条件に合う点を`current`に入れる。読むノードが無ければ`false`。
@@ -317,11 +331,14 @@ impl<R: Read + Seek + Send> ExtractPoints<R> {
             }
         }
         // `points`はここで捨てられる(次のノードを読む前に手放す)。
+        if let Some(callback) = self.on_node.as_mut() {
+            callback(&self.stats)?;
+        }
         Ok(true)
     }
 }
 
-impl<R: Read + Seek + Send> Iterator for ExtractPoints<R> {
+impl<R: Read + Seek + Send> Iterator for ExtractPoints<'_, R> {
     type Item = copc_core::Result<LasPointRecord>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -15,6 +15,8 @@ description = "M4-1のスパイク実装(素朴な全点メモリ実装)と、M4
 # COPCのバイナリ構造(hierarchy entry・COPC info VLR)はpcv-coreの読み込み側(ADR-0003)と
 # 同じcopc-coreの型をそのまま流用する。書式の定義を2箇所で持たないため。
 copc-core = "0.9.0"
+# L2-C: 抽出(extract.rs)がCOPCを開くのに使う。pcv-coreと同じ版・同じvendor差し替え。
+copc-reader = "0.9.0"
 # 入力LAS/LAZの読み込みと、出力点の生バイト列(raw::Point)へのシリアライズに使う。
 # M4-7(TaskSheets/M4-import-and-conversion.md): `laz-parallel`フィーチャは`las`クレートが
 # 既に持っている並列LAZ展開(`laz`クレートの`parallel`フィーチャ、rayon使用)への入口で、
