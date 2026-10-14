@@ -362,6 +362,8 @@ pub fn run() {
             conversion::start_las_conversion,
             conversion::start_multi_las_conversion,
             conversion::cancel_las_conversion,
+            conversion::extract_copc,
+            conversion::merge_copcs,
             conversion::supports_custom_temp_dir
         ])
         .run(tauri::generate_context!())

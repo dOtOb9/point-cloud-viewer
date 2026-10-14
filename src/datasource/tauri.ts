@@ -25,6 +25,7 @@ import {
   type ConversionStageBreakdownDto,
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
+import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
 import { StaleNodeRequestError } from "./stale-node-error";
 import { buildNodeRequestPath } from "./tauri-protocol";
 
@@ -242,18 +243,26 @@ export async function onConversionProgress(
  *  内訳(`sourceFormat`は元ファイルの拡張子、`stageTimings`は秒単位の内訳。
  *  `src-tauri/src/conversion.rs`の`ConversionDoneEvent`参照)。 */
 export async function onConversionDone(
-  callback: (outputPath: string, sourceFormat: string, stageTimings: ConversionStageBreakdown) => void,
+  callback: (
+    outputPath: string,
+    sourceFormat: string,
+    stageTimings: ConversionStageBreakdown,
+    /** L2-C: エラーログに出す警告(CRSの無いファイルを通した、など)。無ければ空。 */
+    warnings: string[],
+  ) => void,
 ): Promise<UnlistenFn> {
   if (!isTauriEnvironment()) return NOOP_UNLISTEN;
   return await listen<{
     output_path: string;
     source_format: string;
     stage_timings: ConversionStageBreakdownDto;
+    warnings?: string[];
   }>("conversion-done", (event) => {
     callback(
       event.payload.output_path,
       event.payload.source_format,
       toConversionStageBreakdown(event.payload.stage_timings),
+      event.payload.warnings ?? [],
     );
   });
 }
@@ -348,4 +357,72 @@ export class TauriSource implements DataSource {
 export async function fetchBenchViaInvoke(sizeBytes: number): Promise<number> {
   const bytes = await invoke<number[]>("bench_invoke", { size: sizeBytes });
   return bytes.length;
+}
+
+// --- L2-C: 点群ツール(抽出・結合) ---
+
+interface ToolResultDto {
+  output_path: string;
+  point_count: number;
+  warnings: string[];
+}
+
+function toToolResult(dto: ToolResultDto): ToolResult {
+  return { outputPath: dto.output_path, pointCount: dto.point_count, warnings: dto.warnings };
+}
+
+/** 実行中だけ進捗イベント(変換と同じ`conversion-progress`)を`onProgress`へ流す。 */
+async function withToolProgress<T>(
+  options: ToolOptions | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const callback = options?.onProgress;
+  const unlisten = callback
+    ? await onConversionProgress((progress) => {
+        if (progress.phase === "reading") {
+          callback({ pointsRead: progress.pointsRead, totalPoints: progress.totalPoints });
+        }
+      })
+    : NOOP_UNLISTEN;
+  try {
+    return await run();
+  } finally {
+    unlisten();
+  }
+}
+
+/**
+ * 開いているCOPC(`path` = `open()`に渡したパス)から`filter`に合う点だけを新しいCOPCにする。
+ * 戻り値の`outputPath`を`open()`に渡せば新しいレイヤーになる。元のファイルは変えない。
+ * 0点なら例外(本文は`EMPTY_SELECTION_MESSAGE`)。キャンセルは`cancelLasConversion()`
+ * (変換と同じ。本文は「キャンセルされた」)。
+ */
+export async function extractToCopc(
+  path: string,
+  filter: ExtractFilter,
+  options?: ToolOptions,
+): Promise<ToolResult> {
+  return await withToolProgress(options, async () => {
+    const dto = await invoke<ToolResultDto>("extract_copc", {
+      path,
+      filter,
+      tempDir: options?.tempDir ?? null,
+    });
+    return toToolResult(dto);
+  });
+}
+
+/**
+ * 開いている複数のCOPC(`open()`に渡したパス)を1つのCOPCにする。
+ * CRSの無いファイルは止めずに通し、`warnings`に理由を返す(エラーログに出す)。
+ * CRSのあるファイル同士が食い違えば例外。
+ */
+export async function mergeCopcs(paths: string[], options?: ToolOptions): Promise<ToolResult> {
+  return await withToolProgress(options, async () => {
+    const dto = await invoke<ToolResultDto>("merge_copcs", {
+      paths,
+      tempDir: options?.tempDir ?? null,
+    });
+    return toToolResult(dto);
+  });
 }

@@ -144,6 +144,8 @@ pub struct ConversionDoneEvent {
     /// Rust側で埋める」を優先した)。
     pub source_format: String,
     pub stage_timings: ConversionStageBreakdownDto,
+    /// L2-C: 画面のエラーログ(ADR-0011)に出す警告(CRSの無いファイルを通した、など)。
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -432,7 +434,7 @@ fn run_merge_conversion_thread(
     );
 
     match result {
-        Ok(_summary) => {
+        Ok(summary) => {
             if let Err(e) = cache::write_multi_sidecar(&output_path, fingerprint) {
                 log::warn!(
                     "[conversion] キャッシュ情報の保存に失敗した(次回は再変換される、マージ): {e}"
@@ -451,6 +453,7 @@ fn run_merge_conversion_thread(
                     fingerprint.total_bytes,
                     input_file_count,
                 ),
+                warnings: summary.crs_warnings(),
             };
             if let Err(e) = app.emit(EVENT_DONE, &event) {
                 log::warn!("[conversion] done イベントの送出に失敗した(マージ): {e}");
@@ -721,6 +724,7 @@ fn run_conversion_thread(
                 output_path: output_path.to_string_lossy().into_owned(),
                 source_format: source_format_label,
                 stage_timings: ConversionStageBreakdownDto::new(timings, point_count, input_len, 1),
+                warnings: Vec::new(),
             };
             if let Err(e) = app.emit(EVENT_DONE, &event) {
                 log::warn!("[conversion] done イベントの送出に失敗した: {e}");
@@ -742,4 +746,199 @@ fn emit_failed(app: &AppHandle, message: String, cancelled: bool) {
     if let Err(e) = app.emit(EVENT_FAILED, &event) {
         log::warn!("[conversion] failed イベントの送出に失敗した: {e}");
     }
+}
+
+// --- L2-C: 点群ツール(抽出・COPCの結合)のコマンド ---
+//
+// 選んだレイヤーから新しいレイヤーを作る(ADR-0018)。結果はアプリの一時フォルダの
+// COPCで、フロントは返ったパスをそのまま `open_copc` に渡して新しいレイヤーにする。
+// 進捗は変換と同じ `conversion-progress` イベント、キャンセルは同じ
+// `cancel_las_conversion` を使う(変換と同時には1つしか走らせない)。
+// 変換の完了・失敗イベントは出さない: 結果はコマンドの戻り値(エラーは `Err` の本文)で返す。
+
+/// 抽出・結合の結果。フロントの `ToolResult` に対応する(camelCaseへの変換は `tauri.ts`)。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolOutput {
+    pub output_path: String,
+    pub point_count: u64,
+    /// エラーログに出す警告(CRSの無いファイルを通した、など)。
+    pub warnings: Vec<String>,
+}
+
+static TOOL_OUTPUT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 一時フォルダの下に、重ならない出力パスを作る。
+fn tool_output_path(
+    app: &AppHandle,
+    temp_dir: Option<&str>,
+    stem: &str,
+) -> Result<PathBuf, String> {
+    let base = resolve_spill_dir(app, temp_dir)?.join("pcv-tools");
+    std::fs::create_dir_all(&base)
+        .map_err(|e| format!("一時フォルダを作成できなかった ({}): {e}", base.display()))?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = TOOL_OUTPUT_SEQ.fetch_add(1, Ordering::Relaxed);
+    Ok(base.join(format!("{stem}-{nanos}-{seq}.copc.laz")))
+}
+
+/// 進捗イベントを流すクロージャを作る(読み込み段階の割合のみ)。
+fn tool_progress(app: &AppHandle) -> impl FnMut(ReadProgress) + Send + 'static {
+    let app = app.clone();
+    let started = Instant::now();
+    move |progress: ReadProgress| {
+        let event = ConversionProgressEvent::Reading {
+            points_read: progress.points_read,
+            total_points: progress.total_points,
+            elapsed_secs: started.elapsed().as_secs_f64(),
+        };
+        if let Err(e) = app.emit(EVENT_PROGRESS, &event) {
+            log::warn!("[tool] progressイベントの送出に失敗した: {e}");
+        }
+    }
+}
+
+/// 別スレッドで `work` を実行し、panic はエラー文にして返す(ADR-0015)。
+/// 実行中はキャンセルフラグを `ConversionState` に置く。
+async fn run_tool<T: Send + 'static>(
+    state: &ConversionState,
+    work: impl FnOnce(AtomicCancel) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = state
+            .0
+            .lock()
+            .map_err(|_| "内部状態が壊れています".to_string())?;
+        if guard.is_some() {
+            return Err("別の変換またはツールの処理が進行中です".to_string());
+        }
+        *guard = Some(cancel_flag.clone());
+    }
+    let cancel = AtomicCancel(cancel_flag);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(cancel)))
+    })
+    .await;
+    if let Ok(mut guard) = state.0.lock() {
+        *guard = None;
+    }
+    match joined {
+        Ok(Ok(result)) => result,
+        Ok(Err(panic)) => {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "(本文なし)".to_string());
+            Err(format!("内部エラー(panic): {message}"))
+        }
+        Err(e) => Err(format!("処理を実行できなかった: {e}")),
+    }
+}
+
+/// `path`(開いているCOPC)から `filter` に合う点だけを新しいCOPCに書き出す。
+/// 0点なら `Err("選んだ範囲に点がありません")`。
+#[tauri::command]
+pub async fn extract_copc(
+    app: AppHandle,
+    path: String,
+    filter: pcv_core::extract::ExtractFilter,
+    temp_dir: Option<String>,
+    state: State<'_, ConversionState>,
+) -> Result<ToolOutput, String> {
+    if FilePath::from_str(&path).is_ok_and(|p| matches!(p, FilePath::Url(_))) {
+        return Err("この環境(content:// URI)では未対応です".to_string());
+    }
+    let stem = Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| {
+            n.trim_end_matches(".laz")
+                .trim_end_matches(".copc")
+                .to_string()
+        })
+        .unwrap_or_else(|| "extract".to_string());
+    let output = tool_output_path(&app, temp_dir.as_deref(), &format!("{stem}-extract"))?;
+    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
+    redirect_os_temp_dir(&spill_dir);
+    let on_progress = tool_progress(&app);
+    run_tool(&state, move |cancel| {
+        let mut timings = ConversionStageTimings::default();
+        let summary = pcv_convert::extract::extract_path_and_timings(
+            Path::new(&path),
+            filter,
+            &output,
+            &spill_dir,
+            &CopcWriterParams::default(),
+            &cancel,
+            on_progress,
+            &mut timings,
+        )
+        .map_err(|e| {
+            if e.is_cancelled() {
+                "キャンセルされた".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+        Ok(ToolOutput {
+            output_path: output.to_string_lossy().into_owned(),
+            point_count: summary.point_count,
+            warnings: Vec::new(),
+        })
+    })
+    .await
+}
+
+/// 開いている複数のCOPCを1つのCOPCにする。CRSの無いファイルは止めずに通し、警告を返す。
+#[tauri::command]
+pub async fn merge_copcs(
+    app: AppHandle,
+    paths: Vec<String>,
+    temp_dir: Option<String>,
+    state: State<'_, ConversionState>,
+) -> Result<ToolOutput, String> {
+    if paths.len() < 2 {
+        return Err("結合するレイヤーが2つ未満です".to_string());
+    }
+    let mut fs_paths: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for raw in &paths {
+        match FilePath::from_str(raw).unwrap_or_else(|e: std::convert::Infallible| match e {}) {
+            FilePath::Path(p) => fs_paths.push(p),
+            FilePath::Url(_) => {
+                return Err(format!("この環境(content:// URI)では未対応です: {raw}"));
+            }
+        }
+    }
+    let output = tool_output_path(&app, temp_dir.as_deref(), "merged")?;
+    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
+    redirect_os_temp_dir(&spill_dir);
+    let on_progress = tool_progress(&app);
+    run_tool(&state, move |cancel| {
+        let mut timings = ConversionStageTimings::default();
+        let summary = merge::merge_paths_and_timings(
+            fs_paths,
+            &output,
+            &spill_dir,
+            &CopcWriterParams::default(),
+            &cancel,
+            on_progress,
+            &mut timings,
+        )
+        .map_err(|e| match e {
+            merge::MergeError::Write(copc_core::Error::Cancelled) => {
+                "キャンセルされた".to_string()
+            }
+            other => other.to_string(),
+        })?;
+        Ok(ToolOutput {
+            output_path: output.to_string_lossy().into_owned(),
+            point_count: summary.declared_points_total,
+            warnings: summary.crs_warnings(),
+        })
+    })
+    .await
 }
