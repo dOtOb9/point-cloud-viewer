@@ -5,7 +5,7 @@ import { DEFAULT_POINT_SIZE_PX, MAX_POINT_SIZE_PX, MIN_POINT_SIZE_PX } from "../
 import { Dialog } from "./Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
 
-// ADR-0017追記: リボンの「着色」「見た目」「読み込み優先」ボタンから開くダイアログ3つ。
+// ADR-0017追記: レイヤー欄の「着色」「見た目」ボタン(LayerActions.tsx)から開くダイアログ2つ(読み込み優先はL2-Aで設定へ移した)。
 // 値はその場で反映する(適用ボタンは無い)。ダイアログが触るのは`viewer`のsetterだけで、
 // 状態は`useCopcViewer`が持つ(ここには状態を持たない)。
 
@@ -55,7 +55,7 @@ const POINT_SHAPE_LABELS: Record<PointShape, string> = {
 export function ColorModeDialog({ viewer, open, onClose }: DialogProps) {
   const layer = viewer.selectedLayer;
   return (
-    <Dialog open={open} title="着色" onClose={onClose} accent="primary" backdrop="clear" footer={<CloseButton onClose={onClose} />}>
+    <Dialog open={open} title="着色" onClose={onClose} accent="primary" footer={<CloseButton onClose={onClose} />}>
       {layer ? (
         <p className="text-xs opacity-70">
           対象のレイヤー: <span className="font-semibold">{layer.name}</span>
@@ -99,7 +99,7 @@ export function ColorModeDialog({ viewer, open, onClose }: DialogProps) {
 export function AppearanceDialog({ viewer, open, onClose }: DialogProps) {
   const layer = viewer.selectedLayer;
   return (
-    <Dialog open={open} title="見た目" onClose={onClose} accent="primary" backdrop="clear" footer={<CloseButton onClose={onClose} />}>
+    <Dialog open={open} title="見た目" onClose={onClose} accent="primary" footer={<CloseButton onClose={onClose} />}>
       {layer ? (
         <p className="text-xs opacity-70">
           対象のレイヤー: <span className="font-semibold">{layer.name}</span>
@@ -142,47 +142,6 @@ export function AppearanceDialog({ viewer, open, onClose }: DialogProps) {
           className="h-8 w-full accent-primary"
         />
         <span className="text-xs opacity-70">直径{MIN_POINT_SIZE_PX}〜{MAX_POINT_SIZE_PX}px、既定{DEFAULT_POINT_SIZE_PX}px。</span>
-      </label>
-    </Dialog>
-  );
-}
-
-/** 読み込み優先ダイアログ: 画面中央を優先して読み込む強さと、重みの下限。 */
-export function LoadPriorityDialog({ viewer, open, onClose }: DialogProps) {
-  return (
-    <Dialog open={open} title="読み込み優先" onClose={onClose} accent="primary" backdrop="clear" footer={<CloseButton onClose={onClose} />}>
-      <p className="text-xs opacity-70">画面の中央に近いデータを先に読み込む設定。変更はすぐ反映される。</p>
-      <label className="flex flex-col gap-1 text-sm">
-        <span className="flex justify-between">
-          <span>中央優先の強さ</span>
-          <span className="font-mono">{viewer.centerPriorityStrength}</span>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={16}
-          step={0.5}
-          value={viewer.centerPriorityStrength}
-          onChange={(e) => viewer.setCenterPriorityStrength(Number(e.target.value))}
-          className="h-8 w-full accent-primary"
-        />
-        <span className="text-xs opacity-70">0〜16、既定4。大きいほど画面の端を後回しにする。0で無効。</span>
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        <span className="flex justify-between">
-          <span>重みの下限</span>
-          <span className="font-mono">{viewer.minCenterPriorityWeight.toFixed(2)}</span>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={0.5}
-          step={0.01}
-          value={viewer.minCenterPriorityWeight}
-          onChange={(e) => viewer.setMinCenterPriorityWeight(Number(e.target.value))}
-          className="h-8 w-full accent-primary"
-        />
-        <span className="text-xs opacity-70">0〜0.5、既定0.2。画面の端でも読み込まれなくならないよう、重みの最小値を決める。</span>
       </label>
     </Dialog>
   );

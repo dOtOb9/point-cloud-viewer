@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { AppearanceDialog, ColorModeDialog, LoadPriorityDialog } from "./ViewDialogs";
+import { AppearanceDialog, ColorModeDialog } from "./ViewDialogs";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -100,25 +100,6 @@ describe("ViewDialogs", () => {
     expect(inputs.length).toBeGreaterThan(0);
     expect(inputs.every((i) => i.disabled)).toBe(true);
     expect(document.body.textContent).toContain("見た目を変えるレイヤーがありません");
-    unmount(m);
-  });
-
-  it("読み込み優先: スライダーを動かすとsetterが数値で呼ばれる", () => {
-    const { viewer, setters } = fakeViewer();
-    const m = mount(<LoadPriorityDialog viewer={viewer} open onClose={() => {}} />);
-    const [strength, minWeight] = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="range"]'));
-    // Reactは値をプロトタイプのsetter経由で追跡するので、同じ経路で値を入れてからinputイベントを送る。
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    act(() => {
-      setValue?.call(strength, "8");
-      strength.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    expect(setters.setCenterPriorityStrength).toHaveBeenCalledWith(8);
-    act(() => {
-      setValue?.call(minWeight, "0.3");
-      minWeight.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    expect(setters.setMinCenterPriorityWeight).toHaveBeenCalledWith(0.3);
     unmount(m);
   });
 

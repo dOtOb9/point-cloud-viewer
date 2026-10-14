@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
 import { glassSurfaceClass } from "./glass";
+import { LayerActions } from "./LayerActions";
 import { LayerInfoSection } from "./LayerInfoSection";
 import { LayerList } from "./LayerList";
 import { LayerStatsDetails } from "./LayerStatsDetails";
@@ -42,7 +43,7 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
   // L1-D: レイヤー一覧・選択は `useCopcViewer` が持つ（ADR-0018）。一覧の描画は `LayerList`。
   const tree = (
     <div className="flex flex-col gap-1">
-      <h3 className="border-l-2 border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー</h3>
+      <h3 className="border-l-[3px] border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー</h3>
       <LayerList viewer={viewer} />
     </div>
   );
@@ -61,9 +62,10 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
     >
       {tree}
       <div className="flex flex-col gap-1">
-        <h3 className="border-l-2 border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー情報</h3>
+        <h3 className="border-l-[3px] border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー情報</h3>
         <LayerInfoSection viewer={viewer} />
       </div>
+      <LayerActions viewer={viewer} />
       <LayerStatsDetails viewer={viewer} />
     </section>
   );

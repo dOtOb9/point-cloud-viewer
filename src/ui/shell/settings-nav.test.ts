@@ -12,6 +12,12 @@ describe("settingsNavReducer", () => {
 });
 
 describe("visibleSettingsPages", () => {
+  it("診断は出さず、読み込み優先と陰影(EDL)を出す", () => {
+    const p = visibleSettingsPages({ isBrowser: false, supportsCustomTempDir: true });
+    expect(p).not.toContain("diagnostics" as never);
+    expect(p).toContain("loadPriority");
+    expect(p).toContain("edl");
+  });
   it("デスクトップ: 一時フォルダが出て、保存領域は出ない", () => {
     const p = visibleSettingsPages({ isBrowser: false, supportsCustomTempDir: true });
     expect(p).toContain("tempDir");

@@ -147,8 +147,10 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
               }}
               onPointerUp={cancelPress}
               onPointerCancel={cancelPress}
-              className={`flex min-h-11 cursor-pointer select-none items-center gap-2 rounded px-2 py-1.5 text-xs ${
-                selected ? "border-l-[3px] border-l-primary bg-black/5 dark:bg-white/10" : ""
+              // L2-A: 選択の有無で左線の太さが変わると文字がずれるため、全行に同じ太さの左線を付け、
+              // 選択していない行は透明にする（余白・高さは全行で同じ）。
+              className={`flex min-h-11 cursor-pointer select-none items-center gap-2 rounded border-l-[3px] px-2 py-1.5 text-xs ${
+                selected ? "border-l-primary bg-black/5 dark:bg-white/10" : "border-l-transparent"
               }`}
             >
               <input
@@ -169,7 +171,7 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
           );
         })}
         {loading && (
-          <li className="flex min-h-11 items-center gap-2 rounded px-2 py-1.5 text-xs opacity-70">
+          <li className="flex min-h-11 items-center gap-2 rounded border-l-[3px] border-l-transparent px-2 py-1.5 text-xs opacity-70">
             <span className="min-w-0 flex-1 truncate">読み込み中…</span>
           </li>
         )}

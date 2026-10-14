@@ -1,7 +1,8 @@
 import {
-  Activity,
   FolderOpen,
   Gauge,
+  Sun,
+  Target,
   HardDrive,
   Image,
   Monitor,
@@ -22,7 +23,8 @@ import { settingsNavReducer, visibleSettingsPages, type SettingsPageId } from ".
 import {
   AnimationDialog,
   BackgroundDialog,
-  DiagnosticsDialog,
+  EdlDialog,
+  LoadPriorityDialog,
   PointBudgetDialog,
   RenderScaleDialog,
   StorageDialog,
@@ -49,7 +51,8 @@ const PAGE_BUTTONS: Record<SettingsPageId, { icon: LucideIcon; label: string }> 
   update: { icon: RefreshCw, label: "更新の確認" },
   tempDir: { icon: FolderOpen, label: "一時ファイル" },
   storage: { icon: HardDrive, label: "保存領域" },
-  diagnostics: { icon: Activity, label: "診断" },
+  loadPriority: { icon: Target, label: "読み込み優先" },
+  edl: { icon: Sun, label: "陰影（EDL）" },
 };
 
 /**
@@ -118,7 +121,8 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
       <UpdateDialog {...pageProps("update")} update={update} />
       {pages.includes("tempDir") && <TempDirDialog {...pageProps("tempDir")} viewer={viewer} />}
       {pages.includes("storage") && <StorageDialog {...pageProps("storage")} viewer={viewer} />}
-      <DiagnosticsDialog {...pageProps("diagnostics")} />
+      <LoadPriorityDialog {...pageProps("loadPriority")} viewer={viewer} />
+      <EdlDialog {...pageProps("edl")} viewer={viewer} />
     </>
   );
 }

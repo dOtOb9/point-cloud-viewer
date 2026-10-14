@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, type MouseEvent as ReactMouseEvent, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { defaultRenderSettings, readDeviceProfileInput } from "../../renderer/device-profile";
 import { useTransitionMount } from "./useTransitionMount";
 
 interface Props {
@@ -16,11 +17,6 @@ interface Props {
   tone?: "normal" | "error";
   /** 上端の3pxのアクセント線の役割色(設定・URL=primary、変換=secondary、エラー=error。ADR-0017)。 */
   accent?: "primary" | "secondary" | "error";
-  /**
-   * 暗幕の濃さ。既定の"dim"は後ろを暗くする。"clear"は暗幕を透明にする(要素は残すので、
-   * 外側クリックで閉じる動きは同じ)。着色・見た目・読み込み優先の3つだけが使う(下の説明を参照)。
-   */
-  backdrop?: "dim" | "clear";
 }
 
 /** 役割色トークン(index.css)の名前で上端線を引く。クラス名は文字列のまま書く(Tailwindが検出できるように)。 */
@@ -50,18 +46,19 @@ const FOCUSABLE =
  *   重なっても最前面の1枚だけが閉じる。
  * - **フォーカス:** 開いたら本文の最初の操作要素(無ければパネル自身)へ移し、
  *   閉じたら開く前にフォーカスがあった要素へ戻す。Tabはダイアログ内で循環させる。
- * - **後ろを暗くしない例外(所有者の決定 2026-10-14、ADR-0017):** 表示の3ダイアログ(着色・見た目・読み込み優先)は
- *   値をその場で反映する。値を変えた結果を点群を見ながら確かめるため、`backdrop="clear"`で暗幕を透明にする。
- *   設定・URL・変換・エラーは既定の"dim"のまま。透明でも暗幕の要素は残るので、
- *   外側クリックで閉じる動きとEscは変わらない(ダイアログが開いている間、点群への操作は暗幕が受け止めて届かない)。
- *   縁が背景に溶けないよう、パネルの影(`shadow-2xl`)をそのまま使う。
+ * - **暗幕はぼかし(Blur)に統一(所有者の決定 2026-10-15、ADR-0017の追記)。** 全ダイアログで後ろをぼかし、
+ *   暗くしすぎない(`bg-black/10`+`backdrop-blur-sm`)。以前は着色・見た目だけ透明、他は暗い、と混在していた。
+ *   モバイル(`device-profile.ts`の`glassEnabled=false`)ではぼかしがGPUに重いので、ぼかさず薄い半透明(`bg-black/30`)に落とす。
+ *   暗幕の要素は残るので、外側クリックで閉じる動きとEscは変わらない(開いている間、点群への操作は暗幕が受け止める)。
  * - **狭幅(<768px):** 外枠の余白を小さくして、ほぼ全幅の中央ダイアログにする。
  */
-export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", layer = "normal", tone = "normal", accent = "primary", backdrop = "dim" }: Props) {
+export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", layer = "normal", tone = "normal", accent = "primary" }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   // 暗幕クリックで閉じる判定用: mousedownが暗幕自身の上で始まったか(refなので再描画しない)。
   const pressStartedOnBackdrop = useRef(false);
+  // ぼかせる端末か(端末プロファイル。起動中は変わらないので最初の1回だけ読む)。
+  const [blurEnabled] = useState(() => defaultRenderSettings(readDeviceProfileInput()).glassEnabled);
 
   useEffect(() => {
     if (!open) return;
@@ -133,7 +130,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
       style={backdropStyle}
       onMouseDown={onBackdropMouseDown}
       onClick={onBackdropClick}
-      className={`fixed inset-0 ${layer === "top" ? "z-50" : "z-40"} flex items-center justify-center ${backdrop === "clear" ? "bg-transparent" : "bg-black/50"} p-3 md:p-4 ${shown ? "" : "pointer-events-none"}`}
+      className={`fixed inset-0 ${layer === "top" ? "z-50" : "z-40"} flex items-center justify-center ${blurEnabled ? "bg-black/10 backdrop-blur-sm" : "bg-black/30"} p-3 md:p-4 ${shown ? "" : "pointer-events-none"}`}
     >
       <div
         style={panelStyle}

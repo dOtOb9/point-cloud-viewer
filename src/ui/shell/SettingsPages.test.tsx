@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 //
-// L1-E: 設定の専用ダイアログ。背景はラジオ、点予算は手動値と自動調整、フッターは戻る・閉じる。
+// L1-E: 設定の専用ダイアログ。背景はラジオ、点予算は手動値と自動調整、フッターは戻るだけ(閉じるは外側クリック・Esc)。
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { BackgroundDialog, PointBudgetDialog } from "./SettingsPages";
+import { BackgroundDialog, EdlDialog, LoadPriorityDialog, PointBudgetDialog } from "./SettingsPages";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -18,12 +18,18 @@ function fakeViewer() {
     setGridEnabled: vi.fn(),
     setPointBudget: vi.fn(),
     setAutoPointBudgetEnabled: vi.fn(),
+    setCenterPriorityStrength: vi.fn(),
+    setMinCenterPriorityWeight: vi.fn(),
+    setEdlEnabled: vi.fn(),
   };
   const viewer = {
     backgroundMode: "solid-dark",
     gridEnabled: false,
     pointBudget: 1_000_000,
     autoPointBudgetEnabled: false,
+    centerPriorityStrength: 4,
+    minCenterPriorityWeight: 0.2,
+    edlEnabled: true,
     ...setters,
   } as unknown as CopcViewerState;
   return { viewer, setters };
@@ -71,20 +77,47 @@ describe("SettingsPages", () => {
     unmount(m2);
   });
 
-  it("フッター: 戻る・閉じるが灰色(tertiary)で、それぞれのコールバックを呼ぶ", () => {
+  it("読み込み優先(設定ページ): スライダーを動かすとsetterが数値で呼ばれる", () => {
+    const { viewer, setters } = fakeViewer();
+    const m = mount(<LoadPriorityDialog viewer={viewer} open onBack={() => {}} onClose={() => {}} />);
+    const [strength, minWeight] = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="range"]'));
+    // Reactは値をプロトタイプのsetter経由で追跡するので、同じ経路で値を入れてからinputイベントを送る。
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    act(() => {
+      setValue?.call(strength, "8");
+      strength.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(setters.setCenterPriorityStrength).toHaveBeenCalledWith(8);
+    act(() => {
+      setValue?.call(minWeight, "0.3");
+      minWeight.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(setters.setMinCenterPriorityWeight).toHaveBeenCalledWith(0.3);
+    unmount(m);
+  });
+
+  it("陰影(EDL): チェックでsetEdlEnabledが呼ばれる", () => {
+    const { viewer, setters } = fakeViewer();
+    const m = mount(<EdlDialog viewer={viewer} open onBack={() => {}} onClose={() => {}} />);
+    const box = document.querySelector<HTMLInputElement>('input[name="edl-enabled"]');
+    expect(box?.checked).toBe(true);
+    act(() => box?.click());
+    expect(setters.setEdlEnabled).toHaveBeenCalledWith(false);
+    unmount(m);
+  });
+
+  it("フッター: 戻るだけが灰色(tertiary)で置かれ、閉じるは無い", () => {
     const { viewer } = fakeViewer();
     const onBack = vi.fn();
     const onClose = vi.fn();
     const m = mount(<BackgroundDialog viewer={viewer} open onBack={onBack} onClose={onClose} />);
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
     const back = buttons.find((b) => b.textContent === "戻る");
-    const close = buttons.find((b) => b.textContent === "閉じる");
     expect(back?.className).toContain("bg-tertiary");
-    expect(close?.className).toContain("bg-tertiary");
+    expect(buttons.some((b) => b.textContent === "閉じる")).toBe(false);
     act(() => back?.click());
     expect(onBack).toHaveBeenCalledTimes(1);
-    act(() => close?.click());
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
     unmount(m);
   });
 });

@@ -60,7 +60,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
   const layer = viewer.selectedLayer;
   const cloudInfo = layer?.info ?? null;
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 pl-[11px]">
       <div className="flex flex-col gap-0.5 text-xs">
         <p>
           <span className="opacity-60">ファイル名: </span>

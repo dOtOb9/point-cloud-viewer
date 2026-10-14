@@ -1,16 +1,13 @@
-import { ArrowLeft, X } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import type { BackgroundMode, CopcViewerState } from "../../state/useCopcViewer";
 import type { ThemePreference, ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
-import { IpcBenchPanel } from "../IpcBenchPanel";
-import { NodeConcurrencyBenchPanel } from "../NodeConcurrencyBenchPanel";
-import { WebGpuProbePanel } from "../WebGpuProbePanel";
 import { Dialog } from "./Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
 
 // L1-E (ADR-0017 追記2): 設定の項目ごとの専用ダイアログ。
-// フッターは「戻る」(設定の一覧へ)と「閉じる」。どちらも灰色(tertiary)。
+// フッターは「戻る」(設定の一覧へ)だけ(灰色=tertiary)。閉じるのは外側クリック・Esc(L2-A: 閉じるボタンは置かない)。
 // 値はその場で viewer などの setter に流す(適用ボタンは無い)。ここには状態を持たない。
 
 interface PageProps {
@@ -55,10 +52,6 @@ function SettingsPageDialog({ open, onBack, onClose, title, widthClass, children
           <button type="button" onClick={onBack} className={`${DIALOG_TERTIARY_BUTTON_CLASS} flex items-center gap-1`}>
             <ArrowLeft size={16} aria-hidden="true" />
             戻る
-          </button>
-          <button type="button" onClick={onClose} className={`${DIALOG_TERTIARY_BUTTON_CLASS} flex items-center gap-1`}>
-            <X size={16} aria-hidden="true" />
-            閉じる
           </button>
         </>
       }
@@ -379,15 +372,60 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
   );
 }
 
-/** M0 の診断パネル(WebGPU probe / IPC bench / node concurrency bench)。機能は削っていない。 */
-export function DiagnosticsDialog(page: PageProps) {
+/** 読み込み優先: 画面中央を優先して読み込む強さと、重みの下限。(L2-A: リボンのダイアログから設定の専用ページへ移した) */
+export function LoadPriorityDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   return (
-    <SettingsPageDialog {...page} title="診断" widthClass="max-w-3xl">
-      <div className="flex flex-col items-center gap-4">
-        <WebGpuProbePanel />
-        <IpcBenchPanel />
-        <NodeConcurrencyBenchPanel />
-      </div>
+    <SettingsPageDialog {...page} title="読み込み優先">
+      <p className="text-xs opacity-70">画面の中央に近いデータを先に読み込む設定。変更はすぐ反映される。</p>
+      <label className="flex flex-col gap-1 text-sm">
+        <span className="flex justify-between">
+          <span>中央優先の強さ</span>
+          <span className="font-mono">{viewer.centerPriorityStrength}</span>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={16}
+          step={0.5}
+          value={viewer.centerPriorityStrength}
+          onChange={(e) => viewer.setCenterPriorityStrength(Number(e.target.value))}
+          className="h-8 w-full accent-primary"
+        />
+        <span className="text-xs opacity-70">0〜16、既定4。大きいほど画面の端を後回しにする。0で無効。</span>
+      </label>
+      <label className="flex flex-col gap-1 text-sm">
+        <span className="flex justify-between">
+          <span>重みの下限</span>
+          <span className="font-mono">{viewer.minCenterPriorityWeight.toFixed(2)}</span>
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={0.5}
+          step={0.01}
+          value={viewer.minCenterPriorityWeight}
+          onChange={(e) => viewer.setMinCenterPriorityWeight(Number(e.target.value))}
+          className="h-8 w-full accent-primary"
+        />
+        <span className="text-xs opacity-70">0〜0.5、既定0.2。画面の端でも読み込まれなくならないよう、重みの最小値を決める。</span>
+      </label>
+    </SettingsPageDialog>
+  );
+}
+
+/**
+ * 陰影(EDL): 画面全体にかける処理なので、レイヤーごとではなくここ(設定)に置く。
+ * 強さを変える setter は viewer に無い(強さは `src/renderer/edl.ts` の固定値)ため、オン/オフだけ。
+ * (L2-A: 見た目ダイアログから移した)
+ */
+export function EdlDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
+  return (
+    <SettingsPageDialog {...page} title="陰影（EDL）">
+      <p className="text-xs opacity-70">EDL は、奥行きの差を陰影にして点群の凹凸を強調する処理。画面全体にかかる。</p>
+      <OptionRow>
+        <input type="checkbox" name="edl-enabled" checked={viewer.edlEnabled} onChange={(e) => viewer.setEdlEnabled(e.target.checked)} className="h-5 w-5 accent-primary" />
+        EDLを使う
+      </OptionRow>
     </SettingsPageDialog>
   );
 }
