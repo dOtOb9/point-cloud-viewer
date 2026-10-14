@@ -344,3 +344,39 @@ pwsh scripts/download-tokyo-23ku-tiles.ps1 `
 2. `http://localhost:4611/?pcvDebug` を開き「URLから開く」で `http://127.0.0.1:<port>/tokyo-23ku-1b.copc.laz` を開く。1秒以内に点が出ること、
    ステータスバーが `表示点数: 約340万` 前後になること、開発者ツールで `__pcvRenderer.camera.target=[-12000,-37800,40]; __pcvRenderer.camera.distance=400` を入れると約 2680万点まで増えることを見る
 3. デスクトップ: `cargo build --release -p pcv-tauri --features tauri/custom-protocol` の exe で「開く」→ 10億点のファイルを選び、同様に確認する
+
+## 追記（2026-10-14）: ノード選択を根から子へたどる形にした後の測定
+
+原因の診断と直し方は ADR-0010 の同日の追記。1回あたりの選択時間は、合成 octree 21,845 ノード・閾値 0.5 で 28.9 ms → 0.06 ms（vitest 内の測定）。
+
+### 画面での測定（Web、10億点 `tokyo-23ku-1b.copc.laz`）
+
+条件: Playwright の画面ありの Chromium（`--enable-unsafe-webgpu --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`、`bringToFront`、1600x900）。`adapter.info` は nvidia / lovelace、`isFallbackAdapter=false`（SwiftShader ではない）。
+変更前（直前の main をビルド）と変更後（この変更をビルド）を `vite preview` で別ポート（4721・4722）に立て、Range 対応のローカル HTTP サーバー（4723）から開いた。全体視点は「止まって40秒見たときの fps と、10秒ドラッグしたときのフレーム間隔」、街区は同じ。測定スクリプトは scratchpad の `bench1b\m3.mjs`（`runperf.sh`・`runperf2.sh` から起動）。
+
+| 視点 | 版 | 回数 | 止まっているとき 中央値 / p95 | ドラッグ 中央値 / p95（最大） | 描いた点数 |
+|---|---|---|---|---|---|
+| 全体 | 変更前 | 2 | 16.7 / 33.4 ms（2回とも） | 16.7 / 33.4 ms（最大 33.6・66.9） | 3,397,857 |
+| 全体 | 変更後 | 2 | 16.7 / 16.9、16.8 ms | 16.7 / 16.8 ms（最大 17.1） | 3,397,857 |
+| 街区 | 変更前 | 1 | 16.7 / 16.8 ms | 16.7 / 16.8 ms（最大 16.9） | 26,843,244 |
+| 街区 | 変更後 | 1 | 16.7 / 16.9 ms | 16.7 / 16.8 ms（最大 16.9） | 26,843,244 |
+
+- 全体のドラッグ中の点予算（AIMD の自動調整値）: 変更前は 0.48M〜26.8M（中央値 3.6M・7.0M）に落ちていたが、変更後は 2回とも 26,843,545 のまま下がらなかった。選択が重くて 16.7ms を超えるフレームがあり、予算を下げていたのが原因と考えられる（推定。AIMD の判定ログまでは見ていない）。
+- 街区は変更前も 60 fps で、差が出ていない（点予算が上限のまま。ノードが全体視点より少ない）。
+- 全体視点の1回目の組（変更前・変更後）は、カメラが動いた・描画が1秒間隔に落ちるなど、他のプロセスの干渉と思われる外れ値になったので使っていない（カメラ位置が違う、フレーム間隔が 1016 ms、など。原因は未調査）。上の表は取り直した2回ずつ。
+- 描いた点数は変更前後で同じ。スクリーンショットも目で見て同じ（全体・止まっているとき）。
+  `C:\Users\Masa1\AppData\Local\Temp\claude\c--rust-point-cloud-viewer\8c5ee30a-58ff-453d-9b09-f09dc1157d52\scratchpad\bench1b\perf\before\` と `...\perf\after\`（`tokyo-23ku-1b-overview-idle.png` など）。
+
+### 確かめていないこと
+
+- デスクトップ版（全体見下ろしで 8〜13 fps だった）は測っていない。選択処理は Web と同じコードなので同様に改善する見込みだが、未検証。
+- 回数が少ない（全体 各2回、街区 各1回）。ばらつきの幅は出していない。
+- 渋谷のファイル、通り視点は測っていない。
+- 打ち切り閾値を 0 にした場合など、既定でない設定の画面での確認。
+
+### 所有者の確認手順
+
+1. `npx vitest run src/renderer/node-selection-equivalence.test.ts` が通ること（旧実装との一致）
+2. `npm run build && npx vite preview --port 4611` と、`data\` を Range 対応で配る HTTP サーバーを立て、10億点のファイルを「URLから開く」で開く
+3. 全体のまま左ボタンでドラッグして、ステータスバーの点予算（`予算:`）が 2684万のまま下がらず、fps が 60 付近であること（変更前は予算が下がり fps が落ちた）
+4. デスクトップ版でも同じ操作で fps を見る（未確認）
