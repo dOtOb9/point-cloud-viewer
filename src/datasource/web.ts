@@ -30,6 +30,8 @@ import {
   buildConvertCancelRequest,
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
+  buildExtractStartRequest,
+  buildToolMergeStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
   buildPcdConvertStartRequest,
@@ -40,6 +42,7 @@ import {
   type WorkerResponse,
 } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
+import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
 
 /**
  * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 容量の事前確認。
@@ -156,6 +159,7 @@ export class WebSource implements DataSource {
       suggestedFileName: string,
       pointCount: number,
       stageTimings: ConversionStageBreakdown,
+      warnings: string[],
     ) => void
   >();
   private readonly convertFailedListeners = new Set<(message: string, cancelled: boolean) => void>();
@@ -355,6 +359,105 @@ export class WebSource implements DataSource {
     return { kind: "converting" };
   }
 
+
+  // --- L2-C: 点群ツール(抽出・結合) ---
+
+  /** ツールの要求idごとの待ち。変換(`convert*Listeners`)とは別にして、結果が
+   *  画面全体の「変換結果を開く」処理に流れないようにする(`web-protocol.ts`参照)。 */
+  private readonly toolPending = new Map<
+    number,
+    {
+      resolve: (done: { outputName: string; pointCount: number; warnings: string[] }) => void;
+      reject: (error: Error) => void;
+      onProgress?: (progress: ToolProgress) => void;
+    }
+  >();
+
+  /** `open()`に渡したキー("file:N")から登録済みの`File`を取り出す。 */
+  private fileForToolInput(path: string): File {
+    const classified = classifyOpenPath(path);
+    const file = classified.kind === "file" ? this.localFiles.get(classified.fileKey) : undefined;
+    if (!file) {
+      throw new Error(`ツールの入力は登録済みのファイルキーだけ対応しています: ${path}`);
+    }
+    return file;
+  }
+
+  /** ツールの要求を送り、`tool-done`/`tool-failed`を待つ。出力は登録済みキーにして返す。 */
+  private async runTool(
+    id: number,
+    request: WorkerRequest,
+    options: ToolOptions | undefined,
+  ): Promise<ToolResult> {
+    this.activeConvertId = id;
+    try {
+      const done = await new Promise<{ outputName: string; pointCount: number; warnings: string[] }>(
+        (resolve, reject) => {
+          this.toolPending.set(id, { resolve, reject, onProgress: options?.onProgress });
+          this.worker.postMessage(request);
+        },
+      );
+      const file = await opfs.getConvertedFile(done.outputName);
+      if (!file) {
+        throw new Error(`作った点群をOPFSから開けませんでした: ${done.outputName}`);
+      }
+      return {
+        outputPath: this.registerFile(file),
+        pointCount: done.pointCount,
+        warnings: done.warnings,
+      };
+    } finally {
+      if (this.activeConvertId === id) this.activeConvertId = null;
+    }
+  }
+
+  /**
+   * 開いているCOPC(`path` = `open()`に渡したキー)から`filter`に合う点だけを新しいCOPC
+   * (OPFS)にする。戻り値の`outputPath`(登録済みキー)を`open()`に渡せば新しいレイヤーになる。
+   * 0点なら例外(本文は`EMPTY_SELECTION_MESSAGE`)。キャンセルは`cancelConversion()`
+   * (例外の本文は「キャンセルされました」)。
+   */
+  async extractToCopc(
+    path: string,
+    filter: ExtractFilter,
+    options?: ToolOptions,
+  ): Promise<ToolResult> {
+    const file = this.fileForToolInput(path);
+    if (!(await opfs.isOpfsAvailable())) {
+      throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
+    }
+    // 出力は多くても元より小さいので、元の点数で容量を見積もる(安全側)。
+    const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
+    if (insufficient) throw new Error("空き容量が足りないため、点群ツールを実行できません");
+    const id = this.nextRequestId++;
+    return await this.runTool(
+      id,
+      buildExtractStartRequest(id, file, filter, `抽出: ${file.name}`),
+      options,
+    );
+  }
+
+  /**
+   * 開いている複数のCOPC(`open()`に渡したキー)を1つのCOPC(OPFS)にする。
+   * CRSの無いファイルは止めずに通し、`warnings`に理由を返す。CRSのあるファイル同士が
+   * 食い違えば例外。
+   */
+  async mergeCopcs(paths: string[], options?: ToolOptions & { isMobile?: boolean }): Promise<ToolResult> {
+    if (paths.length < 2) throw new Error("結合するレイヤーが2つ未満です");
+    const files = paths.map((p) => this.fileForToolInput(p));
+    if (!(await opfs.isOpfsAvailable())) {
+      throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
+    }
+    const insufficient = await checkInsufficientSpaceMulti(files);
+    if (insufficient) throw new Error("空き容量が足りないため、結合を実行できません");
+    const id = this.nextRequestId++;
+    const label = `結合: ${opfs.multiDisplayNameFor(files.map((f) => f.name).sort())}`;
+    return await this.runTool(
+      id,
+      buildToolMergeStartRequest(id, files, options?.isMobile ?? false, label),
+      options,
+    );
+  }
   /** 進行中の変換をキャンセルする。進行中の変換が無ければ何もしない
    *  (デスクトップ版`cancelLasConversion`は失敗するが、Web版はfire-and-forgetの
    *  メッセージなので「送る意味が無い」だけで区別する理由が無い)。 */
@@ -381,6 +484,7 @@ export class WebSource implements DataSource {
       suggestedFileName: string,
       pointCount: number,
       stageTimings: ConversionStageBreakdown,
+      warnings: string[],
     ) => void,
   ): () => void {
     this.convertDoneListeners.add(callback);
@@ -410,8 +514,37 @@ export class WebSource implements DataSource {
       this.activeConvertId = null;
       const stageTimings = toConversionStageBreakdown(response.stageTimings);
       this.convertDoneListeners.forEach((listener) =>
-        listener(response.outputName, response.suggestedFileName, response.pointCount, stageTimings),
+        listener(
+          response.outputName,
+          response.suggestedFileName,
+          response.pointCount,
+          stageTimings,
+          response.warnings ?? [],
+        ),
       );
+      return;
+    }
+    if (response.type === "tool-progress") {
+      this.toolPending.get(response.id)?.onProgress?.({
+        pointsRead: response.pointsRead,
+        totalPoints: response.totalPoints,
+      });
+      return;
+    }
+    if (response.type === "tool-done") {
+      const waiting = this.toolPending.get(response.id);
+      this.toolPending.delete(response.id);
+      waiting?.resolve({
+        outputName: response.outputName,
+        pointCount: response.pointCount,
+        warnings: response.warnings,
+      });
+      return;
+    }
+    if (response.type === "tool-failed") {
+      const waiting = this.toolPending.get(response.id);
+      this.toolPending.delete(response.id);
+      waiting?.reject(new Error(response.message));
       return;
     }
     if (response.type === "convert-failed") {

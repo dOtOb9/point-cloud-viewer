@@ -7,6 +7,8 @@ import {
   buildConvertCancelRequest,
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
+  buildExtractStartRequest,
+  buildToolMergeStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
   buildPcdConvertStartRequest,
@@ -140,5 +142,40 @@ describe("buildPcdConvertStartRequest", () => {
     const req = buildPcdConvertStartRequest(21, file, true, 5_000);
     expect(req.isMobile).toBe(true);
     expect(req.maxPointsPerNode).toBe(5_000);
+  });
+});
+
+describe("点群ツールのリクエスト(L2-C)", () => {
+  it("extractStartに条件とラベルを載せる", () => {
+    const file = new File([new Uint8Array([1])], "a.copc.laz");
+    const filter = {
+      kind: "orientedBox" as const,
+      center: [1, 2, 3] as [number, number, number],
+      axes: [
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ] as [[number, number, number], [number, number, number], [number, number, number]],
+      halfExtents: [1, 1, 1] as [number, number, number],
+    };
+    expect(buildExtractStartRequest(5, file, filter, "抽出: a")).toEqual({
+      type: "extractStart",
+      id: 5,
+      file,
+      filter,
+      label: "抽出: a",
+    });
+  });
+
+  it("toolMergeStartに複数ファイルを載せる", () => {
+    const a = new File([new Uint8Array([1])], "a.copc.laz");
+    const b = new File([new Uint8Array([2])], "b.copc.laz");
+    expect(buildToolMergeStartRequest(6, [a, b], false, "結合")).toEqual({
+      type: "toolMergeStart",
+      id: 6,
+      files: [a, b],
+      isMobile: false,
+      label: "結合",
+    });
   });
 });

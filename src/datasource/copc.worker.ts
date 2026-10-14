@@ -32,6 +32,7 @@ import init, {
   lastAllocationFailureMessage,
   opfsScratchPoolSize,
   WasmConverter,
+  WasmExtractor,
   WasmCopcFile,
   WasmPcdConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
@@ -47,8 +48,10 @@ import {
 import type { PointRange } from "./decompress-partition";
 import type { DecompressRequest, DecompressResponse } from "./laz-decompress.worker";
 import * as opfs from "./opfs";
+import { DEFAULT_MAX_POINTS_PER_NODE } from "./web-protocol";
 import type {
   ConvertMultiStartRequest,
+  ExtractStartRequest,
   OpenSource,
   PcdConvertStartRequest,
   WorkerRequest,
@@ -64,7 +67,61 @@ interface WorkerScope {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null;
   postMessage(message: WorkerResponse, transfer?: Transferable[]): void;
 }
-const scope = self as unknown as WorkerScope;
+const rawScope = self as unknown as WorkerScope;
+
+/**
+ * L2-C: 点群ツール(結合)の要求idの集合。ツールの結合は変換(`runMultiConversion`)と
+ * 同じ処理を使うが、結果は`convert-*`(画面全体のリスナーが「変換結果を開く」)ではなく
+ * `tool-*`(呼んだ関数のPromiseだけに届く)で返したい。`runMultiConversion`の
+ * 送信箇所をすべて書き換える代わりに、送信の出口(この`scope.postMessage`)で、
+ * この集合に入っているidの`convert-*`を`tool-*`に読み替える。
+ */
+const toolRequestIds = new Set<number>();
+
+function translateForTool(message: WorkerResponse): WorkerResponse | null {
+  if (!("id" in message) || !toolRequestIds.has(message.id)) return message;
+  switch (message.type) {
+    case "convert-progress":
+      // 読み込み段階だけをツールの進捗にする(準備・後処理の段階名は出さない)。
+      return message.progress.phase === "reading"
+        ? {
+            type: "tool-progress",
+            id: message.id,
+            pointsRead: message.progress.points_read,
+            totalPoints: message.progress.total_points,
+          }
+        : null;
+    case "convert-done":
+      toolRequestIds.delete(message.id);
+      return {
+        type: "tool-done",
+        id: message.id,
+        outputName: message.outputName,
+        pointCount: message.pointCount,
+        warnings: message.warnings ?? [],
+      };
+    case "convert-failed":
+      toolRequestIds.delete(message.id);
+      return {
+        type: "tool-failed",
+        id: message.id,
+        message: message.message,
+        cancelled: message.cancelled,
+      };
+    default:
+      return message;
+  }
+}
+
+const scope = {
+  set onmessage(handler: WorkerScope["onmessage"]) {
+    rawScope.onmessage = handler;
+  },
+  postMessage(message: WorkerResponse, transfer?: Transferable[]): void {
+    const translated = translateForTool(message);
+    if (translated) rawScope.postMessage(translated, transfer);
+  },
+};
 
 let wasmReady: Promise<void> | null = null;
 // L1-B: 開いているファイルの表（世代番号 = cloudId → ファイル）。複数同時に持つ。
@@ -168,6 +225,19 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       case "pcdConvertStart":
         await handlePcdConvertStart(request);
         return;
+      case "extractStart":
+        await handleExtractStart(request);
+        return;
+      case "toolMergeStart":
+        toolRequestIds.add(request.id);
+        await handleConvertMultiStart({
+          type: "convertMultiStart",
+          id: request.id,
+          files: request.files,
+          maxPointsPerNode: DEFAULT_MAX_POINTS_PER_NODE,
+          isMobile: request.isMobile,
+        });
+        return;
     }
   } catch (err) {
     scope.postMessage({
@@ -255,6 +325,8 @@ interface FeedResultDto {
 interface FinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
+  /** L2-C: 警告(CRSの無いファイルを通した、など)。 */
+  warnings?: string[];
 }
 
 /** 1回の`feed`呼び出しで読むバッチサイズ。デスクトップ版
@@ -671,6 +743,7 @@ async function runConversion(
       suggestedFileName: suggestedFileNameFor(file.name),
       pointCount: finishResult.point_count,
       stageTimings: finishResult.stage_timings,
+      warnings: finishResult.warnings ?? [],
     });
   } catch (err) {
     scope.postMessage({
@@ -767,15 +840,23 @@ async function runMultiConversion(
       (file) => inspectLasHeaderSummary(file) as HeaderSummaryDto,
     );
     const first = summaries[0];
+    // L2-C: CRSの無いファイル("Unknown"。`pcv_core::crs::Crs::Unknown`のDebug表示)は
+    // 止めずに通す(警告はRust側のfinishが返す)。CRSのあるファイル同士の食い違いだけ止める。
+    const NO_CRS = "Unknown";
+    const firstKnownCrs = summaries.findIndex((s) => s.crs_label !== NO_CRS);
     for (let i = 1; i < summaries.length; i++) {
       if (summaries[i].layout_key !== first.layout_key) {
         throw new Error(
           `${files[i].name}: 点フォーマットが${files[0].name}と異なるため、まとめて変換できません`,
         );
       }
-      if (summaries[i].crs_label !== first.crs_label) {
+      if (
+        summaries[i].crs_label !== NO_CRS &&
+        firstKnownCrs >= 0 &&
+        summaries[i].crs_label !== summaries[firstKnownCrs].crs_label
+      ) {
         throw new Error(
-          `${files[i].name}: CRS(座標系)が${files[0].name}と異なるため、まとめて変換できません`,
+          `${files[i].name}: CRS(座標系)が${files[firstKnownCrs].name}と異なるため、まとめて変換できません`,
         );
       }
     }
@@ -891,6 +972,7 @@ async function runMultiConversion(
       suggestedFileName: `${opfs.multiDisplayNameFor(sortedNames)}.copc.laz`,
       pointCount: finishResult.point_count,
       stageTimings: finishResult.stage_timings,
+      warnings: finishResult.warnings ?? [],
     });
   } catch (err) {
     scope.postMessage({
@@ -901,6 +983,129 @@ async function runMultiConversion(
     });
   } finally {
     converter?.free();
+    opfs.closeHandles(scratchHandles);
+    if (outputHandle) opfs.closeHandles([outputHandle]);
+    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
+    if (!succeeded) {
+      await opfs.removeOutputFile(outputName);
+    }
+    if (activeConvertId === id) activeConvertId = null;
+  }
+}
+
+// --- L2-C: COPCから条件に合う点だけを新しいCOPCにする(点の選択・断面) ---
+//
+// `runConversion`と同じ段取り(ロック → 一時ファイルのプール → feedの逐次ループ →
+// finish → 後始末)。違いは入力が`WasmExtractor`(条件に合うノードだけを読む)であることと、
+// 結果を`tool-done`で返すこと。キャンセルは変換と同じ`convertCancel`(finishの間は効かない)。
+
+async function handleExtractStart(request: ExtractStartRequest): Promise<void> {
+  const { id, file, filter, label } = request;
+  const outcome = await opfs.withConversionLock(navigator.locks, () =>
+    runExtract(id, file, filter, label),
+  );
+  if (outcome.kind === "busy") {
+    scope.postMessage({
+      type: "tool-failed",
+      id,
+      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
+      cancelled: false,
+    });
+  }
+}
+
+async function runExtract(
+  id: number,
+  file: File,
+  filter: ExtractStartRequest["filter"],
+  label: string,
+): Promise<void> {
+  activeConvertId = id;
+  convertCancelRequested = false;
+
+  const outputName = opfs.toolOutputName();
+  let scratchDirName: string | null = null;
+  let scratchHandles: FileSystemSyncAccessHandle[] = [];
+  let outputHandle: FileSystemSyncAccessHandle | null = null;
+  let extractor: WasmExtractor | null = null;
+  let succeeded = false;
+  const cancelled = () =>
+    scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
+
+  try {
+    try {
+      await opfs.cleanupStaleScratchDirs();
+    } catch {
+      // 掃除に失敗しても続ける(変換と同じ)。
+    }
+    const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
+    scratchDirName = pool.dirName;
+    scratchHandles = pool.handles;
+    outputHandle = await opfs.createOutputHandle(outputName);
+
+    extractor = new WasmExtractor(
+      file,
+      filter,
+      scratchHandles,
+      outputHandle,
+      outputName,
+      DEFAULT_MAX_POINTS_PER_NODE,
+    );
+
+    for (;;) {
+      if (convertCancelRequested) {
+        cancelled();
+        return;
+      }
+      const result = extractor.feed(CONVERT_BATCH_SIZE) as {
+        points_scanned: number;
+        candidate_points: number;
+        done: boolean;
+      };
+      scope.postMessage({
+        type: "tool-progress",
+        id,
+        pointsRead: result.points_scanned,
+        totalPoints: result.candidate_points,
+      });
+      if (result.done) break;
+      await yieldToEventLoop();
+    }
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+
+    // `finish()`は呼んだ時点でRust側のオブジェクトを消費する(runConversionと同じ)。
+    let finishResult: FinishResultDto;
+    try {
+      finishResult = extractor.finish() as FinishResultDto;
+    } finally {
+      extractor = null;
+    }
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+
+    await opfs.writeToolOutputMeta(outputName, label);
+    succeeded = true;
+    scope.postMessage({
+      type: "tool-done",
+      id,
+      outputName,
+      pointCount: finishResult.point_count,
+      warnings: finishResult.warnings ?? [],
+    });
+  } catch (err) {
+    scope.postMessage({
+      type: "tool-failed",
+      id,
+      message: describeConversionFailure(err),
+      cancelled: false,
+    });
+  } finally {
+    extractor?.free();
     opfs.closeHandles(scratchHandles);
     if (outputHandle) opfs.closeHandles([outputHandle]);
     if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
@@ -932,6 +1137,8 @@ interface PcdFeedResultDto {
 interface PcdFinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
+  /** L2-C: 警告(CRSの無いファイルを通した、など)。 */
+  warnings?: string[];
 }
 
 async function handlePcdConvertStart(request: PcdConvertStartRequest): Promise<void> {
@@ -1039,6 +1246,7 @@ async function runPcdConversion(id: number, file: File, maxPointsPerNode: number
       suggestedFileName: suggestedFileNameFor(file.name),
       pointCount: finishResult.point_count,
       stageTimings: finishResult.stage_timings,
+      warnings: finishResult.warnings ?? [],
     });
   } catch (err) {
     scope.postMessage({

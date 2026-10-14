@@ -828,3 +828,30 @@ export async function withConversionLock<T>(
     return { kind: "acquired", result };
   });
 }
+// --- L2-C: 点群ツール(抽出・結合)の出力 ---
+
+/** ツールの出力ファイル名(重ならない名前。変換のキャッシュ名とは別)。 */
+export function toolOutputName(): string {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `tool-${Date.now().toString(36)}-${random}.copc.laz`;
+}
+
+/**
+ * ツールの出力に索引(サイドカー)を書く。変換のキャッシュと同じ形にすることで、
+ * 設定の「使用量の内訳」に出て、そこから消せる(索引が無いと内訳に出ず、消せないまま
+ * 容量を使い続ける)。`label`は内訳に出す名前(例: 「抽出: xxx」)。
+ */
+export async function writeToolOutputMeta(outputName: string, label: string): Promise<void> {
+  const dir = await getConvertedDir();
+  const key = outputName.replace(/\.copc\.laz$/, "");
+  const handle = await dir.getFileHandle(metaFileNameFor(key), { create: true });
+  const writable = await handle.createWritable();
+  const meta: CacheMeta = {
+    sourceName: label,
+    sourceSize: 0,
+    sourceLastModified: 0,
+    outputName,
+  };
+  await writable.write(JSON.stringify(meta));
+  await writable.close();
+}

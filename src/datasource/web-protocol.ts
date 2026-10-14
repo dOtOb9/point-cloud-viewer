@@ -10,6 +10,7 @@
 
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
+import type { ExtractFilter } from "./tools";
 
 /** ローカルファイルかURLか。`WebSource.open(path)`の`path`から組み立てる。 */
 export type OpenSource = { kind: "file"; file: File } | { kind: "url"; url: string };
@@ -103,6 +104,8 @@ export interface CloseRequest {
 }
 
 export type WorkerRequest =
+  | ExtractStartRequest
+  | ToolMergeStartRequest
   | OpenRequest
   | ReadNodeRequest
   | CloseRequest
@@ -181,6 +184,8 @@ export interface ConvertDoneResponse {
   suggestedFileName: string;
   pointCount: number;
   stageTimings: ConversionStageBreakdownDto;
+  /** L2-C: エラーログに出す警告(CRSの無いファイルを通した、など)。無ければ省略または空。 */
+  warnings?: string[];
 }
 
 /** M4-6b: 変換の失敗・キャンセル。デスクトップ版のonConversionFailedと
@@ -193,6 +198,9 @@ export interface ConvertFailedResponse {
 }
 
 export type WorkerResponse =
+  | ToolProgressResponse
+  | ToolDoneResponse
+  | ToolFailedResponse
   | OpenResponse
   | ReadNodeResponse
   | ReadNodeStaleResponse
@@ -268,4 +276,71 @@ export function buildPcdConvertStartRequest(
   maxPointsPerNode: number = DEFAULT_MAX_POINTS_PER_NODE,
 ): PcdConvertStartRequest {
   return { type: "pcdConvertStart", id, file, maxPointsPerNode, isMobile };
+}
+
+// --- L2-C: 点群ツール(抽出・COPCの結合) ---
+//
+// 変換(convert-*)とは別の応答型(tool-*)にしてある。変換の完了・進捗は
+// 画面全体のリスナー(`useCopcViewer`)が受けて「変換結果を開く」動きをするので、
+// ツールの結果が同じ型で届くと、勝手に新しいファイルとして開かれてしまう。
+// ツールの応答は`WebSource`がリクエストidで、呼んだ関数のPromiseへ返す。
+
+/** 開いているCOPC(`file`)から`filter`に合う点だけを新しいCOPC(OPFS)にする。 */
+export interface ExtractStartRequest {
+  type: "extractStart";
+  id: number;
+  file: File;
+  filter: ExtractFilter;
+  /** 内訳(設定の使用量)に出す名前。 */
+  label: string;
+}
+
+/** 開いている複数のCOPCを1つのCOPC(OPFS)にする。 */
+export interface ToolMergeStartRequest {
+  type: "toolMergeStart";
+  id: number;
+  files: File[];
+  isMobile: boolean;
+  label: string;
+}
+
+export interface ToolProgressResponse {
+  type: "tool-progress";
+  id: number;
+  pointsRead: number;
+  totalPoints: number;
+}
+
+export interface ToolDoneResponse {
+  type: "tool-done";
+  id: number;
+  /** OPFS上の出力名。`opfs.getConvertedFile`で`File`にする。 */
+  outputName: string;
+  pointCount: number;
+  warnings: string[];
+}
+
+export interface ToolFailedResponse {
+  type: "tool-failed";
+  id: number;
+  message: string;
+  cancelled: boolean;
+}
+
+export function buildExtractStartRequest(
+  id: number,
+  file: File,
+  filter: ExtractFilter,
+  label: string,
+): ExtractStartRequest {
+  return { type: "extractStart", id, file, filter, label };
+}
+
+export function buildToolMergeStartRequest(
+  id: number,
+  files: File[],
+  isMobile: boolean,
+  label: string,
+): ToolMergeStartRequest {
+  return { type: "toolMergeStart", id, files, isMobile, label };
 }
