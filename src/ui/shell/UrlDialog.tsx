@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Dialog } from "./Dialog";
-import { DIALOG_BUTTON_CLASS, DIALOG_PRIMARY_BUTTON_CLASS } from "./dialog-styles";
+import { DIALOG_TERTIARY_BUTTON_CLASS, DIALOG_PRIMARY_BUTTON_CLASS } from "./dialog-styles";
 
 /**
  * ADR-0017: 「URLから開く」ダイアログ(リモートのCOPCを開く。Web版のみ)。
@@ -25,7 +25,7 @@ export function UrlDialog({ open, onClose, onSubmit }: { open: boolean; onClose:
       onClose={onClose}
       footer={
         <>
-          <button type="button" onClick={onClose} className={DIALOG_BUTTON_CLASS}>
+          <button type="button" onClick={onClose} className={DIALOG_TERTIARY_BUTTON_CLASS}>
             キャンセル
           </button>
           <button type="button" onClick={submit} disabled={trimmed === ""} className={`${DIALOG_PRIMARY_BUTTON_CLASS} disabled:opacity-40`}>
