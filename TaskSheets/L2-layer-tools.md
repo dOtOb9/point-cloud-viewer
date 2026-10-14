@@ -238,3 +238,73 @@ Changed: `src/renderer/gpu-resources.ts` (one line for the depth texture usage, 
 - Steps: open a file -> press "距離" in the ribbon "Tools" -> click the point cloud twice -> a label appears on screen and "距離 1" appears in the layer list.
   For "面積", click three or more vertices, then double click (or Enter, or "閉じる"). Stop with Esc or by pressing the button again. Also check that dragging moves the camera and that clicking the background shows "点がありません".
 
+
+
+## L2-C record: extraction engine, COPC merge, files without a CRS
+
+### What was done
+
+- **Extraction engine** ("read a COPC, write only the matching points into a new COPC"). No new octree/writer code.
+  - Read side: `crates/pcv-core/src/extract.rs` (`ExtractFilter` = `ScreenPolygon` | `OrientedBox`, iterator `ExtractPoints`). It builds for wasm32 and has no Tauri dependency. It reads only the nodes whose bounds may intersect the condition (conservative culling: any corner behind the camera -> read; screen polygon = NDC bounding-rectangle overlap; oriented box = separating axes of the 3 box axes + 3 world axes), holds one node of points at a time, and yields the points that pass the exact per-point test.
+  - Desktop write side: `crates/pcv-convert/src/extract.rs` (`extract_path_and_timings`) hands the iterator to `write_streaming_with_cancel_and_timings` (same as `merge.rs`).
+  - Web write side: `crates/pcv-wasm/src/extract.rs` (`WasmExtractor`: `feed` in small batches, then `finish`), same `SpillWriter` -> `write_copc_from_spill_with_fs_and_timings` on OPFS as the Web conversion.
+  - Zero points -> error "選んだ範囲に点がありません" before anything is written (the first point is taken before the writer starts). Attributes (RGB, intensity, classification, GPS time, ...) are carried over (`LasPointRecord::from_las_point`); tested.
+  - The node callback (`set_node_callback`) gives per-node progress and a cancellation check during the scan (when few points match, the writer receives nothing for a long time).
+- **COPC merge**: the existing `merge.rs` already accepts COPC inputs (`las::Reader` reads COPC as LAZ). No change needed; tested (`merge_accepts_copc_inputs`). Web reuses `runMultiConversion` through a new `toolMergeStart` request.
+- **Files without a CRS**: `merge::summarize_headers_lenient` (desktop) and `check_layout_and_crs_match` -> `CrsOutcome` (Web). A file without a CRS never stops the merge; the result CRS is taken from the first file that has one (even if it is not the first file); files that both have a CRS and differ still stop (`CrsMismatch`). Warnings (one per file) go back to the caller: `HeaderSummary::crs_warnings()` -> `ConversionDoneEvent.warnings` (desktop, also for the M4-14 multi-file selection) and `FinishResultDto.warnings` -> `convert-done.warnings` (Web). The dev CLI keeps its old strict / `--assume-missing-crs-is-first` behaviour.
+
+### Final API (TypeScript, `src/datasource/tools.ts` types)
+
+```ts
+type ExtractFilter =
+  | { kind: "screenPolygon"; viewProj: number[16] /* column-major, world(file coords) -> clip */; polygonNdc: [number, number][] }
+  | { kind: "orientedBox"; center: [n,n,n]; axes: [[n,n,n],[n,n,n],[n,n,n]]; halfExtents: [n,n,n] };
+interface ToolResult { outputPath: string; pointCount: number; warnings: string[] }
+interface ToolOptions { onProgress?: (p: { pointsRead: number; totalPoints: number }) => void; tempDir?: string | null /* desktop only */ }
+const EMPTY_SELECTION_MESSAGE = "選んだ範囲に点がありません";
+
+// Desktop: src/datasource/tauri.ts (free functions)
+extractToCopc(path: string, filter: ExtractFilter, options?: ToolOptions): Promise<ToolResult>
+mergeCopcs(paths: string[], options?: ToolOptions): Promise<ToolResult>
+// Web: methods of WebSource in src/datasource/web.ts (same names / shapes; paths are registered file keys "file:N";
+//      mergeCopcs options also take isMobile?: boolean)
+source.extractToCopc(path, filter, options?)
+source.mergeCopcs(paths, options?)
+```
+
+- `path` / `paths` are the strings that were passed to `open()` for those layers (desktop: file path; Web: registered key). `outputPath` can be passed to `open()` as is (desktop: a file under `<temp>/pcv-tools/`; Web: a newly registered key for a file on OPFS).
+- Failure = a rejected promise with the text on screen (zero points: `EMPTY_SELECTION_MESSAGE`; cancelled: desktop "キャンセルされた" / Web "キャンセルされました"). Warnings are in `result.warnings` and should be put in the error log (ADR-0011) by the caller.
+- Progress: desktop reuses the `conversion-progress` event (so the app-wide conversion listener also sees it; the UI that calls the tool decides what to show), Web gets `tool-progress` only through `onProgress`. Cancel: desktop `cancelLasConversion()`, Web `source.cancelConversion()`. One tool or conversion at a time (desktop returns an error if one is already running).
+- Desktop done/failed events are NOT emitted for tools (the result is the return value); `onConversionDone` gained a 4th argument `warnings: string[]` (merge of M4-14 fills it); Web `onConvertDone` gained a 5th argument `warnings`.
+- Tauri commands: `extract_copc(path, filter, tempDir)` and `merge_copcs(paths, tempDir)` in `src-tauri/src/conversion.rs`; panics are caught at the entry (`catch_unwind`, ADR-0015) and returned as `Err`. Web: worker requests `extractStart` / `toolMergeStart`, responses `tool-progress` / `tool-done` / `tool-failed`; the worker rewrites the merge's `convert-*` messages to `tool-*` at one choke point (`translateForTool` in `copc.worker.ts`) so the result is not opened by the app-wide conversion handler. Web outputs get a sidecar (`opfs.writeToolOutputMeta`) so they show up in the OPFS usage breakdown.
+
+### Alternatives not taken
+
+- Collect matching points in a `Vec`, then write: memory would grow with the selection (hundreds of millions of points).
+- Exact polygon-vs-box culling (convex hull of the projected corners): not needed for correctness; the coarse rectangle test only reads a few more nodes.
+- Reusing `convert-*` messages for tools on Web: the app-wide listener would open every tool result as a converted file.
+- Android `content://` inputs: unsupported (same limit as the M4-14 merge); a clear error is returned.
+
+### Files touched
+
+`crates/pcv-core/src/{extract.rs,lib.rs,copc.rs}`, `crates/pcv-core/Cargo.toml` (serde), `crates/pcv-convert/src/{extract.rs,merge.rs,lib.rs}`, `crates/pcv-convert/examples/extract_copc.rs`, `crates/pcv-convert/Cargo.toml`, `crates/pcv-wasm/src/{extract.rs,convert.rs,dto.rs,lib.rs,pcd_import.rs}`, `crates/pcv-wasm/Cargo.toml`, `src/wasm/pcv-wasm/*` (regenerated), `src-tauri/src/{conversion.rs,lib.rs}`, `src/datasource/{tools.ts,tauri.ts,web.ts,web-protocol.ts,web-protocol.test.ts,copc.worker.ts,opfs.ts}`.
+
+### Measured (commands and outputs from this session)
+
+Machine state: **L2-E's `merge_las_to_copc.exe` was running at the same time for the whole session** (so all times are with a competing heavy process). Memory is "private memory" polled every 100 ms from outside (`measure.ps1`, max of `PrivateMemorySize64`).
+
+- `cargo test -p pcv-core -p pcv-convert`: all pass (11 new tests in `extract` including: attributes kept, node skipping, zero points, memory bound `buffer_is_bounded_by_largest_node` (8000 points / 500 per node: max held = largest node), progress, cancel during scan, non-COPC input, screen polygon, COPC merge; 2 new in `merge` for lenient CRS). `cargo test` for pcv-wasm (38 + integration) and pcv-tauri (16) pass; `cargo clippy -p pcv-tauri -p pcv-convert -p pcv-core --all-targets` clean; `cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings` clean; `cargo build -p pcv-core --target wasm32-unknown-unknown` OK; `npm run build:wasm` OK; `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (444 tests) pass.
+- `autzen-classified.copc.laz` (10,653,336 points), box x 636500..637500, y 850000..851500, all z: **1,156,505 points out, 47 of 278 nodes read (2,075,794 points scanned, max 70,734 held), 1.58 s, private memory max 30.4 MiB**, output 10,007,553 bytes.
+- `tokyo-shibuya-merged-v2.copc.laz` (347,797,138 points), box x -13000..-11000, y -38500..-37000, z -10..300: **154,661,111 points out, 2943 of 6462 nodes read (169,462,858 points scanned, max 100,000 held), 421.4 s, private memory max 274.3 MiB** (versus roughly 154.7M x ~40 bytes = ~6 GB if all points were held), output 2,107,238,455 bytes. Breakdown: read+decode 194.4 s, spill write 18.7 s, LOD index 147.7 s, node compression 41.6 s. The sampled **working set reached 9,577 MiB**; this is page cache of the memory-mapped spill / LOD files (copc-writer's `memmap2`), not private memory (not investigated further: **unverified** explanation). The output file was deleted after the run.
+
+### Not verified
+
+- The Web path (`WasmExtractor`, worker `extractStart` / `toolMergeStart`, `WebSource.extractToCopc` / `mergeCopcs`) was **not run in a browser**; only compiled, linted and unit-tested (message builders). The `serde_wasm_bindgen` decoding of the internally tagged `ExtractFilter` enum on the wasm side is untested.
+- Tauri commands were not invoked from the running app (only compiled / clippy). Progress events from a tool will also drive the existing conversion progress UI (not checked).
+- Android (`content://`) is unsupported; no device check.
+- Time numbers above are under load from another process; do not read them as the engine's speed.
+
+### How the owner can check
+
+1. `cargo run -p pcv-convert --release --example extract_copc -- data/autzen-classified.copc.laz out.copc.laz 636500 850000 0 637500 851500 1000` then open `out.copc.laz` in the viewer (delete it afterwards). Run it without the box arguments to print a file's bounds.
+2. Call `extractToCopc` / `mergeCopcs` from the browser devtools or the L2-F UI once it exists; for Web check that OPFS usage (Settings) lists "抽出: ..." / "結合: ..." entries and that they can be deleted.
