@@ -25,4 +25,4 @@ export const RIBBON_BUTTON_PRIMARY_CLASS =
   "bg-primary text-on-primary hover:!bg-primary hover:opacity-90";
 
 /** グループ1つの外枠。縦に見出し+横並びの操作、を並べる。 */
-export const RIBBON_GROUP_CLASS = "flex flex-col gap-1 border-r border-black/10 pr-3 last:border-r-0 dark:border-white/10";
+export const RIBBON_GROUP_CLASS = "flex shrink-0 flex-col gap-1 border-r border-black/10 pr-3 last:border-r-0 dark:border-white/10";

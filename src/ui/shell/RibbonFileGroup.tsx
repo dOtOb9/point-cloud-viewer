@@ -35,7 +35,7 @@ export function RibbonFileGroup({ viewer, onOpenUrlDialog }: Props) {
   return (
     <div className={RIBBON_GROUP_CLASS}>
       <span className={RIBBON_GROUP_LABEL_CLASS}>ファイル</span>
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-nowrap items-center gap-1">
         {viewer.isBrowser ? (
           <>
             {/* 隠した<input>をラベルで包み、見た目はリボンのボタン(アイコン+ラベル)にする。 */}

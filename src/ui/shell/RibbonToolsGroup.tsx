@@ -28,7 +28,7 @@ export function RibbonToolsGroup() {
   return (
     <div className={RIBBON_GROUP_CLASS}>
       <span className={RIBBON_GROUP_LABEL_CLASS}>ツール</span>
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-nowrap items-center gap-1">
         {UNIMPLEMENTED_TOOLS.map((tool) => (
           <RibbonButton key={tool.label} icon={tool.icon} label={tool.label} disabled title={tool.title} />
         ))}

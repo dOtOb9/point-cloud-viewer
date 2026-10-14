@@ -17,7 +17,7 @@ export function RibbonViewGroup({ onOpenColorMode, onOpenAppearance, onOpenLoadP
   return (
     <div className={RIBBON_GROUP_CLASS}>
       <span className={RIBBON_GROUP_LABEL_CLASS}>表示</span>
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-nowrap items-center gap-1">
         <RibbonButton icon={Palette} label="着色" title="色の付け方を選ぶ" onClick={onOpenColorMode} />
         <RibbonButton icon={Eye} label="見た目" title="EDL・点の形" onClick={onOpenAppearance} />
         <RibbonButton icon={Gauge} label="読み込み優先" title="画面中央を優先して読み込む強さ" onClick={onOpenLoadPriority} />
