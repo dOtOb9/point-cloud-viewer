@@ -563,7 +563,7 @@ DOM との接続だけ `useRibbonDragScroll.ts`。5px 未満は普通のクリ�
 - ブラウザの保存領域の使用量の取り直しを「設定を開いたとき」のままにする: 専用ダイアログを開いたときに変えた(一覧では見えないため)。
 
 **触ったファイル:** `src/ui/shell/SettingsModal.tsx`・`SettingsPages.tsx`(新)・`settings-nav.ts`(新)・`settings-nav.test.ts`(新)・`SettingsPages.test.tsx`(新)・`LayerInfoSection.tsx`(ブロック削除のみ)・`UrlDialog.tsx`。
-`data-testid="animation-toggle"` はアニメーションの専用ダイアログに残してある(E2Eが使うなら、先に設定の一覧から「アニメーション」を押す必要がある。現在のE2Eは未使用と見ている=未確認)。
+`data-testid="animation-toggle"` はアニメーションの専用ダイアログに残してある(E2Eが使うなら、先に設定の一覧から「アニメーション」を押す必要がある。`e2e/` を grep して現在のE2Eは使っていないことを確認済み)。
 
 **確認したこと:** `npx tsc --noEmit`・`npm run lint`・`npx vitest run`(49ファイル428テスト)が通る。
 ヘッドレスChromium(SwiftShader、`vite`のdev、1280x800)で、設定の一覧(8個のボタンが4列x2行。Webなので保存領域は出て一時ファイルは出ない)、背景ダイアログ(ラジオ3つ+グリッドのチェック、フッターは灰色の戻る・閉じる)、
