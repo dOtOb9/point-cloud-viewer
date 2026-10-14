@@ -96,6 +96,8 @@ features = [
 [patch.crates-io]
 copc-reader = { path = "../../vendor/copc-reader" }
 copc-writer = { path = "../../vendor/copc-writer" }
+# L2-G: seek inside variable-size chunks (COPC). vendor/laz/PATCH.md
+laz = { path = "../../vendor/laz" }
 
 # M4-6b: `tests/memory_scratch_conversion.rs`(ネイティブで走る統合テスト)が
 # 合成LASを書き出すのに使う。wasm32ビルドには一切含まれない(dev-dependency)。

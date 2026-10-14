@@ -32,6 +32,8 @@ repository = "https://github.com/dOtOb9/point-cloud-viewer"
 [patch.crates-io]
 copc-reader = { path = "vendor/copc-reader" }
 copc-writer = { path = "vendor/copc-writer" }
+# L2-G: seek inside variable-size chunks (COPC). vendor/laz/PATCH.md
+laz = { path = "vendor/laz" }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
