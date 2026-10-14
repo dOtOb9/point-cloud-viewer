@@ -11,6 +11,7 @@ import {
   selectNodesForFrame,
   type NodeSelectionCache,
 } from "./node-selection";
+import { screenSpaceError, surfaceSpacingPixels } from "./screen-space-error";
 import type { HierarchyNodeInfo } from "../datasource/DataSource";
 
 const CANVAS_WIDTH = 800;
@@ -31,8 +32,8 @@ function box(key: string, min: number, max: number, pointCount: number): Hierarc
   return { key, pointCount, boundsMin: [min, min, min], boundsMax: [max, max, max] };
 }
 
-// 点間隔 = cbrt(体積/点数)。ルート: 1辺1・1000点 → 0.1ワールド単位。
-// 高さ600px・視野60度では、距離10で約5px、距離100で約0.5px になる。
+// 面を仮定した点間隔 = sqrt(1面の面積/点数)。ルート: 1辺1・1000点 → 約0.032ワールド単位。
+// 高さ600px・視野60度では、距離10で約1.6px、距離100で約0.16px になる。
 const root = box("0-0-0-0", -0.5, 0.5, 1000);
 const child = box("1-0-0-0", -0.5, 0, 1000);
 
@@ -60,7 +61,7 @@ describe("selectNodesForFrame: LOD A（画素より細かい階層は読まな�
   });
 
   it("親が閾値以上なら子は外れない。子が閾値を下回れば、孫だけが外れる", () => {
-    // 子の点が非常に多い（1e6点）→ 子の点間隔は約0.0079単位 → 距離10で約0.4px（閾値未満）
+    // 子の点が非常に多い（1e6点）→ 子の点間隔は約0.0005単位 → 距離10で約0.03px（閾値未満）
     const denseChild = box("1-0-0-0", -0.5, 0, 1_000_000);
     const grandchild = box("2-0-0-0", -0.5, -0.25, 1000);
     expect(selectedKeys([root, denseChild, grandchild], 10)).toEqual(["0-0-0-0", "1-0-0-0"]);
@@ -90,5 +91,15 @@ describe("selectNodesForFrame: LOD A（画素より細かい階層は読まな�
       0.1,
     );
     expect(r.wanted.map((n) => n.key).sort()).toEqual(["0-0-0-0", "1-0-0-0"]);
+  });
+});
+
+describe("surfaceSpacingPixels", () => {
+  it("立方体ノードでは 辺/√点数 のワールド間隔をピクセルにした値で、cbrt 版（screenSpaceError）より小さい", () => {
+    const vp = viewProjAt(10);
+    const surface = surfaceSpacingPixels(vp, root.boundsMin, root.boundsMax, 1000, CANVAS_WIDTH, CANVAS_HEIGHT);
+    const volume = screenSpaceError(vp, root.boundsMin, root.boundsMax, 1000, CANVAS_WIDTH, CANVAS_HEIGHT);
+    // 1辺1・1000点: 面の仮定は 1/√1000、立体の仮定は 1/∛1000 = 0.1 なので、比は 10/√1000
+    expect(surface / volume).toBeCloseTo(10 / Math.sqrt(1000), 6);
   });
 });

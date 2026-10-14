@@ -217,3 +217,37 @@ export function screenSpaceError(
 
   return pointSpacing * pixelsPerWorldUnit;
 }
+
+/**
+ * LOD A（`node-selection.ts` の打ち切り判定）専用: 「点が面に並んでいる」と仮定した
+ * 点間隔を、画面上のピクセル数で返す。
+ *
+ * `screenSpaceError` は点間隔を `cbrt(体積/点数)`（点が立方体の中に一様に詰まっている
+ * 仮定）で見積もる。航空レーザーの点は地表・屋根・壁という**面**に並ぶので、この見積もりは
+ * 実際の面内の点間隔より何倍も大きく出る（面に10万点なら約7倍）。そのため打ち切り判定に
+ * 使うと、画素より細かくなっていても打ち切られなかった（TaskSheets/HQ-high-quality-mode.md
+ * の LOD A）。そこで打ち切りだけ、`sqrt(1面の面積/点数)`（立方体ノードなら 辺/√点数）を使う。
+ *
+ * 副作用: 立体的に密なデータ（体積に点が詰まっているもの）では、実際より点間隔を
+ * 小さく見積もるので、早めに打ち切る側に倒れる（少し粗くなる）。
+ *
+ * ノード間の優先度（`screenSpaceError`、ADR-0010）は変えない。ここは打ち切りにだけ使う。
+ * 面の面積は3組の面（xy・yz・xz）のうち最大のもの（COPCのノードは立方体なので、どれでも同じ）。
+ */
+export function surfaceSpacingPixels(
+  viewProj: Mat4,
+  boundsMin: readonly [number, number, number],
+  boundsMax: readonly [number, number, number],
+  pointCount: number,
+  canvasWidth: number,
+  canvasHeight: number,
+): number {
+  const sizePixels = projectedBoundsDiagonalPixels(viewProj, boundsMin, boundsMax, canvasWidth, canvasHeight);
+  const dx = Math.max(boundsMax[0] - boundsMin[0], 1e-6);
+  const dy = Math.max(boundsMax[1] - boundsMin[1], 1e-6);
+  const dz = Math.max(boundsMax[2] - boundsMin[2], 1e-6);
+  const faceArea = Math.max(dx * dy, dy * dz, dx * dz);
+  const spacing = Math.sqrt(faceArea / Math.max(pointCount, 1));
+  const worldDiagonal = Math.max(Math.hypot(dx, dy, dz), 1e-6);
+  return spacing * (sizePixels / worldDiagonal);
+}

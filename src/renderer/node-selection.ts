@@ -11,7 +11,7 @@
 import type { HierarchyNodeInfo } from "../datasource/DataSource";
 import type { Mat4 } from "./mat4";
 import { aabbIntersectsFrustum, type Plane } from "./frustum";
-import { screenSpaceError } from "./screen-space-error";
+import { screenSpaceError, surfaceSpacingPixels } from "./screen-space-error";
 import { centerPriorityWeight, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "./center-priority";
 import type { CachedNode } from "./node-cache";
 
@@ -115,7 +115,7 @@ export function selectNodesForFrame(
     if (!parent) {
       stopped = stoppedAbove(pk);
     } else {
-      const parentError = screenSpaceError(
+      const parentSpacing = surfaceSpacingPixels(
         viewProj,
         parent.boundsMin,
         parent.boundsMax,
@@ -123,7 +123,7 @@ export function selectNodesForFrame(
         canvasWidth,
         canvasHeight,
       );
-      stopped = parentError < minSpacingPixels || stoppedAbove(pk);
+      stopped = parentSpacing < minSpacingPixels || stoppedAbove(pk);
     }
     refinementStopped.set(key, stopped);
     return stopped;
