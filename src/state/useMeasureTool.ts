@@ -2,38 +2,41 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import type { CopcViewerState } from "./useCopcViewer";
 import { autoFinishCount, MIN_POINTS, type MeasureKind, type Vec3 } from "./measure";
 
-// L2-D: 計測ツールの操作。「いま何を測っているか（種類）」と「入力途中の点」を持ち、
-// 3Dビュー（canvas）のクリックで点を足し、そろったら `viewer.addMeasurement` で新しい計測レイヤーにする。
+// L2-D: operation of the measurement tool. Holds "what is being measured (kind)" and the
+// points entered so far, adds a point on each click in the 3D view (canvas), and when
+// enough points exist turns them into a new measurement layer via `viewer.addMeasurement`.
 //
-// カメラ操作との分け方（クリックとドラッグの区別）:
-//  - canvas の pointerdown の位置を覚え、`click` までに動いた量が小さいときだけ「クリック」とみなす。
-//    ドラッグ（回転・パン）は今までどおり orbit-camera.ts が受け、こちらは何もしない。
-//  - canvas のイベントは止めない（orbit-camera.ts と並んで聞くだけ）。止めるのは `dblclick` だけ:
-//    面積を閉じるダブルクリックで「視点移動（寄る）」まで動かないように、capture で止める。
-//  - ダブルクリックは click が2回来る。2回目（detail >= 2）は無視し、dblclick で閉じる。
+// How clicks are told apart from camera drags:
+//  - Remember the canvas pointerdown position; only treat it as a click when the movement
+//    until `click` is small. Drags (rotate, pan) are still handled by orbit-camera.ts.
+//  - Canvas events are not stopped (we listen alongside orbit-camera.ts). The only event
+//    stopped is `dblclick`: the double click that closes an area must not also trigger the
+//    camera fly-to (stopped in the capture phase).
+//  - A double click delivers two clicks. The second one (detail >= 2) is ignored and the
+//    area is closed by dblclick.
 //
-// 点のピックは非同期（GPU から読み戻す）。クリックが速く連続しても順番が入れ替わらないよう、
-// 処理は1本の Promise の列に並べて順に行う。
+// Picking a point is asynchronous (read back from the GPU). Work is chained on a single
+// Promise so quick successive clicks are processed in order.
 
-/** これ以上動いたらドラッグ（クリックではない）とみなす距離（CSS px）。 */
+/** Moving more than this (CSS px) means a drag, not a click. */
 const CLICK_MOVE_TOLERANCE_PX = 5;
-/** 「点がありません」などの案内を出しておく時間（ms）。 */
+/** How long a short notice such as "no point here" stays visible (ms). */
 const NOTICE_MS = 2500;
 
 export interface MeasureToolState {
-  /** 計測中の種類。null なら計測していない（通常のカメラ操作だけ）。 */
+  /** Kind being measured. null means not measuring (normal camera operation only). */
   mode: MeasureKind | null;
-  /** 入力途中の点（ワールド座標）。 */
+  /** Points entered so far (world coordinates). */
   points: readonly Vec3[];
-  /** 画面に出す短い案内（「点がありません」など）。無ければ null。 */
+  /** Short notice to show on screen (e.g. "点がありません"), or null. */
   notice: string | null;
-  /** 計測を始める。別の種類を計測中なら、入力途中の点を捨てて切り替える。 */
+  /** Start measuring. If another kind is active, its points are discarded and it switches. */
   start: (kind: MeasureKind) => void;
-  /** やめる（入力途中の点も捨てる）。 */
+  /** Stop (also discards points entered so far). */
   stop: () => void;
-  /** 同じ種類なら終了、違えば開始（リボンのボタン用）。 */
+  /** Stop if it is the same kind, otherwise start (for the ribbon buttons). */
   toggle: (kind: MeasureKind) => void;
-  /** 面積を閉じて確定する（Enter・ダブルクリックと同じ）。 */
+  /** Close and finish an area (same as Enter or double click). */
   finish: () => void;
 }
 
@@ -45,13 +48,13 @@ export function useMeasureTool(
   const [points, setPoints] = useState<readonly Vec3[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // イベントハンドラ（canvas に付けたまま残る）から、最新の値を読むための ref。
+  // Refs so event handlers (which stay attached to the canvas) read the latest values.
   const modeRef = useRef<MeasureKind | null>(null);
   const pointsRef = useRef<readonly Vec3[]>([]);
   const viewerRef = useRef(viewer);
   const noticeTimerRef = useRef<number | null>(null);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
-  // 計測をやめたり切り替えたら増える。古い（やめる前に始めた）ピックの結果を捨てるための世代。
+  // Incremented when measuring stops or switches. Discards results of picks started before that.
   const generationRef = useRef(0);
 
   useEffect(() => {
@@ -83,7 +86,7 @@ export function useMeasureTool(
   const stop = useCallback(() => reset(null), [reset]);
   const toggle = useCallback((kind: MeasureKind) => reset(modeRef.current === kind ? null : kind), [reset]);
 
-  /** いまの点で計測を確定して、新しいレイヤーにする。 */
+  /** Finish the measurement with the current points and make a new layer. */
   const commit = useCallback(
     (kind: MeasureKind, pts: readonly Vec3[]) => {
       const up = viewerRef.current.getViewSnapshot()?.up ?? [0, 0, 1];
@@ -99,7 +102,7 @@ export function useMeasureTool(
   );
 
   const finish = useCallback(() => {
-    // 並んでいるピック（直前のクリック）が終わってから閉じる。
+    // Wait for queued picks (the preceding click) to finish before closing.
     const generation = generationRef.current;
     queueRef.current = queueRef.current.then(() => {
       const kind = modeRef.current;
@@ -112,14 +115,14 @@ export function useMeasureTool(
     });
   }, [commit, showNotice]);
 
-  /** クリック位置の点を取って、入力途中の点に足す。 */
+  /** Pick the point at the click position and add it to the points entered so far. */
   const addPointAt = useCallback(
     (cssX: number, cssY: number) => {
       const generation = generationRef.current;
       queueRef.current = queueRef.current.then(async () => {
         if (generation !== generationRef.current || modeRef.current === null) return;
         const picked = await viewerRef.current.pickPoint(cssX, cssY);
-        // ピックの間に、計測をやめた・切り替えた場合は捨てる。
+        // Discard if measuring was stopped or switched during the pick.
         if (generation !== generationRef.current || modeRef.current === null) return;
         if (!picked) {
           showNotice("点がありません");
@@ -137,14 +140,14 @@ export function useMeasureTool(
     [commit, setPointsBoth, showNotice],
   );
 
-  // 計測中だけ、canvas のクリック・ダブルクリックと、キーボード（Esc・Enter）を聞く。
+  // Only while measuring, listen to canvas click / double click and the keyboard (Esc, Enter).
   useEffect(() => {
     const canvas = canvasRef.current;
     if (mode === null || !canvas) return;
 
     let down: { x: number; y: number; id: number } | null = null;
     const onPointerDown = (e: PointerEvent) => {
-      // 左ボタン（タッチ・ペンの接触を含む）だけ。2本目の指（ピンチ）は無視する。
+      // Left button only (including touch/pen contact). Ignore a second finger (pinch).
       if (e.button !== 0 || !e.isPrimary) {
         down = null;
         return;
@@ -155,15 +158,15 @@ export function useMeasureTool(
       const start = down;
       down = null;
       if (!start) return;
-      // 動かしてから離した = ドラッグ。カメラ操作に任せる。
+      // Released after moving = a drag. Leave it to the camera.
       if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_MOVE_TOLERANCE_PX) return;
-      // ダブルクリックの2回目は無視する（閉じるのは dblclick）。
+      // Ignore the second click of a double click (closing is done by dblclick).
       if (e.detail >= 2) return;
       const rect = canvas.getBoundingClientRect();
       addPointAt(e.clientX - rect.left, e.clientY - rect.top);
     };
     const onDoubleClick = (e: MouseEvent) => {
-      // 視点移動（ダブルクリックで寄る）を動かさない。
+      // Do not trigger the camera fly-to (double click to approach).
       e.stopImmediatePropagation();
       finish();
     };
@@ -179,7 +182,7 @@ export function useMeasureTool(
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("click", onClick);
-    // capture: orbit-camera.ts の dblclick より先に受けて止める。
+    // capture: receive it before the dblclick of orbit-camera.ts and stop it.
     canvas.addEventListener("dblclick", onDoubleClick, true);
     window.addEventListener("keydown", onKeyDown);
     return () => {

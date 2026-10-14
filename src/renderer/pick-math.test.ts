@@ -17,7 +17,7 @@ describe("depthToEyeDistance", () => {
   it("perspective の深度から元の距離に戻る", () => {
     const proj = perspective(Math.PI / 3, 1.5, NEAR, FAR);
     for (const z of [0.5, 10, 3000, 90000]) {
-      // 視点座標系で前方 z にある点（-z 方向）
+      // a point ahead by z in view space (the -z direction)
       const [, , cz, cw] = transformPoint(proj, [0, 0, -z]);
       expect(depthToEyeDistance(cz / cw, NEAR, FAR)).toBeCloseTo(z, 3);
     }
@@ -32,7 +32,7 @@ describe("refineDepthRange", () => {
     const farAway = refineDepthRange(2e5, NEAR, FAR);
     expect(farAway.near).toBe(NEAR);
     expect(farAway.far).toBeGreaterThan(4e5);
-    // 遠くの1刻みは約54（z=3000, near=0.01, 24bit）。式どおりであること。
+    // one far step is about 54 (z=3000, near=0.01, 24 bit); it must match the formula
     expect(depthQuantumAt(3000, NEAR, FAR)).toBeGreaterThan(50);
     expect(depthQuantumAt(3000, NEAR, FAR)).toBeLessThan(60);
   });
@@ -52,11 +52,11 @@ describe("nearestHit", () => {
   });
   it("中心に近い画素を選ぶ。同距離なら手前", () => {
     const d = new Float32Array(81).fill(1);
-    d[0] = 0.5; // 隅（遠い画素）
-    d[4 * 9 + 6] = 0.9; // 中心から (2,0)
-    d[4 * 9 + 2] = 0.8; // 中心から (-2,0)。同距離で手前
+    d[0] = 0.5; // a corner (far pixel)
+    d[4 * 9 + 6] = 0.9; // (2,0) from the center
+    d[4 * 9 + 2] = 0.8; // (-2,0) from the center; same distance but nearer
     expect(nearestHit(d, 9)).toEqual({ ix: 2, iy: 4, depth: Math.fround(0.8) });
-    d[4 * 9 + 4] = 0.95; // 中心そのもの
+    d[4 * 9 + 4] = 0.95; // the center itself
     expect(nearestHit(d, 9)?.ix).toBe(4);
   });
 });
@@ -69,20 +69,20 @@ describe("windowViewProj と unprojectWindowSample", () => {
     const target: [number, number, number] = [637000, 850000, 520];
     const view = lookAt(eye, target, [0, 0, 1]);
     const aspect = width / height;
-    // 世界の点: 注視点の少し横
+    // world point: a little beside the target
     const world: [number, number, number] = [637010.25, 850004.5, 515.75];
-    // 1段階目: 通常の射影での距離（w）
+    // stage 1: distance (w) with the normal projection
     const viewProj = multiply(perspective(Math.PI / 3, aspect, NEAR, FAR), view);
     const clip = transformPoint(viewProj, world);
     const z = clip[3];
     const px = Math.floor(((clip[0] / clip[3] + 1) / 2) * width);
     const py = Math.floor((1 - clip[1] / clip[3]) * 0.5 * height);
-    // 2段階目: 狭い near/far
+    // stage 2: narrow near/far
     const range = refineDepthRange(z, NEAR, FAR);
     const tight = multiply(perspective(Math.PI / 3, aspect, range.near, range.far), view);
     const size = 2 * 2 + 1;
     const win = windowViewProj(tight, px, py, size, width, height);
-    // 点は窓の中のどこかの画素の中にある。その画素の中心の ndc を求めて、深度は点のものを使って戻す。
+    // the point is in some pixel of the window; take that pixel center ndc and unproject with the point depth
     const wc = transformPoint(win, world);
     const ndcX = wc[0] / wc[3];
     const ndcY = wc[1] / wc[3];
@@ -95,7 +95,7 @@ describe("windowViewProj と unprojectWindowSample", () => {
     const back = unprojectWindowSample(win, ix, iy, size, wc[2] / wc[3]);
     expect(back).not.toBeNull();
     if (!back) return;
-    // 画素の中心に戻すので、画面方向には1ピクセル分の誤差がありうる（距離 z のとき約 z*2*tan(fov/2)/height）。
+    // we return the pixel center, so up to one pixel of error on screen is possible (about z*2*tan(fov/2)/height at distance z)
     const pixelWorld = (z * 2 * Math.tan(Math.PI / 6)) / height;
     expect(Math.hypot(back[0] - world[0], back[1] - world[1], back[2] - world[2])).toBeLessThan(pixelWorld);
   });
@@ -104,7 +104,7 @@ describe("windowViewProj と unprojectWindowSample", () => {
     const size = 2 * COARSE_HALF + 1;
     const view = lookAt([0, -10, 0], [0, 0, 0], [0, 0, 1]);
     const vp = multiply(perspective(Math.PI / 3, 1, 0.1, 100), view);
-    // 画面中央 = 画素 (100,100) の左上の角。窓の中心画素は (100,100)。
+    // screen center = top-left corner of pixel (100,100); the window center pixel is (100,100)
     const win = windowViewProj(vp, 100, 100, size, 200, 200);
     const c = transformPoint(win, [0, 0, 0]);
     const ix = ((c[0] / c[3] + 1) / 2) * size;

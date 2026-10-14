@@ -175,64 +175,66 @@ L2-A はボタン列の部品（`LayerActions.tsx`）を作り、「移動」は
 ### 所有者の確認手順
 点群を2つ開く → レイヤー欄の行の文字位置が選択で動かないこと、見出しと揃うことを見る → 行を選んで「着色」「見た目」「削除」と Delete キーを試す（レイヤーが無いとボタンがグレー）→ 設定を開き、診断が無く、読み込み優先・陰影（EDL）があること、専用ページに「戻る」だけがあること、後ろがぼけることを見る。
 
-## L2-D の記録: 計測（距離・高さ・面積）
+## L2-D record: measurement (distance, height, area)
 
-### 何をしたか
+### What was done
 
-- **ピック**（画面の点 → 3次元の点）: 点のデータを CPU に持たないので、描いた深度を GPU から読み戻して逆投影する。
-  EDL オン（点群専用のオフスクリーン深度）・オフ（スワップチェーンの深度。空・グリッドは深度を書かない）のどちらでも同じ手順。
-  背景なら「点がありません」で何もしない。逆投影は f64（`mat4.ts` の規約）。
-- **計測**: 距離（3次元・水平・高さ差を併記）、高さ（鉛直差。鉛直の実線と水平の破線で描く）、面積（水平面に投影した面積と周長。靴ひも公式、重心を引いてから計算）。
-  「水平・鉛直」はカメラの上方向（既定 Z）で決める。
-- **計測レイヤー**: 確定すると ADR-0018 のとおり新しいレイヤー（`ViewerLayer.measurement` を持つもの）として一覧に入り、選択になる。
-  表示・非表示・削除ができる。着色は無効（`setLayerColorModeInList` が計測レイヤーを無視、viewer も早期 return）。
-  DataSource のファイルは持たない（`cloudId = -1`。削除時に `close` しない）。
-- **UI**: リボン「ツール」に「距離」「高さ」「面積」の3ボタン（所有者の決定「実装が入ったらボタンを分ける」）。計測中のボタンは下線。
-  画面下に案内（`MeasureHud`: 何を測っているか・次の操作・「閉じる」「やめる」）。やめ方は Esc・もう一度ボタン・「やめる」。
-  面積は、クリックで頂点、ダブルクリックか Enter か「閉じる」で確定。点群が無いときはボタンを押せない。
+- **Picking** (screen point -> 3D point): the node points are not kept on the CPU, so the drawn depth is read back from the GPU and unprojected.
+  The same steps work with EDL on (point-cloud-only offscreen depth) and off (swap-chain depth; sky and grid do not write depth).
+  Clicking the background shows "点がありません" and does nothing. Unprojection is done in f64 (the rule of `mat4.ts`).
+- **Measurements**: distance (3D distance, with horizontal distance and height difference), height (vertical difference, drawn as a solid vertical line plus a dashed horizontal line),
+  area (area and perimeter projected onto the horizontal plane; shoelace formula computed after subtracting the centroid).
+  "Horizontal/vertical" follows the camera up axis (default Z).
+- **Measurement layer**: a finished measurement becomes a new layer (a `ViewerLayer` with `measurement`) in the list, as ADR-0018 says, and becomes the selection.
+  It can be shown, hidden and deleted. Coloring is disabled (`setLayerColorModeInList` ignores measurement layers, and the viewer returns early).
+  It has no DataSource file (`cloudId = -1`; `close` is not called on delete).
+- **UI**: three buttons "距離", "高さ", "面積" in the ribbon "Tools" group (owner decision: split the buttons once implemented). The active button has an underline.
+  A guide at the bottom of the screen (`MeasureHud`: what is measured, the next action, "閉じる" and "やめる"). To stop: Esc, pressing the button again, or "やめる".
+  Area: click vertices, then close with double click, Enter or "閉じる". The buttons are disabled when there is no point cloud.
 
-### 判断と、採らなかった案
+### Decisions and rejected alternatives
 
-- **深度を2段階で読む**（`pick-math.ts` 冒頭）。射影が NEAR=0.01・FAR=1e7 で、24bit の深度は遠くで粗い
-  （式どおり 1刻み = z²/NEAR·2⁻²⁴。autzen の見渡す距離 z≒8000 で約 380 ft）。1段階目の深度だけで逆投影すると、
-  実機で標高 1302（データは 406〜615）のような点になった。そこで 1段階目で距離 z を得て、z/2〜2z だけを near/far にした
-  狭い射影で、クリックした画素の周りの 5×5 画素だけ描き直して深度を読む（これだと z≒8000 でも約 1mm の分解能）。
-  採らなかった案: 深度を depth32float や reverse-z に変える（全パイプライン・EDL・空・グリッドに波及し、L2-B と衝突する）。
-- **余裕を z/2〜2z と広く取った理由**: 最初は「粗い刻みの4個分」にしたが、実機で1段階目の距離が理論の量子化誤差の約3倍（約14%）ずれ、
-  点が範囲外になって当たらなかった。**ずれの原因は未特定**。分解能は余裕を広げても十分なので、比例の余裕にして回避した（原因究明は未了）。
-- **深度の読み戻し**: depth24plus は `copyTextureToBuffer` できないので、`textureLoad` する小さな compute シェーダで storage バッファへ書いて読む（`depth-pick.ts`）。
-  EDL オフ側の深度テクスチャに `TEXTURE_BINDING` を足した（`gpu-resources.ts` の1行）。窓は 9×9 までで、クリックの隙間（数ピクセル）を許す。
-- **線とラベルは DOM の SVG オーバーレイ**（`MeasureOverlay.tsx`）。WebGPU のパイプラインを足さない。理由: ラベル（数値）は DOM が必須で、
-  線だけ WebGPU にすると2系統になる。計測の線は数本で、毎フレーム投影し直しても軽い。renderer（L2-B が作業中）にほぼ触れずに済む。
-  欠点: 点群に隠れず常に手前に描く（計測では見失わないほうが大事なので許容）。カメラが止まっている間は viewProj が変わらないので再描画しない。
-  カメラの後ろへはみ出す線は、ニアプレーンで切ってから投影する（`screen-project.ts`）。
-- **クリックとドラッグの区別**: canvas の pointerdown 位置を覚え、click までに 5px 以内のときだけクリック。canvas のイベントは止めない
-  （orbit-camera.ts と並んで聞くだけ）。止めるのは `dblclick` だけ（capture で止め、面積を閉じるときに「寄る」視点移動が動かないように）。
-  ダブルクリックの click は2回来るので、2回目（`detail >= 2`）は無視する。ピックは非同期なので、処理は1本の Promise の列で順に行う。
-- **単位**: CRS に単位の項目が無いので名前から判断（`lengthUnitLabel`）。名前に ft/feet/foot/US survey → 「ft」、
-  日本の平面直角・UTM → 「m」、不明・CRS なし・読み取り失敗 → 「座標の単位」（m と言い切らない。フィート系の数値が3割ずれても気づけなくなるため）。
-  面積は「ft²」「座標の単位²」。計測レイヤーは元の点群レイヤー（選択中が点群ならそれ、計測なら最初の点群）の CRS を引き継ぐ。
-- 計測レイヤーの種類は `ViewerLayer.measurement?`（あれば計測）で表した。`kind` 列挙にしなかったのは、他の作業（L2-A・L2-B）が同じ型を触っていて、必須フィールドを増やすと衝突するため。
+- **Read the depth in two stages** (top of `pick-math.ts`). The projection is NEAR=0.01, FAR=1e7 and a 24-bit depth is coarse far away
+  (one step = z^2/NEAR * 2^-24 by the formula; about 380 ft at z about 8000, the viewing distance of autzen). Unprojecting the stage-1 depth alone gave points such as elevation 1302
+  on a real machine (the data is 406 to 615). So stage 1 gets a distance z, then only the 5x5 pixels around the clicked pixel are redrawn with a narrow projection whose near/far are z/2 to 2z, and that depth is read
+  (about 1 mm resolution even at z about 8000).
+  Rejected: switching depth to depth32float or reverse-z (affects every pipeline, EDL, sky and grid, and collides with L2-B).
+- **Why the margin is a wide z/2 to 2z**: first it was "4 coarse steps", but on a real machine the stage-1 distance was off by about 3x the theoretical quantization error (about 14%),
+  so the point fell outside the range and was not hit. **The cause of the offset is not identified.** The resolution stays sufficient with a wide margin, so a proportional margin avoids it (root cause still open).
+- **Depth read-back**: depth24plus cannot be copied with `copyTextureToBuffer`, so a tiny compute shader `textureLoad`s it into a storage buffer which is then read (`depth-pick.ts`).
+  `TEXTURE_BINDING` was added to the EDL-off depth texture (one line in `gpu-resources.ts`). The window is at most 9x9, which tolerates gaps of a few pixels between points.
+- **Lines and labels are a DOM SVG overlay** (`MeasureOverlay.tsx`), without adding a WebGPU pipeline. Reason: labels (numbers) need the DOM, and drawing only lines with WebGPU would make two systems.
+  A measurement has a few lines, and projecting again each frame is cheap. It also barely touches the renderer (L2-B was working there).
+  Drawback: lines are not hidden by the point cloud (always on top). Lines crossing behind the camera are cut at the near plane before projection (`screen-project.ts`).
+  While the camera is still, viewProj does not change, so nothing is re-rendered.
+- **Click vs drag**: remember the canvas pointerdown position and treat it as a click only if it moved 5 px or less by `click`. Canvas events are not stopped
+  (we only listen alongside orbit-camera.ts). Only `dblclick` is stopped (in the capture phase, so closing an area does not also trigger the fly-to).
+  A double click delivers two clicks, so the second (`detail >= 2`) is ignored. Picking is asynchronous, so work is chained on a single Promise and runs in order.
+- **Units**: the CRS has no unit field, so decide from the name (`lengthUnitLabel`). Name contains ft/feet/foot/US survey -> "ft"; Japanese plane rectangular and UTM -> "m";
+  unknown, no CRS or unreadable -> "座標の単位" (never assert m, because a foot-based file would be 30% off without anyone noticing). Area is "ft²" or "座標の単位²".
+  A measurement layer inherits the CRS of the source point-cloud layer (the selection if it is a point cloud, otherwise the first point-cloud layer).
+- The layer kind is expressed by `ViewerLayer.measurement?` (measurement if present) rather than a `kind` enum, because L2-A and L2-B touch the same type and a new required field would conflict.
 
-### 触ったファイル
+### Files touched
 
-新規: `src/renderer/pick-math.ts`・`depth-pick.ts`・`screen-project.ts`、`src/state/measure.ts`・`useMeasureTool.ts`、`src/ui/MeasureOverlay.tsx`（各 `.test.ts` あり、UI・フックを除く）。
-変更: `src/renderer/gpu-resources.ts`（深度テクスチャの usage 1行、`readDepthWindow`・`renderDepthWindow`）、`point-cloud-renderer.ts`（`pickPoint`・`getViewSnapshot`、描画設定と view 行列の保持）、
-`src/state/layers.ts`・`useCopcViewer.ts`、`src/ui/shell/Ribbon.tsx`・`RibbonToolsGroup.tsx`・`AppShell.tsx`。
+New: `src/renderer/pick-math.ts`, `depth-pick.ts`, `screen-project.ts`, `src/state/measure.ts`, `useMeasureTool.ts`, `src/ui/MeasureOverlay.tsx` (each with a `.test.ts` except the UI and the hook).
+Changed: `src/renderer/gpu-resources.ts` (one line for the depth texture usage, `readDepthWindow` and `renderDepthWindow`), `point-cloud-renderer.ts` (`pickPoint`, `getViewSnapshot`, keeping the view matrix and draw options),
+`src/state/layers.ts`, `useCopcViewer.ts`, `src/ui/shell/Ribbon.tsx`, `RibbonToolsGroup.tsx`, `AppShell.tsx`.
 
-### 確認したこと（実行した）
+### What was verified (actually run)
 
-- `npx tsc --noEmit`・`npm run lint`・`npx vitest run` が通る（件数は報告に記載）。
-- 実 GPU: ヘッドありの Edge（NVIDIA、adapter vendor=nvidia / lovelace、SwiftShader ではない）、vite dev サーバで `autzen-classified.copc.laz` を開き、
-  EDL オン・オフの両方で、距離・高さ・面積を1つずつ計測。結果は同じ（距離 3,537.98 ft・水平 3,537.97 ft・高さ差 7.85 ft、高さ 20.19 ft、面積 2,810,323 ft²・周長 7,222 ft）。
-  面積の頂点群の標高は 462〜588（データの範囲 406〜615 の内側）。背景クリックは「点がありません」。Esc で計測が終わる。
-  計測レイヤーのチェックで表示切替（ラベルが消える）、右クリックの削除で一覧から消えることを確認。スクショは scratchpad の `l2d-*.png`。
-- 値の「正しさ」は人の目で確かめたもので、地上の実測値との照合はしていない。距離・面積が点の取れた位置から式どおりであること（単体テスト）と、標高が範囲内であることまで。
+- `npx tsc --noEmit`, `npm run lint` and `npx vitest run` pass (counts are in the report).
+- Real GPU: headed Edge (NVIDIA, adapter vendor=nvidia / lovelace, not SwiftShader), vite dev server, opened `autzen-classified.copc.laz`, and measured one distance, one height and one area
+  with EDL on and off. The results were identical (distance 3,537.98 ft, horizontal 3,537.97 ft, height difference 7.85 ft; height 20.19 ft; area 2,810,323 ft^2, perimeter 7,222 ft).
+  The elevations of the area vertices are 462 to 588 (inside the data range 406 to 615). Clicking the background shows "点がありません". Esc ends measuring.
+  The measurement layer checkbox toggles visibility (the label disappears) and the context-menu delete removes it from the list. Screenshots are `l2d-*.png` in the scratchpad.
+- Whether the values are "correct" was judged by eye; they were not compared with surveyed ground values. Verified only that distances and areas follow the formulas from the picked positions (unit tests) and that elevations are in range.
 
-### 確かめていないこと・所有者の確認手順
+### Not verified, and how the owner can check
 
-- タッチ操作: タッチのダブルタップは orbit-camera.ts が独自に「寄る」を動かす（dblclick とは別経路）ので、タッチで面積を閉じるときは「閉じる」ボタンを使う。未確認。
-- Web 版（GitHub Pages）・Android・Tauri 版。確認は vite dev の Edge のみ。
-- 点の少ない疎な場所・非常に遠い視点（z>1e5）での精度。1段階目の距離のずれの原因（上記）。
-- 手順: ファイルを開く → リボン「ツール」の「距離」を押す → 点群を2回クリック → 画面にラベル、レイヤー一覧に「距離 1」。
-  「面積」は頂点を3つ以上クリックしてダブルクリック（または Enter・「閉じる」）。Esc かボタンの再押下でやめる。ドラッグでカメラが動くこと、背景クリックで「点がありません」も見る。
+- Touch: the touch double tap runs its own fly-to in orbit-camera.ts (a separate path from dblclick), so on touch use the "閉じる" button to close an area. Not verified.
+- Web build (GitHub Pages), Android and the Tauri build. Only the vite dev server in Edge was checked.
+- Accuracy in sparse areas and at very far views (z > 1e5). The cause of the stage-1 distance offset (above).
+- Steps: open a file -> press "距離" in the ribbon "Tools" -> click the point cloud twice -> a label appears on screen and "距離 1" appears in the layer list.
+  For "面積", click three or more vertices, then double click (or Enter, or "閉じる"). Stop with Esc or by pressing the button again. Also check that dragging moves the camera and that clicking the background shows "点がありません".
+

@@ -12,7 +12,7 @@ interface Props {
   viewer: CopcViewerState;
   glassEnabled: boolean;
   onOpenSettings: () => void;
-  /** L2-D: 計測ツールの状態（ツールグループのボタンが使う）。 */
+  /** L2-D: state of the measurement tool (used by the buttons of the tools group). */
   measure: MeasureToolState;
 }
 

@@ -12,15 +12,17 @@ import {
 } from "../state/measure";
 import { projectPoint, projectSegment } from "../renderer/screen-project";
 
-// L2-D: 計測の線・頂点・ラベルを、3Dビューの上に重ねる SVG。
+// L2-D: an SVG laid over the 3D view that draws measurement lines, vertices and labels.
 //
-// 描き方の選択（記録は TaskSheets/L2-layer-tools.md の「L2-D の記録」）:
-//  - WebGPU のパイプラインを足さず、DOM の SVG で描く。理由: ラベル（数値）は DOM が必須で、
-//    線だけ WebGPU にすると2系統になる。計測の線は数本で、毎フレーム数十個の要素を更新しても軽い。
-//    renderer（L2-B が作業中）にも触れずに済む。
-//  - 代わりに「点群に隠れる」表現はできない（常に手前に描く）。計測では見失わないほうが大事なので許容。
-//  - 毎フレーム、renderer の直近の viewProj（f64）で3次元の点を画面へ投影し直す。カメラが
-//    止まっている間は viewProj が変わらないので、再描画しない。
+// Drawing choice (recorded in TaskSheets/L2-layer-tools.md, "L2-D record"):
+//  - Draw with DOM SVG instead of adding a WebGPU pipeline. Labels (numbers) need the DOM
+//    anyway, and drawing only the lines with WebGPU would make two systems. A measurement
+//    has a few lines, so updating a few dozen elements per frame is cheap. It also avoids
+//    touching the renderer (L2-B was working there).
+//  - The cost: lines cannot be hidden by the point cloud (always drawn on top). For
+//    measuring, not losing them matters more, so this is accepted.
+//  - Every frame, 3D points are projected again with the renderer's latest viewProj (f64).
+//    While the camera is still the viewProj does not change, so nothing is re-rendered.
 
 const STROKE = "#fbbf24";
 const STROKE_SELECTED = "#f97316";
@@ -109,7 +111,7 @@ function MeasurementShape({
   );
 }
 
-/** 計測中の案内。いま何を測っているか、次に何をすればよいか、やめ方を出す。 */
+/** Guide shown while measuring: what is measured, what to do next, and how to stop. */
 export function MeasureHud({ measure }: { measure: MeasureToolState }) {
   if (measure.mode === null) return null;
   const n = measure.points.length;
@@ -163,7 +165,7 @@ export function MeasureOverlay({
   const [frame, setFrame] = useState<Frame | null>(null);
   const getViewSnapshot = viewer.getViewSnapshot;
 
-  // 計測が画面にあるあいだだけ、毎フレーム viewProj を読む。変わったときだけ state を更新する。
+  // Only while a measurement is on screen, read viewProj every frame. Update state only when it changed.
   useEffect(() => {
     if (!active) return;
     let raf = 0;

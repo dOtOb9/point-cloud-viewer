@@ -1,11 +1,13 @@
-// L2-D: 深度テクスチャの一部（size×size ピクセルの窓）を CPU に読み戻す。
+// L2-D: read back part of a depth texture (a size x size pixel window) to the CPU.
 //
-// 深度フォーマットの depth24plus は copyTextureToBuffer で直接コピーできない（WebGPU の規則）。
-// そこで、深度テクスチャを textureLoad で読む小さな compute シェーダで storage バッファへ書き、
-// それを MAP_READ のバッファへコピーして読む。窓は最大 9×9 = 81 画素なので、速さは問題にならない。
-// 窓が画面の外にはみ出した画素は 1.0（= 点なしのクリア値）として返す。
+// depth24plus cannot be copied directly with copyTextureToBuffer (WebGPU rule). So a tiny
+// compute shader reads the depth texture with textureLoad and writes it to a storage
+// buffer, which is copied to a MAP_READ buffer and read. The window is at most 9x9 = 81
+// pixels, so speed is not a concern. Pixels outside the texture are returned as 1.0
+// (the "no point" clear value).
 //
-// 数式（逆投影・窓の射影）は pick-math.ts にある。ここは GPU の読み戻しだけ。
+// The math (unprojection, window projection) lives in pick-math.ts. This file only does
+// the GPU read-back.
 
 const SHADER = /* wgsl */ `
 struct Params {
@@ -37,7 +39,7 @@ export class DepthWindowReader {
   private pipeline: GPUComputePipeline | null = null;
   private pipelineDevice: GPUDevice | null = null;
 
-  /** デバイスが変わった（消失からの復帰）ら作り直す。 */
+  /** Recreate the pipeline when the device changed (recovery from device loss). */
   private ensurePipeline(device: GPUDevice): GPUComputePipeline {
     if (this.pipeline && this.pipelineDevice === device) return this.pipeline;
     this.pipeline = device.createComputePipeline({
@@ -49,8 +51,9 @@ export class DepthWindowReader {
   }
 
   /**
-   * `texture`（depth24plus）の (x0, y0) を左上とする size×size の窓の深度を、行優先の配列で返す。
-   * 戻る配列は 0..1 の深度（点が無い画素は 1.0）。失敗したら例外（呼び出し側がエラー表示に流す）。
+   * Returns the depth of the size x size window of `texture` (depth24plus) whose top-left is
+   * (x0, y0), as a row-major array of 0..1 depths (1.0 where there is no point). Throws on
+   * failure (the caller routes it to the error display).
    */
   async read(device: GPUDevice, texture: GPUTexture, x0: number, y0: number, size: number): Promise<Float32Array> {
     const pipeline = this.ensurePipeline(device);

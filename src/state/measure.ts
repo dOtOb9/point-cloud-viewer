@@ -1,10 +1,11 @@
-// L2-D: 計測（距離・高さ・面積）の数値計算と、計測レイヤーに描く線・ラベルの決定。
-// React にも WebGPU にも依存しない純粋関数だけを置く。単体テストは `measure.test.ts`。
+// L2-D: measurement math (distance, height, area) and the choice of lines/labels drawn for
+// a measurement layer. Only pure functions that depend on neither React nor WebGPU.
+// Unit tests are in `measure.test.ts`.
 //
-// 座標はピックで取ったワールド座標（f64）。大きな実座標（60万台）でも精度が落ちないよう、
-// 面積は重心を引いてから計算する。
-// 「水平」「鉛直」はカメラの上方向（`up`、既定は Z）で決める。PLY/PCD のように上が Z でない
-// データでも、見ている向きの上下で測れるようにするため（renderer/up-axis.ts と同じ考え方）。
+// Coordinates are the world coordinates (f64) obtained by picking. To keep precision with
+// large real-world coordinates (600k range), the area is computed after subtracting the centroid.
+// "Horizontal" and "vertical" follow the camera's up axis (`up`, default Z). This lets data
+// whose up is not Z (PLY/PCD) be measured along the viewed up/down (same idea as renderer/up-axis.ts).
 
 import type { CrsInfo } from "../datasource/DataSource";
 import { horizontalBasis } from "../renderer/up-axis";
@@ -13,19 +14,19 @@ export type Vec3 = readonly [number, number, number];
 
 export type MeasureKind = "distance" | "height" | "area";
 
-/** 計測1件。ADR-0018 の「計測レイヤー」の中身。点は確定済みで、書き換えない。 */
+/** One measurement. This is the content of a measurement layer (ADR-0018). Points are final and never edited. */
 export interface Measurement {
   kind: MeasureKind;
-  /** 距離・高さは2点、面積は3点以上（順番に結ぶ多角形）。 */
+  /** Two points for distance and height, three or more for area (a polygon joined in order). */
   points: Vec3[];
-  /** 計測したときのカメラの上方向（単位ベクトル）。水平・鉛直の分解に使う。 */
+  /** Camera up axis (unit vector) at measuring time. Used to split into horizontal and vertical. */
   up: Vec3;
 }
 
-/** 計測の種類ごとに必要な最少の点数。 */
+/** Minimum number of points per kind. */
 export const MIN_POINTS: Record<MeasureKind, number> = { distance: 2, height: 2, area: 3 };
 
-/** 距離・高さは、この点数がそろったら自動で確定する。面積は閉じる操作を待つ。 */
+/** Distance and height finish automatically at this many points. Area waits for the close action. */
 export function autoFinishCount(kind: MeasureKind): number | null {
   return kind === "area" ? null : 2;
 }
@@ -44,36 +45,36 @@ function normalize(v: Vec3): [number, number, number] {
 }
 
 export interface DistanceStats {
-  /** 3次元の距離。 */
+  /** 3D distance. */
   distance: number;
-  /** 水平面に投影した距離。 */
+  /** Distance projected onto the horizontal plane. */
   horizontal: number;
-  /** 鉛直の差（b - a。上が正）。 */
+  /** Vertical difference (b - a, up is positive). */
   vertical: number;
 }
 
-/** 2点の距離。水平距離と高さの差も返す（distance² = horizontal² + vertical²）。 */
+/** Distance between two points, with the horizontal distance and the height difference (distance^2 = horizontal^2 + vertical^2). */
 export function distanceStats(a: Vec3, b: Vec3, up: Vec3): DistanceStats {
   const d = sub(b, a);
   const u = normalize(up);
   const vertical = dot(d, u);
   const distance = Math.hypot(d[0], d[1], d[2]);
-  // 差の大きさから鉛直成分を引く（hypot の二乗の引き算より、水平成分を直接作るほうが桁落ちしない）。
+  // Build the horizontal component directly (less cancellation than subtracting squares).
   const h = [d[0] - u[0] * vertical, d[1] - u[1] * vertical, d[2] - u[2] * vertical] as const;
   return { distance, horizontal: Math.hypot(h[0], h[1], h[2]), vertical };
 }
 
 export interface PolygonStats {
-  /** 水平面に投影した多角形の面積（頂点の並びが自己交差していなければ、ふつうの面積）。 */
+  /** Area of the polygon projected onto the horizontal plane (the usual area when the vertex order does not self-intersect). */
   area: number;
-  /** 水平面に投影した周長（最後の頂点から最初の頂点へ戻る辺を含む）。 */
+  /** Perimeter projected onto the horizontal plane (includes the edge from the last vertex back to the first). */
   perimeter: number;
 }
 
 /**
- * 多角形を水平面（`up` に垂直な面）へ投影した面積と周長。
- * 面積は靴ひも公式。重心を引いてから計算する（座標が60万台でも二乗の桁が大きくなりすぎない）。
- * 3点未満なら 0。
+ * Area and perimeter of a polygon projected onto the horizontal plane (perpendicular to `up`).
+ * The area uses the shoelace formula, computed after subtracting the centroid (so squares
+ * do not get huge with coordinates in the 600k range). 0 for fewer than 3 points.
  */
 export function polygonStats(points: readonly Vec3[], up: Vec3): PolygonStats {
   if (points.length < 3) return { area: 0, perimeter: 0 };
@@ -96,14 +97,14 @@ export function polygonStats(points: readonly Vec3[], up: Vec3): PolygonStats {
   return { area: Math.abs(twiceArea) / 2, perimeter };
 }
 
-// ---- 単位 ----
+// ---- Units ----
 
 /**
- * CRS から長さの単位の表示名を決める。CRS に単位の項目は無いので、名前から判断する:
- *  - 名前に ft / feet / foot / US survey があれば「ft」
- *  - 日本の平面直角座標・UTM は m（定義上 m）
- *  - それ以外・不明は「座標の単位」（m だとは言い切らない）
- * 当てずっぽうで「m」と書くと、フィート系のファイルで数値が3割ずれるのに気づけないため。
+ * Display name of the length unit from the CRS. The CRS has no unit field, so decide from the name:
+ *  - name contains ft / feet / foot / US survey -> "ft"
+ *  - Japanese plane rectangular and UTM -> m (by definition)
+ *  - anything else or unknown -> "座標の単位" (coordinate unit; never assert m)
+ * Writing "m" by guess would hide a 30% error for foot-based files.
  */
 export function lengthUnitLabel(crs: CrsInfo | null | undefined): string {
   if (!crs || crs.error || crs.kind === "none") return "座標の単位";
@@ -112,18 +113,18 @@ export function lengthUnitLabel(crs: CrsInfo | null | undefined): string {
   return "座標の単位";
 }
 
-// ---- ラベル・線 ----
+// ---- Labels and lines ----
 
 function fmt(value: number, digits = 2): string {
   return value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
-/** 面積の単位は長さの単位の二乗。「座標の単位」のときは「座標の単位²」。 */
+/** The area unit is the square of the length unit ("座標の単位²" when the unit is unknown). */
 function areaUnit(unit: string): string {
   return `${unit}²`;
 }
 
-/** 計測の結果をラベルの行にする（上から順に表示）。 */
+/** The measurement result as label lines (shown top to bottom). */
 export function measurementLabelLines(m: Measurement, unit: string): string[] {
   if (m.kind === "distance" && m.points.length >= 2) {
     const s = distanceStats(m.points[0], m.points[1], m.up);
@@ -143,7 +144,7 @@ export function measurementLabelLines(m: Measurement, unit: string): string[] {
   return [];
 }
 
-/** 画面に描く線分1本。`dashed` は補助線（高さの水平部分・面積の閉じる辺）。 */
+/** One segment drawn on screen. `dashed` marks helper lines (the horizontal part of a height, the closing edge of an area). */
 export interface MeasureSegment {
   a: Vec3;
   b: Vec3;
@@ -151,9 +152,9 @@ export interface MeasureSegment {
 }
 
 /**
- * 計測の線。距離は a-b、高さは a から鉛直に上がる線（実線）と b へ水平に戻る補助線（破線）、
- * 面積は頂点を順に結び、最後に最初へ戻る辺。
- * `closed=false` は面積を入力している途中の表示（まだ閉じない）。
+ * The lines of a measurement. Distance is a-b. Height is a solid line rising vertically from a
+ * plus a dashed helper line going horizontally to b. Area joins the vertices in order and
+ * returns to the first. `closed=false` is the display while an area is still being entered.
  */
 export function measurementSegments(m: Measurement, closed = true): MeasureSegment[] {
   const pts = m.points;
@@ -174,7 +175,7 @@ export function measurementSegments(m: Measurement, closed = true): MeasureSegme
   return segments;
 }
 
-/** ラベルを置く3次元の位置。距離は中点、高さは鉛直線の中点、面積は頂点の平均。 */
+/** 3D position of the label: the midpoint for distance, the middle of the vertical line for height, the vertex average for area. */
 export function labelAnchor(m: Measurement): Vec3 {
   const pts = m.points;
   if (pts.length === 0) return [0, 0, 0];
@@ -194,7 +195,7 @@ export function labelAnchor(m: Measurement): Vec3 {
   ];
 }
 
-/** 点の外接箱（レイヤーの範囲として CloudInfo.min/max に入れる）。 */
+/** Bounding box of the points (stored as CloudInfo.min/max, the layer's extent). */
 export function pointsBounds(points: readonly Vec3[]): { min: [number, number, number]; max: [number, number, number] } {
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];

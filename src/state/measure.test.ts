@@ -51,7 +51,7 @@ describe("polygonStats", () => {
     expect(s.perimeter).toBeCloseTo(12, 9);
   });
   it("傾いた面でも、水平に投影した面積（斜面の実面積ではない）", () => {
-    // x 方向に 10、斜面で高さ 10 上がる。水平には 10×10 = 100
+    // slope: rises 10 over 10 in x; horizontally 10x10 = 100
     const s = polygonStats([at(0, 0, 0), at(10, 0, 10), at(10, 10, 10), at(0, 10, 0)], UP);
     expect(s.area).toBeCloseTo(100, 6);
   });

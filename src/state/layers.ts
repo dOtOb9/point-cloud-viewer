@@ -33,7 +33,7 @@ export interface ViewerLayer {
   /** このレイヤーを変換で作ったときだけ入る（内訳テキスト・ダウンロード）。 */
   conversionBreakdownText: string | null;
   download: LayerDownload | null;
-  /** L2-D: 計測レイヤーのときだけ入る（種類「計測」）。点群レイヤーには無い。`isMeasureLayer` で判定する。 */
+  /** L2-D: present only on measurement layers (kind "measurement"); point-cloud layers have none. Test with `isMeasureLayer`. */
   measurement?: Measurement;
 }
 
@@ -84,7 +84,7 @@ export function resolveLayerColorMode(layers: ViewerLayer[], id: string, mode: C
 
 /** レイヤーの着色を更新する。RGB を持たないレイヤーで "rgb" を選んだら標高に落とす。 */
 export function setLayerColorModeInList(layers: ViewerLayer[], id: string, mode: ColorMode): ViewerLayer[] {
-  // 計測レイヤーに着色は無い（点群専用の操作）ので変えない。
+  // Measurement layers have no coloring (a point-cloud-only operation), so leave them unchanged.
   return layers.map((l) => (l.id === id && !isMeasureLayer(l) ? { ...l, colorMode: resolveColorMode(mode, l.info.hasColor) } : l));
 }
 
@@ -103,17 +103,18 @@ export function findLayer(layers: ViewerLayer[], id: string | null): ViewerLayer
   return layers.find((l) => l.id === id) ?? null;
 }
 
-// ---- L2-D: 計測レイヤー ----
+// ---- L2-D: measurement layers ----
 
-/** 計測レイヤーか（点群レイヤーと区別する。着色・見た目などの点群専用の操作は無効にする）。 */
+/** Whether this is a measurement layer (distinct from point-cloud layers; point-cloud-only operations such as coloring and appearance are disabled). */
 export function isMeasureLayer(layer: ViewerLayer): boolean {
   return layer.measurement !== undefined;
 }
 
 /**
- * 計測レイヤーを作る。`ViewerLayer` の形を保つため `info` も要るので、元の点群レイヤーの
- * 座標系（CRS・scale・offset）を引き継ぎ、点数は 0、範囲は計測の点の外接箱にする。
- * CRS を引き継ぐのは、単位の注記（m / ft）に使うため。元が無ければ CRS なし。
+ * Make a measurement layer. `ViewerLayer` needs an `info`, so inherit the coordinate system
+ * (CRS, scale, offset) of the source point-cloud layer, with point count 0 and the extent set to
+ * the bounding box of the measured points. The CRS is inherited for the unit note (m / ft).
+ * With no source the CRS is "none".
  */
 export function makeMeasureLayer(id: string, name: string, measurement: Measurement, source: ViewerLayer | null): ViewerLayer {
   const { min, max } = pointsBounds(measurement.points);
@@ -133,10 +134,10 @@ export function makeMeasureLayer(id: string, name: string, measurement: Measurem
     nodeCount: 0,
     visible: true,
     colorMode: "elevation",
-    // 点の形・大きさは点群専用。計測レイヤーでは使わない（型を満たすだけの既定値）。
+    // Point shape and size are point-cloud-only. Unused for measurement layers (defaults just satisfy the type).
     pointShape: "round",
     pointSize: DEFAULT_POINT_SIZE_PX,
-    // DataSource のファイルは無い（close しない目印）。
+    // No DataSource file (marker for "do not close").
     cloudId: -1,
     conversionBreakdownText: null,
     download: null,

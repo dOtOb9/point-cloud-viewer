@@ -200,11 +200,11 @@ export interface CopcViewerState {
   focusLayer: (id: string) => void;
   /** レイヤーを消す（renderer から外し、DataSource のファイルも閉じる）。 */
   removeLayer: (id: string) => void;
-  /** L2-D: 画面の点（キャンバスのCSSピクセル）の3次元座標。点が無い所は null。renderer の `pickPoint`。 */
+  /** L2-D: 3D coordinates of a screen point (canvas CSS pixels); null where there is no point. The renderer's `pickPoint`. */
   pickPoint: (cssX: number, cssY: number) => Promise<{ point: [number, number, number]; refined: boolean } | null>;
-  /** L2-D: 直近フレームの viewProj と上方向（計測の線を重ねる用）。 */
+  /** L2-D: latest-frame viewProj and up axis (for overlaying measurement lines). */
   getViewSnapshot: () => { viewProj: number[]; up: readonly [number, number, number] } | null;
-  /** L2-D: 確定した計測を、新しい「計測」レイヤーとして足す（選択になる）。 */
+  /** L2-D: add a finished measurement as a new "measurement" layer (it becomes the selection). */
   addMeasurement: (measurement: Measurement) => void;
   pointBudget: number;
   /** タスクB(ADR-0009)の自動調整のオン/オフ。既定値はrendererの既定(true)に合わせている。 */
@@ -1123,7 +1123,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       // 到達しないが、二重の安全策として関数側でも解決する（理由はcolormap.tsのコメント参照）。
       const resolved = resolveLayerColorMode(current.layers, id, mode);
       const target = findLayer(current.layers, id);
-      if (resolved === null || !target || isMeasureLayer(target)) return; // 計測レイヤーに着色は無い
+      if (resolved === null || !target || isMeasureLayer(target)) return; // measurement layers have no coloring
       rendererRef.current?.setLayerColorMode(id, resolved);
       commitLayers({ ...current, layers: setLayerColorModeInList(current.layers, id, mode) });
     },
@@ -1167,7 +1167,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       if (next.layers.length === 0) {
         setStatus((prev) => (prev === "ready" ? "idle" : prev));
       }
-      // 計測レイヤーは DataSource のファイルを持たない。
+      // Measurement layers have no DataSource file.
       if (isMeasureLayer(layer)) return;
       sourceRef.current?.close(layer.cloudId).catch((e: unknown) => {
         gpuErrorLogRef.current.report(`ファイルを閉じられませんでした: ${String(e)}`, undefined, "node-read");
@@ -1178,15 +1178,15 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     [commitLayers],
   );
 
-  // ===== L2-D: 計測 =====
-  // ピックと視点の取得は renderer へ素通し。計測の操作（点を集める・確定する）は
-  // useMeasureTool.ts にあり、確定した計測を addMeasurement で新しいレイヤーとして足す。
+  // ===== L2-D: measurement =====
+  // Picking and fetching the view pass straight through to the renderer. The measurement operation
+  // (collecting points, finishing) is in useMeasureTool.ts; a finished one is added as a new layer by addMeasurement.
 
   const pickPoint = useCallback(async (cssX: number, cssY: number) => {
     try {
       return (await rendererRef.current?.pickPoint(cssX, cssY)) ?? null;
     } catch (e) {
-      // 深度の読み戻しに失敗したら、本文のまま既存のエラー表示（ADR-0011）へ流す。黙って捨てない。
+      // If reading the depth back fails, send the message as-is to the existing error display (ADR-0011). Never swallow it.
       gpuErrorLogRef.current.report(`計測の点を取れませんでした: ${String(e)}`);
       setGpuErrors(gpuErrorLogRef.current.list());
       recordErrorHistory(gpuErrorLogRef.current.list());
@@ -1201,8 +1201,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const addMeasurement = useCallback(
     (measurement: Measurement) => {
       const current = layersStateRef.current;
-      // 元にする点群レイヤー（ADR-0018: 選んだレイヤーから作る）: 選択中が点群ならそれ、
-      // 計測レイヤーを選んでいるときは最初の点群レイヤー。座標系（単位）を引き継ぐためだけに使う。
+      // Source point-cloud layer (ADR-0018: made from the chosen layer): the selection if it is a point cloud,
+      // otherwise the first point-cloud layer. Used only to inherit the coordinate system (unit).
       const selected = findLayer(current.layers, current.selectedLayerId);
       const source = selected && !isMeasureLayer(selected) ? selected : (current.layers.find((l) => !isMeasureLayer(l)) ?? null);
       const counters = measureCountersRef.current;

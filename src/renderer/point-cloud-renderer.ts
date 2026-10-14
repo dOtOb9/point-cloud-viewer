@@ -421,16 +421,16 @@ export class PointCloudRenderer {
     this.camera.animateTo(goal);
   }
 
-  // ===== L2-D: ピック（画面の点 → 3次元の点）と、計測の線を重ねるための視点の取得 =====
+  // ===== L2-D: picking (screen point -> 3D point) and the view needed to overlay measurement lines =====
 
-  /** 直近フレームのview行列（ピックの2段階目で、near/farだけ変えた射影と組み直すのに使う）。 */
+  /** View matrix of the latest frame (recombined with a projection that only changes near/far in picking stage 2). */
   private lastView: Mat4 | null = null;
-  /** 直近フレームの描画設定（ピックの描き直しで同じ点の大きさ・形を使うため）。 */
+  /** Draw options of the latest frame (so the picking redraw uses the same point size and shape). */
   private lastDrawOptions: DrawFrameOptions | null = null;
 
   /**
-   * 計測の線・ラベルを重ねるための、直近フレームの視点。まだ描いていなければ null。
-   * `viewProj` はワールド座標→クリップ座標（f64）。`up` はカメラの上方向（水平・鉛直の分解に使う）。
+   * The latest frame's view, for overlaying measurement lines and labels. null before the first frame.
+   * `viewProj` maps world to clip coordinates (f64). `up` is the camera up axis (used to split horizontal and vertical).
    */
   getViewSnapshot(): { viewProj: Mat4; up: readonly [number, number, number] } | null {
     if (!this.lastViewProj) return null;
@@ -438,13 +438,14 @@ export class PointCloudRenderer {
   }
 
   /**
-   * 画面の点（キャンバスのCSSピクセル）にある点群の3次元座標（ワールド座標、f64）を返す。
-   * 点が無い所（背景）なら null。`refined` は2段階目（狭いnear/farで描き直した高精度の深度）が
-   * 使えたか。使えなかったときは1段階目の深度（遠いほど粗い、pick-math.ts冒頭）で答える。
+   * Returns the 3D coordinates (world, f64) of the point-cloud point at a screen point (canvas CSS pixels).
+   * null where there is no point (background). `refined` tells whether stage 2 (redraw with a narrow
+   * near/far for a precise depth) was usable; if not, the stage-1 depth (coarser the farther, see the
+   * top of pick-math.ts) is used.
    *
-   * 点のデータはCPUに無いので、描いた深度をGPUから読み戻して逆投影する。EDLオン・オフどちらの
-   * 経路でも、点群だけの深度を持つテクスチャがあるので同じ手順で動く（gpu-resources.tsの
-   * `readDepthWindow`）。
+   * The points are not on the CPU, so the drawn depth is read back from the GPU and unprojected. Both
+   * the EDL-on and EDL-off paths have a texture with point-cloud-only depth, so the same steps work
+   * (`readDepthWindow` in gpu-resources.ts).
    */
   async pickPoint(cssX: number, cssY: number): Promise<{ point: [number, number, number]; refined: boolean } | null> {
     const viewProj = this.lastViewProj;
@@ -457,7 +458,7 @@ export class PointCloudRenderer {
     const px = Math.floor((cssX / Math.max(rect.width, 1)) * width);
     const py = Math.floor((cssY / Math.max(rect.height, 1)) * height);
 
-    // 1段階目: 描画済みの深度の、クリック位置の周りの窓から、いちばん近い点の画素を探す。
+    // Stage 1: from the already drawn depth, in a window around the click, find the nearest pixel with a point.
     const coarseSize = 2 * COARSE_HALF + 1;
     const coarse = await this.gpu.readDepthWindow(px - COARSE_HALF, py - COARSE_HALF, coarseSize, options.edlEnabled);
     if (!coarse) return null;
@@ -466,7 +467,7 @@ export class PointCloudRenderer {
     const coarseVP = windowViewProj(viewProj, px, py, coarseSize, width, height);
     const coarsePoint = unprojectWindowSample(coarseVP, hit.ix, hit.iy, coarseSize, hit.depth);
 
-    // 2段階目: 粗い距離の前後だけを near/far にした射影で、その画素の周りを描き直して深度を読む。
+    // Stage 2: redraw around that pixel with a projection whose near/far bracket the rough distance, and read the depth.
     const hx = px - COARSE_HALF + hit.ix;
     const hy = py - COARSE_HALF + hit.iy;
     const range = refineDepthRange(depthToEyeDistance(hit.depth, NEAR, FAR), NEAR, FAR);
@@ -474,7 +475,8 @@ export class PointCloudRenderer {
     const refineSize = 2 * REFINE_HALF + 1;
     const refineVP = windowViewProj(multiply(proj, view), hx, hy, refineSize, width, height);
     const fine = await this.gpu.renderDepthWindow(refineVP, refineSize, this.lastDrawn, options);
-    const fineHit = fine ? nearestHit(fine, refineSize) : null;    if (fineHit) {
+    const fineHit = fine ? nearestHit(fine, refineSize) : null;
+    if (fineHit) {
       const point = unprojectWindowSample(refineVP, fineHit.ix, fineHit.iy, refineSize, fineHit.depth);
       if (point) return { point, refined: true };
     }
@@ -1163,7 +1165,7 @@ export class PointCloudRenderer {
       cameraTarget: this.camera.target,
       upAxis: this.camera.getUpAxis(),
     };
-    this.lastView = view; // L2-D: ピック（計測）用
+    this.lastView = view; // L2-D: for picking (measurement)
     this.lastDrawOptions = drawOptions;
     this.gpu.drawFrame(viewProj, width, height, selection.toDraw, drawOptions);
 

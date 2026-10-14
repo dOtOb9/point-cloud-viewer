@@ -714,7 +714,7 @@ export class GpuResources {
     this.depthTexture = this.device.createTexture({
       size: [width, height],
       format: DEPTH_FORMAT,
-      // L2-D: EDLオフのとき、ピック（計測）が点群の深度をここから読み戻す。
+      // L2-D: with EDL off, picking (measurement) reads the point-cloud depth back from here.
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     this.depthView = this.depthTexture.createView();
@@ -1144,15 +1144,15 @@ export class GpuResources {
     pass.draw(6, node.pointCount);
   }
 
-  // ===== L2-D: ピック（計測）用の深度の読み戻し =====
-  // 数式と2段階にする理由は pick-math.ts、GPU から読む部分は depth-pick.ts。
+  // ===== L2-D: depth read-back for picking (measurement) =====
+  // Why two stages and the math: pick-math.ts. The GPU read-back itself: depth-pick.ts.
 
   private readonly depthReader = new DepthWindowReader();
 
   /**
-   * 直近のフレームで描いた点群の深度を、(x0, y0) を左上とする size×size の窓で読む。
-   * EDLオンなら点群専用のオフスクリーン深度、オフならスワップチェーンの深度（空・グリッドは
-   * 深度を書かないので、どちらも点群だけの深度）。準備前は null。
+   * Reads the depth of the point cloud drawn in the latest frame, as a size x size window whose top-left is (x0, y0).
+   * With EDL on it is the point-cloud-only offscreen depth; with EDL off it is the swap-chain depth (sky and grid
+   * do not write depth, so both are point-cloud-only depth). null before the GPU is ready.
    */
   readDepthWindow(x0: number, y0: number, size: number, edlEnabled: boolean): Promise<Float32Array | null> {
     const device = this.device;
@@ -1162,8 +1162,8 @@ export class GpuResources {
   }
 
   /**
-   * `viewProj` で `nodes` を size×size の小さなテクスチャへ描き直し、その深度を返す（ピックの2段階目）。
-   * 画面には何も出さない。フェードインは使わない（深度が欲しいだけなので）。
+   * Redraws `nodes` with `viewProj` into a small size x size texture and returns its depth (stage 2 of picking).
+   * Nothing is shown on screen. Fade-in is not used (only the depth is wanted).
    */
   async renderDepthWindow(
     viewProj: Mat4,
