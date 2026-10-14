@@ -59,7 +59,6 @@ import {
   computeSceneBounds,
   elevationRangeFromCloudBounds,
   mergeSceneBounds,
-  mergeValueRanges,
   type SceneBounds,
 } from "./scene-bounds";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "./device-profile";
@@ -606,11 +605,21 @@ export class PointCloudRenderer {
    * 向き（yaw/pitch）は今のまま、注視点と距離だけ変える。グリッドもこのレイヤーに合わせる。
    * レイヤーが無ければ何もせず`false`。非表示のレイヤーにも移れる（見たければ表示すればよい）。
    */
-  focusLayer(layerId: string): boolean {
+  focusLayer(layerId: string, orientation?: { yaw: number; pitch: number }): boolean {
     const layer = this.layers.get(layerId);
     if (!layer) return false;
-    this.moveCameraToLayer(layer, false);
+    this.moveCameraToLayer(layer, false, orientation);
     return true;
+  }
+
+  /**
+   * L2-F: move the camera to a box (used for measurement layers, which are not in the renderer).
+   * Same animation as `focusLayer`; the orientation is kept. The grid is left as it is.
+   */
+  focusBox(min: readonly [number, number, number], max: readonly [number, number, number]): void {
+    const bounds = layerFocusBounds(null, min, max);
+    this.camera.setSceneScale(bounds.diagonal);
+    this.camera.animateTo(focusGoalFor(bounds));
   }
 
   /**
@@ -1132,10 +1141,12 @@ export class PointCloudRenderer {
       if (node.firstDrawnAtMs === null) node.firstDrawnAtMs = time;
     }
 
-    // 着色の設定はレイヤーごとのバッファに書く。標高の範囲は見えている全レイヤーの合併
-    // （隣り合うタイルを別レイヤーで開いたとき、境目で色がずれないように）、強度の範囲はレイヤーごと。
-    const elevationRange = mergeValueRanges(visibleLayers.map((l) => l.elevationRange));
+    // 着色の設定はレイヤーごとのバッファに書く。標高の範囲・強度の範囲とも、そのレイヤー自身の範囲。
+    // （L2-F: 以前は標高だけ見えている全レイヤーの合併だった。離れた場所のレイヤーを並べると範囲が広がって
+    // 各レイヤーの色の差が無くなるため、レイヤーごとにした。隣り合うタイルを別レイヤーで開くと境目で色が
+    // ずれるが、結合すれば1つのレイヤーになり解消する。）
     for (const layer of visibleLayers) {
+      const elevationRange = layer.elevationRange;
       const buffer = this.ensureColorBuffer(layer);
       if (!buffer) continue;
       // まだ1件もノードが届いていない間の強度の範囲はnull。0..0の縮退レンジを渡せば
