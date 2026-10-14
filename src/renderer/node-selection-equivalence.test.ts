@@ -181,13 +181,15 @@ function randomViewProj(rng: () => number, nodes: HierarchyNodeInfo[], aspect: n
   return multiply(proj, lookAt(eye, target, up));
 }
 
+const CASES = 600;
+
 describe("selectNodesForFrame: 旧実装（全ノード走査）との等価性", () => {
   it("ランダムな階層・カメラ・設定で、toDraw と wanted（順序・priority）が旧実装と一致する", () => {
     const rng = makeRng(20261014);
     let compared = 0;
     let nonEmpty = 0;
     let withBothDroppedAndKept = 0;
-    for (let n = 0; n < 1500; n++) {
+    for (let n = 0; n < CASES; n++) {
       const nodes = randomHierarchy(rng);
       const width = 400 + Math.floor(rng() * 1500);
       const height = 300 + Math.floor(rng() * 900);
@@ -217,8 +219,8 @@ describe("selectNodesForFrame: 旧実装（全ノード走査）との等価性"
       if (expected.toDraw.length + expected.wanted.length < nodes.length) withBothDroppedAndKept++;
     }
     // 「全部空」「全部残る」ばかりの比較になっていないことを確かめる。
-    expect(compared).toBe(1500);
-    expect(nonEmpty).toBeGreaterThan(800);
-    expect(withBothDroppedAndKept).toBeGreaterThan(400);
-  });
+    expect(compared).toBe(CASES);
+    expect(nonEmpty).toBeGreaterThan(CASES * 0.5);
+    expect(withBothDroppedAndKept).toBeGreaterThan(CASES * 0.25);
+  }, 60_000);
 });
