@@ -50,7 +50,7 @@ const POINT_SHAPE_LABELS: Record<PointShape, string> = {
 /** 着色ダイアログ: 色の付け方を1つ選ぶ。 */
 export function ColorModeDialog({ viewer, open, onClose }: DialogProps) {
   return (
-    <Dialog open={open} title="着色" onClose={onClose} accent="primary" footer={<CloseButton onClose={onClose} />}>
+    <Dialog open={open} title="着色" onClose={onClose} accent="primary" backdrop="clear" footer={<CloseButton onClose={onClose} />}>
       <fieldset className="flex flex-col gap-1">
         <legend className="mb-1 text-xs opacity-70">点の色の付け方</legend>
         {(Object.keys(COLOR_MODE_LABELS) as ColorMode[]).map((mode) => {
@@ -80,7 +80,7 @@ export function ColorModeDialog({ viewer, open, onClose }: DialogProps) {
 /** 見た目ダイアログ: EDL のオン/オフと点の形。 */
 export function AppearanceDialog({ viewer, open, onClose }: DialogProps) {
   return (
-    <Dialog open={open} title="見た目" onClose={onClose} accent="primary" footer={<CloseButton onClose={onClose} />}>
+    <Dialog open={open} title="見た目" onClose={onClose} accent="primary" backdrop="clear" footer={<CloseButton onClose={onClose} />}>
       <section className="flex flex-col gap-1">
         <h3 className="text-xs opacity-70">EDL（陰影で凹凸を強調）</h3>
         <OptionRow>
@@ -111,7 +111,7 @@ export function AppearanceDialog({ viewer, open, onClose }: DialogProps) {
 /** 読み込み優先ダイアログ: 画面中央を優先して読み込む強さと、重みの下限。 */
 export function LoadPriorityDialog({ viewer, open, onClose }: DialogProps) {
   return (
-    <Dialog open={open} title="読み込み優先" onClose={onClose} accent="primary" footer={<CloseButton onClose={onClose} />}>
+    <Dialog open={open} title="読み込み優先" onClose={onClose} accent="primary" backdrop="clear" footer={<CloseButton onClose={onClose} />}>
       <p className="text-xs opacity-70">画面の中央に近いデータを先に読み込む設定。変更はすぐ反映される。</p>
       <label className="flex flex-col gap-1 text-sm">
         <span className="flex justify-between">

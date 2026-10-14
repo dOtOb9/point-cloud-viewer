@@ -86,6 +86,35 @@ describe("Dialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  // 所有者の決定(2026-10-14): 表示の3ダイアログは暗幕を透明にする。閉じ方は変えない。
+  it('backdrop="clear"でも暗幕は残り、暗幕クリックで閉じる(パネル内では閉じない)', () => {
+    const onClose = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <Dialog open title="透明" onClose={onClose} backdrop="clear">
+          <button type="button">本文</button>
+        </Dialog>,
+      );
+    });
+    const panel = container.querySelector('[role="dialog"]') as Element;
+    const backdrop = panel.parentElement as HTMLElement;
+    expect(backdrop.className).toContain("bg-transparent");
+    expect(backdrop.className).not.toContain("bg-black/50");
+    press(panel, panel);
+    expect(onClose).not.toHaveBeenCalled();
+    press(backdrop, backdrop);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("既定は暗幕で後ろを暗くする", () => {
+    const { container } = setup(true, () => {});
+    const backdrop = container.querySelector('[role="dialog"]')?.parentElement as HTMLElement;
+    expect(backdrop.className).toContain("bg-black/50");
+  });
+
   it("パネル内で押して暗幕で離しても閉じない", () => {
     const onClose = vi.fn();
     const { container } = setup(true, onClose);
