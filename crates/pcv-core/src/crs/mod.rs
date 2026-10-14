@@ -551,7 +551,9 @@ mod tests {
     /// "no CRS" (also an empty WKT record) from "a CRS without an EPSG code".
     #[test]
     fn crs_id_separates_missing_unsupported_and_unnamed() {
-        let no_crs = las::Builder::from((1, 4)).into_header().expect("valid header");
+        let no_crs = las::Builder::from((1, 4))
+            .into_header()
+            .expect("valid header");
         assert_eq!(crs_id_from_las_header(&no_crs), CrsId::Missing);
 
         let empty_wkt = header_with_wkt_crs("\0");

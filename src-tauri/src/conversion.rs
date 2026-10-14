@@ -929,9 +929,7 @@ pub async fn merge_copcs(
             &mut timings,
         )
         .map_err(|e| match e {
-            merge::MergeError::Write(copc_core::Error::Cancelled) => {
-                "キャンセルされた".to_string()
-            }
+            merge::MergeError::Write(copc_core::Error::Cancelled) => "キャンセルされた".to_string(),
             other => other.to_string(),
         })?;
         Ok(ToolOutput {

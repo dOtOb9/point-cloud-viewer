@@ -801,13 +801,20 @@ mod tests {
     #[test]
     fn crs_outside_supported_range_is_not_reported_as_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: Vec<PathBuf> = ["a.las", "b.las"].iter().map(|n| dir.path().join(n)).collect();
+        let paths: Vec<PathBuf> = ["a.las", "b.las"]
+            .iter()
+            .map(|n| dir.path().join(n))
+            .collect();
         for p in &paths {
             write_single_point_las_with_geotiff_crs(p, 2992);
         }
         let summary = summarize_headers_lenient(&paths).expect("same CRS merges");
         assert_eq!(summary.crs, CrsId::Epsg(2992));
-        assert!(summary.crs_warnings().is_empty(), "{:?}", summary.crs_warnings());
+        assert!(
+            summary.crs_warnings().is_empty(),
+            "{:?}",
+            summary.crs_warnings()
+        );
 
         // 2992 against a different known CRS is still a mismatch.
         write_single_point_las_with_geotiff_crs(&paths[1], 6677);

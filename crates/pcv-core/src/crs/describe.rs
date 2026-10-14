@@ -149,7 +149,11 @@ fn direct_unit_factor(wkt: &str, keyword: &str) -> Option<f64> {
                         return None;
                     }
                 }
-                b'U' if depth == 1 && i > 0 && bytes[i - 1] == b',' && wkt[i..].starts_with("UNIT[") => {
+                b'U' if depth == 1
+                    && i > 0
+                    && bytes[i - 1] == b','
+                    && wkt[i..].starts_with("UNIT[") =>
+                {
                     return parse_unit_factor(&wkt[i + "UNIT[".len()..]);
                 }
                 _ => {}
@@ -176,7 +180,10 @@ fn parse_unit_factor(rest: &str) -> Option<f64> {
 /// (horizontal, vertical) unit factors in meters from a WKT1 string.
 fn wkt_units(bytes: &[u8]) -> (Option<f64>, Option<f64>) {
     let wkt = String::from_utf8_lossy(bytes);
-    (direct_unit_factor(&wkt, "PROJCS["), direct_unit_factor(&wkt, "VERT_CS["))
+    (
+        direct_unit_factor(&wkt, "PROJCS["),
+        direct_unit_factor(&wkt, "VERT_CS["),
+    )
 }
 
 /// `las::Header`のCRS(WKT優先、なければGeoTIFFキー)を説明にする。
@@ -365,7 +372,8 @@ mod tests {
     #[test]
     fn projcs_unit_is_not_confused_with_the_geogcs_degree_unit() {
         // PROJCS without its own UNIT: the only UNIT is the nested GEOGCS degree, which must be ignored.
-        let wkt = "PROJCS[\"x\",GEOGCS[\"g\",UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"p\"]]";
+        let wkt =
+            "PROJCS[\"x\",GEOGCS[\"g\",UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"p\"]]";
         assert_eq!(wkt_units(wkt.as_bytes()), (None, None));
     }
 

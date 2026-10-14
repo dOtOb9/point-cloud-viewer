@@ -449,7 +449,8 @@ impl WasmConverter {
             CrsOutcome::NewFileHasNoCrs => self.missing_crs_names.push(file_name),
             CrsOutcome::AdoptNewFileCrs => {
                 // Take the output CRS (WKT) from the first file that has one.
-                self.metadata.wkt_crs = copc_write_metadata_from_source_header(reader.header()).wkt_crs;
+                self.metadata.wkt_crs =
+                    copc_write_metadata_from_source_header(reader.header()).wkt_crs;
                 self.crs = crs;
             }
         }
@@ -819,7 +820,9 @@ mod tests {
     #[test]
     fn check_layout_and_crs_match_allows_matching_layout_and_unknown_crs() {
         let layout = layout_for_point_format(3);
-        assert!(check_layout_and_crs_match(&layout, &layout, &CrsId::Missing, &CrsId::Missing).is_ok());
+        assert!(
+            check_layout_and_crs_match(&layout, &layout, &CrsId::Missing, &CrsId::Missing).is_ok()
+        );
     }
 
     /// L2-G: a CRS outside the range of `Crs` (EPSG:2992) is compared by its EPSG code: two such
@@ -1079,13 +1082,9 @@ mod tests {
             StreamingLayout::from_las_header(&header).record_width()
         };
 
-        let full = decompress_range_in_batches(
-            Cursor::new(bytes.clone()),
-            0,
-            u64::from(POINT_COUNT),
-            700,
-        )
-        .expect("full read");
+        let full =
+            decompress_range_in_batches(Cursor::new(bytes.clone()), 0, u64::from(POINT_COUNT), 700)
+                .expect("full read");
         assert_eq!(
             full.len(),
             POINT_COUNT as usize * width,
@@ -1094,7 +1093,14 @@ mod tests {
 
         // Eight equal ranges, as `pointRangesFor` makes them, plus awkward starts.
         let mut ranges: Vec<(u64, u64)> = (0..8u64).map(|i| (i * 625, 625)).collect();
-        ranges.extend([(1, 10), (49, 3), (50, 100), (777, 1), (4_990, 10), (4_999, 1)]);
+        ranges.extend([
+            (1, 10),
+            (49, 3),
+            (50, 100),
+            (777, 1),
+            (4_990, 10),
+            (4_999, 1),
+        ]);
         for (start, count) in ranges {
             let part = decompress_range_in_batches(Cursor::new(bytes.clone()), start, count, 300)
                 .unwrap_or_else(|e| panic!("range [{start}, +{count}) failed: {e}"));

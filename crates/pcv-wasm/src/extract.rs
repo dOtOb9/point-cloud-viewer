@@ -97,16 +97,14 @@ impl WasmExtractor {
         let file_size_bytes = file.size() as u64;
 
         // Read the header (layout and output metadata) with `las`; no point data is read.
-        let header_reader = las::Reader::new(open_source(file.clone())).map_err(|e| {
-            JsValue::from_str(&format!("ヘッダーを読めませんでした: {e}"))
-        })?;
+        let header_reader = las::Reader::new(open_source(file.clone()))
+            .map_err(|e| JsValue::from_str(&format!("ヘッダーを読めませんでした: {e}")))?;
         let layout = StreamingLayout::from_las_header(header_reader.header());
         let metadata = copc_write_metadata_from_source_header(header_reader.header());
         drop(header_reader);
 
-        let copc_reader = CopcReader::open(open_source(file)).map_err(|e| {
-            JsValue::from_str(&format!("点群(COPC)として開けませんでした: {e}"))
-        })?;
+        let copc_reader = CopcReader::open(open_source(file))
+            .map_err(|e| JsValue::from_str(&format!("点群(COPC)として開けませんでした: {e}")))?;
         let points = ExtractPoints::new(copc_reader, filter).map_err(to_js_error)?;
 
         let handles = handles_from_js_array(&scratch_handles)?;
