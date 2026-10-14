@@ -3,17 +3,12 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
 import { glassSurfaceClass } from "./glass";
 import { LayerInfoSection } from "./LayerInfoSection";
+import { LayerList } from "./LayerList";
 import { LayerStatsDetails } from "./LayerStatsDetails";
 import { useTransitionMount } from "./useTransitionMount";
 
 /** パネルが滑って消えるまでの時間(ms)。index.cssの`--motion-panel`と同じ値(未検証の初期値)。 */
 const PANEL_EXIT_MS = 220;
-
-/** レイヤー1件(ADR-0018)。今は名前だけ。将来は「どのレイヤーから何の操作で作ったか」を持たせる。 */
-interface Layer {
-  id: string;
-  name: string;
-}
 
 interface Props {
   viewer: CopcViewerState;
@@ -27,9 +22,8 @@ interface Props {
  * ADR-0017 (UIシェル再構築): 画面左の「レイヤーパネル」。
  *
  * デスクトップの点群/GIS系ソフトに多い「レイヤーツリー」の最小構成として、
- * 開いているファイルを1件のレイヤーとして表示する(複数レイヤーの重ね合わせは
- * まだ実装していない。リボンの「複数レイヤー」ツールが未実装（予定）なのと
- * 同じ理由)。その下にレイヤー情報(`LayerInfoSection`: ファイル名・点数・CRS・
+ * 開いているファイルをレイヤーの一覧として表示する(L1-D: 開くたびに足される。
+ * 各行のチェックで表示・非表示、クリックで選択、右クリックで削除)。その下にレイヤー情報(`LayerInfoSection`: ファイル名・点数・CRS・
  * バウンディングボックス・変換の内訳)と、折りたたみ式の詳細統計
  * (`LayerStatsDetails`)を続ける。
  *
@@ -45,43 +39,11 @@ interface Props {
  */
 export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) {
   const narrow = useNarrowViewport();
-  // ADR-0018(機能は「選んだレイヤーから新しいレイヤーを作る」向き)に備え、レイヤー一覧と
-  // 「選択中のレイヤーid」の形で持つ。今は`useCopcViewer`が1ファイルしか持たないため、
-  // 一覧は最大1件・選択は常にその1件。state(`src/state`)は変えず、ここで形だけ揃えた
-  // (ADR-0017に記録)。複数レイヤー化するときは、この`layers`/`selectedLayerId`を
-  // stateへ引き上げるだけで、下の描画はそのまま使える。
-  const loading = viewer.status === "opening" || viewer.status === "converting";
-  const layers: Layer[] =
-    viewer.openedFileName !== null
-      ? [{ id: "current", name: viewer.openedFileName }]
-      : loading
-        ? [{ id: "current", name: "読み込み中…" }]
-        : [];
-  const selectedLayerId: string | null = layers[0]?.id ?? null;
-
+  // L1-D: レイヤー一覧・選択は `useCopcViewer` が持つ（ADR-0018）。一覧の描画は `LayerList`。
   const tree = (
     <div className="flex flex-col gap-1">
       <h3 className="border-l-2 border-tertiary pl-2 text-xs font-semibold uppercase tracking-wide opacity-70">レイヤー</h3>
-      {layers.length > 0 ? (
-        <ul className="flex flex-col gap-1">
-          {layers.map((layer) => (
-            <li
-              key={layer.id}
-              aria-selected={layer.id === selectedLayerId}
-              className={`flex items-center gap-2 rounded px-2 py-1.5 text-xs ${
-                layer.id === selectedLayerId ? "border-l-[3px] border-l-primary bg-black/5 dark:bg-white/10" : ""
-              }`}
-            >
-              <span aria-hidden="true">📄</span>
-              <span className="min-w-0 flex-1 truncate" title={layer.name}>
-                {layer.name}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="px-2 py-1.5 text-xs opacity-60">開いているファイルはありません</p>
-      )}
+      <LayerList viewer={viewer} />
     </div>
   );
 
