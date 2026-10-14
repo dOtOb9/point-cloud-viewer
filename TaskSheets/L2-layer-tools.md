@@ -371,3 +371,43 @@ Changed: `src/state/{useCopcViewer,layers}.ts`, `src/renderer/{point-cloud-rende
 2. "断面" -> click two points on the cloud -> set thickness / height in the dialog -> "作る". A new layer "断面 - ..." opens and the camera looks at it from the side.
 3. Open two small COPCs (or make two results with the tools), select one, Ctrl-click the other, press "複数レイヤー" -> "結合 (2)" with the summed point count. Try autzen + another layer on Web to see the unresolved failure.
 4. Select a measurement layer: the layer info shows the kind and values, "着色" / "見た目" are gray.
+
+## L2-G record: Web merge of a large COPC (capacity overflow), merge progress, CRS check
+
+### The cause (the coordinator's guess was close, but the place was different)
+
+The guess was that the plan or the buffer assumed fixed-size chunks (`chunk_size x point size`). **That is not it.** autzen's laszip VLR does have `chunk_size = 4294967295` (variable; read with a small script from the file, beer.copc.laz the same), but no code of ours uses it.
+
+What was done to find it: a debug wasm build (`CARGO_PROFILE_RELEASE_DEBUG=2`, `wasm-bindgen --keep-debug`) with a temporary panic hook that also prints `Error().stack` (limit raised to 60 frames; not committed). The panic was at 5 s into the merge, in a Worker, and the stack was:
+`Vec<u8>::resize` <- `laz::las::point6::v3::LasPoint6Decompressor` (layered decompressor) <- `LasZipDecompressor::decompress_one` <- `las::Reader::fill_points` <- `LazRangeDecompressor::feed` (our parallel decompression Worker).
+So a Worker read a garbage layer size and tried to resize to it; on wasm32 a size over 2 GiB is `capacity overflow`.
+
+The garbage comes from `LasZipDecompressor::seek` in laz 0.12.2: `delta = point_idx % chunk_table[chunk].point_count`. That is the offset inside the chunk only for fixed-size chunks. COPC chunks have different point counts, so after `Reader::seek(start)` the decoder was at the wrong point. Native test on autzen with the 8 ranges of `pointRangesFor` (`RangeDecompressorCore::open` + `feed`): starts 0, 1331667, ... 7990002 returned 75,905,019 bytes each, but start 9321669 and start 10000000 returned `IoError: failed to fill whole buffer` (64-bit: an error; wasm32: the panic). A full read from 0 returned 607,240,152 bytes = 10,653,336 x 57, so the file is fine and only the seek is wrong.
+
+**Side finding (not measured on content, only from the code and the test): ranges that did not fail were probably also starting at the wrong point**, so a Web conversion/merge of a COPC above 500,000 points (the parallel path) could have silently dropped/duplicated points while still giving the right count (L2-F's "exact sum" checks counted points, they did not compare points). The new test compares bytes. Inputs that are LAS/LAZ with fixed chunks (M4-14's 24M-point LAS merge) were not affected.
+
+### What was changed
+
+1. **`vendor/laz`** (copy of laz 0.12.2 with one change, `vendor/laz/PATCH.md`): `delta = point_idx - points_before_chunk`. Added to `[patch.crates-io]` of the root workspace and of `crates/pcv-wasm` (both needed, as for copc-reader/copc-writer). Alternative not taken: choosing the seek point in our code so that the buggy modulo gives the right offset (depends on the bug; breaks silently when upstream fixes it). Alternative not taken: avoiding `seek` by decoding from 0 (too slow).
+2. **Test** `range_of_variable_chunk_copc_matches_the_same_slice_of_a_full_read` (`crates/pcv-wasm/src/convert.rs`): builds a COPC in memory (5,000 scattered points, 50 per node -> many chunks of different sizes), reads it whole, then reads 8 equal ranges and 6 awkward ranges and compares bytes with the same slice. It failed before the patch (`range [2500, +625) differs`) and passes after.
+3. **Progress doubling**: in the multi-file path the serial branch reported `result.points_read`, which is the converter's counter over all files, and then `reportReadingProgress` added the finished files again. Now it subtracts `pointsCompletedBeforeCurrentFile` (`src/datasource/copc.worker.ts`). The parallel branch was already per file.
+4. **CRS**: new `pcv_core::crs::CrsId { Missing, Epsg(u32), Other(String) }` and `crs_id_from_las_header`. "Missing" means no CRS information (also an empty WKT record: beer.copc.laz has a 1-byte one, which first showed up as a false CRS mismatch in my browser run and was fixed with a test). A CRS outside `Crs` keeps its EPSG code (WKT or GeoTIFF key, projected key first, then geodetic) or its WKT text. Comparison is on `CrsId`. Used by desktop `merge.rs` (`summarize_headers*`, `HeaderSummary.crs` is now `CrsId`, `MergeError::CrsMismatch` carries `CrsId`) and by Web `check_layout_and_crs_match`/`WasmConverter`; the header summary's `crs_label` is now the Debug text of `CrsId`, so `copc.worker.ts` compares with `"Missing"` instead of `"Unknown"`. `Crs`/`detect_crs_from_las_header` are unchanged (still used for units and display).
+   Alternative not taken: comparing the existing `CrsInfo` (describe.rs); it reads the CRS for the screen and carries a name and units, a plain comparable id is simpler.
+
+### Verified (actually run)
+
+- `cargo test --lib` in `crates/pcv-wasm`: 40 passed. `cargo test -p pcv-core -p pcv-convert`: all passed (pcv-core crs tests 34 passed; merge tests 15 passed, with the new `crs_outside_supported_range_is_not_reported_as_missing`). `cargo check --workspace` and `cargo build -p pcv-core --target wasm32-unknown-unknown` OK. `npm run build:wasm` (artifacts committed), `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (59 files, 542 tests passed).
+- **Real browser** (headed Edge, persistent profile; `adapter.info` vendor nvidia / lovelace, not SwiftShader; vite dev server of this worktree; script in the session scratchpad):
+  - autzen opened twice, Ctrl-click, "複数レイヤー": no error; the progress dialog showed "21,306,672 / 21,306,672 点（100.0%）" and the layer "結合 (2)" has **21,306,672 points**, CRS "NAD83 / Oregon GIC Lambert (ft) (EPSG:2992)", drawn normally (screenshots `l2g-d-progress.png`, `l2g-d-end.png`, opened and looked at). About 55 s in total in that run (another agent may have been running at the same time, so the time is only a rough number). No error dialog, so no false "CRS" warning.
+  - autzen + a 5,000-point COPC that has no CRS (made by a test helper, point format 7): progress went 2,162,688 -> ... -> 10,653,336 -> 10,658,336 / 10,658,336 (100.0%), never above 100% (this is the serial branch that used to double); result 10,658,336 points (exact sum, count only); one warning, for the small file only, with the true text "small7.copc.laz: CRS(座標系)の情報がありません…" (`l2g-h-log.png`, looked at).
+  - autzen + beer.copc.laz (66,848,096 points, an empty-WKT CRS): stops at 96.5% with "invalid COPC input: spill size overflow". 77,501,432 points x 57 bytes is over the 4 GiB of wasm32, so this is the known size limit of the Web merge and not part of this task; not changed.
+
+### Not verified
+
+- **Desktop (Tauri)**: the merge command in the running app was not run (a GUI app was not driven). Only the Rust unit tests above cover the desktop `merge.rs` change. The laz patch also changes `laz` for desktop (`laz-parallel` of pcv-convert does not use `seek`; not checked further).
+- Point content of the 21M merge was not compared (only counts and the picture). Android, Chrome, Firefox. Playwright's own E2E (`npx playwright test`) was not re-run after the last commit (see the report).
+
+### How the owner can check
+
+1. Web: open autzen-classified.copc.laz twice, click one row and Ctrl-click the other, press "複数レイヤー". Expect 21,306,672 points, a bar that stops at 100%, and no error dialog.
+2. `cargo test --lib range_of_variable` in `crates/pcv-wasm`; to see it fail, comment out the `laz` line of `[patch.crates-io]` in `crates/pcv-wasm/Cargo.toml`.
