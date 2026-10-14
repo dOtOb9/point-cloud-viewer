@@ -13,21 +13,20 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 /** ダイアログが読み書きする項目だけを持つ偽のviewer。 */
-function fakeViewer(hasColor = true) {
+function fakeViewer(hasColor = true, layerName: string | null = "a.copc.laz") {
   const setters = {
-    setColorMode: vi.fn(),
+    setLayerColorMode: vi.fn(),
     setEdlEnabled: vi.fn(),
     setPointShape: vi.fn(),
     setCenterPriorityStrength: vi.fn(),
     setMinCenterPriorityWeight: vi.fn(),
   };
   const viewer = {
-    colorMode: "rgb",
     edlEnabled: true,
     pointShape: "round",
     centerPriorityStrength: 4,
     minCenterPriorityWeight: 0.2,
-    cloudInfo: { hasColor },
+    selectedLayer: layerName === null ? null : { id: "layer-1", name: layerName, info: { hasColor }, colorMode: "rgb" },
     ...setters,
   } as unknown as CopcViewerState;
   return { viewer, setters };
@@ -47,14 +46,24 @@ function unmount(m: { root: ReturnType<typeof createRoot>; container: HTMLElemen
 }
 
 describe("ViewDialogs", () => {
-  it("着色: ラジオを選ぶとsetColorModeが呼ばれる。RGBを持たないファイルではRGBが選べない", () => {
+  it("着色: ラジオを選ぶと選択中のレイヤーのsetLayerColorModeが呼ばれる。RGBを持たないレイヤーではRGBが選べない", () => {
     const { viewer, setters } = fakeViewer(false);
     const m = mount(<ColorModeDialog viewer={viewer} open onClose={() => {}} />);
     const radios = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="color-mode"]'));
     expect(radios.map((r) => r.value)).toEqual(["rgb", "elevation", "intensity", "classification"]);
     expect(radios[0].disabled).toBe(true);
     act(() => radios[1].click());
-    expect(setters.setColorMode).toHaveBeenCalledWith("elevation");
+    expect(setters.setLayerColorMode).toHaveBeenCalledWith("layer-1", "elevation");
+    expect(document.body.textContent).toContain("a.copc.laz");
+    unmount(m);
+  });
+
+  it("着色: レイヤーが無いときは全部選べず、その旨が出る", () => {
+    const { viewer } = fakeViewer(true, null);
+    const m = mount(<ColorModeDialog viewer={viewer} open onClose={() => {}} />);
+    const radios = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="color-mode"]'));
+    expect(radios.every((r) => r.disabled)).toBe(true);
+    expect(document.body.textContent).toContain("着色を変えるレイヤーがありません");
     unmount(m);
   });
 

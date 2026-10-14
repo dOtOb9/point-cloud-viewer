@@ -47,28 +47,41 @@ const POINT_SHAPE_LABELS: Record<PointShape, string> = {
   square: "四角",
 };
 
-/** 着色ダイアログ: 色の付け方を1つ選ぶ。 */
+/**
+ * 着色ダイアログ: 色の付け方を1つ選ぶ。L1-D: 変えるのは**選択中のレイヤー**だけ（着色はレイヤーごと）。
+ * レイヤーが無いときは選べない旨を出す。
+ */
 export function ColorModeDialog({ viewer, open, onClose }: DialogProps) {
+  const layer = viewer.selectedLayer;
   return (
     <Dialog open={open} title="着色" onClose={onClose} accent="primary" backdrop="clear" footer={<CloseButton onClose={onClose} />}>
+      {layer ? (
+        <p className="text-xs opacity-70">
+          対象のレイヤー: <span className="font-semibold">{layer.name}</span>
+          （レイヤー欄で選んだレイヤーの色だけが変わる）
+        </p>
+      ) : (
+        <p className="text-xs opacity-70">着色を変えるレイヤーがありません。ファイルを開いてから選んでください。</p>
+      )}
       <fieldset className="flex flex-col gap-1">
         <legend className="mb-1 text-xs opacity-70">点の色の付け方</legend>
         {(Object.keys(COLOR_MODE_LABELS) as ColorMode[]).map((mode) => {
-          // RGBを持たないファイルではRGBを選べない。hasColorが分からない(ファイル未オープン)間は選べる。
-          const disabled = mode === "rgb" && viewer.cloudInfo !== null && !viewer.cloudInfo.hasColor;
+          // レイヤーが無ければ全部選べない。RGBを持たないレイヤーではRGBを選べない。
+          const lacksRgb = mode === "rgb" && layer !== null && !layer.info.hasColor;
+          const disabled = layer === null || lacksRgb;
           return (
             <OptionRow key={mode} disabled={disabled}>
               <input
                 type="radio"
                 name="color-mode"
                 value={mode}
-                checked={viewer.colorMode === mode}
+                checked={layer?.colorMode === mode}
                 disabled={disabled}
-                onChange={() => viewer.setColorMode(mode)}
+                onChange={() => layer && viewer.setLayerColorMode(layer.id, mode)}
                 className="h-5 w-5 accent-primary"
               />
               {COLOR_MODE_LABELS[mode]}
-              {disabled && <span className="text-xs opacity-70">（このファイルはRGBを持たない）</span>}
+              {lacksRgb && <span className="text-xs opacity-70">（このレイヤーはRGBを持たない）</span>}
             </OptionRow>
           );
         })}
