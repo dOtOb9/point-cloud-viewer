@@ -50,6 +50,23 @@ describe("LayerActions", () => {
     cleanup();
   });
 
+  it("計測レイヤーを選んでいるときは着色・見た目が無効で、移動・削除は有効（L2-F）", () => {
+    const { viewer } = fakeViewer(true);
+    (viewer as unknown as { selectedLayer: object }).selectedLayer = {
+      id: "layer-2",
+      name: "距離 1",
+      colorMode: "elevation",
+      pointShape: "round",
+      pointSize: 4,
+      info: { hasColor: false },
+      measurement: { kind: "distance", points: [], up: [0, 0, 1] },
+    };
+    const cleanup = mount(<LayerActions viewer={viewer} />);
+    const state = Object.fromEntries(buttons().map((b) => [b.textContent, b.disabled]));
+    expect(state).toEqual({ 着色: true, 見た目: true, 移動: false, 削除: false });
+    cleanup();
+  });
+
   it("削除ボタンで選択中のレイヤーのremoveLayerが呼ばれる", () => {
     const { viewer, removeLayer } = fakeViewer(true);
     const cleanup = mount(<LayerActions viewer={viewer} />);

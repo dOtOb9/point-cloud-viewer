@@ -13,7 +13,14 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 function fakeViewer(status: string = "ready") {
-  const fns = { selectLayer: vi.fn(), setLayerVisible: vi.fn(), removeLayer: vi.fn(), focusLayer: vi.fn() };
+  const fns = {
+    selectLayer: vi.fn(),
+    toggleLayerSelection: vi.fn(),
+    selectLayerRange: vi.fn(),
+    setLayerVisible: vi.fn(),
+    removeLayer: vi.fn(),
+    focusLayer: vi.fn(),
+  };
   const viewer = {
     status,
     layers: [
@@ -21,6 +28,7 @@ function fakeViewer(status: string = "ready") {
       { id: "layer-2", name: "b.copc.laz", visible: false },
     ],
     selectedLayerId: "layer-1",
+    selectedLayerIds: ["layer-1"],
     ...fns,
   } as unknown as CopcViewerState;
   return { viewer, fns };
@@ -47,6 +55,22 @@ describe("LayerList", () => {
     expect(boxes[1].checked).toBe(false);
     act(() => boxes[1].click());
     expect(fns.setLayerVisible).toHaveBeenCalledWith("layer-2", true);
+    expect(fns.selectLayer).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it("Ctrl+クリックは追加/解除、Shift+クリックは範囲選択（L2-F）", () => {
+    const { viewer, fns } = fakeViewer();
+    const cleanup = mount(<LayerList viewer={viewer} />);
+    const rows = document.querySelectorAll<HTMLElement>('[data-testid="layer-row"]');
+    act(() => {
+      rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    });
+    expect(fns.toggleLayerSelection).toHaveBeenCalledWith("layer-2");
+    act(() => {
+      rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
+    });
+    expect(fns.selectLayerRange).toHaveBeenCalledWith("layer-2");
     expect(fns.selectLayer).not.toHaveBeenCalled();
     cleanup();
   });

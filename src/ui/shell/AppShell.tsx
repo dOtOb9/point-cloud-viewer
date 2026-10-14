@@ -6,7 +6,10 @@ import { useUpdateCheck } from "../../state/useUpdateCheck";
 import { useWebGpuSupport } from "../../state/useWebGpuSupport";
 import { defaultRenderSettings, readDeviceProfileInput } from "../../renderer/device-profile";
 import { useMeasureTool } from "../../state/useMeasureTool";
+import { useLayerTool } from "../../state/useLayerTool";
 import { MeasureHud, MeasureOverlay } from "../MeasureOverlay";
+import { LayerToolOverlay } from "../LayerToolOverlay";
+import { SectionDialog, ToolProgressDialog } from "./ToolDialogs";
 import { ViewerPanel } from "../ViewerPanel";
 import { ConversionDialog } from "./ConversionDialog";
 import { ErrorDialog } from "./ErrorDialog";
@@ -33,7 +36,12 @@ export function AppShell() {
   const theme = useTheme();
   const webGpuSupport = useWebGpuSupport();
   const update = useUpdateCheck();
-  const measure = useMeasureTool(viewer, canvasRef);
+  const measureRaw = useMeasureTool(viewer, canvasRef);
+  const layerToolRaw = useLayerTool(viewer, canvasRef);
+  // Only one tool that clicks on the 3D view can be on at a time (measurement, point selection, cross section):
+  // starting one stops the others.
+  const measure = { ...measureRaw, toggle: (kind: Parameters<typeof measureRaw.toggle>[0]) => { layerToolRaw.stop(); measureRaw.toggle(kind); } };
+  const layerTool = { ...layerToolRaw, toggle: (mode: Parameters<typeof layerToolRaw.toggle>[0]) => { measureRaw.stop(); layerToolRaw.toggle(mode); } };
 
   // 狭幅(<768px)ではドロワーが画面を覆うため、最初は閉じて点群が見えるようにする。
   // 広い画面では従来どおり開いておく(E2Eが変換の内訳の表示を待つため、
@@ -89,12 +97,14 @@ export function AppShell() {
       <ViewerPanel canvasRef={canvasRef} />
       <MeasureOverlay viewer={viewer} measure={measure} canvasRef={canvasRef} />
       <MeasureHud measure={measure} />
+      <LayerToolOverlay viewer={viewer} tool={layerTool} canvasRef={canvasRef} />
 
       <Ribbon
         viewer={viewer}
         glassEnabled={glassEnabled}
         onOpenSettings={() => setSettingsOpen(true)}
         measure={measure}
+        layerTool={layerTool}
       />
 
       <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
@@ -122,6 +132,10 @@ export function AppShell() {
           </p>
         </div>
       )}
+
+      {/* L2-F: cross-section thickness / height range, and the progress of a running point-cloud tool. */}
+      <SectionDialog viewer={viewer} tool={layerTool} />
+      <ToolProgressDialog viewer={viewer} />
 
       <ConversionDialog viewer={viewer} open={conversionDialogVisible} onClose={() => setConversionDialogOpen(false)} />
 

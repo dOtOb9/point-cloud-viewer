@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import {
   TauriSource,
   cancelLasConversion,
+  extractToCopc as tauriExtractToCopc,
+  mergeCopcs as tauriMergeCopcs,
   onConversionDone,
   onConversionFailed,
   onConversionProgress,
@@ -65,6 +67,17 @@ import {
 } from "./layers";
 import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "../renderer/center-priority";
 import { MEASURE_KIND_NAME, type Measurement } from "./measure";
+import { effectiveSelectedIds, rangeSelectedIds, toggleSelectedId, toolSourceLayers } from "./layer-selection";
+import { sectionYaw } from "./tool-math";
+import { horizontalBasis } from "../renderer/up-axis";
+import type { ExtractFilter, ToolOptions, ToolResult } from "../datasource/tools";
+
+/** Progress of the running point-cloud tool (L2-F). `totalPoints` is 0 until the first progress arrives. */
+export interface ToolProgressState {
+  title: string;
+  pointsRead: number;
+  totalPoints: number;
+}
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
 // PointShapeもここから再エクスポートする（M3-8）。
@@ -197,7 +210,25 @@ export interface CopcViewerState {
   /** L2-B: そのレイヤーの点の大きさ（直径px、1〜32に丸める）。 */
   setLayerPointSize: (id: string, px: number) => void;
   /** L2-B: そのレイヤーへカメラを移す（アニメーション無効なら即時）。 */
-  focusLayer: (id: string) => void;
+  focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
+  /** L2-F: ids selected together (Ctrl/Shift click). Includes `selectedLayerId` (the last chosen; the action buttons act on it). */
+  selectedLayerIds: string[];
+  /** L2-F: Ctrl/Cmd click: add to / remove from the selection. */
+  toggleLayerSelection: (id: string) => void;
+  /** L2-F: Shift click: select the rows between `selectedLayerId` and this one. */
+  selectLayerRange: (id: string) => void;
+  /** L2-F: progress of the running point-cloud tool, or null. */
+  toolProgress: ToolProgressState | null;
+  cancelTool: () => void;
+  /** L2-F: make a new layer from the points of `layerId` that match `filter` (ADR-0018). Failures go to the error log. */
+  extractFromLayer: (
+    layerId: string,
+    filter: ExtractFilter,
+    label: "選択" | "断面",
+    viewNormal?: readonly [number, number, number],
+  ) => Promise<void>;
+  /** L2-F: merge the selected point-cloud layers into one new layer. */
+  mergeSelectedLayers: () => Promise<void>;
   /** レイヤーを消す（renderer から外し、DataSource のファイルも閉じる）。 */
   removeLayer: (id: string) => void;
   /** L2-D: 3D coordinates of a screen point (canvas CSS pixels); null where there is no point. The renderer's `pickPoint`. */
@@ -348,6 +379,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     layersStateRef.current = next;
     setLayersState(next);
   }, []);
+  // L2-F: ids selected together with Ctrl/Shift click (see layer-selection.ts; trusted only while it contains the primary).
+  const [extraSelectedIds, setExtraSelectedIds] = useState<string[]>([]);
+  // L2-F: true while a point-cloud tool runs. The desktop tools reuse the `conversion-progress` event, and the
+  // conversion listener below must not treat that as a conversion.
+  const toolRunningRef = useRef(false);
+  const [toolProgress, setToolProgress] = useState<ToolProgressState | null>(null);
   // レイヤー id の通し番号。消しても再利用しない（renderer 側のキー衝突を避ける）。
   const nextLayerNumberRef = useRef(1);
   // 変換が終わってから、その結果のレイヤーが開くまでの保留中の結果（`PendingConversionResult`）。
@@ -575,7 +612,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       });
       unlistenFailed = source.onConvertFailed(reportConversionFailure);
     } else {
-      void onConversionProgress((progress) => setConversionProgress(progress)).then((fn) => {
+      void onConversionProgress((progress) => {
+        // A point-cloud tool also emits this event (L2-C). Its progress goes to the tool dialog, not the conversion UI.
+        if (!toolRunningRef.current) setConversionProgress(progress);
+      }).then((fn) => {
         unlistenProgress = fn;
       });
       void onConversionDone((outputPath, sourceFormat, stageTimings) => {
@@ -711,6 +751,70 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     // なので、ここに加えてもこのeffectの「マウント時に1度だけ」という性質は
     // 変わらない(react-hooks/exhaustive-deps対応)。
   }, [setPendingConversion]);
+
+  /**
+   * Open `path` with the DataSource and add it to the renderer and the list as a new layer (the new layer
+   * becomes the selection). Shared by `openFile` and by the tool results (L2-F). Returns the layer id.
+   * `isConversionContinuation`: attach the pending conversion result (name, breakdown, download) to this layer.
+   */
+  const addOpenedLayer = useCallback(
+    async (
+      path: string,
+      fallbackName: string,
+      isConversionContinuation: boolean,
+    ): Promise<{ layerId: string; pointCount: number; nodeCount: number }> => {
+      const renderer = rendererRef.current;
+      const source = sourceRef.current;
+      if (!renderer || !source) throw new Error("ビューアが初期化されていません");
+      const opened = await source.open(path);
+      // L1-D: 開いたものは常に新しいレイヤーとして足す（置き換えない）。足したレイヤーは選択になる。
+      // 着色の初期値はRGBがあれば"rgb"、無ければ標高（colormap.tsの`resolveColorMode`/
+      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。rendererは`resolveColorMode`を知らず、
+      // 渡された値をそのまま使うだけの設計。
+      // renderer は cloudId を知らない。レイヤーごとに cloudId を閉じ込めた readNode を渡す。
+      // 標高の範囲はCloudInfo.min/max（実データ範囲）を渡す
+      // （ノードのbounds=立方体ではない。renderer側の`addLayer`のコメント参照）。
+      const layerId = `layer-${nextLayerNumberRef.current++}`;
+      const colorMode = initialColorModeFor(opened.info);
+      // 変換から続けて開いたときだけ、保留中の内訳・ダウンロードをこのレイヤーに付ける。
+      const pending = isConversionContinuation ? pendingConversionRef.current : null;
+      if (pending) pendingConversionRef.current = null;
+      renderer.addLayer(layerId, {
+        hierarchy: opened.nodes,
+        readNode: (key) => source.readNode(opened.cloudId, key),
+        boundsMin: opened.info.min,
+        boundsMax: opened.info.max,
+        colorMode,
+        visible: true,
+        pointShape: deviceProfileDefaults.pointShape,
+        pointSizePx: DEFAULT_POINT_SIZE_PX,
+      });
+      commitLayers(
+        addLayerToState(layersStateRef.current, {
+          id: layerId,
+          name: pending?.name ?? fallbackName,
+          info: opened.info,
+          nodeCount: opened.nodes.length,
+          visible: true,
+          colorMode,
+          pointShape: deviceProfileDefaults.pointShape,
+          pointSize: DEFAULT_POINT_SIZE_PX,
+          cloudId: opened.cloudId,
+          sourcePath: path,
+          conversionBreakdownText: pending?.breakdownText ?? null,
+          download: pending?.download ?? null,
+        }),
+      );
+      // CRSの読み取り失敗はファイルを開くことを止めない(ADR-0015)。本文はエラーログへ。
+      if (opened.info.crs.error) {
+        gpuErrorLogRef.current.report(`座標系(CRS)を読み取れませんでした: ${opened.info.crs.error}`, undefined, "crs");
+        setGpuErrors(gpuErrorLogRef.current.list());
+        recordErrorHistory(gpuErrorLogRef.current.list());
+      }
+      return { layerId, pointCount: opened.info.pointCount, nodeCount: opened.nodes.length };
+    },
+    [commitLayers, deviceProfileDefaults.pointShape],
+  );
 
   const openFile = useCallback(async (pathOrFile: string | File, isConversionContinuation = false) => {
     const renderer = rendererRef.current;
@@ -854,64 +958,20 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         }
       }
 
-      const opened = await source.open(path);
-      // L1-D: 開いたものは常に新しいレイヤーとして足す（置き換えない）。足したレイヤーは選択になる。
-      // 着色の初期値はRGBがあれば"rgb"、無ければ標高（colormap.tsの`resolveColorMode`/
-      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。rendererは`resolveColorMode`を知らず、
-      // 渡された値をそのまま使うだけの設計。
-      // renderer は cloudId を知らない。レイヤーごとに cloudId を閉じ込めた readNode を渡す。
-      // 標高の範囲はCloudInfo.min/max（実データ範囲）を渡す
-      // （ノードのbounds=立方体ではない。renderer側の`addLayer`のコメント参照）。
-      const layerId = `layer-${nextLayerNumberRef.current++}`;
-      const colorMode = initialColorModeFor(opened.info);
-      // 変換から続けて開いたときだけ、保留中の内訳・ダウンロードをこのレイヤーに付ける。
-      const pending = isConversionContinuation ? pendingConversionRef.current : null;
-      if (pending) pendingConversionRef.current = null;
-      renderer.addLayer(layerId, {
-        hierarchy: opened.nodes,
-        readNode: (key) => source.readNode(opened.cloudId, key),
-        boundsMin: opened.info.min,
-        boundsMax: opened.info.max,
-        colorMode,
-        visible: true,
-        pointShape: deviceProfileDefaults.pointShape,
-        pointSizePx: DEFAULT_POINT_SIZE_PX,
-      });
-      // レイヤー欄に出す名前: 変換結果ならその名前、Tauri版のパス・Web版のURLは最後の区切り以降、
-      // 選択したFileはそのままname。
-      const layerName = pending?.name ?? (typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name);
-      commitLayers(
-        addLayerToState(layersStateRef.current, {
-          id: layerId,
-          name: layerName,
-          info: opened.info,
-          nodeCount: opened.nodes.length,
-          visible: true,
-          colorMode,
-          pointShape: deviceProfileDefaults.pointShape,
-          pointSize: DEFAULT_POINT_SIZE_PX,
-          cloudId: opened.cloudId,
-          conversionBreakdownText: pending?.breakdownText ?? null,
-          download: pending?.download ?? null,
-        }),
-      );
-      // CRSの読み取り失敗はファイルを開くことを止めない(ADR-0015)。本文はエラーログへ。
-      if (opened.info.crs.error) {
-        gpuErrorLogRef.current.report(`座標系(CRS)を読み取れませんでした: ${opened.info.crs.error}`, undefined, "crs");
-        setGpuErrors(gpuErrorLogRef.current.list());
-        recordErrorHistory(gpuErrorLogRef.current.list());
-      }
+      // レイヤー欄に出す名前: 変換結果ならその名前（addOpenedLayerが保留中の結果から取る）、
+      // Tauri版のパス・Web版のURLは最後の区切り以降、選択したFileはそのままname。
+      const opened = await addOpenedLayer(path, typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name, isConversionContinuation);
       setStatus("ready");
 
       const label = typeof pathOrFile === "string" ? pathOrFile : pathOrFile.name;
-      const summary = `[M1] opened ${label}: points=${opened.info.pointCount} nodes=${opened.nodes.length}`;
+      const summary = `[M1] opened ${label}: points=${opened.pointCount} nodes=${opened.nodeCount}`;
       console.log(summary);
       await reportToBackendConsole(summary);
     } catch (e) {
       setStatus("error");
       setError(String(e));
     }
-  }, [tempDir, commitLayers, deviceProfileDefaults.isMobile, deviceProfileDefaults.pointShape, refreshOpfsStorageInfo]);
+  }, [tempDir, addOpenedLayer, deviceProfileDefaults.isMobile, refreshOpfsStorageInfo]);
 
   /**
    * M4-14: 複数ファイル選択時の入口。`openFile`とほぼ同じ判断
@@ -1099,6 +1159,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // L1-D: レイヤー操作。renderer に伝え、同じ内容を一覧（state）にも入れる。
   const selectLayer = useCallback(
     (id: string) => {
+      setExtraSelectedIds([]);
       commitLayers(selectLayerInState(layersStateRef.current, id));
     },
     [commitLayers],
@@ -1150,9 +1211,38 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     [commitLayers],
   );
 
-  const focusLayer = useCallback((id: string) => {
-    rendererRef.current?.focusLayer(id);
+  const focusLayer = useCallback((id: string, orientation?: { yaw: number; pitch: number }) => {
+    const layer = findLayer(layersStateRef.current.layers, id);
+    if (layer?.measurement) {
+      // A measurement layer is not in the renderer: move to the box around its points (L2-F).
+      rendererRef.current?.focusBox(layer.info.min, layer.info.max);
+      return;
+    }
+    rendererRef.current?.focusLayer(id, orientation);
   }, []);
+
+  // ===== L2-F: selecting several layers =====
+  const selectedLayerIds = effectiveSelectedIds(layersState.layers, layersState.selectedLayerId, extraSelectedIds);
+
+  const toggleLayerSelection = useCallback(
+    (id: string) => {
+      const current = layersStateRef.current;
+      const next = toggleSelectedId(current.layers, current.selectedLayerId, extraSelectedIds, id);
+      setExtraSelectedIds(next.ids);
+      commitLayers({ ...current, selectedLayerId: next.primaryId });
+    },
+    [commitLayers, extraSelectedIds],
+  );
+
+  const selectLayerRange = useCallback(
+    (id: string) => {
+      const current = layersStateRef.current;
+      setExtraSelectedIds(rangeSelectedIds(current.layers, current.selectedLayerId, id));
+      // The primary stays the anchor, unless nothing was selected yet.
+      commitLayers(selectLayerInState(current, current.selectedLayerId ?? id));
+    },
+    [commitLayers],
+  );
 
   const removeLayer = useCallback(
     (id: string) => {
@@ -1177,6 +1267,103 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     },
     [commitLayers],
   );
+
+  // ===== L2-F: point-cloud tools (select by polygon, cross section, merge) =====
+  // ADR-0018: each tool reads the chosen layers' files and writes a NEW COPC, which is opened as a new layer.
+  // The source layers are never changed. Rust does the work (desktop: Tauri command, Web: Worker + OPFS).
+
+  /** Show a tool failure or warning in the existing error display (ADR-0011), with the text as it is. */
+  const reportToolMessage = useCallback((message: string) => {
+    gpuErrorLogRef.current.report(message, undefined, "tool");
+    setGpuErrors(gpuErrorLogRef.current.list());
+    recordErrorHistory(gpuErrorLogRef.current.list());
+  }, []);
+
+  /**
+   * Run one tool: show progress, open the result as a new layer, send warnings and failures to the error log.
+   * `viewNormal` (cross section only): after opening, look at the result from that horizontal direction.
+   */
+  const runTool = useCallback(
+    async (
+      title: string,
+      resultName: string,
+      run: (source: DataSource, options: ToolOptions) => Promise<ToolResult>,
+      viewNormal?: readonly [number, number, number],
+    ) => {
+      const source = sourceRef.current;
+      if (!source) return;
+      if (toolRunningRef.current) {
+        reportToolMessage("別の点群ツールを実行中です。終わってからやり直してください");
+        return;
+      }
+      toolRunningRef.current = true;
+      setToolProgress({ title, pointsRead: 0, totalPoints: 0 });
+      try {
+        const result = await run(source, {
+          tempDir,
+          onProgress: (p) => setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints }),
+        });
+        for (const warning of result.warnings) reportToolMessage(warning);
+        const { layerId } = await addOpenedLayer(result.outputPath, resultName, false);
+        setStatus("ready");
+        if (viewNormal) {
+          const up = rendererRef.current?.getViewSnapshot()?.up ?? [0, 0, 1];
+          const { right, forward } = horizontalBasis(up);
+          focusLayer(layerId, { yaw: sectionYaw(viewNormal, right, forward), pitch: 0 });
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        reportToolMessage(message.includes("キャンセル") ? `${title}をキャンセルしました` : message);
+      } finally {
+        toolRunningRef.current = false;
+        setToolProgress(null);
+      }
+    },
+    [tempDir, addOpenedLayer, focusLayer, reportToolMessage],
+  );
+
+  const extractFromLayer = useCallback(
+    async (layerId: string, filter: ExtractFilter, label: "選択" | "断面", viewNormal?: readonly [number, number, number]) => {
+      const layer = findLayer(layersStateRef.current.layers, layerId);
+      if (!layer || isMeasureLayer(layer) || layer.sourcePath === undefined) {
+        reportToolMessage("点群のレイヤーを選んでください");
+        return;
+      }
+      const path = layer.sourcePath;
+      await runTool(
+        `${label}（${layer.name}）`,
+        `${label} - ${layer.name}`,
+        (source, options) => (source instanceof WebSource ? source.extractToCopc(path, filter, options) : tauriExtractToCopc(path, filter, options)),
+        viewNormal,
+      );
+    },
+    [runTool, reportToolMessage],
+  );
+
+  const mergeSelectedLayers = useCallback(async () => {
+    const current = layersStateRef.current;
+    const sources = toolSourceLayers(current.layers, effectiveSelectedIds(current.layers, current.selectedLayerId, extraSelectedIds));
+    if (sources.length < 2) {
+      reportToolMessage("結合するには点群のレイヤーを2つ以上選んでください（Ctrl か Shift を押しながらクリック）");
+      return;
+    }
+    const paths = sources.map((l) => l.sourcePath as string);
+    const isMobile = deviceProfileDefaults.isMobile;
+    await runTool(
+      `結合（${sources.length}レイヤー）`,
+      `結合 (${sources.length})`,
+      (source, options) => (source instanceof WebSource ? source.mergeCopcs(paths, { ...options, isMobile }) : tauriMergeCopcs(paths, options)),
+    );
+  }, [runTool, reportToolMessage, extraSelectedIds, deviceProfileDefaults.isMobile]);
+
+  const cancelTool = useCallback(() => {
+    const source = sourceRef.current;
+    if (source instanceof WebSource) {
+      source.cancelConversion();
+      return;
+    }
+    cancelLasConversion().catch((e: unknown) => console.error("cancelLasConversion failed", e));
+  }, []);
 
   // ===== L2-D: measurement =====
   // Picking and fetching the view pass straight through to the renderer. The measurement operation
@@ -1267,6 +1454,13 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setLayerPointShape,
     setLayerPointSize,
     focusLayer,
+    selectedLayerIds,
+    toggleLayerSelection,
+    selectLayerRange,
+    toolProgress,
+    cancelTool,
+    extractFromLayer,
+    mergeSelectedLayers,
     removeLayer,
     pickPoint,
     getViewSnapshot,

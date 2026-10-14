@@ -30,6 +30,9 @@ export interface ViewerLayer {
   pointSize: number;
   /** DataSource 側のファイル番号。`close` と `readNode` に使う。 */
   cloudId: number;
+  /** L2-F: the string that was passed to `DataSource.open()` for this layer (desktop: file path, Web: registered key).
+   *  The point-cloud tools (select / section / merge) pass it to Rust. Absent on measurement layers. */
+  sourcePath?: string;
   /** このレイヤーを変換で作ったときだけ入る（内訳テキスト・ダウンロード）。 */
   conversionBreakdownText: string | null;
   download: LayerDownload | null;

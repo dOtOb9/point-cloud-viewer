@@ -113,12 +113,19 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
       <ul className="flex flex-col gap-1">
         {viewer.layers.map((layer) => {
           const selected = layer.id === viewer.selectedLayerId;
+          const alsoSelected = !selected && viewer.selectedLayerIds.includes(layer.id);
           return (
             <li
               key={layer.id}
-              aria-selected={selected}
+              aria-selected={selected || alsoSelected}
               data-testid="layer-row"
-              onClick={() => viewer.selectLayer(layer.id)}
+              // L2-F: Ctrl/Cmd click adds or removes a layer, Shift click selects a range; a plain click selects just this one.
+              // The action buttons below act on the one chosen last (`selectedLayerId`).
+              onClick={(e) => {
+                if (e.ctrlKey || e.metaKey) viewer.toggleLayerSelection(layer.id);
+                else if (e.shiftKey) viewer.selectLayerRange(layer.id);
+                else viewer.selectLayer(layer.id);
+              }}
               // ダブルクリックでそのレイヤーへカメラを移す（1回目のクリックで選択も済んでいる）。
               onDoubleClick={() => viewer.focusLayer(layer.id)}
               onContextMenu={(e) => {
@@ -150,7 +157,12 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
               // L2-A: 選択の有無で左線の太さが変わると文字がずれるため、全行に同じ太さの左線を付け、
               // 選択していない行は透明にする（余白・高さは全行で同じ）。
               className={`flex min-h-11 cursor-pointer select-none items-center gap-2 rounded border-l-[3px] px-2 py-1.5 text-xs ${
-                selected ? "border-l-primary bg-black/5 dark:bg-white/10" : "border-l-transparent"
+                selected
+                  ? "border-l-primary bg-black/5 dark:bg-white/10"
+                  : // Selected together with the primary (L2-F): a lighter version of the same look.
+                    alsoSelected
+                    ? "border-l-primary/40 bg-black/[0.03] dark:bg-white/5"
+                    : "border-l-transparent"
               }`}
             >
               <input

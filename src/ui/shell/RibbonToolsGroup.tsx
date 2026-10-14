@@ -1,15 +1,9 @@
 import { Hexagon, Layers, MousePointerClick, MoveVertical, Ruler, Slice, type LucideIcon } from "lucide-react";
 import type { MeasureKind } from "../../state/measure";
 import type { MeasureToolState } from "../../state/useMeasureTool";
+import type { LayerToolState } from "../../state/useLayerTool";
 import { RibbonButton } from "./RibbonButton";
 import { RIBBON_GROUP_CLASS, RIBBON_GROUP_LABEL_CLASS } from "./ribbon-styles";
-
-/** Tools not implemented yet (as specified in the task sheet). */
-const UNIMPLEMENTED_TOOLS: { icon: LucideIcon; label: string; title: string }[] = [
-  { icon: Slice, label: "断面", title: "選択中のレイヤーから断面レイヤーを作る（未実装）" },
-  { icon: MousePointerClick, label: "点の選択", title: "選択中のレイヤーから選んだ点のレイヤーを作る（未実装）" },
-  { icon: Layers, label: "複数レイヤー", title: "選択中の複数のレイヤーから結合レイヤーを作る（未実装）" },
-];
 
 /** Measurement is split into three buttons: distance, height, area (owner decision: split the buttons once implemented). */
 const MEASURE_TOOLS: { kind: MeasureKind; icon: LucideIcon; label: string; title: string }[] = [
@@ -18,22 +12,31 @@ const MEASURE_TOOLS: { kind: MeasureKind; icon: LucideIcon; label: string; title
   { kind: "area", icon: Hexagon, label: "面積", title: "頂点をクリックして面積を測る。ダブルクリックか Enter で閉じる（結果は計測レイヤーになる）" },
 ];
 
+interface Props {
+  measure: MeasureToolState;
+  /** L2-F: "点の選択" and "断面" (they draw on the 3D view, like the measurement tools). */
+  layerTool: LayerToolState;
+  hasPointCloud: boolean;
+  /** L2-F: how many point-cloud layers are selected together (Ctrl/Shift click in the layer list). */
+  selectedPointCloudCount: number;
+  onMerge: () => void;
+  /** A point-cloud tool is running (the buttons wait for it to finish). */
+  toolRunning: boolean;
+}
+
 /**
  * ADR-0017 (UI shell rebuild): the "Tools" group of the top ribbon.
  *
- * ADR-0018: tools here are "operations on the selected layer whose result is a new layer"
+ * ADR-0018: every tool here is "an operation on the chosen layer whose result is a new layer"
  * (the source layer is never rewritten); the tooltips say it that way.
  *
- * Owner decision: tools that are not implemented yet must not look clickable. They keep the
- * icon and label but are `disabled` (disabled style), which guarantees at the HTML level that
- * clicking does nothing, and `title` says "(未実装)" (not implemented). Touch devices may not
- * show `title`, so the grayed-out look itself is also part of the signal.
- *
- * L2-D: measurement (distance, height, area) is implemented. Pressing a button starts
- * measuring and the active button gets an underline. Press again or Esc to stop. The buttons
- * are disabled when there is no point cloud (nothing to measure).
+ * L2-D: measurement (distance, height, area). L2-F: "点の選択" (polygon on the screen), "断面" (a line
+ * between two points, then thickness and height range) and "複数レイヤー" (merge the layers selected
+ * with Ctrl/Shift click; disabled unless two or more point-cloud layers are selected).
+ * Pressing a tool button starts the tool and the active button gets an underline. Press again or Esc to stop.
+ * The buttons are disabled when there is no point cloud (nothing to work on).
  */
-export function RibbonToolsGroup({ measure, hasPointCloud }: { measure: MeasureToolState; hasPointCloud: boolean }) {
+export function RibbonToolsGroup({ measure, layerTool, hasPointCloud, selectedPointCloudCount, onMerge, toolRunning }: Props) {
   return (
     <div className={RIBBON_GROUP_CLASS}>
       <span className={RIBBON_GROUP_LABEL_CLASS}>ツール</span>
@@ -49,9 +52,33 @@ export function RibbonToolsGroup({ measure, hasPointCloud }: { measure: MeasureT
             onClick={() => measure.toggle(tool.kind)}
           />
         ))}
-        {UNIMPLEMENTED_TOOLS.map((tool) => (
-          <RibbonButton key={tool.label} icon={tool.icon} label={tool.label} disabled title={tool.title} />
-        ))}
+        <RibbonButton
+          icon={MousePointerClick}
+          label="点の選択"
+          title="画面に多角形を描き、選んだレイヤーの中で多角形に映る点を新しいレイヤーにする（クリックで頂点、ダブルクリックか Enter で閉じる、Esc でやめる）"
+          active={layerTool.mode === "select"}
+          disabled={(!hasPointCloud && layerTool.mode !== "select") || toolRunning}
+          onClick={() => layerTool.toggle("select")}
+        />
+        <RibbonButton
+          icon={Slice}
+          label="断面"
+          title="点群の上の2点をクリックして線を引き、その線に沿った板の中の点を新しいレイヤーにする"
+          active={layerTool.mode === "section"}
+          disabled={(!hasPointCloud && layerTool.mode !== "section") || toolRunning}
+          onClick={() => layerTool.toggle("section")}
+        />
+        <RibbonButton
+          icon={Layers}
+          label="複数レイヤー"
+          title={
+            selectedPointCloudCount >= 2
+              ? `選んだ${selectedPointCloudCount}つの点群レイヤーを1つに結合した新しいレイヤーを作る`
+              : "レイヤー欄で Ctrl か Shift を押しながら2つ以上の点群レイヤーを選ぶと、結合できる"
+          }
+          disabled={selectedPointCloudCount < 2 || toolRunning}
+          onClick={onMerge}
+        />
       </div>
     </div>
   );
