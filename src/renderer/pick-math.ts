@@ -34,13 +34,16 @@ export function depthQuantumAt(z: number, near: number, far: number): number {
 }
 
 /**
- * 2段階目の near/far。粗い距離 z の前後に「粗い刻みの数個分」の余裕を取る。
- * 余裕の 4 刻みは、1段階目の量子化誤差（±0.5刻み）と、読んだ画素と中心画素の距離の差を
- * 余裕をもって含める経験的な値（未検証。足りなければ2段階目で何も当たらず、1段階目の値に戻る）。
+ * 2段階目の near/far。粗い距離 z の前後に余裕を取る。
+ * 実機（NVIDIA、autzen、z≒8000）で、1段階目の距離が真の距離から「理論の量子化誤差の3倍」
+ * （約14%）ずれた（刻みを基準に 4 刻みの余裕にしたら、点が範囲の外に出て当たらなかった）。
+ * 原因は未特定のため、余裕は距離に比例させて広く取る: z/2 〜 2z。
+ * これでも 2段階目の分解能は十分（near=z/2, far=2z なら 1刻みは z の 1e-7 倍程度、z=8000 で約 1mm）。
+ * 非常に遠く（z>1e5 程度）で粗い刻み自体が z/2 を超えるときだけ、刻みの 4 倍まで広げる。
  */
 export function refineDepthRange(z: number, near: number, far: number): { near: number; far: number } {
-  const margin = 4 * depthQuantumAt(z, near, far);
-  return { near: Math.max(near, z - margin), far: Math.min(far, z + margin) };
+  const margin = Math.max(z / 2, 4 * depthQuantumAt(z, near, far));
+  return { near: Math.max(near, z - margin), far: Math.min(far, z + Math.max(z, margin)) };
 }
 
 /**

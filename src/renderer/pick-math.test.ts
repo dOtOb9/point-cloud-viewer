@@ -25,12 +25,13 @@ describe("depthToEyeDistance", () => {
 });
 
 describe("refineDepthRange", () => {
-  it("近くでは余裕が小さく、遠くでは大きい。かつ z を含む", () => {
-    const near100 = refineDepthRange(100, NEAR, FAR);
-    const near3000 = refineDepthRange(3000, NEAR, FAR);
-    expect(near100.near).toBeLessThan(100);
-    expect(near100.far).toBeGreaterThan(100);
-    expect(near3000.far - near3000.near).toBeGreaterThan(near100.far - near100.near);
+  it("z/2 〜 2z（距離に比例した余裕）で、z を含む。非常に遠いときは刻みの4倍まで広がる", () => {
+    const r100 = refineDepthRange(100, NEAR, FAR);
+    expect(r100.near).toBeCloseTo(50, 9);
+    expect(r100.far).toBeCloseTo(200, 9);
+    const farAway = refineDepthRange(2e5, NEAR, FAR);
+    expect(farAway.near).toBe(NEAR);
+    expect(farAway.far).toBeGreaterThan(4e5);
     // 遠くの1刻みは約54（z=3000, near=0.01, 24bit）。式どおりであること。
     expect(depthQuantumAt(3000, NEAR, FAR)).toBeGreaterThan(50);
     expect(depthQuantumAt(3000, NEAR, FAR)).toBeLessThan(60);

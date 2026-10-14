@@ -474,8 +474,7 @@ export class PointCloudRenderer {
     const refineSize = 2 * REFINE_HALF + 1;
     const refineVP = windowViewProj(multiply(proj, view), hx, hy, refineSize, width, height);
     const fine = await this.gpu.renderDepthWindow(refineVP, refineSize, this.lastDrawn, options);
-    const fineHit = fine ? nearestHit(fine, refineSize) : null;
-    if (fineHit) {
+    const fineHit = fine ? nearestHit(fine, refineSize) : null;    if (fineHit) {
       const point = unprojectWindowSample(refineVP, fineHit.ix, fineHit.iy, refineSize, fineHit.depth);
       if (point) return { point, refined: true };
     }
