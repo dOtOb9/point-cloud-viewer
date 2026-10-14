@@ -25,6 +25,13 @@ import {
   DEFAULT_POINT_BUDGET_TUNING,
   type RefreshIntervalEstimate,
 } from "./point-budget";
+import {
+  cameraPoseChanged,
+  INITIAL_IDLE_BOOST_STATE,
+  stepIdleBoost,
+  type CameraPose,
+  type IdleBoostState,
+} from "./idle-boost";
 import { screenPointToWorldRay } from "./raycast";
 import { NodeCache, type CachedNode } from "./node-cache";
 import { NodeLoader } from "./node-loader";
@@ -107,6 +114,8 @@ export interface RenderStats {
   cameraEye: [number, number, number];
   /** AN-2: カメラが慣性・ズーム・視点移動で動いている間true。 */
   cameraAnimating: boolean;
+  /** HQ-2: カメラが止まったので、点予算を上限まで上げて読み込み・描画している最中。 */
+  idleBoosting: boolean;
   /** M2-1: EDLのオン/オフと強さ。GUIを目視できなくても、UIの操作がrendererまで
    *  届いているかをstdoutで確認できるようにする（陰影が実際に効いているかどうか
    *  自体は目視でしか確認できないが、状態が正しく伝わっているかは機械的に見える）。 */
@@ -177,6 +186,10 @@ export class PointCloudRenderer {
    *  観測値に永久に固定される一方向ラチェットになるため期限付きにした。
    *  詳細は`point-budget.ts`）。 */
   private refreshIntervalEstimate: RefreshIntervalEstimate | null = null;
+  /** HQ-2: 止まったら上限まで上げる判定の状態（idle-boost.ts）。 */
+  private idleBoost: IdleBoostState = INITIAL_IDLE_BOOST_STATE;
+  /** HQ-2: 前フレームのカメラ姿勢。動いたかの判定用。 */
+  private previousCameraPose: CameraPose | null = null;
   private rafHandle = 0;
   private disposed = false;
   /** AN-2: 前フレームの時刻。カメラのアニメーションを実時間で進めるため。 */
@@ -787,7 +800,6 @@ export class PointCloudRenderer {
     }
 
     this.recordFrameDelta(time);
-    this.autoAdjustPointBudget(time);
 
     // AN-2: カメラのアニメーション（慣性・ズーム・視点移動）を実際の経過時間で進める。
     // 動きが無効なら、進行中のものは止めて今までどおり即時の挙動にする。
@@ -796,6 +808,11 @@ export class PointCloudRenderer {
     this.camera.motionEnabled = motionEnabled;
     if (this.previousCameraTime !== null) this.camera.update(time - this.previousCameraTime);
     this.previousCameraTime = time;
+
+    // HQ-2: 止まったら上限まで上げ、動いたら（描く前に）元の点予算に戻す。
+    // 点を選ぶ前に行うこと。止まっている間は AIMD を呼ばない。
+    const aimdPaused = this.updateIdleBoost(time);
+    if (!aimdPaused) this.autoAdjustPointBudget(time);
 
     const width = this.canvas.width;
     const height = this.canvas.height;
@@ -882,6 +899,7 @@ export class PointCloudRenderer {
       cameraUpAxis: [...this.camera.getUpAxis()],
       cameraEye: this.camera.eye(),
       cameraAnimating: this.camera.isAnimating(),
+      idleBoosting: this.idleBoost.boosting,
       autoPointBudgetEnabled: this.autoPointBudgetEnabled,
       edlEnabled: this.edlEnabled,
       edlStrength: this.edlStrength,
@@ -918,6 +936,41 @@ export class PointCloudRenderer {
       this.refreshIntervalEstimate = updateRefreshIntervalEstimate(this.refreshIntervalEstimate, deltaMs, time);
     }
     this.previousFrameTime = time;
+  }
+
+  /**
+   * HQ-2: カメラが止まったら点予算を上限まで上げ、動いたら元に戻す。
+   * 判定は `idle-boost.ts`（純粋関数）に任せ、ここでは結果を点予算に反映するだけ。
+   * 戻り値は「AIMD を止めるか」。
+   *
+   * 戻すとき、AIMD の直近フレームの窓を捨てて最初からやり直す。止まっている間は
+   * 点予算が大きく、フレームが重くなっていることがあるため、それを AIMD が
+   * 「外した」と読んで、動き出した直後に予算を下げてしまうのを防ぐ。
+   */
+  private updateIdleBoost(time: number): boolean {
+    const pose: CameraPose = { eye: this.camera.eye(), target: [...this.camera.target] };
+    const cameraActive = this.camera.isAnimating() || cameraPoseChanged(this.previousCameraPose, pose);
+    this.previousCameraPose = pose;
+
+    const result = stepIdleBoost(this.idleBoost, {
+      nowMs: time,
+      cameraActive,
+      autoEnabled: this.autoPointBudgetEnabled,
+      currentBudget: this.pointBudget,
+      maxBudget: this.autoPointBudgetMax,
+    });
+    this.idleBoost = result.state;
+
+    if (result.action.kind !== "none") {
+      this.pointBudget = result.action.budget;
+      this.cache.maxPoints = this.pointBudget * CACHE_BUDGET_MULTIPLIER;
+    }
+    if (result.action.kind === "restore") {
+      this.recentFrameDeltasMs = [];
+      this.autoPointBudgetConsecutiveHits = 0;
+      this.lastAutoBudgetAdjustAt = time;
+    }
+    return result.aimdPaused;
   }
 
   /**

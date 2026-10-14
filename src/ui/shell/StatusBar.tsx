@@ -52,7 +52,13 @@ export function StatusBar({
         {stats ? stats.drawnPoints.toLocaleString() : "―"} / <span className="hidden md:inline">予算: </span>
         {viewer.pointBudget.toLocaleString()}
       </span>
-      <span className="whitespace-nowrap">fps: {stats ? stats.fps.toFixed(0) : "―"}</span>
+      {stats?.idleBoosting ? (
+        // HQ-2: カメラが止まったので、点予算を上限まで上げて読み込み・描画している最中。
+        <span className="whitespace-nowrap" data-testid="idle-boost">
+          最大まで読み込み中
+        </span>
+      ) : null}
+      <span className="whitespace-nowrap">fps:{stats ? stats.fps.toFixed(0) : "―"}</span>
       {/* CRS: 短い形(EPSGコード)。狭幅では省く(詳細は左パネルで見られる)。 */}
       <span className="hidden whitespace-nowrap md:inline">CRS: {viewer.cloudInfo ? formatCrsShort(viewer.cloudInfo.crs) : "―"}</span>
       {viewer.status === "converting" ? (
