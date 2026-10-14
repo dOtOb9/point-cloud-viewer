@@ -40,16 +40,43 @@ export function parentKey(key: string): string | null {
   return `${d - 1}-${x >> 1}-${y >> 1}-${z >> 1}`;
 }
 
-/** 階層ごとの「キー→ノード」表。毎フレーム作り直さないよう、配列の同一性で覚える。 */
-const nodeMapCache = new WeakMap<readonly HierarchyNodeInfo[], Map<string, HierarchyNodeInfo>>();
+/**
+ * 階層の親子関係（配列ごとに1回だけ作る）。ノードは hierarchy 配列の添字で表す。
+ * COPC の hierarchy は点の無いノードを含まないので、途中の階層が欠けることがある。
+ * そのため各ノードは「階層に存在する、最も近い先祖」の子として繋ぐ。
+ * 先祖が1つも無いノード（ルートや、`d-x-y-z` 形式でないキー）は roots に入れる。
+ */
+interface HierarchyTree {
+  roots: number[];
+  children: number[][];
+}
 
-function nodeMapOf(hierarchy: readonly HierarchyNodeInfo[]): Map<string, HierarchyNodeInfo> {
-  let map = nodeMapCache.get(hierarchy);
-  if (!map) {
-    map = new Map(hierarchy.map((n) => [n.key, n]));
-    nodeMapCache.set(hierarchy, map);
-  }
-  return map;
+const treeCache = new WeakMap<readonly HierarchyNodeInfo[], HierarchyTree>();
+
+function treeOf(hierarchy: readonly HierarchyNodeInfo[]): HierarchyTree {
+  let tree = treeCache.get(hierarchy);
+  if (tree) return tree;
+
+  const indexByKey = new Map<string, number>();
+  hierarchy.forEach((n, i) => indexByKey.set(n.key, i));
+
+  const roots: number[] = [];
+  const children: number[][] = hierarchy.map(() => []);
+  hierarchy.forEach((n, i) => {
+    let ancestor = parentKey(n.key);
+    while (ancestor !== null) {
+      const p = indexByKey.get(ancestor);
+      if (p !== undefined) {
+        children[p].push(i);
+        return;
+      }
+      ancestor = parentKey(ancestor);
+    }
+    roots.push(i);
+  });
+  tree = { roots, children };
+  treeCache.set(hierarchy, tree);
+  return tree;
 }
 
 /**
@@ -101,44 +128,29 @@ export function selectNodesForFrame(
   minCenterPriorityWeight: number = DEFAULT_MIN_CENTER_PRIORITY_WEIGHT,
   minSpacingPixels: number = MIN_NODE_SPACING_PIXELS,
 ): NodeSelectionResult {
-  // LOD A: 先祖のどれかの点間隔が閾値を下回っているか（キー→真偽、このフレーム内だけ有効）。
-  // 純粋に画素サイズで決める。中央優先度の重みは掛けない。
-  // 親の誤差は視錐台と独立に計算する（親が階層に無いときは、さらに上の先祖で判定する）。
-  const nodeMap = nodeMapOf(hierarchy);
-  const refinementStopped = new Map<string, boolean>();
-  const stoppedAbove = (key: string): boolean => {
-    const pk = parentKey(key);
-    if (pk === null) return false;
-    const memo = refinementStopped.get(key);
-    if (memo !== undefined) return memo;
-    const parent = nodeMap.get(pk);
-    let stopped: boolean;
-    if (!parent) {
-      stopped = stoppedAbove(pk);
-    } else {
-      const parentSpacing = surfaceSpacingPixels(
-        viewProj,
-        parent.boundsMin,
-        parent.boundsMax,
-        parent.pointCount,
-        canvasWidth,
-        canvasHeight,
-      );
-      stopped = parentSpacing < minSpacingPixels || stoppedAbove(pk);
-    }
-    refinementStopped.set(key, stopped);
-    return stopped;
-  };
-
+  // 根から子へたどる。次の部分木には降りない（降りても旧実装の結果は変わらないため）。
+  //  (1) 視錐台の外のノードの部分木。
+  //      子の AABB は親の AABB に含まれる（COPC は親の立方体を8等分する）。視錐台判定は
+  //      「平面ごとに最も外側の頂点が平面の外か」なので、親がある平面の外なら、
+  //      その平面に対する子の最外頂点は親のそれより内側にはならず、子も同じ平面の外になる
+  //      （成分ごとに大小が保たれるので、浮動小数点でも逆転しない）。
+  //      階層が欠けて孫が祖父の子になっていても、祖父の AABB は孫を含むので同じ。
+  //  (2) LOD A で打ち切られた部分木。旧実装は「先祖のどれかの点間隔が閾値未満」なら
+  //      そのノードを除外していた。降りる前に「このノードの点間隔が閾値未満か」を見れば、
+  //      子孫は全員その先祖を持つので、判定は同じになる（点間隔は視錐台と無関係に計算）。
+  // 優先度が同じノードの並びを旧実装（hierarchy 順の安定ソート）と同じにするため、
+  // 候補には hierarchy の添字を持たせ、同順位は添字の小さい方を先にする。
+  const tree = treeOf(hierarchy);
   const candidates: {
     key: string;
     priority: number;
     pointCount: number;
+    index: number;
   }[] = [];
 
-  for (const node of hierarchy) {
-    if (!aabbIntersectsFrustum(planes, node.boundsMin, node.boundsMax)) continue;
-    if (stoppedAbove(node.key)) continue;
+  const visit = (i: number): void => {
+    const node = hierarchy[i];
+    if (!aabbIntersectsFrustum(planes, node.boundsMin, node.boundsMax)) return;
     const error = screenSpaceError(
       viewProj,
       node.boundsMin,
@@ -160,10 +172,26 @@ export function selectNodesForFrame(
       key: node.key,
       priority: error * weight,
       pointCount: node.pointCount,
+      index: i,
     });
-  }
 
-  candidates.sort((a, b) => b.priority - a.priority);
+    const kids = tree.children[i];
+    if (kids.length === 0) return;
+    // 自分の点間隔が閾値未満なら、子孫は候補にしない。純粋に画素サイズで決め、中央優先度の重みは掛けない。
+    const spacing = surfaceSpacingPixels(
+      viewProj,
+      node.boundsMin,
+      node.boundsMax,
+      node.pointCount,
+      canvasWidth,
+      canvasHeight,
+    );
+    if (spacing < minSpacingPixels) return;
+    for (const k of kids) visit(k);
+  };
+  for (const r of tree.roots) visit(r);
+
+  candidates.sort((x, y) => y.priority - x.priority || x.index - y.index);
 
   const toDraw: CachedNode[] = [];
   const wanted: WantedNode[] = [];
