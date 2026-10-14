@@ -177,10 +177,49 @@ pub struct HeaderSummary {
     pub metadata: CopcWriteMetadata,
     /// M4-14: 先頭ファイルから判定したCRS。以降の全ファイルがこれと一致する
     /// ことを`summarize_headers`が確認済み。
+    /// L2-C: 寛容モード(`summarize_headers_lenient`)では「CRSのある最初のファイル」のもの。
     pub crs: Crs,
     /// `assume_missing_crs_is_first`で、CRS不明なのに先頭ファイルのCRSと
     /// みなして通したファイル(フラグ無しなら常に空)。
     pub assumed_crs_paths: Vec<PathBuf>,
+    /// L2-C: 寛容モードで、CRSが無いまま通したファイル(厳密モードでは常に空)。
+    pub missing_crs_paths: Vec<PathBuf>,
+}
+
+impl HeaderSummary {
+    /// L2-C: 画面のエラーログ(ADR-0011)へそのまま出せる警告文。
+    /// CRSの無いファイルごとに1件。結果のCRSが何になったかも添える。
+    pub fn crs_warnings(&self) -> Vec<String> {
+        let result = if self.crs == Crs::Unknown {
+            "どのファイルにもCRSが無いので、結果にもCRSはありません"
+        } else {
+            "結果のCRSはCRSのあるファイルのものにしました"
+        };
+        self.missing_crs_paths
+            .iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                format!(
+                    "{name}: CRS(座標系)の情報がありません。他のファイルと同じ座標系とみなして結合しました({result})"
+                )
+            })
+            .collect()
+    }
+}
+
+/// CRSが「不明」のファイルの扱い。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MissingCrs {
+    /// 先頭がCRSありで後ろが不明ならエラー(CLIの既定)。
+    Reject,
+    /// 後ろが不明なら先頭のCRSとみなして通す(CLIの`--assume-missing-crs-is-first`)。
+    AssumeFirst,
+    /// L2-C: アプリの既定。不明なファイルは(先頭でも後ろでも)止めずに通し、警告用に記録する。
+    /// 結果のCRSはCRSのあるファイルのもの。
+    Allow,
 }
 
 /// 全入力ファイルのヘッダーを読み、レイアウト・CRSの一致を確認する。
@@ -188,6 +227,14 @@ pub struct HeaderSummary {
 /// 組み立てる(モジュールのドキュメント参照)。
 pub fn summarize_headers(paths: &[PathBuf]) -> Result<HeaderSummary, MergeError> {
     summarize_headers_with_options(paths, false)
+}
+
+/// L2-C: アプリ(複数レイヤーの結合・M4-14の複数ファイル選択)用。CRSの無いファイルは
+/// 止めずに通し、`HeaderSummary::missing_crs_paths`に記録する。結果のCRSは
+/// CRSのあるファイルのもの(先頭が不明で後ろに既知があれば、その既知のファイルから取る)。
+/// CRSのあるファイル同士が食い違えば、今までどおり`CrsMismatch`で止める。
+pub fn summarize_headers_lenient(paths: &[PathBuf]) -> Result<HeaderSummary, MergeError> {
+    summarize_headers_inner(paths, MissingCrs::Allow)
 }
 
 /// `summarize_headers`の本体。`assume_missing_crs_is_first`が`true`のときだけ、
@@ -200,9 +247,24 @@ pub fn summarize_headers_with_options(
     paths: &[PathBuf],
     assume_missing_crs_is_first: bool,
 ) -> Result<HeaderSummary, MergeError> {
+    let mode = if assume_missing_crs_is_first {
+        MissingCrs::AssumeFirst
+    } else {
+        MissingCrs::Reject
+    };
+    summarize_headers_inner(paths, mode)
+}
+
+fn summarize_headers_inner(
+    paths: &[PathBuf],
+    mode: MissingCrs,
+) -> Result<HeaderSummary, MergeError> {
     let mut assumed_crs_paths: Vec<PathBuf> = Vec::new();
+    let mut missing_crs_paths: Vec<PathBuf> = Vec::new();
     let mut layout: Option<StreamingLayout> = None;
     let mut crs: Option<Crs> = None;
+    // 結果のCRSの出どころ(エラー文の「先頭ファイル」に使う)。
+    let mut crs_source: Option<PathBuf> = None;
     let mut declared_points_total: u64 = 0u64;
     let mut metadata: Option<CopcWriteMetadata> = None;
 
@@ -214,13 +276,11 @@ pub fn summarize_headers_with_options(
         let header = reader.header();
         let this_layout = StreamingLayout::from_las_header(header);
         let this_crs = detect_crs_from_las_header(header);
-        match &layout {
-            None => {
-                layout = Some(this_layout);
-                crs = Some(this_crs);
-                metadata = Some(copc_write_metadata_from_source_header(header));
-            }
-            Some(expected_layout) => {
+        if mode == MissingCrs::Allow && this_crs == Crs::Unknown {
+            missing_crs_paths.push(path.clone());
+        }
+        match (&layout, crs, metadata.as_mut()) {
+            (Some(expected_layout), Some(expected_crs), Some(metadata)) => {
                 if expected_layout != &this_layout {
                     return Err(MergeError::LayoutMismatch {
                         path: path.clone(),
@@ -232,35 +292,49 @@ pub fn summarize_headers_with_options(
                 // M4-14: `Crs::Unknown`どうしは「一致」になる(`Crs`の
                 // `PartialEq`はデータを持たないバリアント同士を等しいとみなす)
                 // ため、両方CRSが分からない入力の組み合わせを誤って拒否しない。
-                let expected_crs = crs.expect("layoutがSomeならcrsもSome");
-                if assume_missing_crs_is_first
+                if mode == MissingCrs::AssumeFirst
                     && this_crs == Crs::Unknown
                     && expected_crs != Crs::Unknown
                 {
                     assumed_crs_paths.push(path.clone());
+                } else if mode == MissingCrs::Allow && this_crs == Crs::Unknown {
+                    // 不明なファイルは通す(記録は上で済み)。
+                } else if mode == MissingCrs::Allow && expected_crs == Crs::Unknown {
+                    // ここまでの出力CRSは不明。このファイルが最初のCRS付きなので、
+                    // 結果のCRS(WKT)をこのファイルから取る。
+                    crs = Some(this_crs);
+                    crs_source = Some(path.clone());
+                    metadata.wkt_crs = copc_write_metadata_from_source_header(header).wkt_crs;
                 } else if expected_crs != this_crs {
                     return Err(MergeError::CrsMismatch {
                         path: path.clone(),
-                        first: paths[0].clone(),
+                        first: crs_source.clone().unwrap_or_else(|| paths[0].clone()),
                         got: Box::new(this_crs),
                         expected: Box::new(expected_crs),
                     });
                 }
+            }
+            _ => {
+                layout = Some(this_layout);
+                crs = Some(this_crs);
+                crs_source = Some(path.clone());
+                metadata = Some(copc_write_metadata_from_source_header(header));
             }
         }
         declared_points_total += header.number_of_points();
     }
 
     // `paths`は呼び出し側(`collect_input_paths`)が空でないことを保証している。
-    let layout = layout.expect("paths は空でない前提");
-    let crs = crs.expect("paths は空でない前提");
-    let metadata = metadata.expect("paths は空でない前提");
+    let (Some(layout), Some(crs), Some(metadata)) = (layout, crs, metadata) else {
+        return Err(MergeError::NoInputFiles("(入力が空)".to_string()));
+    };
     Ok(HeaderSummary {
         layout,
         declared_points_total,
         metadata,
         crs,
         assumed_crs_paths,
+        missing_crs_paths,
     })
 }
 
@@ -440,7 +514,8 @@ pub fn merge_paths_and_timings<F>(
 where
     F: FnMut(ReadProgress),
 {
-    let summary = summarize_headers(&paths)?;
+    // L2-C: アプリの既定はCRSの無いファイルを止めずに通す(警告は`summary.crs_warnings()`)。
+    let summary = summarize_headers_lenient(&paths)?;
     let points =
         MultiFileLasPoints::with_progress(paths, summary.declared_points_total, on_progress);
 
@@ -789,6 +864,53 @@ mod tests {
             summarize_headers_with_options(&paths, true),
             Err(MergeError::CrsMismatch { .. })
         ));
+    }
+
+    /// L2-C: アプリの既定(寛容モード)。CRSの無いファイルは、先頭でも後ろでも止めず、
+    /// 警告用に記録される。結果のCRSはCRSのあるファイルのもの。
+    #[test]
+    fn lenient_mode_passes_files_without_crs_and_reports_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // 先頭(a)がCRSなし、後ろ(b)がCRSあり、(c)がCRSなし。
+        write_single_point_las(&dir.path().join("a.las"), 0.0, 0.0, 0.0, [1, 1, 1]);
+        write_single_point_las_with_geotiff_crs(&dir.path().join("b.las"), 6677);
+        write_single_point_las(&dir.path().join("c.las"), 1.0, 1.0, 1.0, [2, 2, 2]);
+        let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
+
+        // 厳密モードでは止まる。
+        assert!(matches!(
+            summarize_headers(&paths),
+            Err(MergeError::CrsMismatch { .. })
+        ));
+
+        let summary = summarize_headers_lenient(&paths).expect("寛容モードは通る");
+        assert_ne!(summary.crs, Crs::Unknown, "結果のCRSはCRSのあるファイルのもの");
+        assert!(
+            summary.metadata.wkt_crs.is_some(),
+            "出力のWKTも、CRSのあるファイルから取る"
+        );
+        let warnings = summary.crs_warnings();
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].starts_with("a.las: CRS"), "{warnings:?}");
+        assert!(warnings[1].starts_with("c.las: CRS"), "{warnings:?}");
+    }
+
+    /// 寛容モードでも、CRSのあるファイル同士の食い違いは止める。
+    #[test]
+    fn lenient_mode_still_rejects_known_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_single_point_las_with_geotiff_crs(&dir.path().join("a.las"), 6677);
+        write_single_point_las(&dir.path().join("b.las"), 1.0, 1.0, 1.0, [2, 2, 2]);
+        write_single_point_las_with_geotiff_crs(&dir.path().join("c.las"), 32654);
+        let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
+        match summarize_headers_lenient(&paths) {
+            Err(MergeError::CrsMismatch { path, first, .. }) => {
+                assert_eq!(path.file_name().unwrap(), "c.las");
+                assert_eq!(first.file_name().unwrap(), "a.las");
+            }
+            Err(e) => panic!("CrsMismatchを期待したが別のエラー: {e}"),
+            Ok(_) => panic!("CrsMismatchを期待したがOkだった"),
+        }
     }
 
     /// `(x, y, z)`を1点だけ持つLASファイルを、指定したscale/offsetで作る
