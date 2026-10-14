@@ -177,3 +177,59 @@ renderer.resetView(): void                                     // 見えてい�
 1. `cd src-tauri && cargo test --lib` — 新テスト `two_files_open_at_once_and_close_independently`（2つ開いて両方読める／片方を閉じるとそれだけ Stale／二重 close は無害）
 2. `npx tsc --noEmit`・`npm run lint`・`npx vitest run`（`WebSource.close` と cloudId の送り返しのテスト）
 3. 画面: ファイルを開く → 別のファイルを開く、が今までどおり動くこと（置き換え動作）。Tauri の標準出力に `[pcv] closed generation N` が出る。
+
+## L1-D の記録（状態とレイヤー欄を複数レイヤーにした）
+
+### 何をしたか
+
+- **状態**（`src/state/useCopcViewer.ts`）: `layers: ViewerLayer[]`・`selectedLayerId`・`selectedLayer` と、`selectLayer`・`setLayerVisible`・`setLayerColorMode`・`removeLayer` を持たせた。
+  開く経路（ファイル・複数ファイル結合・URL・D&D・サンプル・Web/デスクトップの変換完了後の open）は全部 `openFile` に集まっているので、そこで**常にレイヤーを末尾へ足し、選択にする**（置き換えない）。
+  着色の初期値は RGB があれば rgb、無ければ標高（`initialColorModeFor`）。着色の変更は、レイヤーごとに `resolveColorMode`（RGB が無ければ標高）を通してから renderer と一覧に反映する。
+  `removeLayer` は renderer.removeLayer → 一覧から削除（選択中を消したら残りの先頭、無ければ null）→ `source.close(cloudId)`。最後の1つを消したら status を idle に戻す。
+- **純粋関数**（`src/state/layers.ts`、テスト `layers.test.ts`）: 追加・削除後の選択・選択・表示切替・着色の解決。React にも renderer にも依存しない。
+- **変換の内訳・ダウンロード**: 以前は「全体で1つ」の state だった。今は変換完了ハンドラが `pendingConversionRef`（保留中の結果）に置き、続けて呼ぶ `openFile(…, true)` が成功したときだけ**そのとき足すレイヤー**に付ける。
+  利用者が自分で別のファイルを開いたとき（第2引数 false）は付けない。レイヤーを消すときはダウンロード URL を revoke する。
+  不具合修正（2026-10-08）の `shouldClearConversionResultOnOpen` は、「開くと全体の内訳を消す」動作自体が無くなったので、関数とそのテストごと削除した。
+  変換後のレイヤーの名前は変換結果の名前（以前は Web で内部キー `file:N` が名前に出ていた）。
+- **削除したもの**: `cloudInfo`・`nodeCount`・`openedFileName`・`colorMode`・`setColorMode`・`downloadReady`・`clearDownload`・`conversionBreakdownText`、および設定画面から使われなくなっていた `isMobile`・`deviceMemoryGiB`・`pointerCoarse`・`pointBudgetMax`（grep で他に使い手が無いことを確認）。
+  使う側は選択中のレイヤーから引く: `LayerInfoSection`（名前・点数・CRS・範囲・内訳・ダウンロード）、`LayerStatsDetails`（nodes）、`StatusBar`（CRS）、`AppShell`（変換ダイアログの表示条件）。
+  点予算・背景・グリッドの値と setter は名前を変えず残した（L1-E が設定ダイアログへ移す）。
+- **レイヤー欄**（`LayerList.tsx` を新規、`LayerPanel.tsx` から使う）: 📄 をやめ、先頭にチェックボックス（表示・非表示）。行クリックで選択（選択中は左の緑線）。右クリックで「削除」だけのメニュー。外側クリック・Esc・スクロール・リサイズで閉じる。
+  タッチ・ペンは 500ms の長押しで同じメニュー（8px 以上動いたらスクロールとみなして取り消す。**実機のタッチでは未確認**）。読み込み中は「読み込み中…」の行を末尾に出す。
+- **着色ダイアログ**: 選択中のレイヤーの着色を変える。「対象のレイヤー: 名前」を出し、レイヤーが無いときは「着色を変えるレイヤーがありません」と出して全部選べなくする。RGB 無しのレイヤーでは RGB を選べない。
+
+### 他の案と採らなかった理由
+
+- 内訳・ダウンロードを state のままにして「選択中なら出す」: どのレイヤーの内訳か分からなくなる。レイヤーに付ける形にした。
+- メニューをパネル内に描く: パネルは transform で滑るため `position: fixed` がパネル基準になってしまう。`document.body` へ portal で出した。
+- 一覧の状態を `useReducer` にする: 非同期の open から最新の一覧を読むのに ref が要り、結局 ref + 純粋関数の今の形のほうが短く読める。
+
+### 触ったファイル
+
+`src/state/{useCopcViewer.ts,layers.ts,layers.test.ts}`（`useCopcViewer.test.ts` は削除）、`src/ui/shell/{LayerList.tsx,LayerList.test.tsx,LayerPanel.tsx,LayerInfoSection.tsx,LayerStatsDetails.tsx,StatusBar.tsx,AppShell.tsx,ViewDialogs.tsx,ViewDialogs.test.tsx}`。
+
+### 確認したこと
+
+- `npx tsc --noEmit`・`npm run lint` エラーなし。`npx vitest run`: 48 ファイル 434 テスト合格。
+- E2E: `PCV_E2E_PORT=47311 npx playwright test` → 2 passed（web-conversion・web-multi-conversion。`conversion-breakdown`・`download-link`・`viewer-error` の流れは変わっていない）。
+- 実 GPU の画面確認（ヘッドありの Edge、Playwright、`navigator.gpu.requestAdapter().info` = vendor nvidia / architecture lovelace、SwiftShader ではない）。データ `data/autzen-classified.copc.laz`（10,653,336 点）を `setInputFiles` で開いた:
+  (a) 1回開く: 点が出る（色付きの地形）、エラー表示なし、レイヤー1行。
+  (b) 同じファイルをもう1回: 2行。ステータスバーの表示点数が約 1.32M → 約 2.65M（2レイヤー分描いている）。
+  (c) 2行目のチェックを外す／戻す: 操作は効いた。ただし2つは同じファイルで完全に重なるため、画面の見た目の差は分からない（表示点数は 2.65M → 1.32M → 戻すと増える、はスクリーンショットのステータスバーで確認）。
+  (d) 1行目を非表示にして2行目を選び着色を標高にする: 2行目だけ青〜緑〜黄〜赤の標高の色になった。1行目だけ表示にして2行目を隠すと RGB（写真の色）のままだった。
+  (e) 2行目を右クリック: 「削除」メニューが出て、押すと1行になり、点は残った。
+  スクリーンショットは scratchpad の `l1d-*.png`。
+
+### 確認していないこと（未確認）
+
+- タッチ端末の長押しメニュー、Android、デスクトップ（Tauri）版の複数同時オープン。
+- 別々のファイル（位置のずれたもの）を2つ開いたときの見え方・視点合わせ。
+- 削除を繰り返したときの GPU メモリの推移。
+
+### 所有者の確認手順
+
+1. ファイルを2つ続けて開く → レイヤー欄に2行、両方表示される。
+2. 片方のチェックを外す → そのレイヤーだけ消える。戻すと出る。
+3. 片方を行クリックで選び、リボンの「着色」で標高 → そのレイヤーだけ色が変わる。ダイアログに対象のレイヤー名が出る。
+4. 行を右クリック →「削除」→ 行も点も消え、もう一方は残る。Esc や外側クリックでメニューが閉じる。
+5. Web 版で LAS を開く → 変換の内訳・ダウンロードは、その変換で作ったレイヤーを選んでいるときだけ出る。
