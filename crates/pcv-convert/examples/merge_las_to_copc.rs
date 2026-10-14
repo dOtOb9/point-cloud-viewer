@@ -10,7 +10,7 @@
 //! cargo run -p pcv-convert --release --example merge_las_to_copc -- \
 //!     <入力ディレクトリ or globパターン> <出力.copc.laz> \
 //!     [ノードあたり最大点数=100000] [spill_dir=OS既定の一時ディレクトリ] \
-//!     [--sequential-compress]
+//!     [--sequential-compress] [--timings]
 //! ```
 //!
 //! - 入力: ディレクトリを渡すと配下の`*.las`/`*.laz`(大小文字区別なし)を
@@ -26,12 +26,16 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use copc_core::NeverCancel;
-use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriterParams};
+use copc_writer::{
+    write_streaming_with_cancel_and_timings, CopcWriterParams, IngestStageTimings,
+    PostProcessStageTimings,
+};
 use pcv_convert::merge::{collect_input_paths, summarize_headers_with_options, MultiFileLasPoints};
 
 fn main() {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let sequential_compress = raw_args.iter().any(|a| a == "--sequential-compress");
+    let show_timings = raw_args.iter().any(|a| a == "--timings");
     let assume_missing_crs = raw_args
         .iter()
         .any(|a| a == "--assume-missing-crs-is-first");
@@ -63,6 +67,7 @@ fn main() {
         &spill_dir,
         sequential_compress,
         assume_missing_crs,
+        show_timings,
     ) {
         eprintln!("マージに失敗した: {err}");
         std::process::exit(1);
@@ -76,6 +81,7 @@ fn run(
     spill_dir: &Path,
     sequential_compress: bool,
     assume_missing_crs: bool,
+    show_timings: bool,
 ) -> Result<(), String> {
     println!("入力            : {input}");
     println!("出力            : {}", output.display());
@@ -125,6 +131,9 @@ fn run(
         .with_parallel_node_compression(!sequential_compress);
     let points = MultiFileLasPoints::new(paths, summary.declared_points_total);
 
+    // Collect per-stage times only with --timings (see TaskSheets/BENCH-conversion-profile.md).
+    let mut ingest = IngestStageTimings::default();
+    let mut post = PostProcessStageTimings::default();
     let t0 = Instant::now();
     let result = write_streaming_with_cancel_and_timings(
         output,
@@ -134,8 +143,8 @@ fn run(
         &summary.metadata,
         spill_dir,
         &NeverCancel,
-        None,
-        None,
+        show_timings.then_some(&mut ingest),
+        show_timings.then_some(&mut post),
     );
     let elapsed_s = t0.elapsed().as_secs_f64();
 
@@ -144,6 +153,16 @@ fn run(
             let output_bytes = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
             println!("マージ完了      : {elapsed_s:.2} 秒");
             println!("出力サイズ      : {:.2} MB", output_bytes as f64 / 1e6);
+            if show_timings {
+                println!(
+                    "TIMINGS 読み込み+展開={:.2}s spill書き込み={:.2}s LOD索引={:.2}s ノード圧縮={:.2}s ヘッダー等={:.2}s",
+                    ingest.source_read_and_decode.as_secs_f64(),
+                    ingest.spill_write.as_secs_f64(),
+                    post.lod_index_build.as_secs_f64(),
+                    post.node_compression.as_secs_f64(),
+                    post.header_and_hierarchy_write.as_secs_f64(),
+                );
+            }
             Ok(())
         }
         Err(err) => Err(format!("{err}({elapsed_s:.2} 秒経過)")),
