@@ -386,7 +386,7 @@ where
 /// copc-reader内部にも同じ式（非公開）があるが、Hierarchy構築時に一度だけ
 /// 計算してキャッシュしておきたいのでここに複製する。COPC仕様: ルートcubeを
 /// `center ± halfsize` とし、levelが1つ深くなるごとに一辺を半分に刻む。
-fn voxel_bounds(key: VoxelKey, info: &CopcInfo) -> ([f64; 3], [f64; 3]) {
+pub(crate) fn voxel_bounds(key: VoxelKey, info: &CopcInfo) -> ([f64; 3], [f64; 3]) {
     let side = (info.halfsize * 2.0) / 2f64.powi(key.level);
     let root_min = [
         info.center.0 - info.halfsize,

@@ -10,6 +10,7 @@
 mod color_depth;
 mod copc;
 pub mod crs;
+pub mod extract;
 mod node_format;
 
 pub use copc::{CloudInfo, CopcError, CopcFile, Hierarchy, HierarchyNode, NodeKey, Result};

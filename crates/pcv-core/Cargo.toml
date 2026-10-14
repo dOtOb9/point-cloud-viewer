@@ -25,9 +25,13 @@ thiserror = "2"
 # lasクレート自体は純Rustでwasm32-unknown-unknownでビルドできる(copc-reader経由で
 # 既に実証済み、TaskSheets/ADR-0003-copc-crate.md参照)。
 las = "0.10"
+# L2-C: 抽出の条件(ExtractFilter)をフロントのJSONから受け取るためのDeserialize。
+# wasm32でもビルドできる(pcv-wasmも同じものを使っている)。
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 # テスト用に極小のCOPCファイルをその場で生成するためだけに使う（M1-point-rendering.md の
 # 「テストデータの扱い」参照）。pcv-core の実行時依存には含めない。
 copc-writer = "0.9.0"
 tempfile = "3"
+serde_json = "1"
