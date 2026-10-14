@@ -1,7 +1,7 @@
 import type { PreparingStep } from "../../datasource/conversion-dto";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "./Dialog";
-import { DIALOG_BUTTON_CLASS } from "./dialog-styles";
+import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
 
 /**
  * M4-11: Web版の「準備」段階の各ステップを文言にする
@@ -58,12 +58,12 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
       footer={
         converting ? (
           <>
-            <button type="button" onClick={viewer.cancelConversion} className={DIALOG_BUTTON_CLASS}>
+            <button type="button" onClick={viewer.cancelConversion} className={DIALOG_TERTIARY_BUTTON_CLASS}>
               キャンセル
             </button>
           </>
         ) : (
-          <button type="button" onClick={onClose} className={DIALOG_BUTTON_CLASS}>
+          <button type="button" onClick={onClose} className={DIALOG_TERTIARY_BUTTON_CLASS}>
             閉じる
           </button>
         )

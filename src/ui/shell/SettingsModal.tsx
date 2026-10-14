@@ -6,7 +6,7 @@ import { IpcBenchPanel } from "../IpcBenchPanel";
 import { NodeConcurrencyBenchPanel } from "../NodeConcurrencyBenchPanel";
 import { WebGpuProbePanel } from "../WebGpuProbePanel";
 import { Dialog } from "./Dialog";
-import { DIALOG_BUTTON_CLASS } from "./dialog-styles";
+import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
 
 interface Props {
   open: boolean;
@@ -70,7 +70,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
       onClose={onClose}
       widthClass="max-w-3xl"
       footer={
-        <button type="button" onClick={onClose} aria-label="設定を閉じる" className={DIALOG_BUTTON_CLASS}>
+        <button type="button" onClick={onClose} aria-label="設定を閉じる" className={DIALOG_TERTIARY_BUTTON_CLASS}>
           閉じる
         </button>
       }

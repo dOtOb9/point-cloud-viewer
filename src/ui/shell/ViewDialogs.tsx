@@ -2,7 +2,7 @@ import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ColorMode, CopcViewerState, PointShape } from "../../state/useCopcViewer";
 import { Dialog } from "./Dialog";
-import { DIALOG_PRIMARY_BUTTON_CLASS } from "./dialog-styles";
+import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
 
 // ADR-0017追記: リボンの「着色」「見た目」「読み込み優先」ボタンから開くダイアログ3つ。
 // 値はその場で反映する(適用ボタンは無い)。ダイアログが触るのは`viewer`のsetterだけで、
@@ -17,7 +17,7 @@ interface DialogProps {
 /** フッターの「閉じる」ボタン(アイコン+ラベル。ADR-0017の約束)。 */
 function CloseButton({ onClose }: { onClose: () => void }) {
   return (
-    <button type="button" onClick={onClose} className={`${DIALOG_PRIMARY_BUTTON_CLASS} flex items-center gap-1`}>
+    <button type="button" onClick={onClose} className={`${DIALOG_TERTIARY_BUTTON_CLASS} flex items-center gap-1`}>
       <X size={16} aria-hidden="true" />
       閉じる
     </button>
