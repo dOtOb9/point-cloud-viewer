@@ -188,16 +188,16 @@ export class WasmExtractor {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * 最大`batch_size`点を取り出してspillへ書く。`done`になったら`finish`へ。
+     * Takes up to `batch_size` points and writes them to the spill. Go to `finish` when `done`.
      */
     feed(batch_size: number): any;
     /**
-     * octreeを構築してOPFSの出力へ書く。0点ならエラー(何も書かない)。
+     * Builds the octree and writes the OPFS output. Fails (writing nothing) for zero points.
      */
     finish(): any;
     /**
-     * `file`は元のCOPC、`filter`は`ExtractFilter`のJSON(`src/datasource/tools.ts`の形)。
-     * 一時ファイルのプールと出力ハンドルは変換(`WasmConverter`)と同じもの。
+     * `file` is the source COPC; `filter` is the `ExtractFilter` JSON (shape in `src/datasource/tools.ts`).
+     * The scratch-file pool and output handle are the same ones the conversion (`WasmConverter`) uses.
      */
     constructor(file: File, filter: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
 }
