@@ -27,18 +27,21 @@ use std::time::Instant;
 
 use copc_core::NeverCancel;
 use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriterParams};
-use pcv_convert::merge::{collect_input_paths, summarize_headers, MultiFileLasPoints};
+use pcv_convert::merge::{collect_input_paths, summarize_headers_with_options, MultiFileLasPoints};
 
 fn main() {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let sequential_compress = raw_args.iter().any(|a| a == "--sequential-compress");
+    let assume_missing_crs = raw_args
+        .iter()
+        .any(|a| a == "--assume-missing-crs-is-first");
     let positional: Vec<&String> = raw_args.iter().filter(|a| !a.starts_with("--")).collect();
 
     let (Some(input), Some(output)) = (positional.first(), positional.get(1)) else {
         eprintln!(
             "usage: merge_las_to_copc <入力ディレクトリ or glob> <出力.copc.laz> \
              [ノードあたり最大点数=100000] [spill_dir=OS既定の一時ディレクトリ] \
-             [--sequential-compress]"
+             [--sequential-compress] [--assume-missing-crs-is-first]"
         );
         std::process::exit(2);
     };
@@ -59,6 +62,7 @@ fn main() {
         max_points_per_node,
         &spill_dir,
         sequential_compress,
+        assume_missing_crs,
     ) {
         eprintln!("マージに失敗した: {err}");
         std::process::exit(1);
@@ -71,6 +75,7 @@ fn run(
     max_points_per_node: u32,
     spill_dir: &Path,
     sequential_compress: bool,
+    assume_missing_crs: bool,
 ) -> Result<(), String> {
     println!("入力            : {input}");
     println!("出力            : {}", output.display());
@@ -89,7 +94,17 @@ fn run(
     println!("入力ファイル数  : {}", paths.len());
 
     let t_header = Instant::now();
-    let summary = summarize_headers(&paths).map_err(|e| e.to_string())?;
+    let summary =
+        summarize_headers_with_options(&paths, assume_missing_crs).map_err(|e| e.to_string())?;
+    if !summary.assumed_crs_paths.is_empty() {
+        println!(
+            "CRS不明のため先頭ファイルのCRSとみなしたファイル({}個):",
+            summary.assumed_crs_paths.len()
+        );
+        for p in &summary.assumed_crs_paths {
+            println!("  {}", p.display());
+        }
+    }
     println!(
         "ヘッダー確認    : {:.2} 秒 (申告点数の合計={}, レイアウト: point_format={} 色あり={})",
         t_header.elapsed().as_secs_f64(),

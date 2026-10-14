@@ -178,12 +178,29 @@ pub struct HeaderSummary {
     /// M4-14: 先頭ファイルから判定したCRS。以降の全ファイルがこれと一致する
     /// ことを`summarize_headers`が確認済み。
     pub crs: Crs,
+    /// `assume_missing_crs_is_first`で、CRS不明なのに先頭ファイルのCRSと
+    /// みなして通したファイル(フラグ無しなら常に空)。
+    pub assumed_crs_paths: Vec<PathBuf>,
 }
 
 /// 全入力ファイルのヘッダーを読み、レイアウト・CRSの一致を確認する。
 /// 出力のメタデータ(CRS・scale/offset等)は先頭ファイルのヘッダーから
 /// 組み立てる(モジュールのドキュメント参照)。
 pub fn summarize_headers(paths: &[PathBuf]) -> Result<HeaderSummary, MergeError> {
+    summarize_headers_with_options(paths, false)
+}
+
+/// `summarize_headers`の本体。`assume_missing_crs_is_first`が`true`のときだけ、
+/// CRSが「不明」のファイルを、先頭ファイルのCRSとみなして通す(開発ツール専用。
+/// 配布データ側にCRSのVLRが欠けたタイルがあるため)。該当したファイルは
+/// `HeaderSummary::assumed_crs_paths`に入る。CRSがあるもの同士の食い違いは、
+/// このフラグがあっても`CrsMismatch`のまま。先頭ファイル自身が「不明」の
+/// ときは、みなす先が無いので従来どおり(不明と既知の混在はエラー)。
+pub fn summarize_headers_with_options(
+    paths: &[PathBuf],
+    assume_missing_crs_is_first: bool,
+) -> Result<HeaderSummary, MergeError> {
+    let mut assumed_crs_paths: Vec<PathBuf> = Vec::new();
     let mut layout: Option<StreamingLayout> = None;
     let mut crs: Option<Crs> = None;
     let mut declared_points_total: u64 = 0u64;
@@ -216,7 +233,12 @@ pub fn summarize_headers(paths: &[PathBuf]) -> Result<HeaderSummary, MergeError>
                 // `PartialEq`はデータを持たないバリアント同士を等しいとみなす)
                 // ため、両方CRSが分からない入力の組み合わせを誤って拒否しない。
                 let expected_crs = crs.expect("layoutがSomeならcrsもSome");
-                if expected_crs != this_crs {
+                if assume_missing_crs_is_first
+                    && this_crs == Crs::Unknown
+                    && expected_crs != Crs::Unknown
+                {
+                    assumed_crs_paths.push(path.clone());
+                } else if expected_crs != this_crs {
                     return Err(MergeError::CrsMismatch {
                         path: path.clone(),
                         first: paths[0].clone(),
@@ -238,6 +260,7 @@ pub fn summarize_headers(paths: &[PathBuf]) -> Result<HeaderSummary, MergeError>
         declared_points_total,
         metadata,
         crs,
+        assumed_crs_paths,
     })
 }
 
@@ -730,6 +753,42 @@ mod tests {
         let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
         let summary = summarize_headers(&paths).expect("CRSが無い入力どうしは一致するはず");
         assert_eq!(summary.crs, Crs::Unknown);
+    }
+
+    /// 先頭がCRSあり、後ろがCRSなし: 既定ではエラー、フラグがあるときだけ通り、
+    /// 該当ファイルが`assumed_crs_paths`に載る(開発ツールのフラグ用)。
+    #[test]
+    fn assume_missing_crs_flag_only_accepts_unknown_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_single_point_las_with_geotiff_crs(&dir.path().join("a.las"), 6677);
+        write_single_point_las(&dir.path().join("b.las"), 1.0, 1.0, 1.0, [2, 2, 2]);
+        let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
+
+        assert!(matches!(
+            summarize_headers(&paths),
+            Err(MergeError::CrsMismatch { .. })
+        ));
+        let summary = summarize_headers_with_options(&paths, true).expect("フラグ有りなら通る");
+        assert_ne!(summary.crs, Crs::Unknown);
+        let names: Vec<_> = summary
+            .assumed_crs_paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_owned())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("b.las")]);
+    }
+
+    /// CRSがある同士の食い違いは、フラグがあってもエラーのまま。
+    #[test]
+    fn assume_missing_crs_flag_still_rejects_known_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_single_point_las_with_geotiff_crs(&dir.path().join("a.las"), 6677);
+        write_single_point_las_with_geotiff_crs(&dir.path().join("b.las"), 32654);
+        let paths = collect_input_paths(dir.path().to_str().expect("utf8 path")).expect("collect");
+        assert!(matches!(
+            summarize_headers_with_options(&paths, true),
+            Err(MergeError::CrsMismatch { .. })
+        ));
     }
 
     /// `(x, y, z)`を1点だけ持つLASファイルを、指定したscale/offsetで作る
