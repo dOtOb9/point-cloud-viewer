@@ -828,18 +828,18 @@ export async function withConversionLock<T>(
     return { kind: "acquired", result };
   });
 }
-// --- L2-C: 点群ツール(抽出・結合)の出力 ---
+// --- L2-C: output of the point-cloud tools (extraction, merge) ---
 
-/** ツールの出力ファイル名(重ならない名前。変換のキャッシュ名とは別)。 */
+/** Output file name of a tool (unique; separate from conversion cache names). */
 export function toolOutputName(): string {
   const random = Math.random().toString(36).slice(2, 10);
   return `tool-${Date.now().toString(36)}-${random}.copc.laz`;
 }
 
 /**
- * ツールの出力に索引(サイドカー)を書く。変換のキャッシュと同じ形にすることで、
- * 設定の「使用量の内訳」に出て、そこから消せる(索引が無いと内訳に出ず、消せないまま
- * 容量を使い続ける)。`label`は内訳に出す名前(例: 「抽出: xxx」)。
+ * Writes the index (sidecar) for a tool output. Using the same shape as the conversion cache
+ * makes it appear in the usage breakdown in settings, where it can be deleted (without an index it would
+ * not appear and would keep using space). `label` is the name shown in the breakdown (e.g. "抽出: xxx").
  */
 export async function writeToolOutputMeta(outputName: string, label: string): Promise<void> {
   const dir = await getConvertedDir();

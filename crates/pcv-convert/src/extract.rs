@@ -1,34 +1,38 @@
-//! L2-C: 「COPCを読み、条件に合う点だけを新しいCOPCに書く」(デスクトップ・Android)。
+//! L2-C: "read a COPC file and write only the points that match a condition into a
+//! new COPC file" (desktop and Android).
 //!
-//! 点群ツール(点の選択・断面)の本体。選んだレイヤーから新しいレイヤーを作る
-//! (`TaskSheets/ADR-0018-layer-centric-operations.md`)ため、**元のファイルは
-//! 書き換えない**。
+//! This is the core of the point-cloud tools (point selection, cross section).
+//! A new layer is created from a chosen layer
+//! (`TaskSheets/ADR-0018-layer-centric-operations.md`), so **the source file is never
+//! modified**.
 //!
-//! # 設計: 新しいoctree/writerを書かない
+//! # Design: no new octree / writer
 //!
-//! 結合(`merge.rs`)と同じ流し方にした。条件に合う点を1点ずつ返すイテレータ
-//! (`pcv_core::extract::ExtractPoints`。条件と交わるノードだけを読む)を、
-//! `vendor/copc-writer`の `write_streaming_with_cancel_and_timings` に渡すだけで、
-//! octree分割・LAZ圧縮・COPC階層の組み立てを全部やってくれる。
-//! 読む側が抱えるのは常に1ノード分の点だけ、書く側(copc-writer)は一時ファイル
-//! (spill)に書き出すので、**メモリは点数に比例しない**(`ExtractPoints`の
-//! ドキュメントとテスト`buffer_is_bounded_by_largest_node`参照)。
+//! It works the same way as merging (`merge.rs`). The iterator that yields matching
+//! points one by one (`pcv_core::extract::ExtractPoints`, which reads only the nodes
+//! that intersect the condition) is handed to `vendor/copc-writer`'s
+//! `write_streaming_with_cancel_and_timings`, which does the octree split, LAZ
+//! compression and COPC hierarchy assembly. The reader holds only one node of points
+//! at a time and the writer spills to temporary files, so **memory does not grow
+//! with the point count** (see the `ExtractPoints` docs and the test
+//! `buffer_is_bounded_by_largest_node`).
 //!
-//! 採らなかった案: 条件に合う点を一度`Vec`に集めてから書く。選んだ範囲が数億点
-//! になりうる(広い範囲を選ぶ)ので、メモリが点数に比例してしまう。
+//! Rejected alternative: collect the matching points into a `Vec` and write them
+//! afterwards. A wide selection can be hundreds of millions of points, so memory
+//! would grow with the point count.
 //!
-//! # 0点のとき
+//! # Zero points
 //!
-//! 条件に合う点が1つも無ければ、出力は作らずエラー(`ExtractError::EmptySelection`、
-//! 本文「選んだ範囲に点がありません」)にする。最初の1点を先に取り出して
-//! (`peek`)から書き出しを始めるので、0点のときは一時ファイルも作らない。
+//! If no point matches, no output is created and `ExtractError::EmptySelection` is
+//! returned. The first matching point is taken before the writer starts, so no
+//! temporary file is created in that case either.
 //!
-//! # 属性
+//! # Attributes
 //!
-//! `read_node`が返す`las::Point`を`LasPointRecord::from_las_point`に通すだけなので、
-//! RGB・強度・分類・GPS時刻・戻り番号などは書き出し先にそのまま引き継がれる。
-//! レイアウト(point format・色・extra bytes)と出力のメタデータ(scale/offset・CRS)は
-//! 元のCOPCのヘッダーから`merge.rs`と同じ関数で作る。
+//! Points read with `read_node` go through `LasPointRecord::from_las_point`, so RGB,
+//! intensity, classification, GPS time, return numbers, etc. are carried over. The
+//! layout (point format, color, extra bytes) and the output metadata (scale/offset,
+//! CRS) are built from the source COPC header with the same functions as `merge.rs`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,7 +49,7 @@ use crate::write_metadata::copc_write_metadata_from_source_header;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExtractError {
-    /// 利用者向けの本文。画面にそのまま出す。
+    /// User-facing text, shown on screen as is.
     #[error("選んだ範囲に点がありません")]
     EmptySelection,
     #[error("抽出の条件が正しくありません: {0}")]
@@ -69,7 +73,7 @@ pub enum ExtractError {
 }
 
 impl ExtractError {
-    /// キャンセルで止まったか(画面では「キャンセルされた」として扱う)。
+    /// Whether it stopped because of cancellation (shown as "cancelled" on screen).
     pub fn is_cancelled(&self) -> bool {
         matches!(
             self,
@@ -79,20 +83,21 @@ impl ExtractError {
     }
 }
 
-/// 抽出の結果。
+/// Result of an extraction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExtractSummary {
-    /// 出力した点数。
+    /// Number of points written.
     pub point_count: u64,
     pub stats: ExtractStats,
 }
 
-/// `source`(COPC)から`filter`に合う点だけを`output`(COPC)へ書く。
+/// Writes only the points of `source` (COPC) that match `filter` into `output` (COPC).
 ///
-/// - `on_progress`: ノードを1つ読むたびに呼ぶ。`points_read`=ここまでに読んだ点数、
-///   `total_points`=読む予定のノードの点数の合計(条件と交わるノードだけの合計なので、
-///   元のファイルの総点数より小さい)。読み終えたあとの後処理(書き出し)の間は呼ばれない。
-/// - `cancel`: 読む側(ノードごと)と書く側の両方で確認する。
+/// - `on_progress`: called after each node is read. `points_read` is the number of
+///   points read so far and `total_points` the total of the nodes that will be read
+///   (only nodes intersecting the condition, so smaller than the source's total).
+///   It is not called during the write phase that follows.
+/// - `cancel`: checked on both the read side (per node) and the write side.
 #[allow(clippy::too_many_arguments)]
 pub fn extract_path_and_timings<F>(
     source: &Path,
@@ -109,8 +114,8 @@ where
 {
     filter.validate().map_err(ExtractError::Filter)?;
 
-    // レイアウトと出力のメタデータは、`las`でヘッダーだけ読んで作る
-    // (`merge.rs`の`summarize_headers`と同じ。点データはここでは読まない)。
+    // Layout and output metadata come from the header only, read with `las`
+    // (same as `summarize_headers` in `merge.rs`; no point data is read here).
     let header_reader =
         las::Reader::from_path(source).map_err(|source_err| ExtractError::OpenHeader {
             path: source.to_path_buf(),
@@ -126,8 +131,8 @@ where
     })?;
     let mut points = ExtractPoints::new(copc_reader, filter).map_err(ExtractError::Read)?;
 
-    // コールバックは書き出しにイテレータを渡したあとも動くので、最後の統計は
-    // 共有の入れ物(`last_stats`)に書き残す。
+    // The callback keeps running after the iterator is handed to the writer, so the
+    // latest stats are left in a shared cell.
     let last_stats = Arc::new(Mutex::new(points.stats()));
     let last_stats_in_callback = Arc::clone(&last_stats);
     points.set_node_callback(Box::new(move |stats: &ExtractStats| {
@@ -142,14 +147,14 @@ where
         Ok(())
     }));
 
-    // 最初の1点を先に取り出す。無ければ書き出しを始めずにエラーにする。
+    // Take the first point before starting the writer; with none, fail without writing.
     let first = match points.next() {
         None => return Err(ExtractError::EmptySelection),
         Some(Err(e)) => return Err(ExtractError::Read(e)),
         Some(Ok(record)) => record,
     };
-    // 書き出しに渡した点を数える(`ExtractStats::points_matched`は、イテレータが
-    // 点を返すたびに増えるので、書き出しにイテレータを渡したあとは取り出せない)。
+    // Count the points handed to the writer (`ExtractStats::points_matched` cannot be
+    // read back once the iterator has been moved into the writer).
     let written = Arc::new(AtomicU64::new(0));
     let written_in_iter = Arc::clone(&written);
     let all_points = std::iter::once(Ok(first))
@@ -176,11 +181,10 @@ where
     .map_err(ExtractError::Write)?;
     *timings = ConversionStageTimings::from_parts(ingest, post);
 
-    // ノードを読み終えた時点の統計(最後のノードの分まで入っている)に、数えた点数を足す。
-    let mut stats = last_stats
-        .lock()
-        .map(|guard| *guard)
-        .map_err(|_| ExtractError::Read(copc_core::Error::InvalidInput("統計の取得に失敗".into())))?;
+    // Stats as of the last node read (they include the last node), plus the count.
+    let mut stats = last_stats.lock().map(|guard| *guard).map_err(|_| {
+        ExtractError::Read(copc_core::Error::InvalidInput("統計の取得に失敗".into()))
+    })?;
     let point_count = written.load(Ordering::Relaxed);
     stats.points_matched = point_count;
     Ok(ExtractSummary { point_count, stats })
@@ -194,8 +198,9 @@ mod tests {
     use pcv_core::extract::OrientedBox;
     use pcv_core::CopcFile;
 
-    /// 一辺`side`点の立方体格子(間隔1m、原点(1000,2000,30))のLAS(PDRF7、色あり)を書く。
-    /// 強度=通し番号(下位16bit)、分類=通し番号%5、色は座標から決める。
+    /// Writes a LAS (PDRF7, with color) of a cube grid with `side` points per edge
+    /// (1 m spacing, origin (1000, 2000, 30)). Intensity is the running index (low
+    /// 16 bits), classification is index % 5, color is derived from the position.
     fn write_grid_las(path: &Path, side: u32) {
         let mut builder = las::Builder::from((1, 4));
         builder.point_format = las::point::Format::new(7).expect("PDRF7");
@@ -243,7 +248,7 @@ mod tests {
         writer.close().expect("close");
     }
 
-    /// 格子のLASをCOPC(1ノード最大`max_points_per_node`点)にして返す。
+    /// Converts the grid LAS into a COPC with at most `max_points_per_node` per node.
     fn make_copc(dir: &Path, side: u32, max_points_per_node: u32) -> PathBuf {
         let las_path = dir.join("grid.las");
         write_grid_las(&las_path, side);
@@ -296,18 +301,19 @@ mod tests {
         )
     }
 
-    /// 箱で切り出すと、箱の中の点だけが、座標・強度・分類・色を保ったまま出る。
+    /// Cutting with a box outputs only the points inside, keeping coordinates,
+    /// intensity, classification and color.
     #[test]
     fn extracts_points_in_box_and_keeps_attributes() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let source = make_copc(dir.path(), 20, 500); // 8000点
-        // x:1005..1009, y:2002..2004, z:30..39(全高) → 5*3*10=150点
+        let source = make_copc(dir.path(), 20, 500); // 8000 points
+                                                     // x: 1005..1009, y: 2002..2004, z: 30..39 -> 5*3*10 = 150 points
         let filter = box_filter([1004.5, 2001.5, 29.5], [1009.5, 2004.5, 39.5]);
         let output = dir.path().join("out.copc.laz");
         let summary = run(&source, filter, &output).expect("extract");
         assert_eq!(summary.point_count, 150);
 
-        // 出力をcopc-readerで全点読み、座標と属性を元の格子の規則と突き合わせる。
+        // Read every point of the output and check it against the grid's rules.
         let mut reader = CopcReader::from_path(&output).expect("open output");
         assert_eq!(reader.header().number_of_points(), 150);
         let keys: Vec<_> = reader
@@ -322,11 +328,11 @@ mod tests {
                 let (ix, iy, iz) = (p.x - 1000.0, p.y - 2000.0, p.z - 30.0);
                 assert!((5.0..=9.0).contains(&ix) && (2.0..=4.0).contains(&iy));
                 assert!((0.0..=9.0).contains(&iz));
-                let color = p.color.expect("色が引き継がれる");
+                let color = p.color.expect("color is carried over");
                 assert_eq!(f64::from(color.red), ix * 100.0);
                 assert_eq!(f64::from(color.green), iy * 100.0);
                 assert_eq!(f64::from(color.blue), iz * 100.0);
-                // 強度=通し番号(ix*400+iy*20+iz)の下位16bit、分類=通し番号%5。
+                // intensity = low 16 bits of the index (ix*400+iy*20+iz), class = index % 5.
                 let n = (ix as u32) * 400 + (iy as u32) * 20 + iz as u32;
                 assert_eq!(u32::from(p.intensity), n & 0xFFFF);
                 assert_eq!(u8::from(p.classification), (n % 5) as u8);
@@ -335,18 +341,18 @@ mod tests {
         }
         assert_eq!(seen, 150);
 
-        // 範囲(ヘッダーのbounds)は切り出した点に縮んでいる。
+        // The header bounds shrink to the extracted points.
         let file = CopcFile::open(&output).expect("pcv-core open");
         assert_eq!(file.info().min[0], 1005.0);
         assert_eq!(file.info().max[0], 1009.0);
     }
 
-    /// 画面の多角形でも切り出せる(奥行き=zは全部入る)。
+    /// A screen polygon works too (all depths along z are selected).
     #[test]
     fn extracts_points_inside_screen_polygon_for_all_depths() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 20, 500);
-        // 真上から見た正射影風: ndc.x = 0.1*(x-1000), ndc.y = 0.1*(y-2000), w=1。
+        // Top-down orthographic-like view: ndc.x = 0.1*(x-1000), ndc.y = 0.1*(y-2000), w = 1.
         let mut m = [0.0; 16];
         m[0] = 0.1;
         m[12] = -100.0;
@@ -360,12 +366,12 @@ mod tests {
         });
         let output = dir.path().join("out.copc.laz");
         let summary = run(&source, filter, &output).expect("extract");
-        // x:1002.5..1007.5 → 3..=7の5個、yも5個、zは20個すべて。
+        // x in 1002.5..1007.5 -> 3..=7 (5 values), same for y, all 20 values of z.
         assert_eq!(summary.point_count, 5 * 5 * 20);
         assert!(summary.stats.nodes_read < summary.stats.nodes_total);
     }
 
-    /// 条件が元の一部にしか重ならないとき、重ならないノードは読まない。
+    /// Nodes that do not intersect the condition are not read.
     #[test]
     fn skips_nodes_that_do_not_intersect() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -373,45 +379,44 @@ mod tests {
         let filter = box_filter([1000.0, 2000.0, 30.0], [1002.0, 2002.0, 32.0]);
         let output = dir.path().join("out.copc.laz");
         let summary = run(&source, filter, &output).expect("extract");
-        assert_eq!(summary.point_count, 27); // 0..=2 の3x3x3
+        assert_eq!(summary.point_count, 27); // 3x3x3 for 0..=2
         let s = summary.stats;
-        assert!(s.nodes_total > 4, "ノードが複数に分かれている前提: {s:?}");
-        assert!(
-            s.nodes_read < s.nodes_total,
-            "全ノードを読んでいる: {s:?}"
-        );
+        assert!(s.nodes_total > 4, "expects several nodes: {s:?}");
+        assert!(s.nodes_read < s.nodes_total, "read every node: {s:?}");
         assert_eq!(s.nodes_read, s.nodes_selected);
         assert!(s.points_scanned < 8000);
     }
 
-    /// 0点のときはエラーで、出力ファイルを作らない。
+    /// With zero points it is an error and no output file is created.
     #[test]
     fn empty_selection_is_an_error_and_writes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 10, 500);
         let filter = box_filter([5000.0, 5000.0, 5000.0], [5001.0, 5001.0, 5001.0]);
         let output = dir.path().join("out.copc.laz");
-        let err = run(&source, filter, &output).expect_err("0点はエラー");
+        let err = run(&source, filter, &output).expect_err("zero points is an error");
         assert!(matches!(err, ExtractError::EmptySelection));
         assert_eq!(err.to_string(), "選んだ範囲に点がありません");
         assert!(!output.exists());
     }
 
-    /// ノードには交わるが、点は1つも条件に入らない場合も0点エラー(ノードの絞り込みは粗いので)。
+    /// Also an error when the box intersects a node but contains no point (node
+    /// culling is coarse).
     #[test]
     fn empty_selection_inside_a_node_is_also_an_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 10, 500);
-        // 格子点(整数座標)の間に入る小さな箱。
+        // A small box between grid points (integer coordinates).
         let filter = box_filter([1000.2, 2000.2, 30.2], [1000.4, 2000.4, 30.4]);
         let output = dir.path().join("out.copc.laz");
-        let err = run(&source, filter, &output).expect_err("0点はエラー");
+        let err = run(&source, filter, &output).expect_err("zero points is an error");
         assert!(matches!(err, ExtractError::EmptySelection));
     }
 
-    /// 抱える量の上限: 読む側が同時に持つ点は、最大のノード1つ分を超えない。
-    /// 8000点・1ノード最大500点(→ノードは複数)の元から、全点を選んでも
-    /// 同時に抱えた点数は1ノードの点数(≒500)以下で、総点数(8000)には近づかない。
+    /// Bound on what is held: the reader never holds more than one node of points.
+    /// From a source of 8000 points with at most 500 per node (so many nodes),
+    /// selecting every point still holds at most one node (about 500) at a time, far
+    /// below the total (8000).
     #[test]
     fn buffer_is_bounded_by_largest_node() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -430,13 +435,13 @@ mod tests {
             .max()
             .expect("nodes") as usize;
         let s = summary.stats;
-        assert!(s.nodes_read > 8, "ノードが十分に分かれている: {s:?}");
+        assert!(s.nodes_read > 8, "enough nodes: {s:?}");
         assert_eq!(s.max_buffered_points, largest_node);
         assert!(s.max_buffered_points <= 500, "{s:?}");
         assert!(s.max_buffered_points * 10 < 8000);
     }
 
-    /// 進捗: ノードごとに呼ばれ、最後は読む予定の点数に届く。
+    /// Progress is reported per node and ends at the number of points to be read.
     #[test]
     fn reports_progress_per_node() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -465,7 +470,7 @@ mod tests {
         assert_eq!(last.total_points, 1000);
     }
 
-    /// キャンセルは読んでいる途中でも効く(書き出しの確認を待たない)。
+    /// Cancellation works during the scan (it does not wait for the writer's check).
     #[test]
     fn cancel_stops_during_scan() {
         struct CancelNow;
@@ -490,12 +495,12 @@ mod tests {
             |_| {},
             &mut timings,
         )
-        .expect_err("キャンセル");
+        .expect_err("cancelled");
         assert!(err.is_cancelled(), "{err}");
         assert!(!output.exists());
     }
 
-    /// COPCでないファイルは、わかる日本語で失敗する。
+    /// A file that is not a COPC fails with a clear message.
     #[test]
     fn non_copc_input_fails_with_clear_message() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -503,11 +508,11 @@ mod tests {
         write_grid_las(&las_path, 3);
         let filter = box_filter([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let output = dir.path().join("out.copc.laz");
-        let err = run(&las_path, filter, &output).expect_err("COPCではない");
+        let err = run(&las_path, filter, &output).expect_err("not a COPC");
         assert!(matches!(err, ExtractError::Open { .. }), "{err}");
     }
 
-    /// 結合(merge.rs)は、COPCを入力にしてもそのまま動き、点数と範囲が合う。
+    /// Merging (`merge.rs`) accepts COPC inputs as they are; counts add up.
     #[test]
     fn merge_accepts_copc_inputs() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -516,7 +521,7 @@ mod tests {
         std::fs::create_dir_all(&a_dir).expect("mkdir");
         std::fs::create_dir_all(&b_dir).expect("mkdir");
         let a = make_copc(&a_dir, 6, 100);
-        // bは同じ格子をそのまま別ファイルにしたもの(座標は重なるが、点は別々に数える)。
+        // b overlaps a in coordinates, but points are counted separately.
         let b = make_copc(&b_dir, 5, 100);
         let output = dir.path().join("merged.copc.laz");
         let spill = tempfile::tempdir().expect("spill");
@@ -530,7 +535,7 @@ mod tests {
             |_| {},
             &mut timings,
         )
-        .expect("COPC同士の結合");
+        .expect("merging COPC inputs");
         assert_eq!(summary.declared_points_total, 216 + 125);
         let file = CopcFile::open(&output).expect("open merged");
         assert_eq!(file.info().point_count, 216 + 125);

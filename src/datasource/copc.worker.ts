@@ -70,11 +70,11 @@ interface WorkerScope {
 const rawScope = self as unknown as WorkerScope;
 
 /**
- * L2-C: 点群ツール(結合)の要求idの集合。ツールの結合は変換(`runMultiConversion`)と
- * 同じ処理を使うが、結果は`convert-*`(画面全体のリスナーが「変換結果を開く」)ではなく
- * `tool-*`(呼んだ関数のPromiseだけに届く)で返したい。`runMultiConversion`の
- * 送信箇所をすべて書き換える代わりに、送信の出口(この`scope.postMessage`)で、
- * この集合に入っているidの`convert-*`を`tool-*`に読み替える。
+ * L2-C: ids of point-cloud tool (merge) requests. A tool merge uses the same code as conversion (`runMultiConversion`),
+ * but its result should go out as `tool-*` (reaching only the caller's Promise), not `convert-*`
+ * (which the app-wide listener turns into "open the conversion result"). Instead of rewriting every
+ * send site in `runMultiConversion`, the exit point (this `scope.postMessage`) rewrites
+ * `convert-*` into `tool-*` for ids in this set.
  */
 const toolRequestIds = new Set<number>();
 
@@ -82,7 +82,7 @@ function translateForTool(message: WorkerResponse): WorkerResponse | null {
   if (!("id" in message) || !toolRequestIds.has(message.id)) return message;
   switch (message.type) {
     case "convert-progress":
-      // 読み込み段階だけをツールの進捗にする(準備・後処理の段階名は出さない)。
+      // Only the read phase becomes tool progress (preparing / post-processing phases are not shown).
       return message.progress.phase === "reading"
         ? {
             type: "tool-progress",
@@ -325,7 +325,7 @@ interface FeedResultDto {
 interface FinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
-  /** L2-C: 警告(CRSの無いファイルを通した、など)。 */
+  /** L2-C: warnings (e.g. files without a CRS were let through). */
   warnings?: string[];
 }
 
@@ -840,8 +840,8 @@ async function runMultiConversion(
       (file) => inspectLasHeaderSummary(file) as HeaderSummaryDto,
     );
     const first = summaries[0];
-    // L2-C: CRSの無いファイル("Unknown"。`pcv_core::crs::Crs::Unknown`のDebug表示)は
-    // 止めずに通す(警告はRust側のfinishが返す)。CRSのあるファイル同士の食い違いだけ止める。
+    // L2-C: files without a CRS ("Unknown", the Debug text of `pcv_core::crs::Crs::Unknown`) are
+    // let through (Rust `finish` returns the warning). Only a mismatch between files that have a CRS stops.
     const NO_CRS = "Unknown";
     const firstKnownCrs = summaries.findIndex((s) => s.crs_label !== NO_CRS);
     for (let i = 1; i < summaries.length; i++) {
@@ -993,11 +993,11 @@ async function runMultiConversion(
   }
 }
 
-// --- L2-C: COPCから条件に合う点だけを新しいCOPCにする(点の選択・断面) ---
+// --- L2-C: extract only the matching points of a COPC into a new COPC (point selection, cross section) ---
 //
-// `runConversion`と同じ段取り(ロック → 一時ファイルのプール → feedの逐次ループ →
-// finish → 後始末)。違いは入力が`WasmExtractor`(条件に合うノードだけを読む)であることと、
-// 結果を`tool-done`で返すこと。キャンセルは変換と同じ`convertCancel`(finishの間は効かない)。
+// Same sequence as `runConversion` (lock -> scratch-file pool -> sequential feed loop ->
+// finish -> cleanup). The differences are that the input is a `WasmExtractor` (reads only matching nodes) and that
+// the result is returned as `tool-done`. Cancellation is the same `convertCancel` (no effect during finish).
 
 async function handleExtractStart(request: ExtractStartRequest): Promise<void> {
   const { id, file, filter, label } = request;
@@ -1036,7 +1036,7 @@ async function runExtract(
     try {
       await opfs.cleanupStaleScratchDirs();
     } catch {
-      // 掃除に失敗しても続ける(変換と同じ)。
+      // Carry on even if cleanup fails (same as conversion).
     }
     const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
     scratchDirName = pool.dirName;
@@ -1076,7 +1076,7 @@ async function runExtract(
       return;
     }
 
-    // `finish()`は呼んだ時点でRust側のオブジェクトを消費する(runConversionと同じ)。
+    // `finish()` consumes the Rust-side object when called (same as runConversion).
     let finishResult: FinishResultDto;
     try {
       finishResult = extractor.finish() as FinishResultDto;
@@ -1137,7 +1137,7 @@ interface PcdFeedResultDto {
 interface PcdFinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
-  /** L2-C: 警告(CRSの無いファイルを通した、など)。 */
+  /** L2-C: warnings (e.g. files without a CRS were let through). */
   warnings?: string[];
 }
 

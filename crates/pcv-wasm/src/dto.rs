@@ -112,7 +112,7 @@ pub struct FeedResultDto {
 pub struct FinishResultDto {
     pub point_count: u64,
     pub stage_timings: ConversionStageBreakdownDto,
-    /// L2-C: エラーログに出す警告(CRSの無いファイルを通した、など)。無ければ空。
+    /// L2-C: warnings for the error log (e.g. files without a CRS were let through). Empty if none.
     pub warnings: Vec<String>,
 }
 

@@ -210,8 +210,8 @@ fn check_layout_and_crs_match(
             "入力ファイルの点フォーマットが一致しない({new_layout:?} != {current_layout:?})"
         ));
     }
-    // L2-C: CRSの無いファイルは止めずに通す(警告は呼び出し側が記録する)。
-    // CRSのあるファイル同士の食い違いだけを止める。
+    // L2-C: files without a CRS are let through (the caller records a warning).
+    // Only a mismatch between files that both have a CRS stops the merge.
     if new_crs == Crs::Unknown {
         return Ok(CrsOutcome::NewFileHasNoCrs);
     }
@@ -226,19 +226,19 @@ fn check_layout_and_crs_match(
     Ok(CrsOutcome::Same)
 }
 
-/// L2-C: `check_layout_and_crs_match`の結果(CRSについて呼び出し側がすること)。
+/// L2-C: result of `check_layout_and_crs_match` (what the caller must do about the CRS).
 #[derive(Debug, PartialEq, Eq)]
 enum CrsOutcome {
-    /// 何もしない(CRSが一致)。
+    /// Nothing to do (the CRS matches).
     Same,
-    /// 新しいファイルにCRSが無い。通して、警告用に名前を記録する。
+    /// The new file has no CRS. Let it through and record its name for a warning.
     NewFileHasNoCrs,
-    /// ここまでCRSが無く、新しいファイルが最初のCRS付き。出力のCRSをこのファイルから取る。
+    /// No CRS so far and the new file is the first with one. Take the output CRS from it.
     AdoptNewFileCrs,
 }
 
-/// L2-C: 結合で、CRSの無いファイルを通したときの警告文(デスクトップの
-/// `HeaderSummary::crs_warnings`と同じ本文)。
+/// L2-C: warning text for files let through without a CRS in a merge (same text as the desktop
+/// `HeaderSummary::crs_warnings`).
 fn missing_crs_warnings(names: &[String], result_crs: Crs) -> Vec<String> {
     let result = if result_crs == Crs::Unknown {
         "どのファイルにもCRSが無いので、結果にもCRSはありません"
@@ -332,7 +332,7 @@ pub struct WasmConverter {
     /// M4-14: これまでに`open_next_file`で開いたファイル数(先頭の1を含む)。
     /// 内訳の「入力ファイル数」表示に使う。
     input_file_count: u64,
-    /// L2-C: CRSの無いまま通したファイルの名前(結合のときだけ警告にする)。
+    /// L2-C: names of files let through without a CRS (warned about only for merges).
     missing_crs_names: Vec<String>,
 }
 
@@ -447,7 +447,7 @@ impl WasmConverter {
             CrsOutcome::Same => {}
             CrsOutcome::NewFileHasNoCrs => self.missing_crs_names.push(file_name),
             CrsOutcome::AdoptNewFileCrs => {
-                // 出力のCRS(WKT)を、最初のCRS付きファイルから取る。
+                // Take the output CRS (WKT) from the first file that has one.
                 self.metadata.wkt_crs = copc_write_metadata_from_source_header(reader.header()).wkt_crs;
                 self.crs = crs;
             }
@@ -610,7 +610,7 @@ impl WasmConverter {
                 Some(self.fs.seq_read_stats()),
                 self.input_file_count,
             ),
-            // 1ファイルだけの変換では、CRSが無いことは警告にしない(結合のときだけ)。
+            // A missing CRS is not a warning for a single-file conversion (merges only).
             warnings: if self.input_file_count > 1 {
                 missing_crs_warnings(&self.missing_crs_names, self.crs)
             } else {
@@ -820,8 +820,8 @@ mod tests {
         assert!(check_layout_and_crs_match(&layout, &layout, Crs::Unknown, Crs::Unknown).is_ok());
     }
 
-    /// L2-C: CRSの無いファイルは止めずに通す。最初のCRS付きファイルが来たらそのCRSを採る。
-    /// CRSのあるファイル同士の食い違いだけを止める(上のテスト)。
+    /// L2-C: files without a CRS are let through; the CRS of the first file that has one is adopted.
+    /// Only a mismatch between files that both have a CRS stops (see the test above).
     #[test]
     fn check_layout_and_crs_match_passes_missing_crs_and_adopts_first_known() {
         let layout = layout_for_point_format(3);

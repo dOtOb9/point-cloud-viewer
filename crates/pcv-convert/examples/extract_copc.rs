@@ -1,10 +1,14 @@
-//! 開発者向け: COPCから軸に平行な箱の中の点だけを新しいCOPCに切り出す(L2-C)。
-//! アプリは使わない。時間とメモリ(別プロセスから見たピーク)を測るためのもの。
+//! Developer tool: cut the points inside an axis-aligned box out of a COPC file into
+//! a new COPC file (L2-C). The app does not use it; it exists to measure time and
+//! memory (peak seen from another process).
 //!
 //! ```text
 //! cargo run -p pcv-convert --release --example extract_copc -- \
-//!     <入力.copc.laz> <出力.copc.laz> minx miny minz maxx maxy maxz [spill_dir]
+//!     <input.copc.laz> <output.copc.laz> minx miny minz maxx maxy maxz [spill_dir]
 //! ```
+//!
+//! With only the input path it prints the point count and bounds (a hint for
+//! choosing the box).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -17,26 +21,25 @@ use pcv_core::extract::{ExtractFilter, OrientedBox};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // 引数が入力1つだけのときは、範囲と点数を表示して終わる(箱を決める手がかり)。
     if args.len() == 1 {
         match pcv_core::CopcFile::open(std::path::Path::new(&args[0])) {
             Ok(file) => {
                 let info = file.info();
-                println!("点数: {}", info.point_count);
+                println!("points: {}", info.point_count);
                 println!("min: {:?}", info.min);
                 println!("max: {:?}", info.max);
             }
-            Err(e) => eprintln!("開けませんでした: {e}"),
+            Err(e) => eprintln!("could not open: {e}"),
         }
         return;
     }
     if args.len() < 8 {
-        eprintln!("usage: extract_copc <入力> <出力> minx miny minz maxx maxy maxz [spill_dir]");
+        eprintln!("usage: extract_copc <input> <output> minx miny minz maxx maxy maxz [spill_dir]");
         std::process::exit(2);
     }
     let numbers: Result<Vec<f64>, _> = args[2..8].iter().map(|s| s.parse::<f64>()).collect();
     let Ok(n) = numbers else {
-        eprintln!("箱の座標が数値ではありません");
+        eprintln!("box coordinates are not numbers");
         std::process::exit(2);
     };
     let spill_dir: PathBuf = args
@@ -72,14 +75,20 @@ fn main() {
     );
     match result {
         Ok(summary) => {
-            println!("出力点数: {}", summary.point_count);
-            println!("ノード: 全{} / 選択{} / 読んだ{}", summary.stats.nodes_total, summary.stats.nodes_selected, summary.stats.nodes_read);
-            println!("読んだ点数: {} (最大同時保持 {} 点)", summary.stats.points_scanned, summary.stats.max_buffered_points);
-            println!("所要時間: {:.2} 秒", started.elapsed().as_secs_f64());
-            println!("内訳: {timings:?}");
+            println!("output points: {}", summary.point_count);
+            println!(
+                "nodes: total {} / selected {} / read {}",
+                summary.stats.nodes_total, summary.stats.nodes_selected, summary.stats.nodes_read
+            );
+            println!(
+                "points read: {} (max held at once: {})",
+                summary.stats.points_scanned, summary.stats.max_buffered_points
+            );
+            println!("elapsed: {:.2} s", started.elapsed().as_secs_f64());
+            println!("breakdown: {timings:?}");
         }
         Err(e) => {
-            eprintln!("失敗: {e}");
+            eprintln!("failed: {e}");
             std::process::exit(1);
         }
     }

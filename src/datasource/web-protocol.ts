@@ -184,7 +184,7 @@ export interface ConvertDoneResponse {
   suggestedFileName: string;
   pointCount: number;
   stageTimings: ConversionStageBreakdownDto;
-  /** L2-C: エラーログに出す警告(CRSの無いファイルを通した、など)。無ければ省略または空。 */
+  /** L2-C: warnings for the error log (e.g. files without a CRS were let through). Omitted or empty if none. */
   warnings?: string[];
 }
 
@@ -278,24 +278,24 @@ export function buildPcdConvertStartRequest(
   return { type: "pcdConvertStart", id, file, maxPointsPerNode, isMobile };
 }
 
-// --- L2-C: 点群ツール(抽出・COPCの結合) ---
+// --- L2-C: point-cloud tools (extraction, COPC merge) ---
 //
-// 変換(convert-*)とは別の応答型(tool-*)にしてある。変換の完了・進捗は
-// 画面全体のリスナー(`useCopcViewer`)が受けて「変換結果を開く」動きをするので、
-// ツールの結果が同じ型で届くと、勝手に新しいファイルとして開かれてしまう。
-// ツールの応答は`WebSource`がリクエストidで、呼んだ関数のPromiseへ返す。
+// These use response types (tool-*) separate from conversion (convert-*). Conversion done / progress
+// is received by an app-wide listener (`useCopcViewer`) that "opens the conversion result", so if a
+// tool result arrived with the same type it would be opened as a new file on its own.
+// `WebSource` routes tool responses by request id to the Promise of the function that was called.
 
-/** 開いているCOPC(`file`)から`filter`に合う点だけを新しいCOPC(OPFS)にする。 */
+/** Creates a new COPC (on OPFS) from only the points of the open COPC (`file`) that match `filter`. */
 export interface ExtractStartRequest {
   type: "extractStart";
   id: number;
   file: File;
   filter: ExtractFilter;
-  /** 内訳(設定の使用量)に出す名前。 */
+  /** Name shown in the usage breakdown (settings). */
   label: string;
 }
 
-/** 開いている複数のCOPCを1つのCOPC(OPFS)にする。 */
+/** Merges several open COPC files into one COPC (on OPFS). */
 export interface ToolMergeStartRequest {
   type: "toolMergeStart";
   id: number;
@@ -314,7 +314,7 @@ export interface ToolProgressResponse {
 export interface ToolDoneResponse {
   type: "tool-done";
   id: number;
-  /** OPFS上の出力名。`opfs.getConvertedFile`で`File`にする。 */
+  /** Output name on OPFS. Turn it into a `File` with `opfs.getConvertedFile`. */
   outputName: string;
   pointCount: number;
   warnings: string[];

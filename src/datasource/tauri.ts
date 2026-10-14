@@ -247,7 +247,7 @@ export async function onConversionDone(
     outputPath: string,
     sourceFormat: string,
     stageTimings: ConversionStageBreakdown,
-    /** L2-C: エラーログに出す警告(CRSの無いファイルを通した、など)。無ければ空。 */
+    /** L2-C: warnings for the error log (e.g. files without a CRS were let through). Empty if none. */
     warnings: string[],
   ) => void,
 ): Promise<UnlistenFn> {
@@ -359,7 +359,7 @@ export async function fetchBenchViaInvoke(sizeBytes: number): Promise<number> {
   return bytes.length;
 }
 
-// --- L2-C: 点群ツール(抽出・結合) ---
+// --- L2-C: point-cloud tools (extraction, merge) ---
 
 interface ToolResultDto {
   output_path: string;
@@ -371,7 +371,7 @@ function toToolResult(dto: ToolResultDto): ToolResult {
   return { outputPath: dto.output_path, pointCount: dto.point_count, warnings: dto.warnings };
 }
 
-/** 実行中だけ進捗イベント(変換と同じ`conversion-progress`)を`onProgress`へ流す。 */
+/** Forwards progress events (the same `conversion-progress` as conversion) to `onProgress` while `run` is running. */
 async function withToolProgress<T>(
   options: ToolOptions | undefined,
   run: () => Promise<T>,
@@ -392,10 +392,10 @@ async function withToolProgress<T>(
 }
 
 /**
- * 開いているCOPC(`path` = `open()`に渡したパス)から`filter`に合う点だけを新しいCOPCにする。
- * 戻り値の`outputPath`を`open()`に渡せば新しいレイヤーになる。元のファイルは変えない。
- * 0点なら例外(本文は`EMPTY_SELECTION_MESSAGE`)。キャンセルは`cancelLasConversion()`
- * (変換と同じ。本文は「キャンセルされた」)。
+ * Creates a new COPC from only the points of an open COPC (`path` = the path passed to `open()`) that match `filter`.
+ * Passing the returned `outputPath` to `open()` makes a new layer. The source file is not modified.
+ * With zero points it throws (text is `EMPTY_SELECTION_MESSAGE`). Cancel with `cancelLasConversion()`
+ * (same as conversion; the error text is "キャンセルされた").
  */
 export async function extractToCopc(
   path: string,
@@ -413,9 +413,9 @@ export async function extractToCopc(
 }
 
 /**
- * 開いている複数のCOPC(`open()`に渡したパス)を1つのCOPCにする。
- * CRSの無いファイルは止めずに通し、`warnings`に理由を返す(エラーログに出す)。
- * CRSのあるファイル同士が食い違えば例外。
+ * Merges several open COPC files (paths passed to `open()`) into one COPC.
+ * Files without a CRS are let through and the reason is returned in `warnings` (for the error log).
+ * Throws if files that both have a CRS differ.
  */
 export async function mergeCopcs(paths: string[], options?: ToolOptions): Promise<ToolResult> {
   return await withToolProgress(options, async () => {

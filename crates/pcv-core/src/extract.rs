@@ -1,35 +1,38 @@
-//! L2-C: 「COPCを読み、条件に合う点だけを取り出す」ための部品。
+//! L2-C: reading only the points that match a condition out of a COPC file.
 //!
-//! 点群ツール(点の選択・断面)は、選んだレイヤーから新しい点群レイヤーを作る
-//! (`TaskSheets/ADR-0018-layer-centric-operations.md`)。このファイルは
-//! その「読む側」で、**書き出し(COPCを作る)は含まない**。書き出しは
-//! デスクトップが `crates/pcv-convert/src/extract.rs`、Webが
-//! `crates/pcv-wasm/src/extract.rs` で、既存の変換と同じ
-//! `vendor/copc-writer` に点のイテレータを渡して行う。
-//! ここに置いたのは、どちらからも使える(wasm32でもビルドできる、Tauri非依存)ためである。
+//! The point-cloud tools (point selection, cross section) create a new layer from a
+//! chosen layer (`TaskSheets/ADR-0018-layer-centric-operations.md`). This file is the
+//! "read" side only; **writing the COPC is not done here**. Desktop writes it in
+//! `crates/pcv-convert/src/extract.rs` and Web in `crates/pcv-wasm/src/extract.rs`,
+//! both by handing an iterator of points to `vendor/copc-writer`, exactly like the
+//! existing conversion. It lives here because both sides can use it (it builds for
+//! wasm32 and does not depend on Tauri).
 //!
-//! # 構成
+//! # Layout
 //!
-//! - `ExtractFilter`: 条件。画面上の多角形(`ScreenPolygon`)か、向きのある箱
-//!   (`OrientedBox`)。座標はどちらもファイルの実座標(f64)。
-//! - `ExtractPoints`: COPCの階層から、条件と交わるノードだけを選び、
-//!   そのノードを1つずつ読んで条件に合う点を1点ずつ返すイテレータ。
+//! - `ExtractFilter`: the condition, either a polygon drawn on screen
+//!   (`ScreenPolygon`) or an oriented box (`OrientedBox`). Coordinates are the
+//!   file's real coordinates (f64) in both cases.
+//! - `ExtractPoints`: picks the octree nodes that may intersect the condition from
+//!   the COPC hierarchy, reads them one at a time, and yields the matching points
+//!   one by one.
 //!
-//! # メモリが点数に比例しない理由
+//! # Why memory does not grow with the point count
 //!
-//! `ExtractPoints` が抱えるのは「いま読んでいる1ノードの点」だけで、次のノードを
-//! 読む前に前のノードの点は捨てる。1ノードの点数は書き出し時の
-//! `max_points_per_node`(既定10万)で決まり、ファイルの総点数にもノード数にも
-//! 比例しない(ノード数に比例するのは階層の一覧と、選ばれたノードのキーの一覧だけ)。
-//! 上限はテスト(`crates/pcv-convert/src/extract.rs`の
-//! `buffer_is_bounded_by_largest_node`)で確かめている。
+//! `ExtractPoints` only holds the points of the node being read and drops them
+//! before reading the next node. A node holds at most `max_points_per_node` points
+//! (default 100k, decided when the file was written), so the buffer depends neither
+//! on the total point count nor on the node count (only the hierarchy listing and
+//! the list of selected node keys grow with the node count). The bound is checked by
+//! the test `buffer_is_bounded_by_largest_node` in `crates/pcv-convert/src/extract.rs`.
 //!
-//! # ノードの絞り込みは「保守的」
+//! # Node culling is conservative
 //!
-//! `may_intersect` は、交わらないと**確実に言える**ときだけ `false` を返す。
-//! 迷うとき(画面の手前にはみ出すノードなど)は `true` で、読んだ上で点ごとの
-//! `contains` が正確に判定する。したがって結果の正しさは絞り込みの精度に
-//! 左右されず、絞り込みが粗いと読むノードが増えて遅くなるだけである。
+//! `may_intersect` returns `false` only when it can say for sure that the node does
+//! not intersect. When unsure (for example a node that straddles the camera plane) it
+//! returns `true`, the node is read, and the per-point `contains` decides exactly.
+//! The result is therefore correct whatever the culling precision; coarse culling
+//! only means more nodes are read.
 
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
@@ -39,26 +42,29 @@ use copc_reader::CopcReader;
 
 use crate::copc::voxel_bounds;
 
-/// 画面上の多角形。投影して多角形の内側に映り、かつカメラの前(w>0)にある点が対象。
-/// 奥行きは問わない(手前から奥まで全部)。
+/// A polygon drawn on screen. A point is selected when it projects inside the
+/// polygon and is in front of the camera (w > 0). Depth does not matter (everything
+/// from near to far is selected).
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenPolygon {
-    /// ビュー射影行列。列優先の16要素(WebGPU/glMatrixの並び)。
-    /// ワールド座標(ファイルの実座標)→クリップ座標。
+    /// View-projection matrix, 16 elements in column-major order (the WebGPU /
+    /// glMatrix layout). World coordinates (the file's real coordinates) to clip
+    /// coordinates.
     pub view_proj: [f64; 16],
-    /// 多角形の頂点。NDC(x,y とも -1..1)。閉じなくてよい(最後と最初を結ぶ)。
+    /// Polygon vertices in NDC (x and y in -1..1). It does not need to be closed
+    /// (the last vertex is joined to the first).
     pub polygon_ndc: Vec<[f64; 2]>,
 }
 
-/// 向きのある箱(断面の板など)。
+/// An oriented box (for example the slab of a cross section).
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrientedBox {
     pub center: [f64; 3],
-    /// 正規直交な3軸(長さ1)。
+    /// Three orthonormal axes (unit length).
     pub axes: [[f64; 3]; 3],
-    /// 各軸方向の半分の長さ(0以上)。
+    /// Half the length along each axis (0 or more).
     pub half_extents: [f64; 3],
 }
 
@@ -70,7 +76,8 @@ pub enum ExtractFilter {
 }
 
 impl ExtractFilter {
-    /// 入力の形を確かめる(有限の数か、頂点が3つ以上か等)。条件に使う前に呼ぶ。
+    /// Checks the shape of the input (finite numbers, at least 3 vertices, ...).
+    /// Call before using the condition.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             ExtractFilter::ScreenPolygon(p) => {
@@ -103,7 +110,7 @@ impl ExtractFilter {
         }
     }
 
-    /// 点が条件に合うか(正確な判定)。
+    /// Whether a point matches the condition (exact test).
     pub fn contains(&self, p: [f64; 3]) -> bool {
         match self {
             ExtractFilter::ScreenPolygon(s) => match project(&s.view_proj, p) {
@@ -117,8 +124,8 @@ impl ExtractFilter {
         }
     }
 
-    /// 軸に平行な箱 `[min, max]` が条件と交わりうるか。`false` なら確実に交わらない
-    /// (モジュール冒頭「ノードの絞り込みは保守的」)。
+    /// Whether the axis-aligned box `[min, max]` may intersect the condition.
+    /// `false` means it certainly does not (see "Node culling is conservative").
     pub fn may_intersect(&self, min: [f64; 3], max: [f64; 3]) -> bool {
         match self {
             ExtractFilter::ScreenPolygon(s) => screen_may_intersect(s, min, max),
@@ -135,7 +142,7 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// ワールド座標を投影してNDCの(x,y)にする。w>0でなければ`None`(カメラの後ろ)。
+/// Projects a world point to NDC (x, y). `None` unless w > 0 (behind the camera).
 fn project(m: &[f64; 16], p: [f64; 3]) -> Option<[f64; 2]> {
     let w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
     if w <= 0.0 || !w.is_finite() {
@@ -146,7 +153,7 @@ fn project(m: &[f64; 16], p: [f64; 3]) -> Option<[f64; 2]> {
     Some([x / w, y / w])
 }
 
-/// 偶奇規則(半直線を右へ伸ばし、辺と交わる回数が奇数なら内側)。
+/// Even-odd rule: cast a ray to the right; an odd number of edge crossings means inside.
 fn point_in_polygon(p: [f64; 2], polygon: &[[f64; 2]]) -> bool {
     let mut inside = false;
     let n = polygon.len();
@@ -177,10 +184,11 @@ fn corners(min: [f64; 3], max: [f64; 3]) -> [[f64; 3]; 8] {
     out
 }
 
-/// 画面の多角形と箱の交差の保守的な判定。
-/// 箱の8頂点のうち1つでもカメラの後ろ(w<=0)なら、投影が破綻するので`true`(読んで点ごとに判定)。
-/// 全頂点がカメラの前なら、投影した8頂点のNDC上の外接矩形が、多角形の外接矩形と
-/// 重なるかで判定する(外接矩形どうしが離れていれば確実に交わらない)。
+/// Conservative intersection test between a screen polygon and a box.
+/// If any of the 8 corners is behind the camera (w <= 0) the projection breaks
+/// down, so return `true` (read the node and test per point). If all corners are in
+/// front, compare the NDC bounding rectangle of the projected corners with the
+/// polygon's bounding rectangle (disjoint rectangles certainly do not intersect).
 fn screen_may_intersect(s: &ScreenPolygon, min: [f64; 3], max: [f64; 3]) -> bool {
     let mut bx = (f64::INFINITY, f64::NEG_INFINITY);
     let mut by = (f64::INFINITY, f64::NEG_INFINITY);
@@ -202,10 +210,10 @@ fn screen_may_intersect(s: &ScreenPolygon, min: [f64; 3], max: [f64; 3]) -> bool
     bx.0 <= px.1 && px.0 <= bx.1 && by.0 <= py.1 && py.0 <= by.1
 }
 
-/// 向きのある箱と軸平行な箱の、分離軸による保守的な判定。
-/// 軸は「向きのある箱の3軸」と「ワールドの3軸」だけを調べる(辺どうしの外積の
-/// 9軸は調べない)。調べる軸が少ないぶん「交わらない」と言い切れる場面が減る
-/// だけで、`true`を返しすぎる方向にしか間違えない。
+/// Separating-axis test between an oriented box and an axis-aligned box.
+/// Only the 3 axes of the oriented box and the 3 world axes are checked (the 9 edge
+/// cross-product axes are not). Fewer axes only means fewer cases where "does not
+/// intersect" can be proven, so the test errs only toward returning `true`.
 fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
     let c = [
         (min[0] + max[0]) * 0.5,
@@ -218,7 +226,7 @@ fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
         (max[2] - min[2]) * 0.5,
     ];
     let d = sub(c, b.center);
-    // 向きのある箱の軸で調べる: 軸平行な箱をその軸へ投影した半径は Σ h_k |axis_k|。
+    // Axes of the oriented box: the projected radius of the aligned box is sum h_k |axis_k|.
     for i in 0..3 {
         let axis = b.axes[i];
         let r = h[0] * axis[0].abs() + h[1] * axis[1].abs() + h[2] * axis[2].abs();
@@ -226,7 +234,7 @@ fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
             return false;
         }
     }
-    // ワールドの軸で調べる: 向きのある箱をその軸へ投影した半径は Σ e_i |axis_i[k]|。
+    // World axes: the projected radius of the oriented box is sum e_i |axis_i[k]|.
     for k in 0..3 {
         let r = (0..3)
             .map(|i| b.half_extents[i] * b.axes[i][k].abs())
@@ -238,50 +246,52 @@ fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
     true
 }
 
-/// 抽出の途中経過(進捗表示とテスト用)。
+/// Progress of an extraction (for progress display and tests).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExtractStats {
-    /// 階層にある点データ付きノードの数。
+    /// Number of nodes with point data in the hierarchy.
     pub nodes_total: usize,
-    /// そのうち条件と交わりうるとして選んだノードの数(読む予定のノード)。
+    /// Nodes that may intersect the condition (the nodes that will be read).
     pub nodes_selected: usize,
-    /// 読み終えたノードの数。
+    /// Nodes read so far.
     pub nodes_read: usize,
-    /// 選んだノードの点数の合計(読む点数の上限。進捗の分母に使う)。
+    /// Total points of the selected nodes (upper bound of what will be read; the
+    /// denominator of progress).
     pub candidate_points: u64,
-    /// これまでに読んだ点数。
+    /// Points read so far.
     pub points_scanned: u64,
-    /// そのうち条件に合って返した点数。
+    /// Of those, points that matched and were returned.
     pub points_matched: u64,
-    /// 同時に抱えた点数の最大(1ノード分。テストで上限を確かめる)。
+    /// Most points held at the same time (one node; checked by a test).
     pub max_buffered_points: usize,
 }
 
-/// ノードを1つ読み終えるたびに呼ばれる関数。
+/// Called after each node is read.
 pub type NodeCallback<'a> = Box<dyn FnMut(&ExtractStats) -> copc_core::Result<()> + Send + 'a>;
 
-/// COPCから条件に合う点だけを1点ずつ返すイテレータ。
+/// Iterator that yields only the points of a COPC file that match a condition.
 pub struct ExtractPoints<'a, R: Read + Seek + Send> {
     reader: CopcReader<R>,
     filter: ExtractFilter,
     pending: VecDeque<VoxelKey>,
-    /// いま読んでいるノードの、条件に合った点(読み終えたら捨てる)。
+    /// Matching points of the node being read (dropped once consumed).
     current: VecDeque<LasPointRecord>,
     stats: ExtractStats,
-    /// ノードを1つ読み終えるたびに呼ぶ(進捗とキャンセルの確認用)。`Err`を返すと抽出を打ち切る。
+    /// Called after each node is read (progress and cancellation checks). Returning
+    /// `Err` aborts the extraction.
     on_node: Option<NodeCallback<'a>>,
 }
 
 impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
-    /// `reader`の階層を調べ、条件と交わるノードを選ぶ。点はまだ読まない。
+    /// Looks at the hierarchy of `reader` and selects the nodes that intersect the
+    /// condition. No points are read yet.
     pub fn new(reader: CopcReader<R>, filter: ExtractFilter) -> Result<Self, copc_core::Error> {
-        filter
-            .validate()
-            .map_err(copc_core::Error::InvalidInput)?;
+        filter.validate().map_err(copc_core::Error::InvalidInput)?;
         let info: CopcInfo = *reader.copc_info();
         let mut stats = ExtractStats::default();
         let mut pending = VecDeque::new();
-        // 階層は BTreeMap なので、キー順(level, x, y, z)=毎回同じ順で読む。
+        // The hierarchy is a BTreeMap, so nodes are read in key order (level, x, y, z),
+        // the same order every time.
         for entry in reader.file().hierarchy_entries() {
             if !entry.has_point_data() {
                 continue;
@@ -308,15 +318,16 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         self.stats
     }
 
-    /// ノードを読み終えるたびに呼ぶ関数を設定する。進捗の通知とキャンセルの確認に使う
-    /// (条件に合う点が少ないと、書き出し側が何も受け取らないまま長く読み続けるため、
-    /// 書き出し側のキャンセル確認だけでは間に合わない)。`Err`を返すとイテレータは
-    /// そのエラーを返して終わる。
+    /// Sets a function called after each node is read, for progress reports and
+    /// cancellation. It is needed because when few points match, the writer receives
+    /// nothing for a long time, so its own cancellation check alone would be too
+    /// slow. If it returns `Err`, the iterator yields that error and ends.
     pub fn set_node_callback(&mut self, callback: NodeCallback<'a>) {
         self.on_node = Some(callback);
     }
 
-    /// 次のノードを読み、条件に合う点を`current`に入れる。読むノードが無ければ`false`。
+    /// Reads the next node and puts its matching points into `current`.
+    /// Returns `false` when there is no node left.
     fn load_next_node(&mut self) -> Result<bool, copc_core::Error> {
         let Some(key) = self.pending.pop_front() else {
             return Ok(false);
@@ -327,10 +338,11 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         self.stats.max_buffered_points = self.stats.max_buffered_points.max(points.len());
         for point in &points {
             if self.filter.contains([point.x, point.y, point.z]) {
-                self.current.push_back(LasPointRecord::from_las_point(point));
+                self.current
+                    .push_back(LasPointRecord::from_las_point(point));
             }
         }
-        // `points`はここで捨てられる(次のノードを読む前に手放す)。
+        // `points` is dropped here (released before the next node is read).
         if let Some(callback) = self.on_node.as_mut() {
             callback(&self.stats)?;
         }
@@ -351,7 +363,7 @@ impl<R: Read + Seek + Send> Iterator for ExtractPoints<'_, R> {
                 Ok(true) => {}
                 Ok(false) => return None,
                 Err(e) => {
-                    // 以降は読まない(壊れたノードの後ろを読み続けない)。
+                    // Do not keep reading past a failed node.
                     self.pending.clear();
                     return Some(Err(e));
                 }
@@ -364,7 +376,7 @@ impl<R: Read + Seek + Send> Iterator for ExtractPoints<'_, R> {
 mod tests {
     use super::*;
 
-    /// x,y をそのままNDCにする行列(w=1)。
+    /// A matrix that uses x, y as NDC directly (w = 1).
     fn identity_view_proj() -> [f64; 16] {
         let mut m = [0.0; 16];
         m[0] = 1.0;
@@ -374,7 +386,7 @@ mod tests {
         m
     }
 
-    /// w = -z になる行列。z<0 がカメラの前、z>0 は後ろ。
+    /// A matrix with w = -z: z < 0 is in front of the camera, z > 0 is behind it.
     fn looking_down_minus_z() -> [f64; 16] {
         let mut m = identity_view_proj();
         m[11] = -1.0;
@@ -392,7 +404,7 @@ mod tests {
             view_proj: identity_view_proj(),
             polygon_ndc: square(-0.5, 0.5),
         });
-        assert!(f.contains([0.0, 0.0, 100.0]), "奥行きは問わない");
+        assert!(f.contains([0.0, 0.0, 100.0]), "depth does not matter");
         assert!(f.contains([0.4, -0.4, -100.0]));
         assert!(!f.contains([0.6, 0.0, 0.0]));
         assert!(!f.contains([0.0, -0.6, 0.0]));
@@ -405,7 +417,7 @@ mod tests {
             polygon_ndc: square(-1.0, 1.0),
         });
         assert!(f.contains([0.0, 0.0, -2.0]));
-        assert!(!f.contains([0.0, 0.0, 2.0]), "w<=0は対象外");
+        assert!(!f.contains([0.0, 0.0, 2.0]), "w <= 0 is excluded");
     }
 
     #[test]
@@ -417,9 +429,9 @@ mod tests {
         assert!(f.may_intersect([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]));
         assert!(
             !f.may_intersect([0.6, 0.0, 0.0], [1.0, 1.0, 1.0]),
-            "離れた箱は読まない"
+            "a distant box is not read"
         );
-        // カメラの前後にまたがる箱は、判定せず読む側に倒す。
+        // A box straddling the camera plane is read rather than judged.
         let g = ExtractFilter::ScreenPolygon(ScreenPolygon {
             view_proj: looking_down_minus_z(),
             polygon_ndc: square(-0.1, 0.1),
@@ -446,16 +458,16 @@ mod tests {
 
     #[test]
     fn rotated_box_uses_its_own_axes() {
-        // z軸まわりに45度回した細い板(長さ10、幅0.5)。
+        // A thin slab (length 10, width 0.5) rotated 45 degrees around the z axis.
         let s = std::f64::consts::FRAC_1_SQRT_2;
         let f = ExtractFilter::OrientedBox(OrientedBox {
             center: [0.0, 0.0, 0.0],
             axes: [[s, s, 0.0], [-s, s, 0.0], [0.0, 0.0, 1.0]],
             half_extents: [5.0, 0.25, 1.0],
         });
-        assert!(f.contains([3.0, 3.0, 0.0]), "板の長手方向の上");
-        assert!(!f.contains([3.0, -3.0, 0.0]), "板の幅の外");
-        // 板から離れた角のノードは読まない。
+        assert!(f.contains([3.0, 3.0, 0.0]), "along the slab");
+        assert!(!f.contains([3.0, -3.0, 0.0]), "outside the slab width");
+        // A node in a far corner away from the slab is not read.
         assert!(!f.may_intersect([4.0, -6.0, -1.0], [6.0, -4.0, 1.0]));
     }
 
@@ -474,7 +486,7 @@ mod tests {
 
     #[test]
     fn filter_deserializes_from_camel_case_json() {
-        // フロント(TypeScript)が送る形。
+        // The shape the frontend (TypeScript) sends.
         let json = r#"{"kind":"orientedBox","center":[1,2,3],
             "axes":[[1,0,0],[0,1,0],[0,0,1]],"halfExtents":[1,1,1]}"#;
         let f: ExtractFilter = serde_json::from_str(json).expect("json");

@@ -360,10 +360,10 @@ export class WebSource implements DataSource {
   }
 
 
-  // --- L2-C: 点群ツール(抽出・結合) ---
+  // --- L2-C: point-cloud tools (extraction, merge) ---
 
-  /** ツールの要求idごとの待ち。変換(`convert*Listeners`)とは別にして、結果が
-   *  画面全体の「変換結果を開く」処理に流れないようにする(`web-protocol.ts`参照)。 */
+  /** Waiters per tool request id. Kept separate from conversion (`convert*Listeners`) so the result does not
+   *  flow into the app-wide "open the conversion result" handling (see `web-protocol.ts`). */
   private readonly toolPending = new Map<
     number,
     {
@@ -373,7 +373,7 @@ export class WebSource implements DataSource {
     }
   >();
 
-  /** `open()`に渡したキー("file:N")から登録済みの`File`を取り出す。 */
+  /** Looks up the registered `File` for a key ("file:N") passed to `open()`. */
   private fileForToolInput(path: string): File {
     const classified = classifyOpenPath(path);
     const file = classified.kind === "file" ? this.localFiles.get(classified.fileKey) : undefined;
@@ -383,7 +383,7 @@ export class WebSource implements DataSource {
     return file;
   }
 
-  /** ツールの要求を送り、`tool-done`/`tool-failed`を待つ。出力は登録済みキーにして返す。 */
+  /** Sends a tool request and waits for `tool-done` / `tool-failed`. The output is registered and returned as a key. */
   private async runTool(
     id: number,
     request: WorkerRequest,
@@ -412,10 +412,10 @@ export class WebSource implements DataSource {
   }
 
   /**
-   * 開いているCOPC(`path` = `open()`に渡したキー)から`filter`に合う点だけを新しいCOPC
-   * (OPFS)にする。戻り値の`outputPath`(登録済みキー)を`open()`に渡せば新しいレイヤーになる。
-   * 0点なら例外(本文は`EMPTY_SELECTION_MESSAGE`)。キャンセルは`cancelConversion()`
-   * (例外の本文は「キャンセルされました」)。
+   * Creates a new COPC (on OPFS) from only the points of an open COPC (`path` = the key passed to `open()`)
+   * that match `filter`. Passing the returned `outputPath` (a registered key) to `open()` makes a new layer.
+   * With zero points it throws (text is `EMPTY_SELECTION_MESSAGE`). Cancel with `cancelConversion()`
+   * (the error text is "キャンセルされました").
    */
   async extractToCopc(
     path: string,
@@ -426,7 +426,7 @@ export class WebSource implements DataSource {
     if (!(await opfs.isOpfsAvailable())) {
       throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
     }
-    // 出力は多くても元より小さいので、元の点数で容量を見積もる(安全側)。
+    // The output is at most as large as the source, so estimate space from the source point count (safe side).
     const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
     if (insufficient) throw new Error("空き容量が足りないため、点群ツールを実行できません");
     const id = this.nextRequestId++;
@@ -438,9 +438,9 @@ export class WebSource implements DataSource {
   }
 
   /**
-   * 開いている複数のCOPC(`open()`に渡したキー)を1つのCOPC(OPFS)にする。
-   * CRSの無いファイルは止めずに通し、`warnings`に理由を返す。CRSのあるファイル同士が
-   * 食い違えば例外。
+   * Merges several open COPC files (keys passed to `open()`) into one COPC (on OPFS).
+   * Files without a CRS are let through and the reason is returned in `warnings`. Throws if files that
+   * both have a CRS differ.
    */
   async mergeCopcs(paths: string[], options?: ToolOptions & { isMobile?: boolean }): Promise<ToolResult> {
     if (paths.length < 2) throw new Error("結合するレイヤーが2つ未満です");

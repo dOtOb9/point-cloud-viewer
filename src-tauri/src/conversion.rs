@@ -144,7 +144,7 @@ pub struct ConversionDoneEvent {
     /// Rust側で埋める」を優先した)。
     pub source_format: String,
     pub stage_timings: ConversionStageBreakdownDto,
-    /// L2-C: 画面のエラーログ(ADR-0011)に出す警告(CRSの無いファイルを通した、など)。
+    /// L2-C: warnings for the on-screen error log (ADR-0011), e.g. files without a CRS were let through.
     pub warnings: Vec<String>,
 }
 
@@ -748,26 +748,26 @@ fn emit_failed(app: &AppHandle, message: String, cancelled: bool) {
     }
 }
 
-// --- L2-C: 点群ツール(抽出・COPCの結合)のコマンド ---
+// --- L2-C: commands for the point-cloud tools (extraction, COPC merge) ---
 //
-// 選んだレイヤーから新しいレイヤーを作る(ADR-0018)。結果はアプリの一時フォルダの
-// COPCで、フロントは返ったパスをそのまま `open_copc` に渡して新しいレイヤーにする。
-// 進捗は変換と同じ `conversion-progress` イベント、キャンセルは同じ
-// `cancel_las_conversion` を使う(変換と同時には1つしか走らせない)。
-// 変換の完了・失敗イベントは出さない: 結果はコマンドの戻り値(エラーは `Err` の本文)で返す。
+// A new layer is created from a chosen layer (ADR-0018). The result is a COPC in the app's
+// temp folder; the frontend passes the returned path straight to `open_copc` to make a new layer.
+// Progress uses the same `conversion-progress` event as conversion, and cancellation the same
+// `cancel_las_conversion` (only one conversion or tool runs at a time).
+// No done/failed events are emitted: the result is the command's return value (errors are the `Err` text).
 
-/// 抽出・結合の結果。フロントの `ToolResult` に対応する(camelCaseへの変換は `tauri.ts`)。
+/// Result of an extraction or merge. Matches the frontend `ToolResult` (camelCase conversion is in `tauri.ts`).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolOutput {
     pub output_path: String,
     pub point_count: u64,
-    /// エラーログに出す警告(CRSの無いファイルを通した、など)。
+    /// Warnings for the error log (e.g. files without a CRS were let through).
     pub warnings: Vec<String>,
 }
 
 static TOOL_OUTPUT_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// 一時フォルダの下に、重ならない出力パスを作る。
+/// Makes a non-colliding output path under the temp folder.
 fn tool_output_path(
     app: &AppHandle,
     temp_dir: Option<&str>,
@@ -784,7 +784,7 @@ fn tool_output_path(
     Ok(base.join(format!("{stem}-{nanos}-{seq}.copc.laz")))
 }
 
-/// 進捗イベントを流すクロージャを作る(読み込み段階の割合のみ)。
+/// Makes a closure that emits progress events (read phase only).
 fn tool_progress(app: &AppHandle) -> impl FnMut(ReadProgress) + Send + 'static {
     let app = app.clone();
     let started = Instant::now();
@@ -800,8 +800,8 @@ fn tool_progress(app: &AppHandle) -> impl FnMut(ReadProgress) + Send + 'static {
     }
 }
 
-/// 別スレッドで `work` を実行し、panic はエラー文にして返す(ADR-0015)。
-/// 実行中はキャンセルフラグを `ConversionState` に置く。
+/// Runs `work` on another thread and turns a panic into an error string (ADR-0015).
+/// While it runs, the cancel flag is kept in `ConversionState`.
 async fn run_tool<T: Send + 'static>(
     state: &ConversionState,
     work: impl FnOnce(AtomicCancel) -> Result<T, String> + Send + 'static,
@@ -839,8 +839,8 @@ async fn run_tool<T: Send + 'static>(
     }
 }
 
-/// `path`(開いているCOPC)から `filter` に合う点だけを新しいCOPCに書き出す。
-/// 0点なら `Err("選んだ範囲に点がありません")`。
+/// Writes only the points of `path` (an open COPC) that match `filter` into a new COPC.
+/// With zero points it returns `Err("選んだ範囲に点がありません")`.
 #[tauri::command]
 pub async fn extract_copc(
     app: AppHandle,
@@ -893,7 +893,7 @@ pub async fn extract_copc(
     .await
 }
 
-/// 開いている複数のCOPCを1つのCOPCにする。CRSの無いファイルは止めずに通し、警告を返す。
+/// Merges several open COPC files into one. Files without a CRS are let through and a warning is returned.
 #[tauri::command]
 pub async fn merge_copcs(
     app: AppHandle,
