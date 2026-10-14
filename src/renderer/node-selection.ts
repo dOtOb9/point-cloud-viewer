@@ -21,11 +21,12 @@ import type { CachedNode } from "./node-cache";
  * 点数と読み込み・描画のコストだけが増えるため（HQ-0 で、全体を見下ろすと
  * 1画素に約170点を描いていた）。
  *
- * **未検証の初期値**。1.0 は「点間隔が1画素」という素直な値で、実機の見た目と
- * fps で決めたものではない（測定結果は TaskSheets/HQ-high-quality-mode.md の LOD A）。
+ * 0.5 と 1.0 を比べて 0.5 を選んだ。0.5 は変更前とほぼ見分けがつかず、見下ろしの点数は
+ * 約1/6に減る。1.0 は高層ビルの壁面が少しまばらになる軽い劣化があった
+ * （測定結果は TaskSheets/HQ-high-quality-mode.md の LOD A）。
  * 設定画面には出していない。
  */
-export const MIN_NODE_SPACING_PIXELS = 1.0;
+export const MIN_NODE_SPACING_PIXELS = 0.5;
 
 /**
  * COPC のキー `d-x-y-z` から親のキーを返す。ルート（`0-0-0-0`）や、この形式で

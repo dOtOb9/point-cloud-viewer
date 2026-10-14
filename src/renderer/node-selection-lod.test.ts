@@ -76,7 +76,7 @@ describe("selectNodesForFrame: LOD A（画素より細かい階層は読まな�
   });
 
   it("閾値は引数で変えられ、既定は MIN_NODE_SPACING_PIXELS", () => {
-    expect(MIN_NODE_SPACING_PIXELS).toBe(1.0);
+    expect(MIN_NODE_SPACING_PIXELS).toBe(0.5);
     const vp = viewProjAt(100);
     const r = selectNodesForFrame(
       [root, child],
