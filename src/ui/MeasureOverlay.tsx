@@ -10,7 +10,7 @@ import {
   MEASURE_KIND_NAME,
   type Measurement,
 } from "../state/measure";
-import { projectPoint, projectSegment } from "../renderer/screen-project";
+import { labelShifts, projectPoint, projectSegment } from "../renderer/screen-project";
 import { lengthUnitsFor, type LengthUnits } from "../state/units";
 import { useDisplayUnit } from "../state/useDisplayUnit";
 
@@ -40,6 +40,10 @@ function sameFrame(a: Frame | null, b: Frame): boolean {
   if (!a || a.width !== b.width || a.height !== b.height) return false;
   for (let i = 0; i < 16; i++) if (a.viewProj[i] !== b.viewProj[i]) return false;
   return true;
+}
+
+function labelAnchorOnScreen(measurement: Measurement, frame: Frame) {
+  return projectPoint(frame.viewProj, labelAnchor(measurement), frame.width, frame.height);
 }
 
 function Label({ lines, x, y }: { lines: string[]; x: number; y: number }) {
@@ -72,6 +76,7 @@ function MeasurementShape({
   selected,
   closed,
   withLabel,
+  labelShiftY = 0,
 }: {
   measurement: Measurement;
   units: LengthUnits;
@@ -79,6 +84,8 @@ function MeasurementShape({
   selected: boolean;
   closed: boolean;
   withLabel: boolean;
+  /** Move the label down by this many px so it does not sit on another measurement's label (L2-F). */
+  labelShiftY?: number;
 }) {
   const stroke = selected ? STROKE_SELECTED : STROKE;
   const lines = measurementSegments(measurement, closed).map((seg, i) => {
@@ -102,13 +109,13 @@ function MeasurementShape({
     const s = projectPoint(frame.viewProj, p, frame.width, frame.height);
     return s ? <circle key={i} cx={s.x} cy={s.y} r={4} fill={stroke} stroke="#000" strokeWidth={1.5} /> : null;
   });
-  const anchor = withLabel ? projectPoint(frame.viewProj, labelAnchor(measurement), frame.width, frame.height) : null;
+  const anchor = withLabel ? labelAnchorOnScreen(measurement, frame) : null;
   const text = withLabel ? measurementLabelLines(measurement, units) : [];
   return (
     <g>
       {lines}
       {dots}
-      {anchor && text.length > 0 && <Label lines={text} x={anchor.x} y={anchor.y} />}
+      {anchor && text.length > 0 && <Label lines={text} x={anchor.x} y={anchor.y + labelShiftY} />}
     </g>
   );
 }
@@ -190,6 +197,12 @@ export function MeasureOverlay({
   const draft: Measurement | null = measure.mode !== null && measure.points.length > 0 ? { kind: measure.mode, points: [...measure.points], up: frame.up } : null;
   const draftUnits = lengthUnitsFor((viewer.selectedLayer ?? viewer.layers[0])?.info.crs, displayUnit);
 
+  // Labels that would overlap on screen are moved down (L2-F).
+  const shifts = labelShifts(
+    measureLayers.map((l) => (l.measurement ? labelAnchorOnScreen(l.measurement, frame) : null)),
+    measureLayers.map((l) => (l.measurement ? measurementLabelLines(l.measurement, lengthUnitsFor(l.info.crs, displayUnit)).length : 0)),
+  );
+
   return (
     <svg
       data-testid="measure-overlay"
@@ -197,7 +210,7 @@ export function MeasureOverlay({
       width={frame.width}
       height={frame.height}
     >
-      {measureLayers.map((layer) =>
+      {measureLayers.map((layer, i) =>
         layer.measurement ? (
           <MeasurementShape
             key={layer.id}
@@ -207,6 +220,7 @@ export function MeasureOverlay({
             selected={layer.id === viewer.selectedLayerId}
             closed
             withLabel
+            labelShiftY={shifts[i]}
           />
         ) : null,
       )}

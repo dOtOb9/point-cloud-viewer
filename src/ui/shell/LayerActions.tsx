@@ -1,6 +1,7 @@
 import { Crosshair, Eye, Palette, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { isMeasureLayer } from "../../state/layers";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { shouldDeleteLayerOnKey } from "./layer-delete-key";
 import { RibbonButton } from "./RibbonButton";
@@ -21,6 +22,8 @@ export function LayerActions({ viewer }: { viewer: CopcViewerState }) {
   const [dialog, setDialog] = useState<"color" | "appearance" | null>(null);
   const layer = viewer.selectedLayer;
   const hasLayer = layer !== null;
+  // L2-F: a measurement layer has no points, so coloring and appearance do not apply (move and delete do).
+  const pointCloudSelected = layer !== null && !isMeasureLayer(layer);
   const { removeLayer, focusLayer } = viewer;
   const selectedId = layer?.id ?? null;
 
@@ -41,8 +44,8 @@ export function LayerActions({ viewer }: { viewer: CopcViewerState }) {
   return (
     <>
       <div className="flex flex-nowrap items-center gap-1 pl-[11px]" data-testid="layer-actions">
-        <RibbonButton icon={Palette} label="着色" title="選んだレイヤーの色の付け方" disabled={!hasLayer} onClick={() => setDialog("color")} />
-        <RibbonButton icon={Eye} label="見た目" title="選んだレイヤーの見た目" disabled={!hasLayer} onClick={() => setDialog("appearance")} />
+        <RibbonButton icon={Palette} label="着色" title="選んだレイヤーの色の付け方" disabled={!pointCloudSelected} onClick={() => setDialog("color")} />
+        <RibbonButton icon={Eye} label="見た目" title="選んだレイヤーの見た目" disabled={!pointCloudSelected} onClick={() => setDialog("appearance")} />
         <RibbonButton
           icon={Crosshair}
           label="移動"

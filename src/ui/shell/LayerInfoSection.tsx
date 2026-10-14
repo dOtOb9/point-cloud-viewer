@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
+import { MEASURE_KIND_NAME, measurementLabelLines } from "../../state/measure";
 import { coordinateUnitLabel, formatCoordinate, lengthUnitsFor } from "../../state/units";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { formatCrsLong } from "./crs-format";
@@ -63,30 +64,48 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
   const units = lengthUnitsFor(cloudInfo?.crs, displayUnit);
   return (
     <div className="flex flex-col gap-3 pl-[11px]">
-      <div className="flex flex-col gap-0.5 text-xs">
-        <p>
-          <span className="opacity-60">ファイル名: </span>
-          {layer?.name ?? "（未選択）"}
-        </p>
-        <p>
-          <span className="opacity-60">点数: </span>
-          {cloudInfo ? cloudInfo.pointCount.toLocaleString() : "―"}
-        </p>
-        <p>
-          <span className="opacity-60">CRS: </span>
-          {cloudInfo ? formatCrsLong(cloudInfo.crs) : "―"}
-        </p>
-        <p>
-          <span className="opacity-60">バウンディングボックス: </span>
-          {cloudInfo ? (
-            <span className="font-mono">
-              min={formatCoordinate(cloudInfo.min, units)} / max={formatCoordinate(cloudInfo.max, units)} {coordinateUnitLabel(units)}
-            </span>
-          ) : (
-            "―"
-          )}
-        </p>
-      </div>
+      {layer?.measurement ? (
+        // L2-F: a measurement layer has no points, so show the kind and the measured values
+        // (same lines as the on-screen label, in the display unit) instead of point count / CRS / bounding box.
+        <div className="flex flex-col gap-0.5 text-xs" data-testid="measure-layer-info">
+          <p>
+            <span className="opacity-60">名前: </span>
+            {layer.name}
+          </p>
+          <p>
+            <span className="opacity-60">種類: </span>
+            計測（{MEASURE_KIND_NAME[layer.measurement.kind]}）
+          </p>
+          {measurementLabelLines(layer.measurement, units).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-0.5 text-xs">
+          <p>
+            <span className="opacity-60">ファイル名: </span>
+            {layer?.name ?? "（未選択）"}
+          </p>
+          <p>
+            <span className="opacity-60">点数: </span>
+            {cloudInfo ? cloudInfo.pointCount.toLocaleString() : "―"}
+          </p>
+          <p>
+            <span className="opacity-60">CRS: </span>
+            {cloudInfo ? formatCrsLong(cloudInfo.crs) : "―"}
+          </p>
+          <p>
+            <span className="opacity-60">バウンディングボックス: </span>
+            {cloudInfo ? (
+              <span className="font-mono">
+                min={formatCoordinate(cloudInfo.min, units)} / max={formatCoordinate(cloudInfo.max, units)} {coordinateUnitLabel(units)}
+              </span>
+            ) : (
+              "―"
+            )}
+          </p>
+        </div>
+      )}
 
       {viewer.error && (
         // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidでエラー表示の

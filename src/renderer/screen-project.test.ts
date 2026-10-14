@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { lookAt, multiply, perspective } from "./mat4";
-import { projectPoint, projectSegment } from "./screen-project";
+import { labelShifts, projectPoint, projectSegment } from "./screen-project";
+
+describe("labelShifts", () => {
+  it("leaves labels that are far apart where they are", () => {
+    expect(labelShifts([{ x: 100, y: 100 }, { x: 600, y: 100 }, { x: 100, y: 400 }], [2, 2, 2])).toEqual([0, 0, 0]);
+  });
+  it("moves a label down when it would sit on an earlier one", () => {
+    const [a, b, c] = labelShifts([{ x: 100, y: 100 }, { x: 110, y: 105 }, { x: 105, y: 102 }], [2, 2, 1]);
+    expect(a).toBe(0);
+    expect(b).toBeGreaterThan(0);
+    expect(c).toBeGreaterThan(b); // clears both
+  });
+  it("gives 0 to an off-screen label and does not let it block others", () => {
+    expect(labelShifts([null, { x: 5, y: 5 }], [2, 2])).toEqual([0, 0]);
+  });
+});
 
 const view = lookAt([637000, 850000 - 100, 500], [637000, 850000, 500], [0, 0, 1]);
 const viewProj = multiply(perspective(Math.PI / 3, 2, 0.01, 1e7), view);
