@@ -359,7 +359,9 @@ fn native_output_hash_matches_recorded_value() {
     // (2026-09-30に記録した前の値0xE17F_4891_ACC2_2B10は、合成LASの作成日時を
     // 固定していなかったために翌日の実行で食い違った。`chrono::NaiveDate`で
     // 固定した今は、実行する日に関わらずこの値になるはず)。
-    const EXPECTED_HASH: u64 = 0x1835_0A7E_294F_68C3;
+    // M4-16: 親ノードへ入れる点の選び方を「先頭から」から「等間隔」に変えたため、
+    // ノードの中身が変わり値を更新した(前の値は0x1835_0A7E_294F_68C3)。
+    const EXPECTED_HASH: u64 = 0xA705_3768_F45A_CD58;
     assert_eq!(
         hash,
         EXPECTED_HASH,

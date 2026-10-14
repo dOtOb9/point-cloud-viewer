@@ -164,12 +164,13 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
     let mut nodes = Vec::new();
     let order_writer = fs.create_temp("order")?;
     let mut order_writer = BufWriter::with_capacity(INDEX_IO_BUFFER_BYTES, order_writer);
-    let selected_counts = append_lod_selection_to_order(
-        &children,
+    let selected_counts = select_for_parent_and_split_children(
+        &mut children,
         max_points_per_node,
         &mut order_writer,
         &mut order_offset,
         cancel,
+        fs,
     )?;
     let selected_total: usize = selected_counts.iter().sum();
     nodes.push(LodNodeRange {
@@ -181,15 +182,10 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
     // 残った子をオクタント順を保ったまま集め、並列に処理する。
     let mut remaining: Vec<(u8, IndexRun, Bounds)> = Vec::new();
     for (octant, child) in children.iter_mut().enumerate() {
-        let Some(mut child_run) = child.take() else {
+        // 親に選ばれた点は既に除かれた「残り」の列が入っている
+        let Some(child_run) = child.take() else {
             continue;
         };
-        let selected = selected_counts[octant];
-        if selected >= child_run.count {
-            continue;
-        }
-        child_run.start += selected as u64 * INDEX_RECORD_BYTES;
-        child_run.count -= selected;
         remaining.push((octant as u8, child_run, bounds.octant(octant as u8)));
     }
 
@@ -360,12 +356,13 @@ impl<S: CopcPointSource, W: Write> LodIndexBuilder<'_, S, W> {
 
         let mut children = partition_index_run(self.source, &run, bounds, self.cancel, self.fs)?;
         let start = *self.order_offset;
-        let selected_counts = append_lod_selection_to_order(
-            &children,
+        let selected_counts = select_for_parent_and_split_children(
+            &mut children,
             self.max_points_per_node,
             self.order_writer,
             self.order_offset,
             self.cancel,
+            self.fs,
         )?;
         let selected_total = selected_counts.iter().sum();
         self.nodes.push(LodNodeRange {
@@ -375,15 +372,10 @@ impl<S: CopcPointSource, W: Write> LodIndexBuilder<'_, S, W> {
         });
 
         for (octant, child) in children.iter_mut().enumerate() {
-            let Some(mut child_run) = child.take() else {
+            // 親に選ばれた点は既に除かれた「残り」の列が入っている
+            let Some(child_run) = child.take() else {
                 continue;
             };
-            let selected = selected_counts[octant];
-            if selected >= child_run.count {
-                continue;
-            }
-            child_run.start += selected as u64 * INDEX_RECORD_BYTES;
-            child_run.count -= selected;
             self.assign(
                 key.child(octant as u8)?,
                 child_run,
@@ -472,24 +464,15 @@ fn partition_index_run<S: CopcPointSource>(
     Ok(children)
 }
 
-fn append_lod_selection_to_order<W: Write>(
+/// 子ごとに親へ入れる点数を決める(各子へ1点ずつ順に配るラウンドロビン。
+/// 点数だけを決め、ファイルは読まない)。
+fn decide_selected_counts(
     children: &[Option<IndexRun>; 8],
     max_points_per_node: usize,
-    order_writer: &mut W,
-    order_offset: &mut u64,
-    cancel: &(dyn CancelCheck + Sync),
-) -> Result<[usize; 8]> {
-    let mut readers: [Option<BufReader<Box<dyn Read + Send>>>; 8] = std::array::from_fn(|_| None);
-    for octant in 0..8 {
-        if let Some(child) = &children[octant] {
-            readers[octant] = Some(open_index_run(child)?);
-        }
-    }
-
+) -> [usize; 8] {
     let mut selected_counts = [0usize; 8];
     let mut selected_total = 0usize;
     while selected_total < max_points_per_node {
-        cancel.check()?;
         let mut progressed = false;
         for octant in 0..8 {
             let Some(child) = &children[octant] else {
@@ -498,12 +481,6 @@ fn append_lod_selection_to_order<W: Write>(
             if selected_counts[octant] >= child.count {
                 continue;
             }
-            let index = readers[octant]
-                .as_mut()
-                .ok_or_else(|| Error::InvalidData("partition reader was not opened".into()))?
-                .read_u32::<LittleEndian>()
-                .map_err(|e| Error::io("read selected LOD index", e))?;
-            append_index_to_order(order_writer, order_offset, index)?;
             selected_counts[octant] += 1;
             selected_total += 1;
             progressed = true;
@@ -513,6 +490,81 @@ fn append_lod_selection_to_order<W: Write>(
         }
         if !progressed {
             break;
+        }
+    }
+    selected_counts
+}
+
+/// 親ノードに入れる点を、各子の列の**全体から等間隔に**選んで`order_writer`へ
+/// 書き、選ばれなかった点を新しい一時ファイルへ書き出して子の列に置き換える
+/// (M4-16)。
+///
+/// 以前は各子の列の先頭から取っていた。列は入力順を保つので、先頭=入力ファイルの
+/// 先頭部分(LASの走査線順なら空間的に一部の帯。複数図郭の結合なら先頭の図郭)
+/// になり、上位ノード(=引いたときに見える点)が空間的に偏った。
+///
+/// - 選ぶ点数は`decide_selected_counts`のまま(子ごとの割り当ては変えない)。
+/// - 子の列を1回だけ順に読む。`k`個選ぶ列(長さ`n`)では、`i`番目(0始まり)を
+///   `(i+1)*k/n > i*k/n`のとき選ぶ。ちょうど`k`個が等間隔になる。
+/// - 選ぶ側も残す側も列の中の相対順(indexの昇順)を保つ。順序を保つとノード内の
+///   点が近い順に並び、LAZの圧縮率が落ちない。結果も決定的(逐次版・並列版で同じ)。
+/// - メモリは入出力バッファだけ(点数に比例しない)。
+///
+/// 戻り値は子ごとの選んだ点数。`children[octant]`は、全点を選んだ子は`None`、
+/// 1点も選ばなかった子は元のまま、それ以外は「残り」の列(`start`=0)になる。
+fn select_for_parent_and_split_children<W: Write>(
+    children: &mut [Option<IndexRun>; 8],
+    max_points_per_node: usize,
+    order_writer: &mut W,
+    order_offset: &mut u64,
+    cancel: &(dyn CancelCheck + Sync),
+    fs: &dyn ScratchFs,
+) -> Result<[usize; 8]> {
+    let selected_counts = decide_selected_counts(children, max_points_per_node);
+    for octant in 0..8 {
+        let Some(child) = children[octant].take() else {
+            continue;
+        };
+        let selected = selected_counts[octant];
+        if selected == 0 {
+            children[octant] = Some(child);
+            continue;
+        }
+        let n = child.count as u64;
+        let k = selected as u64;
+        let mut reader = open_index_run(&child)?;
+        let mut rest_writer = if selected < child.count {
+            Some(BufWriter::with_capacity(
+                INDEX_IO_BUFFER_BYTES,
+                fs.create_temp("remainder")?,
+            ))
+        } else {
+            None
+        };
+        for i in 0..child.count {
+            if i.is_multiple_of(CANCEL_POLL_STRIDE) {
+                cancel.check()?;
+            }
+            let index = reader
+                .read_u32::<LittleEndian>()
+                .map_err(|e| Error::io("read selected LOD index", e))?;
+            let i = i as u64;
+            if (i + 1) * k / n > i * k / n {
+                append_index_to_order(order_writer, order_offset, index)?;
+            } else if let Some(rest) = rest_writer.as_mut() {
+                rest.write_u32::<LittleEndian>(index)
+                    .map_err(|e| Error::io("write LOD remainder index", e))?;
+            }
+        }
+        if let Some(rest) = rest_writer {
+            let boxed = rest
+                .into_inner()
+                .map_err(|e| Error::io("flush LOD remainder index", e.into_error()))?;
+            children[octant] = Some(IndexRun {
+                reader: boxed.finish_temp()?,
+                start: 0,
+                count: child.count - selected,
+            });
         }
     }
     Ok(selected_counts)
@@ -768,6 +820,74 @@ mod tests {
         .expect("identical points must exceed the depth cap");
 
         assert!(error.to_string().contains("maximum depth"));
+    }
+
+    /// M4-16: 空間的に並んだ入力(yの昇順)でも、ルートなど上位ノードの点が
+    /// 空間全体に散らばること。親へ入れる点を子の列の「先頭から」取っていた
+    /// ころは、入力の先頭付近(=yの小さい帯)にしか点が無かった。
+    fn upper_nodes_cover_spatially_sorted_input(fs: &dyn ScratchFs) {
+        let side = 64u32;
+        let mut points = Vec::new();
+        for yi in 0..side {
+            for xi in 0..side {
+                points.push(CopcPointFields {
+                    x: f64::from(xi),
+                    y: f64::from(yi),
+                    z: f64::from((xi + yi) % 5),
+                    return_number: 1,
+                    number_of_returns: 1,
+                    ..CopcPointFields::default()
+                });
+            }
+        }
+        let source = VecSource { points };
+        let bounds = source_bounds(&source);
+        let (center, halfsize) = cube_from_bounds(&bounds);
+        let params = CopcWriterParams::new(200);
+        let lod = build_lod_index(&source, center, halfsize, &params, &NeverCancel, fs).unwrap();
+        let ranges = read_lod_index(&lod).unwrap();
+
+        // 全点が1回ずつ現れること(選び方を変えても欠落・重複が無い)
+        let mut seen = vec![false; source.len()];
+        for (_key, indices) in &ranges {
+            for &index in indices {
+                assert!(!seen[index as usize], "point {index} assigned twice");
+                seen[index as usize] = true;
+            }
+        }
+        assert!(seen.into_iter().all(|v| v));
+
+        // ルートだけ、ルートとレベル1だけ、それぞれで、yの範囲を10分割した
+        // 各区間に点があること
+        for max_level in 0..=1u32 {
+            let mut bins = [0usize; 10];
+            for (key, indices) in &ranges {
+                if key.level as u32 > max_level {
+                    continue;
+                }
+                for &index in indices {
+                    let y = source.points[index as usize].y;
+                    let bin = ((y / f64::from(side)) * 10.0) as usize;
+                    bins[bin.min(9)] += 1;
+                }
+            }
+            assert!(
+                bins.iter().all(|&n| n > 0),
+                "レベル{max_level}以下の点が y の全範囲に広がっていない: {bins:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn upper_nodes_cover_spatially_sorted_input_memory() {
+        upper_nodes_cover_spatially_sorted_input(&MemoryScratchFs::new());
+    }
+
+    #[cfg(feature = "native-fs")]
+    #[test]
+    fn upper_nodes_cover_spatially_sorted_input_native() {
+        let dir = tempfile::tempdir().unwrap();
+        upper_nodes_cover_spatially_sorted_input(&NativeScratchFs::new(dir.path()));
     }
 
     fn source_bounds(source: &VecSource) -> Bounds {

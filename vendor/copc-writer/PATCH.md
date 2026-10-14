@@ -569,3 +569,11 @@ vendor/copc-writer/Cargo.toml --all-targets -- -D warnings`は本タスクと無
 `OpfsScratchFs`経由でこの改修に依存する。upstream(`roteiro-gis/copc-rust`)が
 同等のScratchFs抽象を取り込んだら、そちらに乗り換えてこの`vendor/`を
 削除できる。**上流への提案はしない**(コーディネーター指示)。
+
+## M4-16: 親ノードへ入れる点を子の列の全体から等間隔に選ぶ(`src/lod.rs`)
+
+上流は、親ノードに入れる点を各子オクタントの点列の先頭から取っていた。入力が空間的に
+並んでいる(LASの走査線順、結合では図郭順)と、上位ノードが空間的に偏る。
+`append_lod_selection_to_order`を`select_for_parent_and_split_children`に置き換え、
+子の列を1回読んで等間隔に選び、残りを新しい一時ファイルへ書いて子に渡すようにした。
+理由・採らなかった案・測定は`TaskSheets/M4-16-lod-sampling-bias.md`。
