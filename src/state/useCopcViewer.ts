@@ -30,7 +30,7 @@ import {
 } from "../datasource/opfs";
 import { detectSourceFormatByName } from "../datasource/source-format";
 import { isTauriEnvironment } from "../datasource/environment";
-import type { CloudInfo, DataSource } from "../datasource/DataSource";
+import type { DataSource } from "../datasource/DataSource";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import { formatConversionBreakdown, type ConversionBreakdownMeta } from "../datasource/conversion-breakdown";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
@@ -42,8 +42,22 @@ import {
   storeAnimationEnabled,
 } from "./motion-setting";
 import { GpuErrorLog, type GpuErrorEntry } from "../renderer/gpu-error-log";
-import { DEFAULT_COLOR_MODE, resolveColorMode, type ColorMode } from "../renderer/colormap";
+import type { ColorMode } from "../renderer/colormap";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "../renderer/device-profile";
+import {
+  EMPTY_LAYERS,
+  addLayerToState,
+  findLayer,
+  initialColorModeFor,
+  removeLayerFromState,
+  resolveLayerColorMode,
+  selectLayerInState,
+  setLayerColorModeInList,
+  setLayerVisibleInList,
+  type LayerDownload,
+  type LayersState,
+  type ViewerLayer,
+} from "./layers";
 import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "../renderer/center-priority";
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
@@ -62,15 +76,15 @@ export type { BackgroundMode };
 // ColorModeもここから再エクスポートする（M2-2）。
 export type { ColorMode };
 
+// L1-D: レイヤー1件の型も同じ理由で再エクスポートする。
+export type { ViewerLayer };
+
 // UI(src/ui)はdatasourceを直接触らずstate経由にする規約（規約2の裏返し。
 // tauri.tsをimportしてよいのはこのファイルだけ）のため、
 // ConversionProgressもここから再エクスポートする（M4-3）。
 export type { ConversionProgress };
 
 const TEMP_DIR_STORAGE_KEY = "pcv-conversion-temp-dir";
-
-/** L1-C: 今は「1ファイルを開くと置き換わる」ので、レイヤーは常にこの id の1つだけ。L1-Dで複数にする。 */
-const CURRENT_LAYER_ID = "current";
 
 /** M4-12(`TaskSheets/M4-import-and-conversion.md`): `path`(Tauri版の
  *  `\`/`/`どちらも使える文字列パス)の最後の区切り以降をファイル名として
@@ -89,35 +103,19 @@ function extensionOfFileName(fileName: string): string {
 }
 
 /**
- * 不具合修正(2026-10-08、所有者の報告「変換の内訳が出てこない」):
- * `openFile`の冒頭で「変換の内訳(`conversionBreakdownText`)・ダウンロードリンク
- * (`downloadReady`)を消すかどうか」を判断する部分だけを、純粋関数として
- * 切り出す。
+ * 変換が終わってから、その結果を開いてレイヤーになるまでの間だけ持つ「保留中の変換結果」。
  *
- * **直す前の問題**: 変換完了時のハンドラ(`onConvertDone`/`onConversionDone`)が
- * `setConversionBreakdownText(...)`(Web版は`setDownloadReady(...)`も)で
- * 内訳を設定した直後、変換結果を開くために続けて`openFileRef.current(...)`
- * (`openFile`)を呼んでいた。`openFile`は冒頭で問答無用に
- * `setConversionBreakdownText(null)`/`setDownloadReady(null)`を呼んでいたため、
- * 設定した直後に消えてしまい、Web版・デスクトップ版の両方で「変換の内訳」が
- * 画面に出ず、Web版の変換結果のダウンロードリンクも消えていた。
- *
- * **直し方**: 内訳・ダウンロードリンクを消すのは、利用者が自分で新しい
- * ファイルを開いたときだけにする。`openFile`の第2引数
- * `isConversionContinuation`(変換完了から続けて開く呼び出しかどうか。
- * 既定false)がtrueのときは消さない。利用者が自分でファイルを開く経路
- * (`LayerPanel.tsx`/`SettingsModal.tsx`)はこの引数を渡さないので、既定の
- * false(=消す)のままになる。
- *
- * 消す判断を呼び出し側(UIの各ボタン)に分散させるより、「いつ消すか」を
- * `openFile`一箇所に残したほうが所有者がこの関数を読むだけで全体の挙動を
- * 追えるため、この形を選んだ。`openFile`自体は`PointCloudRenderer`/
- * `DataSource`を触る大きな関数でテストしにくいため、判断部分だけを
- * `useTheme.ts`の`resolveTheme`と同じやり方でここだけ切り出してテストする
- * (`useCopcViewer.test.ts`参照)。
+ * 不具合修正(2026-10-08、「変換の内訳が出てこない」)の経緯: 変換完了ハンドラは内訳を設定した直後に
+ * `openFile` を呼ぶが、`openFile` が冒頭で内訳を消していたため画面に出なかった。
+ * L1-D では内訳・ダウンロードは「それを作ったレイヤー」に付ける。完了ハンドラはここに置き、
+ * `openFile(…, true)`（変換から続けて開く）が成功したときだけレイヤーへ移す。
+ * 利用者が自分で別のファイルを開いたとき（第2引数 false）は移さない（別のレイヤーに内訳が付かないように）。
  */
-export function shouldClearConversionResultOnOpen(isConversionContinuation: boolean): boolean {
-  return !isConversionContinuation;
+interface PendingConversionResult {
+  /** レイヤー欄に出す名前（変換後の `.copc.laz` の名前）。 */
+  name: string;
+  breakdownText: string;
+  download: LayerDownload | null;
 }
 
 /** M4-12: 内訳テキストに入れる端末情報。`navigator.deviceMemory`は
@@ -175,8 +173,21 @@ export type ViewerStatus = "idle" | "opening" | "converting" | "ready" | "error"
 export interface CopcViewerState {
   status: ViewerStatus;
   error: string | null;
-  cloudInfo: CloudInfo | null;
-  nodeCount: number;
+  /**
+   * L1-D: 開いているレイヤーの一覧（足した順）。「開く」は常に末尾へ足す（置き換えない）。
+   * 名前・点群情報・点数・着色・表示/非表示・変換の内訳・ダウンロードはレイヤーごとに持つ。
+   */
+  layers: ViewerLayer[];
+  /** 選択中のレイヤーの id。レイヤーが無ければ null。足したレイヤーは自動で選択になる。 */
+  selectedLayerId: string | null;
+  /** `layers` の中の選択中の1件（無ければ null）。レイヤー情報・着色ダイアログ・CRS 表示が引く。 */
+  selectedLayer: ViewerLayer | null;
+  selectLayer: (id: string) => void;
+  setLayerVisible: (id: string, visible: boolean) => void;
+  /** そのレイヤーの着色を変える。RGB を持たないレイヤーで "rgb" を選んだら標高に落ちる。 */
+  setLayerColorMode: (id: string, mode: ColorMode) => void;
+  /** レイヤーを消す（renderer から外し、DataSource のファイルも閉じる）。 */
+  removeLayer: (id: string) => void;
   pointBudget: number;
   /** タスクB(ADR-0009)の自動調整のオン/オフ。既定値はrendererの既定(true)に合わせている。 */
   autoPointBudgetEnabled: boolean;
@@ -191,17 +202,6 @@ export interface CopcViewerState {
   edlEnabled: boolean;
   /** AN: アニメーション（フェードイン・慣性・視点移動）のオン/オフ。UIのトグルは未実装（UIの作り直し後）。 */
   animationEnabled: boolean;
-  /**
-   * M3-8: モバイル最適化。`isMobile`/`deviceMemoryGiB`/`pointerCoarse`/
-   * `pointBudgetMax`は端末プロファイル(`device-profile.ts`)から一度だけ決まる、
-   * セッション中変わらない値（所有者が実機でどの既定値が選ばれたかを設定画面で
-   * 確かめられるようにするための表示用）。`renderScale`/`pointShape`は設定画面
-   * から切り替えられる値で、変更は再起動なしでrendererへ反映される。
-   */
-  isMobile: boolean;
-  deviceMemoryGiB: number | undefined;
-  pointerCoarse: boolean;
-  pointBudgetMax: number;
   renderScale: number;
   pointShape: PointShape;
   /** ADR-0010追記: LOD優先度に画面中央からの距離で掛ける重みの強さ。0で
@@ -215,17 +215,6 @@ export interface CopcViewerState {
    *  変更でき、再起動なしでrendererへ反映される
    *  （`PointCloudRenderer.setMinCenterPriorityWeight()`参照）。 */
   minCenterPriorityWeight: number;
-  /** M2-2: 着色モード。既定は`DEFAULT_COLOR_MODE`("rgb")。ファイルを開いた結果
-   *  RGBが無いと分かった場合は自動で`FALLBACK_COLOR_MODE_WITHOUT_RGB`("elevation")
-   *  に落ちる（`openFile`参照）。手動で"rgb"を選んでも、開いているファイルが
-   *  RGBを持たなければ同様に落ちる（`setColorMode`参照。フォールバック先の
-   *  理由は`src/renderer/colormap.ts`の`FALLBACK_COLOR_MODE_WITHOUT_RGB`
-   *  のコメントに記録してある）。
-   *
-   *  レンダラへの結線は`point-cloud-renderer.ts`の分割(node-selection.ts/
-   *  gpu-resources.ts/point-cloud-renderer.tsへの3分割)が完了した後に行った
-   *  （TaskSheets/M2-shading-and-ui.md M2-2「段階2」参照）。 */
-  colorMode: ColorMode;
   /** WebGPUのエラー（ADR-0011）。`device.onuncapturederror`・デバイス消失・初期化時の
    *  バリデーションエラーがここに蓄積される。M3(ADR-0013)以降は`pcv://`の
    *  ノード読み出し失敗（Rust側のpanicから復旧したものを含む）も同じ配列に
@@ -244,10 +233,6 @@ export interface CopcViewerState {
    * （`recordErrorHistory`参照）。
    */
   errorHistory: GpuErrorEntry[];
-  /** 開いているファイルの名前（パス/URLの最後の区切り以降、またはFileのname）。
-   *  まだ何も開いていない・開くのに失敗した場合は`null`（UIシェル再構築で追加。
-   *  左パネルのレイヤー情報に表示する）。 */
-  openedFileName: string | null;
   /** 変換ダイアログ(ConversionDialog.tsx)に出す、変換中の元ファイル名。まだ変換していなければnull。 */
   convertingFileName: string | null;
   /** Tauri版はパス文字列、Web版はURL文字列か、ドラッグ&ドロップ/選択した`File`を渡す。 */
@@ -274,26 +259,10 @@ export interface CopcViewerState {
   /** 変換中にキャンセルボタンから呼ぶ。 */
   cancelConversion: () => void;
   /**
-   * M4-6b: Web版で変換が完了したときだけ入る、ダウンロード用のURL
-   * (`URL.createObjectURL`)とファイル名。OPFSの中身はアプリの外から
-   * 取り出す手段が無いため、変換結果を保存したい所有者向けにこれを出す
-   * (受け入れ条件「変換したCOPCをダウンロードできるようにする」)。
-   * Tauri版・変換していないときは`null`。
+   * 選択中のレイヤーの変換の内訳を、クリップボードへコピーする。
+   * コピーに成功したら`true`を返す(失敗は握りつぶしてログだけ残す)。
+   * 内訳・ダウンロード（Web版）は変換で作ったレイヤーの `ViewerLayer` に付く。
    */
-  downloadReady: { url: string; fileName: string } | null;
-  /** ダウンロードのURLを明示的に破棄する(`URL.revokeObjectURL`込み)。 */
-  clearDownload: () => void;
-  /**
-   * M4-12(`TaskSheets/M4-import-and-conversion.md`): 直前に完了した変換の、
-   * 段階ごとの所要時間を所有者がそのまま報告できる形に整形したテキスト
-   * (`src/datasource/conversion-breakdown.ts`の`formatConversionBreakdown`)。
-   * Web版・デスクトップ版どちらも変換完了時に入る。次にファイルを開くと
-   * (`openFile`が)`null`に戻す。
-   */
-  conversionBreakdownText: string | null;
-  /** 上記テキストをクリップボードへコピーする(`navigator.clipboard`)。
-   *  コピーに成功したら`true`を返す(失敗は握りつぶしてログだけ残す。
-   *  ボタンの一時的な「コピーしました」表示に使うことを想定)。 */
   copyConversionBreakdownText: () => Promise<boolean>;
   /**
    * M4-6追記: Web版のOPFS使用量(キャッシュ・一時ファイルの内訳)と永続化の
@@ -337,7 +306,6 @@ export interface CopcViewerState {
   setPointShape: (shape: PointShape) => void;
   setCenterPriorityStrength: (strength: number) => void;
   setMinCenterPriorityWeight: (minWeight: number) => void;
-  setColorMode: (mode: ColorMode) => void;
   /** バナーの「閉じる」ボタンから呼ぶ。指定したエラーだけを消す。 */
   dismissGpuError: (id: number) => void;
 }
@@ -353,9 +321,25 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // TauriのwebviewかブラウザかでTauriSource/WebSourceを選ぶ（Web版はこの1箇所だけの
   // 分岐で切り替わる。TaskSheets/ADR-0012-web-worker-sync-io.md参照）。
   const sourceRef = useRef<DataSource | null>(null);
-  // L1-B: いま画面に出している（renderer に渡している）ファイルの cloudId。
-  // 今は置き換え動作（1ファイル）なので1つだけ持つ。複数レイヤー化は L1-D。
-  const currentCloudIdRef = useRef<number | null>(null);
+  // L1-D: レイヤー一覧と選択中の id。state（再描画用）と ref（コールバックから最新を読む用）の
+  // 両方に同じ値を入れる（`commitLayers` だけが書く）。renderer / DataSource への反映は
+  // 呼び出し側（openFile・removeLayer など）が行う。
+  const [layersState, setLayersState] = useState<LayersState>(EMPTY_LAYERS);
+  const layersStateRef = useRef<LayersState>(EMPTY_LAYERS);
+  const commitLayers = useCallback((next: LayersState) => {
+    layersStateRef.current = next;
+    setLayersState(next);
+  }, []);
+  // レイヤー id の通し番号。消しても再利用しない（renderer 側のキー衝突を避ける）。
+  const nextLayerNumberRef = useRef(1);
+  // 変換が終わってから、その結果のレイヤーが開くまでの保留中の結果（`PendingConversionResult`）。
+  const pendingConversionRef = useRef<PendingConversionResult | null>(null);
+  const setPendingConversion = useCallback((next: PendingConversionResult | null) => {
+    // 開かれないまま残った前回のダウンロード URL は、ここで手放す。
+    const previous = pendingConversionRef.current;
+    if (previous?.download) URL.revokeObjectURL(previous.download.url);
+    pendingConversionRef.current = next;
+  }, []);
   // GpuErrorLog自体はReactのstateではない（GPUに依存しない蓄積・重複抑制ロジックの
   // 実体、renderer/gpu-error-log.ts参照）。useRefで1個だけ持ち、reportのたびに
   // list()のスナップショットをgpuErrors stateへコピーしてReactに再描画させる。
@@ -367,13 +351,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // なので、rendererとこのフックの初期値はハンドシェイクなしで一致する
   // （point-cloud-renderer.tsのコンストラクタのコメント参照）。`useState`の
   // 初期化関数として渡し、レンダー毎に呼び直されないようにする。
-  const [deviceProfileInput] = useState(() => readDeviceProfileInput());
-  const [deviceProfileDefaults] = useState(() => defaultRenderSettings(deviceProfileInput));
+  const [deviceProfileDefaults] = useState(() => defaultRenderSettings(readDeviceProfileInput()));
 
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [cloudInfo, setCloudInfo] = useState<CloudInfo | null>(null);
-  const [nodeCount, setNodeCount] = useState(0);
   const [pointBudget, setPointBudgetState] = useState(deviceProfileDefaults.pointBudgetStart);
   // rendererの既定(PointCloudRenderer内 private autoPointBudgetEnabled = true)と合わせる。
   const [autoPointBudgetEnabled, setAutoPointBudgetEnabledState] = useState(true);
@@ -386,7 +367,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [pointShape, setPointShapeState] = useState<PointShape>(deviceProfileDefaults.pointShape);
   const [centerPriorityStrength, setCenterPriorityStrengthState] = useState(DEFAULT_CENTER_PRIORITY_STRENGTH);
   const [minCenterPriorityWeight, setMinCenterPriorityWeightState] = useState(DEFAULT_MIN_CENTER_PRIORITY_WEIGHT);
-  const [colorMode, setColorModeState] = useState<ColorMode>(DEFAULT_COLOR_MODE);
   const [gpuErrors, setGpuErrors] = useState<GpuErrorEntry[]>([]);
   // UIシェル再構築(ADR-0017)で追加: dismissで消えないエラー履歴。
   // `setGpuErrors`の直後に呼ぶ`recordErrorHistory`だけが更新する
@@ -399,19 +379,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       return Array.from(byId.values()).sort((a, b) => a.firstAt - b.firstAt);
     });
   };
-  // UIシェル再構築(ADR-0017)で追加: 左パネルのレイヤー情報に出すファイル名。
-  const [openedFileName, setOpenedFileName] = useState<string | null>(null);
   // 変換ダイアログに出す「いま変換している元ファイル名」(複数選択のときは表示名)。
   const [convertingFileName, setConvertingFileName] = useState<string | null>(null);
   // M4-3: 変換中の進捗。変換していないときはnull。
   const [conversionProgress, setConversionProgress] = useState<ConversionProgress | null>(null);
-  // M4-6b: Web版の変換完了後だけ入るダウンロード用URL。
-  const [downloadReady, setDownloadReadyState] = useState<{ url: string; fileName: string } | null>(null);
-  const downloadReadyRef = useRef<{ url: string; fileName: string } | null>(null);
-  // M4-12(`TaskSheets/M4-import-and-conversion.md`): 直前に完了した変換の、
-  // 所有者がそのまま報告できる内訳テキスト。変換していない・まだ完了していない
-  // ときは`null`。次に`openFile`を呼ぶとクリアする(`downloadReady`と同じ扱い)。
-  const [conversionBreakdownText, setConversionBreakdownText] = useState<string | null>(null);
   // 変換を開始する直前に元ファイル名を覚えておく(`openFile`が設定し、
   // マウント時に1度だけ張る`onConversionDone`/`onConvertDone`のハンドラが
   // 変換完了時にこれを読む。両ハンドラはクロージャ生成時点のファイル名を
@@ -419,31 +390,19 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // という`openFileRef`と同じ理由)。
   const convertingSourceNameRef = useRef<string | null>(null);
 
-  // 直前のダウンロードURLを(あれば)revokeしてから、新しい状態を設定する。
-  // `null`を渡すと「ダウンロードを破棄するだけ」になる。
-  const setDownloadReady = useCallback((next: { url: string; fileName: string } | null) => {
-    if (downloadReadyRef.current) {
-      URL.revokeObjectURL(downloadReadyRef.current.url);
-    }
-    downloadReadyRef.current = next;
-    setDownloadReadyState(next);
-  }, []);
-
-  const clearDownload = useCallback(() => setDownloadReady(null), [setDownloadReady]);
-
-  // M4-12: `conversionBreakdownText`はstateそのもの(上で宣言済み)。ここでは
-  // クリップボードへコピーする関数だけを作る。`navigator.clipboard`が無い
-  // 環境(非HTTPS等)でも画面を壊さないよう、失敗はログに残すだけにする。
+  // M4-12: 選択中のレイヤーの内訳テキストをクリップボードへコピーする。
+  // `navigator.clipboard`が無い環境(非HTTPS等)でも画面を壊さないよう、失敗はログに残すだけにする。
+  const selectedBreakdownText = findLayer(layersState.layers, layersState.selectedLayerId)?.conversionBreakdownText ?? null;
   const copyConversionBreakdownText = useCallback(async (): Promise<boolean> => {
-    if (conversionBreakdownText === null) return false;
+    if (selectedBreakdownText === null) return false;
     try {
-      await navigator.clipboard.writeText(conversionBreakdownText);
+      await navigator.clipboard.writeText(selectedBreakdownText);
       return true;
     } catch (e: unknown) {
       console.error("copyConversionBreakdownText failed", e);
       return false;
     }
-  }, [conversionBreakdownText]);
+  }, [selectedBreakdownText]);
 
   // M4-6追記: Web版のOPFS使用量・永続化の状態(設定画面「ブラウザの保存領域」節)。
   const [opfsStorageInfo, setOpfsStorageInfo] = useState<OpfsStorageInfo | null>(null);
@@ -506,7 +465,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // 別途trueになるので、この値がtrueのままでもUI側でisBrowserを優先して隠す)。
   const [supportsCustomTempDirState, setSupportsCustomTempDirState] = useState(true);
 
-  // `openFile`は`colorMode`等に依存して再生成される(下のuseCallback参照)。
+  // `openFile`は`tempDir`等に依存して再生成される(下のuseCallback参照)。
   // マウント時に1度だけ張るイベント購読(下のuseEffect)から常に最新の
   // `openFile`を呼べるよう、refに常に最新の関数を入れておく
   // (「effectは一度だけ、でも中身は最新でありたい」という定番の対処)。
@@ -563,8 +522,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         // 覚えておいた値(`convertingSourceNameRef`)を使う(`suggestedFileName`は
         // 既に".copc.laz"へ拡張子が変わっているため、元の形式が分からない)。
         const sourceName = convertingSourceNameRef.current ?? suggestedFileName;
-        setConversionBreakdownText(
-          formatConversionBreakdown(stageTimings, {
+        const breakdownText = formatConversionBreakdown(stageTimings, {
             platform: "web",
             // M4-14: 複数ファイルのときは表示名に拡張子が無い(「<名前> ほかNファイル」)
             // ので、デスクトップ版(src-tauriが返す文字列)と同じ表記にする。
@@ -574,8 +532,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
                 : extensionOfFileName(sourceName),
             fileName: sourceName,
             ...currentDeviceMeta(),
-          }),
-        );
+          });
         void (async () => {
           // OPFSに書いた出力を`File`として取り出し、通常のローカルファイル選択と
           // 同じ経路(`registerFile`→`open`)で開く。ダウンロード用のURLも
@@ -587,13 +544,14 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
             setError("変換結果をOPFSから読み出せませんでした");
             return;
           }
-          setDownloadReady({ url: URL.createObjectURL(file), fileName: suggestedFileName });
+          // L1-D: 内訳・ダウンロードは保留しておき、続けて開くレイヤーに付ける（PendingConversionResult参照）。
+          setPendingConversion({
+            name: suggestedFileName,
+            breakdownText,
+            download: { url: URL.createObjectURL(file), fileName: suggestedFileName },
+          });
           const key = source.registerFile(file);
-          // 不具合修正(2026-10-08): ここで設定した内訳(setConversionBreakdownText)・
-          // ダウンロードリンク(setDownloadReady)を、続けて呼ぶopenFileが冒頭で
-          // 消してしまっていた(利用者が新しいファイルを開いたときと見分けが
-          // 付かなかったため)。「変換結果を続けて開く」ことを示す第2引数
-          // trueを渡し、消さないようにする。
+          // 「変換結果を続けて開く」ことを示す第2引数trueを渡す（保留中の結果をレイヤーに移すため）。
           void openFileRef.current(key, true);
         })();
       });
@@ -607,16 +565,17 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
         // start_las_conversionを経由するが、既にCOPCと判定されて即座に開く
         // 経路に入るだけなので実害は無い(往復コストはヘッダー1回分)。
         setConversionProgress(null);
-        setConversionBreakdownText(
-          formatConversionBreakdown(stageTimings, {
+        setPendingConversion({
+          name: basenameOfPath(outputPath),
+          breakdownText: formatConversionBreakdown(stageTimings, {
             platform: "desktop",
             format: sourceFormat,
             fileName: convertingSourceNameRef.current ?? basenameOfPath(outputPath),
             ...currentDeviceMeta(),
           }),
-        );
-        // 不具合修正(2026-10-08): Web版と同じ理由(上のコメント参照)で、
-        // 第2引数trueを渡して内訳を消さないようにする。
+          download: null,
+        });
+        // Web版と同じ理由(上のコメント参照)で、第2引数trueを渡す。
         void openFileRef.current(outputPath, true);
       }).then((fn) => {
         unlistenDone = fn;
@@ -730,10 +689,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       unlistenDone();
       unlistenFailed();
     };
-    // setDownloadReadyは依存配列を空にしたuseCallbackで作った安定参照
-    // (revoke込みのsetter)なので、ここに加えてもこのeffectの「マウント時に
-    // 1度だけ」という性質は変わらない(react-hooks/exhaustive-deps対応)。
-  }, [setDownloadReady]);
+    // setPendingConversionは依存配列を空にしたuseCallbackで作った安定参照
+    // なので、ここに加えてもこのeffectの「マウント時に1度だけ」という性質は
+    // 変わらない(react-hooks/exhaustive-deps対応)。
+  }, [setPendingConversion]);
 
   const openFile = useCallback(async (pathOrFile: string | File, isConversionContinuation = false) => {
     const renderer = rendererRef.current;
@@ -742,12 +701,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
 
     setStatus("opening");
     setError(null);
-    setOpenedFileName(null);
     setConversionProgress(null);
-    if (shouldClearConversionResultOnOpen(isConversionContinuation)) {
-      setDownloadReady(null);
-      setConversionBreakdownText(null);
-    }
     try {
       // Web版のローカルファイル選択は`File`を受け取る。`DataSource.open()`は
       // 文字列しか取らないので、先に`WebSource.registerFile()`でキーへ変換する
@@ -883,49 +837,49 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       }
 
       const opened = await source.open(path);
-      // M2-2: 開いたファイルがRGBを持たない場合、現在"rgb"を選んでいれば
-      // 自動的に標高へ落とす（colormap.tsの`resolveColorMode`/
-      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。rendererは`resolveColorMode`を
-      // 知らず、渡された値をそのまま使うだけの設計。この関数は`colorMode`に依存する
-      // ため、下の`useCallback`の依存配列に`colorMode`を含めている。
-      const resolvedColorMode = resolveColorMode(colorMode, opened.info.hasColor);
-      // 置き換え動作: 新しいファイルが開けてから、前のレイヤーを消して前のファイルを閉じる
-      // （開けなかったときは前のファイルをそのまま見せ続ける）。
-      // L1-C: renderer は cloudId を知らない。レイヤーごとに cloudId を閉じ込めた readNode を渡す。
-      // 複数レイヤーの状態の作り直しはL1-Dでやる。標高の範囲はCloudInfo.min/max（実データ範囲）を渡す
+      // L1-D: 開いたものは常に新しいレイヤーとして足す（置き換えない）。足したレイヤーは選択になる。
+      // 着色の初期値はRGBがあれば"rgb"、無ければ標高（colormap.tsの`resolveColorMode`/
+      // `FALLBACK_COLOR_MODE_WITHOUT_RGB`参照）。rendererは`resolveColorMode`を知らず、
+      // 渡された値をそのまま使うだけの設計。
+      // renderer は cloudId を知らない。レイヤーごとに cloudId を閉じ込めた readNode を渡す。
+      // 標高の範囲はCloudInfo.min/max（実データ範囲）を渡す
       // （ノードのbounds=立方体ではない。renderer側の`addLayer`のコメント参照）。
-      const previousCloudId = currentCloudIdRef.current;
-      currentCloudIdRef.current = opened.cloudId;
-      renderer.removeLayer(CURRENT_LAYER_ID);
-      renderer.addLayer(CURRENT_LAYER_ID, {
+      const layerId = `layer-${nextLayerNumberRef.current++}`;
+      const colorMode = initialColorModeFor(opened.info);
+      // 変換から続けて開いたときだけ、保留中の内訳・ダウンロードをこのレイヤーに付ける。
+      const pending = isConversionContinuation ? pendingConversionRef.current : null;
+      if (pending) pendingConversionRef.current = null;
+      renderer.addLayer(layerId, {
         hierarchy: opened.nodes,
         readNode: (key) => source.readNode(opened.cloudId, key),
         boundsMin: opened.info.min,
         boundsMax: opened.info.max,
-        colorMode: resolvedColorMode,
+        colorMode,
         visible: true,
       });
-      if (previousCloudId !== null) {
-        source.close(previousCloudId).catch((e: unknown) => {
-          gpuErrorLogRef.current.report(`前のファイルを閉じられませんでした: ${String(e)}`, undefined, "node-read");
-          setGpuErrors(gpuErrorLogRef.current.list());
-          recordErrorHistory(gpuErrorLogRef.current.list());
-        });
-      }
-      setCloudInfo(opened.info);
+      // レイヤー欄に出す名前: 変換結果ならその名前、Tauri版のパス・Web版のURLは最後の区切り以降、
+      // 選択したFileはそのままname。
+      const layerName = pending?.name ?? (typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name);
+      commitLayers(
+        addLayerToState(layersStateRef.current, {
+          id: layerId,
+          name: layerName,
+          info: opened.info,
+          nodeCount: opened.nodes.length,
+          visible: true,
+          colorMode,
+          cloudId: opened.cloudId,
+          conversionBreakdownText: pending?.breakdownText ?? null,
+          download: pending?.download ?? null,
+        }),
+      );
       // CRSの読み取り失敗はファイルを開くことを止めない(ADR-0015)。本文はエラーログへ。
       if (opened.info.crs.error) {
         gpuErrorLogRef.current.report(`座標系(CRS)を読み取れませんでした: ${opened.info.crs.error}`, undefined, "crs");
         setGpuErrors(gpuErrorLogRef.current.list());
         recordErrorHistory(gpuErrorLogRef.current.list());
       }
-      setNodeCount(opened.nodes.length);
       setStatus("ready");
-      // UIシェル再構築(ADR-0017): 左パネルのレイヤー情報に出すファイル名。
-      // Tauri版のパス・Web版のURLはbasenameOfPathで最後の区切り以降だけにし、
-      // 選択したFileはそのままname（既にファイル名そのもの）を使う。
-      setOpenedFileName(typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name);
-      setColorModeState(resolvedColorMode);
 
       const label = typeof pathOrFile === "string" ? pathOrFile : pathOrFile.name;
       const summary = `[M1] opened ${label}: points=${opened.info.pointCount} nodes=${opened.nodes.length}`;
@@ -935,7 +889,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, [colorMode, tempDir, setDownloadReady, deviceProfileDefaults.isMobile, refreshOpfsStorageInfo]);
+  }, [tempDir, commitLayers, deviceProfileDefaults.isMobile, refreshOpfsStorageInfo]);
 
   /**
    * M4-14: 複数ファイル選択時の入口。`openFile`とほぼ同じ判断
@@ -957,8 +911,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setStatus("opening");
     setError(null);
     setConversionProgress(null);
-    setDownloadReady(null);
-    setConversionBreakdownText(null);
 
     const isFileArray = typeof pathsOrFiles[0] !== "string";
     const names = isFileArray
@@ -1046,10 +998,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       setStatus("error");
       setError(String(e));
     }
-  }, [tempDir, deviceProfileDefaults.isMobile, setDownloadReady, refreshOpfsStorageInfo]);
+  }, [tempDir, deviceProfileDefaults.isMobile, refreshOpfsStorageInfo]);
 
   // `openFileRef`を毎レンダー最新化する。マウント時に一度だけ張るイベント
-  // 購読(上のuseEffect、deps=[])から常に最新の`openFile`(最新のcolorMode/
+  // 購読(上のuseEffect、deps=[])から常に最新の`openFile`(最新の
   // tempDirを閉じ込めたもの)を呼べるようにするための、定番の対処。
   useEffect(() => {
     openFileRef.current = openFile;
@@ -1121,18 +1073,59 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef.current?.setMinCenterPriorityWeight(minWeight);
   }, []);
 
-  const setColorMode = useCallback(
-    (mode: ColorMode) => {
-      // 現在開いているファイルがRGBを持たない場合は、"rgb"を選ぼうとしても
-      // 自動的に標高へ落とす（受け入れ条件「RGBを持たない点群ではRGBが選べないか、
-      // 選んだときに分かる形で別モードに落ちる」）。`LayerPanel`側でも"rgb"の
-      // 選択肢自体をdisabledにしているため、通常はここに到達しないが、
-      // 二重の安全策として関数側でも解決する。
-      const resolved = resolveColorMode(mode, cloudInfo?.hasColor ?? false);
-      setColorModeState(resolved);
-      rendererRef.current?.setLayerColorMode(CURRENT_LAYER_ID, resolved);
+  // L1-D: レイヤー操作。renderer に伝え、同じ内容を一覧（state）にも入れる。
+  const selectLayer = useCallback(
+    (id: string) => {
+      commitLayers(selectLayerInState(layersStateRef.current, id));
     },
-    [cloudInfo],
+    [commitLayers],
+  );
+
+  const setLayerVisible = useCallback(
+    (id: string, visible: boolean) => {
+      const current = layersStateRef.current;
+      if (!findLayer(current.layers, id)) return;
+      rendererRef.current?.setLayerVisible(id, visible);
+      commitLayers({ ...current, layers: setLayerVisibleInList(current.layers, id, visible) });
+    },
+    [commitLayers],
+  );
+
+  const setLayerColorMode = useCallback(
+    (id: string, mode: ColorMode) => {
+      const current = layersStateRef.current;
+      // そのレイヤーがRGBを持たない場合は、"rgb"を選ぼうとしても標高へ落とす
+      // （受け入れ条件「RGBを持たない点群ではRGBが選べないか、選んだときに分かる形で別モードに
+      // 落ちる」）。着色ダイアログでも"rgb"の選択肢自体をdisabledにしているため、通常はここに
+      // 到達しないが、二重の安全策として関数側でも解決する（理由はcolormap.tsのコメント参照）。
+      const resolved = resolveLayerColorMode(current.layers, id, mode);
+      if (resolved === null) return;
+      rendererRef.current?.setLayerColorMode(id, resolved);
+      commitLayers({ ...current, layers: setLayerColorModeInList(current.layers, id, mode) });
+    },
+    [commitLayers],
+  );
+
+  const removeLayer = useCallback(
+    (id: string) => {
+      const current = layersStateRef.current;
+      const layer = findLayer(current.layers, id);
+      if (!layer) return;
+      // renderer から外す（GPUバッファの解放）→ 一覧から消す → DataSource のファイルを閉じる。
+      rendererRef.current?.removeLayer(id);
+      if (layer.download) URL.revokeObjectURL(layer.download.url);
+      const next = removeLayerFromState(current, id);
+      commitLayers(next);
+      if (next.layers.length === 0) {
+        setStatus((prev) => (prev === "ready" ? "idle" : prev));
+      }
+      sourceRef.current?.close(layer.cloudId).catch((e: unknown) => {
+        gpuErrorLogRef.current.report(`ファイルを閉じられませんでした: ${String(e)}`, undefined, "node-read");
+        setGpuErrors(gpuErrorLogRef.current.list());
+        recordErrorHistory(gpuErrorLogRef.current.list());
+      });
+    },
+    [commitLayers],
   );
 
   const dismissGpuError = useCallback((id: number) => {
@@ -1179,8 +1172,13 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const state: CopcViewerState = {
     status,
     error,
-    cloudInfo,
-    nodeCount,
+    layers: layersState.layers,
+    selectedLayerId: layersState.selectedLayerId,
+    selectedLayer: findLayer(layersState.layers, layersState.selectedLayerId),
+    selectLayer,
+    setLayerVisible,
+    setLayerColorMode,
+    removeLayer,
     pointBudget,
     autoPointBudgetEnabled,
     stats,
@@ -1188,27 +1186,18 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     gridEnabled,
     edlEnabled,
     animationEnabled,
-    isMobile: deviceProfileDefaults.isMobile,
-    deviceMemoryGiB: deviceProfileInput.deviceMemoryGiB,
-    pointerCoarse: deviceProfileInput.pointerCoarse,
-    pointBudgetMax: deviceProfileDefaults.pointBudgetMax,
     renderScale,
     pointShape,
     centerPriorityStrength,
     minCenterPriorityWeight,
-    colorMode,
     gpuErrors,
     errorHistory,
-    openedFileName,
     convertingFileName,
     openFile,
     openFiles,
     isBrowser: !isTauriEnvironment(),
     conversionProgress,
     cancelConversion,
-    downloadReady,
-    clearDownload,
-    conversionBreakdownText,
     copyConversionBreakdownText,
     opfsStorageInfo,
     refreshOpfsStorageInfo,
@@ -1232,7 +1221,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setPointShape,
     setCenterPriorityStrength,
     setMinCenterPriorityWeight,
-    setColorMode,
     dismissGpuError,
   };
   return [canvasRef, state];

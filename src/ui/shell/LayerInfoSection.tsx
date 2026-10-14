@@ -61,26 +61,30 @@ function ConversionBreakdownPanel({ text, onCopy }: { text: string; onCopy: () =
  * 文字列にして出す(配線の経緯はADR-0017のCRSの節とADR-0008の追記を参照)。
  */
 export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
+  // L1-D: 選択中のレイヤーの情報を出す。変換の内訳・ダウンロードは、それを作ったレイヤーを
+  // 選んでいるときだけ出る（変換直後はそのレイヤーが選択になる）。
+  const layer = viewer.selectedLayer;
+  const cloudInfo = layer?.info ?? null;
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5 text-xs">
         <p>
           <span className="opacity-60">ファイル名: </span>
-          {viewer.openedFileName ?? "（未選択）"}
+          {layer?.name ?? "（未選択）"}
         </p>
         <p>
           <span className="opacity-60">点数: </span>
-          {viewer.cloudInfo ? viewer.cloudInfo.pointCount.toLocaleString() : "―"}
+          {cloudInfo ? cloudInfo.pointCount.toLocaleString() : "―"}
         </p>
         <p>
           <span className="opacity-60">CRS: </span>
-          {viewer.cloudInfo ? formatCrsLong(viewer.cloudInfo.crs) : "―"}
+          {cloudInfo ? formatCrsLong(cloudInfo.crs) : "―"}
         </p>
         <p>
           <span className="opacity-60">バウンディングボックス: </span>
-          {viewer.cloudInfo ? (
+          {cloudInfo ? (
             <span className="font-mono">
-              min={fmt3(viewer.cloudInfo.min)} / max={fmt3(viewer.cloudInfo.max)}
+              min={fmt3(cloudInfo.min)} / max={fmt3(cloudInfo.max)}
             </span>
           ) : (
             "―"
@@ -97,12 +101,12 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
       )}
 
       {/* M4-6b: Web版のダウンロード導線。 */}
-      {viewer.isBrowser && viewer.downloadReady && (
+      {viewer.isBrowser && layer?.download && (
         <div className="flex items-center justify-between gap-2 rounded border border-black/10 p-2 text-xs dark:border-white/10">
           <span className="opacity-70">変換したCOPCを保存できます</span>
           <a
-            href={viewer.downloadReady.url}
-            download={viewer.downloadReady.fileName}
+            href={layer.download.url}
+            download={layer.download.fileName}
             // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidでダウンロード
             // リンクの表示を確かめる。削除・リネームするときはそちらも直すこと。
             data-testid="download-link"
@@ -114,8 +118,8 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
       )}
 
       {/* M4-12: 変換完了後の内訳。 */}
-      {viewer.conversionBreakdownText && (
-        <ConversionBreakdownPanel text={viewer.conversionBreakdownText} onCopy={viewer.copyConversionBreakdownText} />
+      {layer?.conversionBreakdownText && (
+        <ConversionBreakdownPanel text={layer.conversionBreakdownText} onCopy={viewer.copyConversionBreakdownText} />
       )}
 
       {/* 点予算・背景・グリッドはタスクシートが「表示」グループへの移動を

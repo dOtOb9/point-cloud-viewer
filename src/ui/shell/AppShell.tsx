@@ -72,7 +72,7 @@ export function AppShell() {
 
   // 変換ダイアログを出す条件: 変換中、または変換が終わって結果を出している間。
   // 失敗・キャンセル(status="error"/"idle")のときは出さない(エラーダイアログが出る)。
-  const conversionFinished = viewer.conversionBreakdownText !== null && viewer.status !== "error" && viewer.status !== "idle";
+  const conversionFinished = viewer.selectedLayer?.conversionBreakdownText != null && viewer.status !== "error" && viewer.status !== "idle";
   const conversionDialogVisible = conversionDialogOpen && (viewer.status === "converting" || conversionFinished);
 
   const closeErrorDialog = () => {

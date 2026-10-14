@@ -1,0 +1,85 @@
+// L1-D: レイヤー一覧の状態計算。React にも renderer にも依存しない純粋関数だけを置く
+// （一覧への追加・削除後の選択・表示切替・着色の更新）。`useCopcViewer.ts` はこれを呼んで
+// 結果を state に入れ、同じ内容を renderer に伝える。単体テストは `layers.test.ts`。
+// 純粋関数に分けた理由: フック本体は renderer / DataSource を起動する副作用が大きく、
+// 「選択中を消したら先頭を選ぶ」のような規則を直接テストできないため。
+
+import type { CloudInfo } from "../datasource/DataSource";
+import { resolveColorMode, type ColorMode } from "../renderer/colormap";
+
+/** 変換で作ったレイヤーに付く、Web 版のダウンロード用 URL。 */
+export interface LayerDownload {
+  url: string;
+  fileName: string;
+}
+
+/** 画面の「レイヤー」1件。ADR-0018 の「選んだレイヤーから新しいレイヤーを作る」の元になる単位。 */
+export interface ViewerLayer {
+  /** UI・renderer 共通のレイヤー id（`layer-1` のような通し番号。消しても再利用しない）。 */
+  id: string;
+  name: string;
+  info: CloudInfo;
+  nodeCount: number;
+  visible: boolean;
+  colorMode: ColorMode;
+  /** DataSource 側のファイル番号。`close` と `readNode` に使う。 */
+  cloudId: number;
+  /** このレイヤーを変換で作ったときだけ入る（内訳テキスト・ダウンロード）。 */
+  conversionBreakdownText: string | null;
+  download: LayerDownload | null;
+}
+
+/** 追加・削除の結果。一覧と選択中の id をひとまとめに返す（選択は常に一覧の中の id か null）。 */
+export interface LayersState {
+  layers: ViewerLayer[];
+  selectedLayerId: string | null;
+}
+
+export const EMPTY_LAYERS: LayersState = { layers: [], selectedLayerId: null };
+
+/** 新しいレイヤーの着色の初期値: 既定（RGB）を、RGB が無ければ標高に落とした値。 */
+export function initialColorModeFor(info: CloudInfo): ColorMode {
+  return resolveColorMode("rgb", info.hasColor);
+}
+
+/** 末尾に足し、足したレイヤーを選択にする。 */
+export function addLayerToState(state: LayersState, layer: ViewerLayer): LayersState {
+  return { layers: [...state.layers, layer], selectedLayerId: layer.id };
+}
+
+/**
+ * 消す。選択中を消したら残りの先頭を選び、残りが無ければ null。
+ * 選択中でないレイヤーを消したときは選択を変えない。存在しない id は何もしない。
+ */
+export function removeLayerFromState(state: LayersState, id: string): LayersState {
+  if (!state.layers.some((l) => l.id === id)) return state;
+  const layers = state.layers.filter((l) => l.id !== id);
+  const selectedLayerId = state.selectedLayerId === id ? (layers[0]?.id ?? null) : state.selectedLayerId;
+  return { layers, selectedLayerId };
+}
+
+/** 一覧にある id だけを選択にする（無い id は無視）。 */
+export function selectLayerInState(state: LayersState, id: string): LayersState {
+  if (!state.layers.some((l) => l.id === id)) return state;
+  return { ...state, selectedLayerId: id };
+}
+
+export function setLayerVisibleInList(layers: ViewerLayer[], id: string, visible: boolean): ViewerLayer[] {
+  return layers.map((l) => (l.id === id ? { ...l, visible } : l));
+}
+
+/** 選んだ着色をそのレイヤーに当てはめたときの実際の値（RGB が無ければ標高）。無いレイヤーは null。 */
+export function resolveLayerColorMode(layers: ViewerLayer[], id: string, mode: ColorMode): ColorMode | null {
+  const layer = layers.find((l) => l.id === id);
+  return layer ? resolveColorMode(mode, layer.info.hasColor) : null;
+}
+
+/** レイヤーの着色を更新する。RGB を持たないレイヤーで "rgb" を選んだら標高に落とす。 */
+export function setLayerColorModeInList(layers: ViewerLayer[], id: string, mode: ColorMode): ViewerLayer[] {
+  return layers.map((l) => (l.id === id ? { ...l, colorMode: resolveColorMode(mode, l.info.hasColor) } : l));
+}
+
+export function findLayer(layers: ViewerLayer[], id: string | null): ViewerLayer | null {
+  if (id === null) return null;
+  return layers.find((l) => l.id === id) ?? null;
+}

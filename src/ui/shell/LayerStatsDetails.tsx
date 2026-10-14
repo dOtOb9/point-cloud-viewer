@@ -28,7 +28,7 @@ export function LayerStatsDetails({ viewer }: { viewer: CopcViewerState }) {
       <summary className="cursor-pointer border-l-2 border-tertiary pl-2 font-sans text-xs font-semibold uppercase tracking-wide opacity-70">詳細統計</summary>
 
       <div className="flex flex-col gap-0.5">
-        <p>nodes: {viewer.nodeCount}</p>
+        <p>nodes: {viewer.selectedLayer?.nodeCount ?? 0}</p>
         <p>
           drawn: {stats.drawnPoints.toLocaleString()} pts / {stats.drawnNodes} nodes
         </p>
