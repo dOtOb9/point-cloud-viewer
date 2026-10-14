@@ -811,3 +811,9 @@ npm run build       # 通った
 4. 下限を0に下げたとき、設定画面にリスクの説明文が出ることを確認する
 5. `minCenterPriorityWeight=...`が`npm run tauri dev`のRust側stdoutに出て、
    設定画面の操作に合わせて値が変わることを確認する
+
+## 追記（2026-10-14）: 画素より細かい階層を読まない判定（LOD A）は、効果が出なかった
+
+`selectNodesForFrame` に「先祖の `screenSpaceError` が閾値（既定 1px）未満なら候補に入れない」判定を足した。
+`screenSpaceError` の単位がピクセルであることは確かめたが、点間隔を `cbrt(体積/点数)` で推定するため、面状のデータでは過大に出て、閾値 1 では点数がほぼ減らなかった（見下ろし 22.1M→21.5M）。
+閾値 4 では 1.4M まで減ったが、浅いノードの点が領域を均等に覆っておらず、見下ろしに穴が出た。詳細は `TaskSheets/HQ-high-quality-mode.md` の「LOD A」。
