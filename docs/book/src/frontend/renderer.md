@@ -9,20 +9,42 @@ React を知らず、`<canvas>` と `DataSource` だけを受け取ります。�
 ## フレームループ: `point-cloud-renderer.ts`
 
 [`PointCloudRenderer`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/point-cloud-renderer.ts) クラスがオーケストレーション役です。`requestAnimationFrame`・
-カメラ・統計・点予算の自動調整の呼び出し、ノードローダーとの接続を持ち、
-`src/state/useCopcViewer.ts` が使う唯一の入り口（公開 API）になっています。
+カメラ・統計・点予算の自動調整（止まったら上限まで上げる HQ-2 を含む）の呼び出し、ノードローダーとの接続を持ち、
+`src/state/` の hook（`useRendererLifecycle`・`useDisplaySettings`・`useLayers` など）が使う唯一の入り口（公開 API）になっています。
 実際に WebGPU の API を叩くことはせず、毎フレーム「今何を描くか」を
-`gpu-resources.ts` に渡すだけです。
+`gpu-resources.ts` に渡すだけです。毎フレームの手順は[毎フレームの描画](../flows/render-frame.md)に番号つきで書きました。
+
+### 複数レイヤーと `focusLayer`
+
+renderer は**複数のレイヤー**を持ちます（`Map<string, Layer>`。挿入順がレイヤーの並び順）。
+`DataSource` も `cloudId` も知らず、`addLayer(layerId, input)` の `LayerInput.readNode` が `cloudId` を閉じ込めた関数として渡されます。
+
+- **レイヤーごとに持つもの**: ノード階層・着色モード・標高の範囲（LAS ヘッダーの実データ範囲）・強度の範囲（届いたノードで広げる）・点の形と大きさ（`style`）・着色設定の uniform バッファ。
+- **全レイヤーで共有するもの**: 点予算、ノードキャッシュ、ノードローダー。キャッシュ・ローダーのキーは `"<通し番号>:<ノードキー>"`（`layer-key.ts`）でレイヤーごとに分かれる。
+- 操作: `addLayer`・`removeLayer`・`setLayerVisible`・`setLayerColorMode`・`setLayerPointShape`・`setLayerPointSize`。非表示のレイヤーはノード選択・読み込み・描画の対象外。
+- **`focusLayer(layerId, orientation?)`**: そのレイヤーへカメラを移す（視点移動のアニメーション。向きは今のまま）。グリッドの高さ・大きさもそのレイヤーに合わせる。
+  `addLayer` も最初のレイヤーは即座に、二つ目以降は `focusLayer` と同じ動きで移る。`focusBox(min, max)` は計測レイヤー（renderer の外にある）用、`resetView(layerId?)` は向きも初期に戻す。
+  範囲の計算は `layer-focus.ts`（`layerFocusBounds`・`focusGoalFor`）。
+- デバイス消失から復帰すると、各レイヤーの着色 uniform バッファは古いデバイスのものなので `null` にして、次に使うとき作り直す。
+
+### ピック（画面の点 → 3D の点）
+
+`pickPoint(cssX, cssY)` は、点が CPU に無いので**描いた深度を GPU から読み戻して**逆射影します。段階1で粗い距離を取り、
+段階2でその距離を挟む狭い near/far で小窓だけ描き直して精度を取り戻す二段階です（式は `pick-math.ts`、読み戻しは `gpu-resources.ts` の
+`readDepthWindow`／`renderDepthWindow`）。`getViewSnapshot()` は計測の線を重ねるために直近の `viewProj` と上方向を返します
+（[計測](../flows/measure.md)）。
 
 ## どのノードを描くか: `node-selection.ts`
 
-[`selectNodesForFrame()`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/node-selection.ts) が、クラスのフィールドに一切触らない**純粋関数**として
-「このフレームで描くノード」を決めます。
+[`selectNodesForLayers()`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/node-selection.ts) が、クラスのフィールドに一切触らない**純粋関数**として
+「このフレームで描くノード」を決めます（1レイヤー・キー前置きなしのときの結果は、従来の `selectNodesForFrame()` と同じです）。
 
-1. 視錐台の外のノードを除外する（`frustum.ts` の `aabbIntersectsFrustum`）
-2. 残ったノードに [`screenSpaceError()`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/screen-space-error.ts) で優先度を付け、優先度の高い順に並べる
-3. 点予算を超えるまでノードを採用し、超えたら残りは諦める
-4. 採用したノードのうち、キャッシュ済みのものは `toDraw`、未取得のものは `wanted`
+1. 見えているレイヤーごとに、octree の根から子へたどる。視錐台の外のノードの部分木には降りない（`frustum.ts` の `aabbIntersectsFrustum`）
+2. **LOD A**: 点間隔が `MIN_NODE_SPACING_PIXELS`（0.5px）を下回ったノードの子孫は候補に入れない（画素より細かい点は、読んでも見た目が変わらないため）
+3. 残ったノードに [`screenSpaceError()`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/screen-space-error.ts) と中央優先度の重みで優先度を付け、
+   **全レイヤーを一つのリストにして**優先度の高い順に並べる
+4. 点予算を超えるまでノードを採用し、超えたら残りは諦める（点予算は全レイヤーで一つを分け合う）
+5. 採用したノードのうち、キャッシュ済みのものは `toDraw`、未取得のものは `wanted`
    （ロードキューに渡す）に振り分ける
 
 キャッシュへのアクセスは `NodeSelectionCache` という最小限のインターフェース
@@ -57,6 +79,12 @@ Multiplicative Decrease）です。これは当初の実装（`requestAnimationF
 ラチェットでした）は [ADR-0010 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0010-lod-priority-and-point-budget.md) に詳しく記録されています。
 [落とし穴と教訓](../pitfalls.md)でも取り上げています。
 
+### 止まったら上限まで: `idle-boost.ts`（HQ-2）
+
+[`idle-boost.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/idle-boost.ts) の `stepIdleBoost` は、カメラが 500ms 止まったら点予算を上限まで上げ、
+動き出したら**描く前に**元の値へ戻す判定です（純粋関数）。上げる前の値は一度だけ保存し、止まっている間は AIMD を呼ばないので、
+一方向に張り付く形（ADR-0010 で何度も失敗した形）になりません。
+
 ## WebGPU を直接叩くところ: `gpu-resources.ts`
 
 [`gpu-resources.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/gpu-resources.ts)（1,000行超）が、デバイス・パイプライン・テクスチャの初期化、
@@ -70,6 +98,10 @@ Multiplicative Decrease）です。これは当初の実装（`requestAnimationF
   オフスクリーンを読んで陰影を掛けながら合成する、2パス構成
 - EDL オフ: オフスクリーンを経由せず、背景を描いた同じパスの中で点群を
   スワップチェーンへ直接描く、1パス構成（モバイルでの GPU 負荷削減のため）
+
+点の形（丸/四角）と大きさは**レイヤーごと**で、描くときに `DrawFrameOptions.nodeStyle(node)`
+（`PointCloudRenderer` が、ノードのキーの前置きからレイヤーを引いて返す）で決まります。着色は、ノードの bind group が
+**そのレイヤーの着色 uniform バッファ**を指しているので、レイヤーごとに別の着色モード・範囲で描けます。
 
 点の形（丸/四角）は、実行時の `if` 分岐で `discard` を迂回するのではなく、
 `fs_main_round`/`fs_main_square` という別々のフラグメントエントリポイントを
@@ -101,7 +133,7 @@ NaN が出て画面が真っ黒・地面しか見えない、という不具合�
 このパイプラインは、一度 `depthStencil` の宣言を忘れたことでレンダーパスと
 非互換になり、**画面全体が真っ黒になる**（しかも typecheck/lint/test/build/CI は
 すべて成功する）という事故を起こしています。これをきっかけに
-[WebGPU のエラー可視化の仕組み](#エラーの表示-gpu-error-logts--gpuerrorbannertsx)が作られました。
+[WebGPU のエラー可視化の仕組み](#エラーの表示-gpu-error-logts)が作られました。
 詳細は [ADR-0011](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0011-gpu-error-visibility.md) を参照してください。
 
 ### カラーマップ: `colormap.ts`
@@ -115,7 +147,9 @@ WGSL のコードを生成する `rampToWgslFunction()` があり、色の制御
 標高の正規化レンジは、octree のノードの立方体の範囲ではなく、LAS ヘッダーの
 実データ範囲（`CloudInfo.min`/`max`）から取ります（[`scene-bounds.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/scene-bounds.ts)）。
 これを混同すると「標高が全部同じ色になる」という実機不具合になります
-（[落とし穴と教訓](../pitfalls.md)参照）。
+（[落とし穴と教訓](../pitfalls.md)参照）。着色モード・標高の範囲・強度の範囲は**レイヤーごと**です
+（離れた場所のレイヤーを並べても、各レイヤーの色の差が潰れないように）。RGB を持たないレイヤーで `rgb` を選ぶと、
+呼び出し側（`resolveColorMode`、`colormap.ts`）が標高に落としてから renderer に渡します。renderer は渡された値をそのまま使います。
 
 ### 上方向: `up-axis.ts`
 
@@ -138,12 +172,14 @@ PLY/PCD のように座標系を持たないデータに備え、定数ではな
   戻らないという報告を受けて追加されました。無限に再試行せず、直近60秒に
   3回までという上限を持ちます
 
-## エラーの表示: `gpu-error-log.ts` / `GpuErrorBanner.tsx`
+## エラーの表示: `gpu-error-log.ts`
 
 [`gpu-error-log.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/gpu-error-log.ts) の `GpuErrorLog` は、WebGPU のエラー（初期化時のバリデーション
 エラー、実行時のエラー、デバイス消失）とノード読み出し失敗を蓄積し、同じ
 メッセージの連投を抑制する、**WebGPU に一切依存しない**純粋なクラスです。
-`src/ui/shell/GpuErrorBanner.tsx`（[ui-shell の章](./ui-shell.md)）が画面に表示します。
+`src/state/useErrorLog.ts` の `reportError` が受け取り、`src/ui/dialogs/ErrorDialog.tsx`（[ui-shell の章](./ui-shell.md)）が画面に表示します
+（出どころごとの流れは[エラーの流れ](../flows/errors.md)）。`GpuErrorSource`（`gpu`／`node-read`／`conversion`／`crs`／`tool`）で、
+どの種類のエラーかを区別します。クラス名・ファイル名は `Gpu` のままですが、中身は GPU に依存しない汎用の仕組みです。
 
 この仕組みが作られた理由そのものが教訓です。EDL の `depthStencil` 宣言漏れで
 画面が真っ黒になったとき、`typecheck`/`lint`/`test`/`build`/CI はすべて緑でした。

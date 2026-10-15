@@ -58,7 +58,7 @@ WebGPU では、深度アタッチメントを持つレンダーパスの中で 
 **コマンドエンコーダ全体が無効化されてそのフレームが丸ごと捨てられます。**
 これはブラウザの WebGPU 実装が実行時に出すバリデーションエラーであり、
 `npm run typecheck`/`lint`/`test`/`build`、CI のどこにも現れません。この事故が
-[WebGPU エラー可視化の仕組み](./frontend/renderer.md#エラーの表示-gpu-error-logts--gpuerrorbannertsx)（`GpuErrorLog`/`GpuErrorBanner`）を作る直接のきっかけになりました。
+[WebGPU エラー可視化の仕組み](./frontend/renderer.md#エラーの表示-gpu-error-logts)（`GpuErrorLog`。表示は今は `ErrorDialog`）を作る直接のきっかけになりました。
 詳細は [ADR-0011](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0011-gpu-error-visibility.md) を参照してください。
 
 ### インストーラ抜きの Release が「成功」する
