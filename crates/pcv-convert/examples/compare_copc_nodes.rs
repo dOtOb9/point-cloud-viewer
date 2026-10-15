@@ -45,8 +45,10 @@ fn read_nodes(path: &Path) -> Result<BTreeMap<NodeKey, Vec<Vec<u8>>>, String> {
             .get(HEADER_BYTES..)
             .ok_or_else(|| format!("node {key:?}: buffer shorter than its header"))?;
         let mut points: Vec<Vec<u8>> = body
-            .chunks_exact(POINT_STRIDE)
-            .map(<[u8]>::to_vec)
+            .as_chunks::<POINT_STRIDE>()
+            .0
+            .iter()
+            .map(|point| point.to_vec())
             .collect();
         points.sort();
         nodes.insert(key, points);
