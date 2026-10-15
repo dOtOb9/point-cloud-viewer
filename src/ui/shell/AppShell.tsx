@@ -13,7 +13,7 @@ import { SectionDialog, ToolProgressDialog } from "./ToolDialogs";
 import { ViewerPanel } from "../ViewerPanel";
 import { ConversionDialog } from "./ConversionDialog";
 import { ErrorDialog } from "./ErrorDialog";
-import { glassSurfaceClass } from "./glass";
+import { glassSurfaceClass } from "../common/glass";
 import { LayerPanel } from "./LayerPanel";
 import { Ribbon } from "./Ribbon";
 import { SettingsModal } from "./SettingsModal";

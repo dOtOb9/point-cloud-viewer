@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { OPAQUE_GLASS_SURFACE } from "./glass";
+import { OPAQUE_GLASS_SURFACE } from "../common/glass";
 
 // L1-D: レイヤー欄の一覧。各行は「表示チェック + 名前」。
 // - チェックボックス: 表示・非表示

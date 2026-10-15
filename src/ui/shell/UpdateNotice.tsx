@@ -1,5 +1,5 @@
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
-import { glassSurfaceClass } from "./glass";
+import { glassSurfaceClass } from "../common/glass";
 
 /**
  * M3-2 / M3-4: 新しいバージョンがあるときだけ出す通知。デスクトップ・Android共通

@@ -1,6 +1,6 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { formatCrsShort } from "./crs-format";
-import { glassSurfaceClass } from "./glass";
+import { formatCrsShort } from "../common/crs-format";
+import { glassSurfaceClass } from "../common/glass";
 
 /**
  * ADR-0017 (UIシェル再構築): 画面下部の「ステータスバー」。1行だけ。

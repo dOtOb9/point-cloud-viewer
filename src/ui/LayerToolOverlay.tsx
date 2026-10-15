@@ -2,7 +2,7 @@ import { useEffect, useState, type RefObject } from "react";
 import type { CopcViewerState } from "../state/useCopcViewer";
 import { MIN_POLYGON_VERTICES, type LayerToolState } from "../state/useLayerTool";
 import { projectPoint } from "../renderer/screen-project";
-import { glassSurfaceClass } from "./shell/glass";
+import { glassSurfaceClass } from "./common/glass";
 
 // L2-F: what is drawn over the 3D view while "点の選択" or "断面" is on, plus the guide at the bottom.
 //  - Polygon: the vertices are stored in canvas pixels, so they are drawn as they are (the polygon is

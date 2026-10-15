@@ -3,7 +3,7 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { MEASURE_KIND_NAME, measurementLabelLines } from "../../state/measure";
 import { coordinateUnitLabel, formatCoordinate, lengthUnitsFor } from "../../state/units";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
-import { formatCrsLong } from "./crs-format";
+import { formatCrsLong } from "../common/crs-format";
 
 // 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
 

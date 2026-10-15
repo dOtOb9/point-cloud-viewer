@@ -1,12 +1,12 @@
 import type { CSSProperties } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
-import { glassSurfaceClass } from "./glass";
+import { glassSurfaceClass } from "../common/glass";
 import { LayerActions } from "./LayerActions";
 import { LayerInfoSection } from "./LayerInfoSection";
 import { LayerList } from "./LayerList";
 import { LayerStatsDetails } from "./LayerStatsDetails";
-import { useTransitionMount } from "./useTransitionMount";
+import { useTransitionMount } from "../common/useTransitionMount";
 
 /** パネルが滑って消えるまでの時間(ms)。index.cssの`--motion-panel`と同じ値(未検証の初期値)。 */
 const PANEL_EXIT_MS = 220;

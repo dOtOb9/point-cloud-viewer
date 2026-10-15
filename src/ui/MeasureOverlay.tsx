@@ -13,7 +13,7 @@ import {
 import { labelShifts, projectPoint, projectSegment } from "../renderer/screen-project";
 import { lengthUnitsFor, type LengthUnits } from "../state/units";
 import { useDisplayUnit } from "../state/useDisplayUnit";
-import { glassSurfaceClass } from "./shell/glass";
+import { glassSurfaceClass } from "./common/glass";
 
 // L2-D: an SVG laid over the 3D view that draws measurement lines, vertices and labels.
 //

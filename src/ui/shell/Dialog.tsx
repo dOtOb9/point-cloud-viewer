@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { defaultRenderSettings, readDeviceProfileInput } from "../../renderer/device-profile";
-import { glassSurfaceClass } from "./glass";
-import { useTransitionMount } from "./useTransitionMount";
+import { glassSurfaceClass } from "../common/glass";
+import { useTransitionMount } from "../common/useTransitionMount";
 
 interface Props {
   open: boolean;

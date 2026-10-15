@@ -1,6 +1,6 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
-import { glassSurfaceClass } from "./glass";
+import { glassSurfaceClass } from "../common/glass";
 import { RibbonFileGroup } from "./RibbonFileGroup";
 import { RibbonSettingsGroup } from "./RibbonSettingsGroup";
 import { RibbonToolsGroup } from "./RibbonToolsGroup";
