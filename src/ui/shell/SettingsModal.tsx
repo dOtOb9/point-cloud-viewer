@@ -17,8 +17,8 @@ import { useEffect, useLayoutEffect, useReducer } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import type { ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
-import { Dialog } from "./Dialog";
-import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
+import { Dialog } from "../dialogs/Dialog";
+import { DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 import { RIBBON_BUTTON_CLASS } from "../ribbon/ribbon-styles";
 import { settingsNavReducer, visibleSettingsPages, type SettingsPageId } from "./settings-nav";
 import {

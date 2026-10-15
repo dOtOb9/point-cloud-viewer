@@ -5,8 +5,8 @@ import type { ThemePreference, ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import type { DisplayUnit } from "../../state/units";
-import { Dialog } from "./Dialog";
-import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
+import { Dialog } from "../dialogs/Dialog";
+import { DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 
 // L1-E (ADR-0017 追記2): 設定の項目ごとの専用ダイアログ。
 // フッターは「戻る」(設定の一覧へ)だけ(灰色=tertiary)。閉じるのは外側クリック・Esc(L2-A: 閉じるボタンは置かない)。

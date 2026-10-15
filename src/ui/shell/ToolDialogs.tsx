@@ -4,8 +4,8 @@ import type { LayerToolState } from "../../state/useLayerTool";
 import { convertLength, lengthUnitsFor, unitSymbol, UNKNOWN_UNIT_NOTE } from "../../state/units";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { displayLengthToFile, heightRange } from "../../state/tool-math";
-import { Dialog } from "./Dialog";
-import { DIALOG_BUTTON_CLASS, DIALOG_PRIMARY_BUTTON_CLASS, DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
+import { Dialog } from "../dialogs/Dialog";
+import { DIALOG_BUTTON_CLASS, DIALOG_PRIMARY_BUTTON_CLASS, DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 
 // L2-F: dialogs of the point-cloud tools. Both are plain forms.
 
