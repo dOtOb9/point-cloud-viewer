@@ -173,3 +173,41 @@ merge_las_to_copc <input> <out.copc.laz> 100000 <spill_dir> --assume-missing-crs
 cargo run -p pcv-convert --release --example verify_merge -- <out.copc.laz> <inputs...>
 ```
 Not checked: opening the new output in the viewer on a real GPU (only the Web E2E on SwiftShader and the node comparison were done).
+
+### Measured on the real data (B1, 2026-10-16): (a) 55 files, 347,797,138 points
+
+Build: origin/main at the time (record-carrying LOD included), `cargo build -p pcv-convert --release --example merge_las_to_copc`.
+Command: `merge_las_to_copc <data\tokyo-shibuya> <out> 100000 <spill_dir> --assume-missing-crs-is-first --timings`, TMP/TEMP and spill dir under the scratchpad on C:.
+Sampled every ~2 s (113 samples; same monitor as above, abort below 25 GB free). One run, no repeats. No other `merge_las_to_copc` process was running at the start;
+other agents' load was not monitored. The output passed `verify_merge` (347,797,138 points, bounds equal to the union of the inputs, colored nodes present).
+
+| Item | before (table above) | after ADR-0019 (this run) |
+|---|---|---|
+| Read + decode | 54.39 s | 39.73 s |
+| Spill write | 33.04 s | 18.43 s |
+| LOD index + node compression (compare the sum) | 207.76 + 63.43 = 271.19 s | 214.46 + 4.34 = 218.80 s |
+| Header / hierarchy | 0.03 s | 0.40 s |
+| **Total (tool)** | **386.20 s** | **294.56 s** (wall, monitor: 295.3 s) |
+| Output size | 4221.55 MB | 4221.55 MB (4,221,548,960 bytes; same size as before) |
+| Peak private memory (sampled) | 309 MiB | 308 MiB |
+| Peak working set (sampled) | not recorded | 299 MB |
+| Process write counter, total | 41.5 GiB | ~112 GiB (last sample 103.7 GiB at 278 s; final value not sampled) |
+| Process read counter, at last sample | 11.0 GiB (end of ingest; flat afterwards) | 136.7 GiB (not flat: runs are now re-read explicitly) |
+| Max spill-dir size (sampled) | 18.5 GB | 20.8 GB (includes partition run files; the dir is where the writer keeps them) |
+| Disk use (free before - lowest free) | 37.6 GB | 21.0 GB (68.8 -> 47.75). Includes the 4.2 GB output; free space also moves with other processes, so this is approximate |
+| Node count | not recorded | not recorded (`verify_merge` does not print it) |
+
+Reading: total is 24% shorter (386 -> 295 s); the ingest part is shorter too (spill write 33 -> 18 s, read 54 -> 40 s), but the machine state may differ between the two
+measurements, so only the sum of LOD + compression is a fair stage comparison (271 -> 219 s, -19%). Private memory is unchanged at ~0.3 GiB.
+Explicit I/O went up about 2.7x in writes (41.5 -> ~112 GiB) and the read counter now grows through LOD, which matches record-carrying runs being written and read back;
+time still went down. Whether that stays true when the data does not fit the page cache is the (c)/(b) question below.
+
+### (c) 110 files, 726M points: aborted by the watchdog, NOT measured
+
+Free space before: 85.1 GB, which is above "estimated peak + 25 GB" using the (a) ratio (21 GB x 2.09 = ~44 GB). The estimate was wrong: the spill alone reached 38.5 GB
+(end of ingest at ~150 s, write counter 38.6 GiB, same as the old (c)), and during the first ~80 s of the LOD stage free space fell from 46.5 GB to 28.2 GB (~0.07 GB/s... about 18 GB in 80 s).
+At t = 239 s free space reached 24.7 GB and the monitor killed the process (exit -1, as designed). So the peak disk use of the new method for (c) is **more than 60 GB**
+(not known; old method: 59.7 GB). Output and spill were deleted; C: free is back to ~84 GB. No time/memory figures for (c) are claimed.
+Private memory stayed at 94-308 MiB for the 240 s that ran (sampled), so the memory property held in the part that ran.
+To run (c) or (b), about 130-150 GB free would be needed (estimate: spill 38.5 GB + up to 2.1x-spill live run bytes, the bound tested in `tests/lod_runs_bounded.rs`, + 9 GB output);
+or lower the watchdog limit, which was not done here because C: is shared with other work.
