@@ -15,7 +15,7 @@ import { ConversionDialog } from "./ConversionDialog";
 import { ErrorDialog } from "./ErrorDialog";
 import { glassSurfaceClass } from "../common/glass";
 import { LayerPanel } from "./LayerPanel";
-import { Ribbon } from "./Ribbon";
+import { Ribbon } from "../ribbon/Ribbon";
 import { SettingsModal } from "./SettingsModal";
 import { StatusBar } from "./StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";

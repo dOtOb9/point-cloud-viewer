@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { isMeasureLayer } from "../../state/layers";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { shouldDeleteLayerOnKey } from "./layer-delete-key";
-import { RibbonButton } from "./RibbonButton";
+import { RibbonButton } from "../ribbon/RibbonButton";
 import { AppearanceDialog, ColorModeDialog } from "./ViewDialogs";
 
 /**
