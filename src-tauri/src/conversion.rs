@@ -367,7 +367,7 @@ pub fn start_multi_las_conversion(
     *state.0.lock().expect("ConversionState mutex poisoned") = Some(cancel_flag.clone());
 
     let app_for_thread = app.clone();
-    std::thread::spawn(move || {
+    spawn_guarded_conversion(app.clone(), move || {
         run_merge_conversion_thread(
             app_for_thread,
             fs_paths,
@@ -573,7 +573,7 @@ fn decide_and_start(
 
     let app_for_thread = app.clone();
     let output_for_thread = output_path.clone();
-    std::thread::spawn(move || {
+    spawn_guarded_conversion(app.clone(), move || {
         run_conversion_thread(
             app_for_thread,
             open_for_convert,
@@ -741,6 +741,37 @@ fn run_conversion_thread(
     }
 }
 
+/// Runs `work` on a new thread and reports a panic as a `conversion-failed` event (ADR-0015).
+/// Without this, a panic would end the thread silently and the screen would stay on "converting".
+fn spawn_guarded_conversion(app: AppHandle, work: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(move || {
+        run_guarded(work, |message| emit_failed(&app, message, false));
+    });
+}
+
+/// Calls `work`; if it panics, calls `on_panic` with an error message. Returns true if `work` finished.
+/// Split out from `spawn_guarded_conversion` so that it can be unit-tested without a Tauri app.
+fn run_guarded(work: impl FnOnce(), on_panic: impl FnOnce(String)) -> bool {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+        Ok(()) => true,
+        Err(panic) => {
+            let message = panic_message(panic.as_ref());
+            log::error!("[conversion] thread panicked: {message}");
+            on_panic(format!("内部エラー(panic): {message}"));
+            false
+        }
+    }
+}
+
+/// Extracts a readable message from the payload returned by `catch_unwind`.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(本文なし)".to_string())
+}
+
 fn emit_failed(app: &AppHandle, message: String, cancelled: bool) {
     let event = ConversionFailedEvent { message, cancelled };
     if let Err(e) = app.emit(EVENT_FAILED, &event) {
@@ -828,11 +859,7 @@ async fn run_tool<T: Send + 'static>(
     match joined {
         Ok(Ok(result)) => result,
         Ok(Err(panic)) => {
-            let message = panic
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "(本文なし)".to_string());
+            let message = panic_message(panic.as_ref());
             Err(format!("内部エラー(panic): {message}"))
         }
         Err(e) => Err(format!("処理を実行できなかった: {e}")),
@@ -939,4 +966,32 @@ pub async fn merge_copcs(
         })
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_guarded_does_not_report_when_work_finishes() {
+        let mut reported = None;
+        let finished = run_guarded(|| {}, |m| reported = Some(m));
+        assert!(finished);
+        assert!(reported.is_none());
+    }
+
+    #[test]
+    fn run_guarded_reports_a_str_panic() {
+        let mut reported = None;
+        let finished = run_guarded(|| panic!("boom"), |m| reported = Some(m));
+        assert!(!finished);
+        assert_eq!(reported.as_deref(), Some("内部エラー(panic): boom"));
+    }
+
+    #[test]
+    fn run_guarded_reports_a_formatted_panic() {
+        let mut reported = None;
+        run_guarded(|| panic!("bad value {}", 7), |m| reported = Some(m));
+        assert_eq!(reported.as_deref(), Some("内部エラー(panic): bad value 7"));
+    }
 }

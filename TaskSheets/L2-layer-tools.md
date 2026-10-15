@@ -411,3 +411,20 @@ The garbage comes from `LasZipDecompressor::seek` in laz 0.12.2: `delta = point_
 
 1. Web: open autzen-classified.copc.laz twice, click one row and Ctrl-click the other, press "複数レイヤー". Expect 21,306,672 points, a bar that stops at 100%, and no error dialog.
 2. `cargo test --lib range_of_variable` in `crates/pcv-wasm`; to see it fail, comment out the `laz` line of `[patch.crates-io]` in `crates/pcv-wasm/Cargo.toml`.
+
+## F1 record: desktop conversion failures reaching the screen
+
+Two claims from reading the code were checked.
+
+1. "`run_merge_conversion_thread` does not call `emit_failed` in the `Err(e)` branch": **false**. The generic `Err(e)` arm in `src-tauri/src/conversion.rs` already calls `emit_failed(&app, e.to_string(), false)` (after `log::error!`), same as the single-file thread. No change.
+2. "The conversion `std::thread::spawn` has no `catch_unwind`": **true**. A panic in either conversion thread (single file or merge) ended the thread with no `conversion-failed` event, so the screen could stay on "converting".
+
+Fix: both spawns now go through `spawn_guarded_conversion`, which wraps the work in `run_guarded` (`catch_unwind`) and, on panic, emits `conversion-failed` with `内部エラー(panic): <message>` (not cancelled). `run_guarded` takes a plain callback instead of an `AppHandle`, so it is unit-tested without Tauri (3 tests in `conversion.rs`). `panic_message` is shared with `run_tool`. Alternative not taken: wrapping inside each `run_*_thread`; that would duplicate the guard and still miss panics before the match.
+
+Also fixed the stale `GpuErrorBanner.tsx` path in a `src-tauri/src/lib.rs` comment (now `src/ui/dialogs/ErrorDialog.tsx`, which exists).
+
+Files: `src-tauri/src/conversion.rs`, `src-tauri/src/lib.rs`.
+
+Not verified: running the desktop app. A real panic during conversion was not triggered in the app.
+
+How the owner can check: `cargo test --workspace run_guarded` runs the unit tests. To see it on screen, temporarily add `panic!("test")` at the start of `run_conversion_thread`, convert a LAZ file, and expect an error instead of an endless "converting".
