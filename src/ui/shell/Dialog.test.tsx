@@ -109,4 +109,26 @@ describe("Dialog", () => {
     press(panel, backdrop);
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  // Owner decision 2026-10-15: dialogs are glass too (ADR-0017 addendum).
+  it("the panel is glass (blur + translucent tint), not opaque white/slate", () => {
+    const { container } = setup(true, () => {});
+    const panel = container.querySelector('[role="dialog"]') as HTMLElement;
+    expect(panel.className).toContain("backdrop-blur-md");
+    expect(panel.className).toContain("bg-white/65");
+    expect(panel.className).toContain("dark:bg-slate-950/70");
+  });
+
+  it("with glassEnabled=false (mobile profile) the panel is an opaque tint without blur", () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q.includes("pointer: coarse"), media: q }) as MediaQueryList) as typeof window.matchMedia;
+    try {
+      const { container } = setup(true, () => {});
+      const panel = container.querySelector('[role="dialog"]') as HTMLElement;
+      expect(panel.className).not.toContain("backdrop-blur");
+      expect(panel.className).toContain("bg-white ");
+    } finally {
+      window.matchMedia = original;
+    }
+  });
 });

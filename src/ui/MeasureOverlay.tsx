@@ -13,6 +13,7 @@ import {
 import { labelShifts, projectPoint, projectSegment } from "../renderer/screen-project";
 import { lengthUnitsFor, type LengthUnits } from "../state/units";
 import { useDisplayUnit } from "../state/useDisplayUnit";
+import { glassSurfaceClass } from "./shell/glass";
 
 // L2-D: an SVG laid over the 3D view that draws measurement lines, vertices and labels.
 //
@@ -121,7 +122,7 @@ function MeasurementShape({
 }
 
 /** Guide shown while measuring: what is measured, what to do next, and how to stop. */
-export function MeasureHud({ measure }: { measure: MeasureToolState }) {
+export function MeasureHud({ measure, glassEnabled }: { measure: MeasureToolState; glassEnabled: boolean }) {
   if (measure.mode === null) return null;
   const n = measure.points.length;
   const kindName = MEASURE_KIND_NAME[measure.mode];
@@ -134,7 +135,7 @@ export function MeasureHud({ measure }: { measure: MeasureToolState }) {
   return (
     <div
       data-testid="measure-hud"
-      className="pointer-events-auto absolute bottom-14 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100"
+      className={`pointer-events-auto absolute bottom-14 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl ${glassSurfaceClass(glassEnabled)} px-3 py-2 text-sm shadow-xl`}
     >
       <span className="font-semibold">{kindName}を計測中</span>
       <span>{measure.notice ?? guide}</span>

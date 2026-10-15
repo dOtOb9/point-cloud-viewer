@@ -2,6 +2,7 @@ import { useEffect, useState, type RefObject } from "react";
 import type { CopcViewerState } from "../state/useCopcViewer";
 import { MIN_POLYGON_VERTICES, type LayerToolState } from "../state/useLayerTool";
 import { projectPoint } from "../renderer/screen-project";
+import { glassSurfaceClass } from "./shell/glass";
 
 // L2-F: what is drawn over the 3D view while "点の選択" or "断面" is on, plus the guide at the bottom.
 //  - Polygon: the vertices are stored in canvas pixels, so they are drawn as they are (the polygon is
@@ -21,10 +22,13 @@ export function LayerToolOverlay({
   viewer,
   tool,
   canvasRef,
+  glassEnabled,
 }: {
   viewer: CopcViewerState;
   tool: LayerToolState;
   canvasRef: RefObject<HTMLCanvasElement | null>;
+  /** Same device-profile flag as the ribbon: false falls back to an opaque tint. */
+  glassEnabled: boolean;
 }) {
   const [frame, setFrame] = useState<Frame | null>(null);
   const getViewSnapshot = viewer.getViewSnapshot;
@@ -74,12 +78,12 @@ export function LayerToolOverlay({
           </g>
         )}
       </svg>
-      <LayerToolHud tool={tool} />
+      <LayerToolHud tool={tool} glassEnabled={glassEnabled} />
     </>
   );
 }
 
-function LayerToolHud({ tool }: { tool: LayerToolState }) {
+function LayerToolHud({ tool, glassEnabled }: { tool: LayerToolState; glassEnabled: boolean }) {
   const name = tool.mode === "select" ? "点の選択" : "断面";
   let guide: string;
   if (tool.mode === "select") {
@@ -94,7 +98,7 @@ function LayerToolHud({ tool }: { tool: LayerToolState }) {
   return (
     <div
       data-testid="layer-tool-hud"
-      className="pointer-events-auto absolute bottom-14 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl bg-white px-3 py-2 text-sm text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100"
+      className={`pointer-events-auto absolute bottom-14 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl ${glassSurfaceClass(glassEnabled)} px-3 py-2 text-sm shadow-xl`}
     >
       <span className="font-semibold">{name}</span>
       <span>{tool.notice ?? guide}</span>

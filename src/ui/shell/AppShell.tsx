@@ -13,6 +13,7 @@ import { SectionDialog, ToolProgressDialog } from "./ToolDialogs";
 import { ViewerPanel } from "../ViewerPanel";
 import { ConversionDialog } from "./ConversionDialog";
 import { ErrorDialog } from "./ErrorDialog";
+import { glassSurfaceClass } from "./glass";
 import { LayerPanel } from "./LayerPanel";
 import { Ribbon } from "./Ribbon";
 import { SettingsModal } from "./SettingsModal";
@@ -96,8 +97,8 @@ export function AppShell() {
     <div className="fixed inset-0 overflow-hidden bg-black">
       <ViewerPanel canvasRef={canvasRef} />
       <MeasureOverlay viewer={viewer} measure={measure} canvasRef={canvasRef} />
-      <MeasureHud measure={measure} />
-      <LayerToolOverlay viewer={viewer} tool={layerTool} canvasRef={canvasRef} />
+      <MeasureHud measure={measure} glassEnabled={glassEnabled} />
+      <LayerToolOverlay viewer={viewer} tool={layerTool} canvasRef={canvasRef} glassEnabled={glassEnabled} />
 
       <Ribbon
         viewer={viewer}
@@ -127,7 +128,7 @@ export function AppShell() {
       {dragging && (
         // ファイルをドラッグしている間だけ出す案内(操作は受けない。ドロップはuseFileDrop.tsが受ける)。
         <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-black/40">
-          <p className="rounded-2xl bg-white px-6 py-4 text-lg font-semibold text-slate-900 shadow-2xl dark:bg-slate-900 dark:text-slate-100">
+          <p className={`rounded-2xl ${glassSurfaceClass(glassEnabled)} px-6 py-4 text-lg font-semibold shadow-2xl`}>
             ここにドロップして開く
           </p>
         </div>

@@ -591,3 +591,29 @@ DOM との接続だけ `useRibbonDragScroll.ts`。5px 未満は普通のクリ�
 **触ったファイル:** `src/ui/shell/Dialog.tsx`・`Dialog.test.tsx`・`ViewDialogs.tsx`・`SettingsPages.tsx`・`SettingsPages.test.tsx`。
 **確認:** Edge(実GPU、adapter.info vendor=nvidia, architecture=lovelace)で、設定・着色・陰影ページの後ろがぼけることをスクリーンショットで確認(L2-layer-tools.md の L2-A の記録参照)。
 **所有者の確認手順:** 着色・設定などを開き、後ろがぼけて暗くなりすぎないこと、設定の専用ページに「戻る」だけがあることを確かめる。
+
+## Addendum 2026-10-15: dialogs are glass too (L2-I)
+
+**What:** Every dialog panel (`Dialog.tsx`: settings list and pages, coloring, appearance, conversion, tool progress, section, error, URL) now uses
+`glassSurfaceClass(glassEnabled)` from `glass.ts`, the same surface as the ribbon and the layer panel (blur + translucent tint, light 65% / dark 70%).
+The same glass is used by the floating guide bars of the measurement and layer tools (`MeasureHud`, `LayerToolHud`) and the "drop a file here" hint (`AppShell.tsx`).
+Header/footer separators changed from slate lines to `border-black/10` / `dark:border-white/10` so they match the glass border.
+The dimming blur behind the dialog (`bg-black/10 backdrop-blur-sm`) is kept.
+With `glassEnabled=false` (mobile profile) the panel falls back to the opaque tint (`OPAQUE_GLASS_SURFACE`), as the ribbon does.
+`Dialog` reads the device profile itself (it already did for the backdrop), so no prop is threaded through every call site; the HUD bars get `glassEnabled` from `AppShell`.
+
+**Why / why the old decision is reversed:** ADR-0005 and the first ADR-0017 text said "dialogs are opaque" (dense inputs and long text need stable contrast).
+The owner decided on 2026-10-15 that popups should be translucent as well, because the ribbon is already readable on glass.
+The dialog sits over a blurred backdrop, so the point cloud behind it is smeared, which keeps the contrast closer to the ribbon's than the ADR-0005 worst case.
+
+**Alternatives not taken:** raising the tint opacity only for dialogs (not needed after looking at the screenshots; revisit if a bright cloud makes text hard to read);
+passing `glassEnabled` as a `Dialog` prop (more churn, same source of truth).
+
+**Touched files:** `src/ui/shell/Dialog.tsx`, `Dialog.test.tsx`, `AppShell.tsx`, `src/ui/MeasureOverlay.tsx`, `src/ui/LayerToolOverlay.tsx`.
+
+**Checked:** `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (59 files, 544 tests; new tests: glass classes present, absent with a coarse pointer), `npx playwright test` (2 passed).
+Real Edge (headed, adapter nvidia/lovelace) with `autzen-classified.copc.laz`, light and dark: settings list, background page, coloring and section dialogs were screenshotted after the open animation.
+Text, radios, checkbox and buttons are readable in both themes. In light theme the number inputs have a faint border on the grey glass (readable, but the weakest part).
+**Not checked:** the error dialog (no error was produced), bright point clouds behind the dialog, the mobile opaque fallback on a real device, backdrop-filter cost with two stacked blurs (backdrop + panel; not measured).
+
+**Owner check:** open Settings, a settings page, Coloring and Section in light and dark themes; confirm the panel is see-through like the ribbon and still readable; on a phone confirm the panels are opaque.

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { defaultRenderSettings, readDeviceProfileInput } from "../../renderer/device-profile";
+import { glassSurfaceClass } from "./glass";
 import { useTransitionMount } from "./useTransitionMount";
 
 interface Props {
@@ -33,8 +34,8 @@ const FOCUSABLE =
  * ダイアログ。上に中央ぞろえのタイトル、真ん中に本文、下に中央ぞろえのボタン列、という構成。
  * 右上の✕ボタンは無い(所有者の判断で廃止。閉じる手段は下の3つ)。
  *
- * - **不透明。** ADR-0005の決定どおり(密な入力・長文は安定したコントラストが要る)。
- *   ガラス(`glass.ts`)は使わない。
+ * - **Glass (2026-10-15; reverses the earlier "opaque" rule, see the ADR-0017 addendum).** The panel uses the
+ *   same `glassSurfaceClass` as the ribbon. When the device profile has `glassEnabled=false` it falls back to an opaque tint.
  * - **閉じ方は3つ:** フッターのボタン(呼び出し側が`footer`に「閉じる」か「キャンセル」を必ず置く)、
  *   外側の暗幕クリック、Esc。
  * - **暗幕クリックで閉じる(所有者の判断。以前は誤操作を避けて閉じなかった)。**
@@ -104,7 +105,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
     }
   };
 
-  const headerTone = tone === "error" ? "bg-error text-on-error" : "border-b border-slate-200 dark:border-slate-700";
+  const headerTone = tone === "error" ? "bg-error text-on-error" : "border-b border-black/10 dark:border-white/10";
 
   // 動かすのはopacityとtransformだけ。出る: 暗幕はフェード、パネルは0.96倍→1倍+フェード(ease-out)。
   // 閉じる: 逆向きで速く(ease-in)。時間・イージングはindex.cssの`--motion-*`(1箇所)。
@@ -140,7 +141,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className={`flex max-h-[85vh] w-full ${widthClass} flex-col overflow-hidden rounded-2xl border-t-[3px] ${ACCENT_BORDER[accent]} bg-white text-slate-900 shadow-2xl outline-none dark:bg-slate-900 dark:text-slate-100`}
+        className={`flex max-h-[85vh] w-full ${widthClass} flex-col overflow-hidden rounded-2xl ${glassSurfaceClass(blurEnabled)} border-t-[3px] ${ACCENT_BORDER[accent]} shadow-2xl outline-none`}
       >
         <div className={`px-4 py-3 text-center ${headerTone}`}>
           <h2 id={titleId} className="text-base font-semibold">
@@ -151,7 +152,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
           {children}
         </div>
         {footer && (
-          <div className="flex flex-wrap items-center justify-center gap-2 border-t border-slate-200 px-4 py-3 dark:border-slate-700">{footer}</div>
+          <div className="flex flex-wrap items-center justify-center gap-2 border-t border-black/10 px-4 py-3 dark:border-white/10">{footer}</div>
         )}
       </div>
     </div>
