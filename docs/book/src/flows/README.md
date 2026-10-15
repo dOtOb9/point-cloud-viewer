@@ -16,9 +16,12 @@
 |---|---|
 | [起動](./startup.md) | `main.tsx` からビューアが動くまで |
 | [ファイルを開く](./open-file.md) | 「開く」・D&D から、レイヤーが画面に出るまで |
+| [変換の中身](./conversion.md) | LAS/LAZ・PCD から COPC への変換（Rust 側） |
+| [ノードの読み込み](./node-loading.md) | ノードのバイナリが renderer に届くまで |
 | [毎フレームの描画](./render-frame.md) | `renderOnce` の中身 |
 | [レイヤー操作](./layers.md) | 表示・選択・着色・移動・削除 |
 | [計測](./measure.md) | 計測ボタンから計測レイヤーまで |
+| [点の選択・断面・結合](./point-cloud-tools.md) | 選んだレイヤーから新しいレイヤーを作るツール |
 | [エラーの流れ](./errors.md) | どこで受け止められ、どこに出るか |
 | [設定と単位](./settings.md) | 設定の一覧、保存先、単位の換算 |
 
