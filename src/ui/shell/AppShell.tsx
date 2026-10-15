@@ -17,9 +17,9 @@ import { glassSurfaceClass } from "../common/glass";
 import { LayerPanel } from "../layers/LayerPanel";
 import { Ribbon } from "../ribbon/Ribbon";
 import { SettingsModal } from "./SettingsModal";
-import { StatusBar } from "./StatusBar";
+import { StatusBar } from "../status/StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
-import { UpdateNotice } from "./UpdateNotice";
+import { UpdateNotice } from "../status/UpdateNotice";
 
 /**
  * ADR-0017 (UIシェル再構築): UIシェルの組み立て役。
