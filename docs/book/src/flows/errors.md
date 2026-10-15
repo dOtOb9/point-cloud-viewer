@@ -53,7 +53,7 @@
 | `pcv://` のノード読み出し | `copc_state.rs` の `catch_unwind` → HTTP 500 | 2. の経路で `reportError(..., "node-read")` |
 | 点群ツール（選択・断面・結合）のコマンド | `src-tauri/src/conversion.rs` の `catch_unwind`（`spawn_blocking` の中）。`"内部エラー(panic): ..."` の `Err` にする | `usePointCloudTools.ts` の `runTool` の `catch` → `reportError(message, "tool")` |
 | Web の Worker（wasm） | `init_panic_hook`（`crates/pcv-wasm/src/lib.rs`。`console.error` に出す）。トラップは Worker の `try/catch` が拾い `error`／`convert-failed` のメッセージに | 3. の経路 |
-| 変換本体（`std::thread::spawn` のスレッド） | **`conversion.rs` の変換スレッドには `catch_unwind` が見当たらない**（grep で確認。動作は未検証） | panic すると `conversion-failed` が出ず、画面が「変換中」のままになりうる（推定） |
+| 変換本体（変換スレッド） | `src-tauri/src/conversion.rs` の `spawn_guarded_conversion` → `run_guarded`（`catch_unwind`）。panic は `"内部エラー(panic): ..."` として `emit_failed` へ（F1） | 失敗と同じく `conversion-failed` → `onConversionFailed` → エラーダイアログ（アプリでの実行は未確認、単体テストのみ） |
 
 ### 5. その他
 

@@ -139,5 +139,5 @@ ADR-0019 の**後**に測れたのは渋谷4枚(30,043,046点)だけで、旧 61
   - Web の後処理(`finish`)は途中で止められません(GitHub Pages では `SharedArrayBuffer` が使えないため)。
   - Web では `std::time::Instant::now` が panic するため、`copc-writer` は `web_time::Instant` を使います。`None` のときでも無条件に呼んでいたため、Web の変換がファイルサイズに関係なく失敗していた事故があります(`writer.rs` の `PostProcessStageTimings` のコメント)。
   - OPFS には mmap が無く、spill をまるごと読むと wasm32 のメモリ上限で落ちました。`ScratchReader` は範囲読み(`read_at`)だけにしてあります([vendor/copc-writer の章](../rust/copc-writer.md))。
-  - デスクトップで複数ファイルの結合が失敗したとき、`run_merge_conversion_thread` の `Err(e)` 枝は `log::error!` を出すだけで、`emit_failed`(`conversion-failed` イベント)を呼んでいないように読めます(キャンセルの枝は呼ぶ)。画面に失敗が出ない可能性があります。**コードを読んだだけで、実行して確かめていません。**
+  - 変換スレッド(単一ファイル・結合)は `spawn_guarded_conversion` で起動し、中身を `run_guarded`(`catch_unwind`)で囲んでいます。panic したら `内部エラー(panic): ...` を `conversion-failed` として画面に出します(F1。以前は panic すると画面が「変換中」のまま残りえた)。失敗(`Err`)の枝は、単一ファイル・結合とも `emit_failed` を呼びます。デスクトップのアプリで panic を起こして確かめてはいません(単体テストのみ)。
   - テストが緑でも、実際の巨大入力・実ブラウザで確かめていない部分があります(上の「再計測は未実施」)。
