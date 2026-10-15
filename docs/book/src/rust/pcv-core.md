@@ -5,7 +5,8 @@
 ネイティブと `wasm32-unknown-unknown` の両方でビルドできます。これがデスクトップ・
 Android・Web のすべてで**同じ読み込みコード**を使えている理由です。
 
-公開 API は [`crates/pcv-core/src/lib.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/lib.rs) の `pub use` に集約されています。
+公開 API は [`crates/pcv-core/src/lib.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/lib.rs) にあり、
+`pub mod crs`(座標参照系)・`pub mod extract`(条件に合う点の抽出)と、次の `pub use` で構成されています。
 
 ```rust
 pub use copc::{CloudInfo, CopcError, CopcFile, Hierarchy, HierarchyNode, NodeKey, Result};
@@ -59,6 +60,22 @@ impl<R: Read + Seek + Send> CopcFile<R> {
 変換（世界座標の原点を f32 に丸めてから差分を取ることで、丸め誤差を相対座標に
 持ち込まない工夫）もこの関数の中にあります。
 
+## `extract.rs`: 条件に合う点だけを読む(L2-C)
+
+[`src/extract.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/extract.rs) は、点の選択・断面ツールの**読み側**です。
+書き出しはここでは行いません(デスクトップは `pcv-convert/src/extract.rs`、Web は `pcv-wasm/src/extract.rs` が、このイテレータを `vendor/copc-writer` に渡します)。
+`pcv-core` に置いてあるのは、wasm32 でビルドでき Tauri に依存しないので、両方から使えるためです。
+
+- `ExtractFilter`(`#[serde(tag = "kind", rename_all = "camelCase")]`の列挙型): `ScreenPolygon`(画面に描いた多角形。`view_proj`(16要素、列優先)と NDC の頂点列。カメラの前(w > 0)にあり多角形に投影される点が対象で、奥行きは問わない)と、
+  `OrientedBox`(向きつきの直方体。中心・単位ベクトル3本・各軸の半分の長さ。断面の板)。座標はファイルの実座標(f64)。
+  `validate`(入力の形の検査)・`contains`(点ごとの正確な判定)・`may_intersect`(ノードの bbox との**保守的な**交差判定)を持つ。
+- `ExtractPoints`: COPC の hierarchy から、条件と交わりうるノードだけを選び(`new`)、1ノードずつ `read_node` して、`contains` を通った点を1点ずつ返すイテレータ。
+  読んだ点は次のノードを読む前に捨てるので、同時に抱えるのは1ノード分(`max_points_per_node` 以下)です。
+  `set_node_callback` でノードごとの進捗とキャンセルの確認を差し込めます(一致する点が少ないとき、書き出し側のキャンセル確認だけでは遅いため)。
+- `may_intersect` が `false` を返すのは「交わらないと断言できる」ときだけで、迷ったら `true`(読んでから点ごとに判定)。粗くても結果は正しく、読むノードが増えるだけです。
+
+流れは[点の選択・断面・結合](../flows/point-cloud-tools.md)の章を見てください。
+
 ## `crs/`: 座標参照系
 
 [`src/crs/`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs) は横メルカトル図法ベースの座標変換です。[ADR-0008](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md) の決定により、
@@ -71,7 +88,8 @@ PROJ（C ライブラリ）を使うと規約1が壊れるため、採用して�
 | [`transverse_mercator.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs/transverse_mercator.rs) | 横メルカトルの順変換・逆変換の数式本体 |
 | [`plane_rectangular.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs/plane_rectangular.rs) | 平面直角座標系19系（I〜XIX、JGD2000/JGD2011）のパラメータ表 |
 | [`utm.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs/utm.rs) | UTM（51N〜56N）のパラメータ表 |
-| [`mod.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs/mod.rs) | 上記をまとめる `Crs` 列挙型、EPSG コードとの対応、LAS ヘッダーからの CRS 判定 |
+| [`mod.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs/mod.rs) | 上記をまとめる `Crs` 列挙型、EPSG コードとの対応、LAS ヘッダーからの CRS 判定、ファイル同士の比較に使う `CrsId` |
+| [`describe.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs/describe.rs) | 画面に出すための説明 `CrsInfo`(EPSG コード・名前・種別・読み取りエラー・長さの単位) |
 
 ```rust
 pub enum Crs {
@@ -85,13 +103,40 @@ pub enum Crs {
 `Unknown` は「対応範囲外」と「読み取れなかった」の両方を表します。ADR-0008 の方針
 どおり、対応範囲外の CRS は常に「不明」として扱われ、計測や重ね合わせには使われません。
 
+`Crs` は「この crate が座標変換できるか」だけを持つ型です。**対応外の CRS では EPSG コードも名前も失われる**ため、次の2つを別に持っています。
+
+### `CrsInfo`: 画面に出す説明と長さの単位(`describe.rs`)
+
+`CloudInfo.crs` に入り、ファイルを開くときに `read_crs_info` が読みます(`CopcFile::open` / `from_reader`)。ADR-0015 により、読み取りに失敗してもファイルは開け、失敗の文言は `CrsInfo::error` に入ります。
+
+- `epsg`・`name`・`kind`(`CrsKind`: `PlaneRectangular` / `Utm` / `Other` / `None`)
+- **`horizontal_unit_to_meter` / `vertical_unit_to_meter`**(L2-D): 座標1単位が何メートルか(1.0 = メートル、0.3048 = 国際フィート)。WKT1 の `PROJCS[`・`VERT_CS[` 直下の `UNIT["name",係数]` から読む。
+  `None` は「単位が不明」で、呼び出し側は換算してはいけない。WKT2(`PROJCRS[`)は読めず `None`。鉛直 CS が無いときは水平の単位と同じとみなす(これは**仮定**)。
+  画面側の使い道は、計測結果とレイヤー情報の範囲を表示単位(メートル/フィート)に換算すること(`src/state/units.ts`)。
+
+### `CrsId`: ファイル同士の比較に使う識別子(L2-G)
+
+複数ファイルの結合で「同じ座標系か」を比べるための型です。`Crs` は対応外の CRS(例: autzen の EPSG:2992)を「不明」にしてしまい、CRS が無いファイルと見分けがつかなかったため、結合で
+「CRS の情報がありません」という誤った警告が出ていました。
+
+| 値 | 意味 |
+|---|---|
+| `Missing` | ファイルに CRS の情報が無い(空の WKT も含む) |
+| `Epsg(u32)` | EPSG コードが分かる(この crate が対応する系かどうかは問わない) |
+| `Other(String)` | EPSG コードを持たない CRS(WKT の文字列、または読めない GeoTIFF キーの注記)。同じ文字列のときだけ同じ CRS |
+
+`crs_id_from_las_header` が作ります(WKT → GeoTIFF の順。GeoTIFF は projected キーを先に、次に geodetic)。`Crs` / `detect_crs_from_las_header` は変えておらず、表示などに使われています。
+
+### 座標変換そのものの使われ方
+
 式の出典は河瀬(2011)の論文（国土地理院時報）で、精度は国土地理院の測量計算サイト API
 と Karney (2011) の `TMcoords.dat` という2つの独立した出典付きデータで検証しています
 （「それらしい値」では済ませていません）。検証の詳細は
 [ADR-0008 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#追記2026-09-24-横メルカトル変換の実装と精度検証m4-5) を参照してください。
 
-**この座標変換は、計算とテストまでが実装済みで、画面への表示配線（情報パネルへの
-1行表示）はまだありません**（M4-5 の範囲外として明記されています）。
+**緯度経度との相互変換（`transverse_mercator.rs` の順変換・逆変換）は、計算とテストまでが実装済みで、`crs/` の外からは呼ばれていません**
+（`grep` で確認。M4-5 の範囲外として画面への配線は見送られた状態のままです）。
+一方、`CrsInfo`（EPSG・名前・単位）は画面に出ています。`pcv-convert` の `crs_override.rs` は、対応する系の WKT を組み立てるためにパラメータ表を使っています。
 
 対応していないもの（[ADR-0008](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md) の「対応しないもの」節）:
 
