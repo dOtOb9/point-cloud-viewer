@@ -19,6 +19,12 @@ ADR（Architecture Decision Record、設計判断の記録）は、**なぜ**そ
 | [ADR-0011](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0011-gpu-error-visibility.md) | WebGPU のエラーを画面に | 「すべて緑なのに画面が真っ黒」という事故から、エラーを握りつぶさない仕組みを作った |
 | [ADR-0012](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0012-web-worker-sync-io.md) | Web 版の読み込み | Web Worker の中で同期 I/O を使い、`pcv-core` をそのまま動かす |
 | [ADR-0013](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0013-crash-visibility.md) | Android で落ちたときの原因の可視化 | `panic = "unwind"` に変え、panic をログと画面のバナーに出す |
+| [ADR-0014](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0014-ui-forge.md) | UI シェルを ui-forge で書く | **廃止**(ADR-0017 で手書きの TSX に戻した)。決定の記録として残っている |
+| [ADR-0015](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0015-error-handling-incremental.md) | エラー処理を触ったところから少しずつ | 本番で panic しない・エラーを画面で取れる、を一度に直さず、触ったコードとその周りに当てはめる |
+| [ADR-0016](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0016-e2e-web-conversion.md) | Web 変換の E2E | Playwright で実ブラウザの変換を CI に入れた。`data-testid` を残すのはこのため |
+| [ADR-0017](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0017-ui-shell-ribbon.md) | UI シェルをリボン+レイヤーツリー+ステータスバーに | ADR-0014 を置き換え。ガラスの質感(ADR-0005)は維持 |
+| [ADR-0018](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0018-layer-centric-operations.md) | 機能は「選んだレイヤーから新しいレイヤーを作る」 | 点の選択・断面・結合がこの形。元のレイヤーは書き換えない |
+| [ADR-0019](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0019-record-carrying-lod.md) | LOD の分割で点のレコードを運ぶ | 点の番号ではなく点そのものを順次読みで分割し、小さな部分木はメモリで仕上げる。spill のランダム読み(約13倍の読み)を無くすため。**10億点での再計測は未実施** |
 
 ## 各 ADR の構成
 
@@ -30,7 +36,8 @@ ADR のうちいくつかは、最初の決定が実機での発見によって�
 これは ADR が「一度書いたら終わり」の文書ではなく、**実測・実機で裏切られた
 前提をそのつど正す**運用になっていることを示しています。代表例は
 ADR-0003（大規模 COPC を開けない欠陥）、ADR-0007（並行化だけでは直らなかった）、
-ADR-0010（点予算の自動調整が2回ラチェットに陥った）です。
+ADR-0010（点予算の自動調整が2回ラチェットに陥った）です。ADR-0006 には、変換の方式が後の ADR-0019 で作り直された
+経緯があります(旧方式の説明は ADR-0006 と M4 のタスクシートに、今の方式は ADR-0019 に書かれています)。
 
 ## タスクシートとの関係
 
