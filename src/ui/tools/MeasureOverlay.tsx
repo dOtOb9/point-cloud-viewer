@@ -1,7 +1,7 @@
 import { useEffect, useState, type RefObject } from "react";
-import type { CopcViewerState } from "../state/useCopcViewer";
-import type { MeasureToolState } from "../state/useMeasureTool";
-import { isMeasureLayer } from "../state/layers";
+import type { CopcViewerState } from "../../state/useCopcViewer";
+import type { MeasureToolState } from "../../state/useMeasureTool";
+import { isMeasureLayer } from "../../state/layers";
 import {
   labelAnchor,
 
@@ -9,11 +9,11 @@ import {
   measurementSegments,
   MEASURE_KIND_NAME,
   type Measurement,
-} from "../state/measure";
-import { labelShifts, projectPoint, projectSegment } from "../renderer/screen-project";
-import { lengthUnitsFor, type LengthUnits } from "../state/units";
-import { useDisplayUnit } from "../state/useDisplayUnit";
-import { glassSurfaceClass } from "./common/glass";
+} from "../../state/measure";
+import { labelShifts, projectPoint, projectSegment } from "../../renderer/screen-project";
+import { lengthUnitsFor, type LengthUnits } from "../../state/units";
+import { useDisplayUnit } from "../../state/useDisplayUnit";
+import { glassSurfaceClass } from "../common/glass";
 
 // L2-D: an SVG laid over the 3D view that draws measurement lines, vertices and labels.
 //
