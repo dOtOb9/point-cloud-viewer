@@ -1,6 +1,6 @@
-# src/ui/shell: 画面の部品
+# src/ui: 画面の部品
 
-`src/ui/shell/` は [ADR-0005](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0005-ui-shell.md)（ガラスの質感）と
+`src/ui/`（`shell/`・`ribbon/`・`layers/`・`dialogs/`・`settings/`・`tools/`・`status/`・`common/` に分かれています。役割の一覧は `TaskSheets/R2-ui-components.md`）は [ADR-0005](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0005-ui-shell.md)（ガラスの質感）と
 [ADR-0017](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0017-ui-shell-ribbon.md)（レイアウトの再構築）が決めた UI シェルの実装です。3D ビューを
 ウィンドウ全面に敷き、UI はその上に浮かぶ半透明のガラス面として構成する方針（ADR-0005）は変わっていません。
 レイアウト自体は、デスクトップの点群/GIS 系ソフトに多い「上部リボン + 左レイヤーツリー + 下部ステータスバー」に
@@ -37,13 +37,13 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 
 | 部品 | 内容 |
 |---|---|
-| [`Ribbon.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Ribbon.tsx)（上部） | ファイル(開く)/表示(着色・EDL・点のサイズ・中央優先度)/ツール(未実装4種、グレーアウト)/設定(モーダルを開く)の4グループ。各グループは`Ribbon*Group.tsx`に分けてある |
-| [`LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/LayerPanel.tsx)（左） | レイヤーツリー(開いているファイルを1件のレイヤーとして表示)+レイヤー情報(`LayerInfoSection.tsx`: ファイル名・点数・CRS・バウンディングボックス・背景・グリッド・点予算・変換の進捗/内訳/エラー)+詳細統計(`LayerStatsDetails.tsx`、折りたたみ) |
-| [`StatusBar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/StatusBar.tsx)（下部、1行） | 表示点数/点予算、fps、CRS、読み込み進捗、エラーログを開くボタン |
-| [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/SettingsModal.tsx) | レンダースケール、テーマ、更新チェック、一時ファイルの置き場所、OPFSの保存領域、診断パネル |
-| [`Dialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dialog.tsx) | 設定・変換・エラーが共通で使う中央ダイアログ枠(不透明、Esc/✕、フォーカス移動、狭幅は全幅近く) |
-| [`ConversionDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/ConversionDialog.tsx) | 変換の進捗・結果(「変換中」、キャンセル) |
-| [`ErrorDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/ErrorDialog.tsx) | エラー(コピー・閉じる)と、このセッションの全エラー履歴 |
+| [`Ribbon.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/ribbon/Ribbon.tsx)（上部） | ファイル(開く)/表示(着色・EDL・点のサイズ・中央優先度)/ツール(未実装4種、グレーアウト)/設定(モーダルを開く)の4グループ。各グループは`Ribbon*Group.tsx`に分けてある |
+| [`LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/layers/LayerPanel.tsx)（左） | レイヤーツリー(開いているファイルを1件のレイヤーとして表示)+レイヤー情報(`LayerInfoSection.tsx`: ファイル名・点数・CRS・バウンディングボックス・背景・グリッド・点予算・変換の進捗/内訳/エラー)+詳細統計(`LayerStatsDetails.tsx`、折りたたみ) |
+| [`StatusBar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/status/StatusBar.tsx)（下部、1行） | 表示点数/点予算、fps、CRS、読み込み進捗、エラーログを開くボタン |
+| [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/settings/SettingsModal.tsx) | レンダースケール、テーマ、更新チェック、一時ファイルの置き場所、OPFSの保存領域、診断パネル |
+| [`Dialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/dialogs/Dialog.tsx) | 設定・変換・エラーが共通で使う中央ダイアログ枠(不透明、Esc/✕、フォーカス移動、狭幅は全幅近く) |
+| [`ConversionDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/dialogs/ConversionDialog.tsx) | 変換の進捗・結果(「変換中」、キャンセル) |
+| [`ErrorDialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/dialogs/ErrorDialog.tsx) | エラー(コピー・閉じる)と、このセッションの全エラー履歴 |
 
 **CRS について(正直に):** `LayerInfoSection`・`StatusBar`はどちらも「CRS: 不明（未配線）」と表示します。
 `CloudInfo`（`src/datasource/DataSource.ts`）には現時点で CRS フィールドが無く、`crates/pcv-core/src/crs`
@@ -68,7 +68,7 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 
 ## ガラスの質感: `glass.ts`
 
-[`glass.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/glass.ts) に `GLASS_SURFACE` として集約されています。`backdrop-blur-md` の上に
+[`glass.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/common/glass.ts) に `GLASS_SURFACE` として集約されています。`backdrop-blur-md` の上に
 `bg-white/65`（ライト）・`dark:bg-slate-950/70`（ダーク）の tint を重ねます。
 点群は色が任意で高周波ノイズがあり、tint が薄いと文字が背景依存で読めなくなる
 という [ADR-0005](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0005-ui-shell.md) のリスクへの対処です。`SettingsModal` と `GpuErrorBanner`・`ErrorLogDialog`だけは
@@ -82,7 +82,7 @@ GPU 負荷削減の一手段。ユーザーが切り替える設定ではない�
 
 ## エラー・変換の表示: 中央ダイアログ
 
-設定・変換の進捗・エラーは、共通の [`Dialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Dialog.tsx)（タイトルバー・本文・右寄せボタンのフッター）で出します。
+設定・変換の進捗・エラーは、共通の [`Dialog.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/dialogs/Dialog.tsx)（タイトルバー・本文・右寄せボタンのフッター）で出します。
 エラーは以前は画面最前面のバナー（`GpuErrorBanner`、[ADR-0011](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0011-gpu-error-visibility.md)）でしたが、
 ADR-0017 で中央の `ErrorDialog` に置き換えました（バナーは廃止）。ADR-0011 の要件（本文を要約しない・複数でも
 最初のエラーを隠さない・不透明・最前面）は引き継いでいます。「閉じる」は現在のエラーを一覧（`viewer.gpuErrors`）から
@@ -95,6 +95,6 @@ ADR-0017 で中央の `ErrorDialog` に置き換えました（バナーは廃�
 ## まず読むファイル
 
 - [`src/ui/shell/AppShell.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/AppShell.tsx) — 組み立て役。ここから各部品を辿る
-- [`src/ui/shell/Ribbon.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/Ribbon.tsx) — 上部リボン。4グループの束ね役
-- [`src/ui/shell/LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/LayerPanel.tsx) — 左パネル。レイヤーツリー+情報の束ね役
-- [`src/ui/shell/SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/SettingsModal.tsx) — モバイル最適化・テーマ・更新チェックの設定
+- [`src/ui/ribbon/Ribbon.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/ribbon/Ribbon.tsx) — 上部リボン。4グループの束ね役
+- [`src/ui/layers/LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/layers/LayerPanel.tsx) — 左パネル。レイヤーツリー+情報の束ね役
+- [`src/ui/settings/SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/settings/SettingsModal.tsx) — モバイル最適化・テーマ・更新チェックの設定

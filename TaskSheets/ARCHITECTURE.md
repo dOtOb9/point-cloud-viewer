@@ -32,8 +32,15 @@ point-cloud-viewer/
 │   │                       point-cloud-renderer.ts(フレームループ・外部公開API)
 │   │                       に分割。責務の詳細は「守る規約」の下の注記参照
 │   ├─ state/             アプリ状態
-│   └─ ui/                React コンポーネント
-│       └─ shell/Dock.*   Dockだけはレイアウトをui-forgeの`.ui`から生成(I-1, ADR-0014)
+│   └─ ui/                React コンポーネント。役割ごとのフォルダに分かれる(R2。一覧は R2-ui-components.md)
+│       ├─ shell/         AppShell(全体の組み立て)・ViewerPanel(canvas)・UnsupportedDeviceScreen
+│       ├─ ribbon/        上部リボン(ファイル/ツール/設定のグループ)
+│       ├─ layers/        左のレイヤー欄(一覧・操作ボタン・情報・変換の内訳)
+│       ├─ dialogs/       共通Dialogと、着色・見た目・変換・エラーのダイアログ
+│       ├─ settings/      設定の一覧(SettingsModal)と、1ページ1ファイルの設定ページ(pages/)
+│       ├─ tools/         計測・断面などの、3Dビュー上のオーバーレイと操作ダイアログ
+│       ├─ status/        下部のステータスバーと更新通知
+│       └─ common/        glass.ts・crs-format.ts など、複数のフォルダが使う小さな部品
 ├─ Cargo.toml             cargo workspace (pcv-wasmは含まない)
 └─ package.json
 ```

@@ -16,7 +16,7 @@
   - [src/datasource: データの入口](./frontend/datasource.md)
   - [src/state: React とレンダラをつなぐ](./frontend/state.md)
   - [src/renderer: WebGPU 描画](./frontend/renderer.md)
-  - [src/ui/shell: 画面の部品](./frontend/ui-shell.md)
+  - [src/ui: 画面の部品](./frontend/ui-shell.md)
 - [配布](./distribution.md)
 - [設計判断の索引(ADR)](./adr-index.md)
 - [落とし穴と教訓](./pitfalls.md)

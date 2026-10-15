@@ -47,7 +47,7 @@ function unmount(m: { root: ReturnType<typeof createRoot>; container: HTMLElemen
   m.container.remove();
 }
 
-describe("ViewDialogs", () => {
+describe("ColorModeDialog and AppearanceDialog", () => {
   it("着色: ラジオを選ぶと選択中のレイヤーのsetLayerColorModeが呼ばれる。RGBを持たないレイヤーではRGBが選べない", () => {
     const { viewer, setters } = fakeViewer(false);
     const m = mount(<ColorModeDialog viewer={viewer} open onClose={() => {}} />);
