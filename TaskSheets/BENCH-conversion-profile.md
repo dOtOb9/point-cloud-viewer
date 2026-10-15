@@ -116,3 +116,60 @@ Raw logs (`samples.csv`, `stdout.txt` per run) remain in the session scratchpad 
 cargo build -p pcv-convert --release --example merge_las_to_copc
 .\target\release\examples\merge_las_to_copc.exe C:\rust\point-cloud-viewer\data\tokyo-shibuya <out.copc.laz> 100000 <spill_dir> --assume-missing-crs-is-first --timings
 ```
+
+## After ADR-0019 (L3-B): record-carrying LOD, small subtrees finished in memory
+
+What is measured and what is not (read this first):
+
+- **Measured**: a 4-file subset of `data\tokyo-shibuya` (09LD2626-2629, 30,043,046 points), old build (origin/main, built in a
+  scratchpad copy) vs new build, same machine, one run each. Output compared node by node.
+- **NOT measured**: the three target runs (a) 55 files / 348M, (c) 110 files / 726M, (b) 165 files / 1.06B points. When I tried, free space on C: was
+  only 28 GB (112 GB at the first attempt), below the 25 GB abort limit given for the runs, so the run was aborted by the watchdog after 35 s.
+  Another agent's `new2.exe` (the L2-H benchmark) was also running at the first attempt, and the one (a) run that finished then (753 s) is
+  not usable: it was the first version of the code (two passes per level) and ran next to that process (spill write 127 s vs 33 s in the table above).
+  So the table "before" above has no "after" column yet. The commands to fill it are at the end of this section.
+
+### 4-file subset, old vs new (one run each, other load on the machine unknown)
+
+| | old (origin/main) | new |
+|---|---|---|
+| Total (tool) | 61.8 s | 35.2 s (second to last run; 34.6-44 s over 5 runs of intermediate versions) |
+| Read + decode | 7.03 s | 3.4 s |
+| Spill write | 3.46 s | 2.2 s |
+| LOD index | 38.52 s | 24.9 s (= wall time with at least one disk partition running) |
+| Node compression | 9.18 s | 0.9 s (= rest of the node pass) |
+| Output size | 378.75 MB | 378.76 MB |
+| Node set / points | 593 nodes, 30,043,046 points | `compare_copc_nodes`: SAME (every node holds the same multiset of points as seen by the viewer) |
+
+Notes: the spill write is faster partly because temp files are no longer fsynced (`sync_all`) in `finish_temp`. With the default
+budget (1 GiB, 8 workers = 64 MiB per subtree) 30M points need two disk levels. In this machine the disk levels were disk-write-bound
+(root partition of 1.6 GB took 8 s alone, about 200 MB/s; with 8 partitions running together each took 8-12 s), so the LOD line is
+the part to look at in the large runs.
+
+### Which old line is which new line
+
+| old `--timings` field | new meaning |
+|---|---|
+| LOD index (octree split) | wall time during which at least one run is being partitioned on disk |
+| Node compression + write | rest of the node pass: in-memory subtree building, compression, chunk writes (overlaps with the above in reality) |
+
+Compare the sum of the two, not each line.
+
+### Correctness checks that were run
+
+- `lod::tests::record_builder_matches_index_reference`: old index-based builder (kept in `src/lod_reference.rs`) vs new builder, exact node-by-node,
+  point-by-point and in the same order, for 5 inputs x 4 memory limits (all on disk, mixed, all in memory).
+- `compare_copc_nodes` on the 4-file subset (above).
+- `cargo test` in vendor/copc-writer with and without `--features parallel`, workspace tests, clippy, Web E2E (`PCV_E2E_PORT=4391`, 2 passed).
+- `tests/heap_is_bounded.rs`: heap peak 11.6 MB at 50,000 and at 400,000 points with 1 worker; 11.6 MB vs 13.9 MB with 4 workers.
+- `tests/lod_runs_bounded.rs`: live temp bytes never exceed 2.1x the spill size.
+
+### To fill the table (needs about 120 GB free on C: for (b); abort below 25 GB)
+
+```powershell
+cargo build -p pcv-convert --release --example merge_las_to_copc
+# per run: TMP/TEMP and the spill dir on C:, --timings, sample private memory, free space, process read/write counters
+merge_las_to_copc <input> <out.copc.laz> 100000 <spill_dir> --assume-missing-crs-is-first --timings
+cargo run -p pcv-convert --release --example verify_merge -- <out.copc.laz> <inputs...>
+```
+Not checked: opening the new output in the viewer on a real GPU (only the Web E2E on SwiftShader and the node comparison were done).
