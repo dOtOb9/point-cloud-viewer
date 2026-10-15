@@ -17,7 +17,7 @@
 // 依存させる必要が無いためここでは意図的に外している。単体テストがGPUDeviceの
 // モックを一切必要としないのはこのため）。呼び出し側（point-cloud-renderer.ts）が
 // device.onuncapturederror / device.lost / pushErrorScope の結果を文字列に
-// してここへ渡し、React側（src/state/useCopcViewer.ts、src/ui/shell/GpuErrorBanner.tsx）が
+// してここへ渡し、React側（src/state/useErrorLog.ts、src/ui/dialogs/ErrorDialog.tsx）が
 // 表示を担当する。
 //
 // M3（TaskSheets/ADR-0013-crash-visibility.md）: `pcv://`のノード読み出しが

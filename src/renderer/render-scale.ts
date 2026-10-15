@@ -4,7 +4,7 @@
 // 決める。キャンバスの`width`/`height`属性(描画バッファ)だけをこの式で小さくし、
 // CSS側の表示サイズ(`width: 100%`等)はそのまま保つ。ブラウザがバッファを
 // 表示サイズへ自動で引き伸ばすので、「小さい解像度で描いて、大きく引き伸ばして
-// 表示する」が実現できる(`src/ui/ViewerPanel.tsx`のcanvasが
+// 表示する」が実現できる(`src/ui/shell/ViewerPanel.tsx`のcanvasが
 // `className="... h-full w-full"`でCSSサイズを完全に制御しているため、
 // `canvas.width`/`height`を変えてもレイアウト上の表示サイズは変わらないことを
 // 確認済み)。

@@ -264,7 +264,7 @@ export class PointCloudRenderer {
   private frameTimestamps: number[] = [];
 
   /** WebGPUのエラー（ADR-0011）が起きるたびに呼ばれる。実際の蓄積・重複抑制は
-   *  呼び出し側（src/state/useCopcViewer.ts）の`GpuErrorLog`が行う。
+   *  呼び出し側（src/state/useErrorLog.ts）の`GpuErrorLog`が行う。
    *  ここは伝える役目だけ（規約3: このファイルはReactを知らないので、
    *  コールバックで外へ渡す。`onStatsUpdate`と同じ形）。 */
   private onGpuError: ((message: string) => void) | null = null;

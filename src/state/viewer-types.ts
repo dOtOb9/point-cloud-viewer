@@ -150,13 +150,13 @@ export interface CopcViewerState {
    *  混ざる（`GpuErrorEntry.source`で区別する）。蓄積・重複抑制のロジック自体は
    *  `GpuErrorLog`（renderer/gpu-error-log.ts、GPUに依存しない純粋なクラス）に
    *  切り出してあり、ここではそのスナップショットを保持するだけ。表示は
-   *  `src/ui/shell/GpuErrorBanner.tsx`が担当する（規約3）。 */
+   *  `src/ui/dialogs/ErrorDialog.tsx`が担当する（規約3）。 */
   gpuErrors: GpuErrorEntry[];
   /**
    * UIシェル再構築(ADR-0017)で追加: このセッション中に報告された全エラーの
    * 履歴（`dismissGpuError`で消しても消えない）。`gpuErrors`は バナーが表示する
    * 「現在出ている」エラーで、閉じると配列から消える。エラーログダイアログ
-   * （`ErrorLogDialog.tsx`）はこちらを表示することで、閉じたエラーも含めて
+   * （`ErrorDialog.tsx`の履歴モード）はこちらを表示することで、閉じたエラーも含めて
    * 「このセッションで何が起きたか」をあとから確認できるようにする。
    * 追記・countの更新だけを行い、エントリを削除することは無い
    * （`recordErrorHistory`参照）。
@@ -175,7 +175,7 @@ export interface CopcViewerState {
    * (受け入れ条件。LAS/LAZの混在はOK)。
    */
   openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
-  /** LayerPanelがTauri用のパス入力とWeb用のファイル選択/URL入力を切り替えるための判定。 */
+  /** True in the browser build. The ribbon's open button (`RibbonFileGroup.tsx`) uses it to switch between the Tauri file dialog and the Web file input. */
   isBrowser: boolean;
   /**
    * M4-3: 生LAS/LAZの変換中(`status === "converting"`)の進捗。読み込み段階は

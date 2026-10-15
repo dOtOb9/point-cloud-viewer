@@ -65,7 +65,7 @@ export const FALLBACK_COLOR_MODE_WITHOUT_RGB: ColorMode = "elevation";
  * に落とす（受け入れ条件「RGBを持たない点群ではRGBが選べないか、選んだときに
  * 分かる形で別モードに落ちる」）。UI側はこの関数の戻り値を実際のモードとして表示し、
  * 「RGBを選んだつもりが標高になっている」ことが分かるようにする
- * （`LayerPanel`はRGBの選択肢自体もdisabledにするので、両対策になっている）。
+ * （`ColorModeDialog`(`src/ui/dialogs/`)はRGBの選択肢自体もdisabledにするので、両対策になっている）。
  */
 export function resolveColorMode(mode: ColorMode, hasColor: boolean): ColorMode {
   if (mode === "rgb" && !hasColor) return FALLBACK_COLOR_MODE_WITHOUT_RGB;

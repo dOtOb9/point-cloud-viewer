@@ -563,7 +563,7 @@ function suggestedFileNameFor(sourceFileName: string): string {
   return `${withoutExtension}.copc.laz`;
 }
 
-/** 準備段階(M4-11)の進捗を1つ送る。`src/ui/shell/LayerPanel.tsx`が
+/** 準備段階(M4-11)の進捗を1つ送る。`src/ui/dialogs/ConversionDialog.tsx`が
  *  「変換を準備しています…」の代わりにステップ名を表示する(所有者の実機で
  *  「準備中のまま止まってタブが落ちる」不具合の調査のため。次に落ちたとき、
  *  どのステップで止まったか所有者が報告できるようにするのが目的。

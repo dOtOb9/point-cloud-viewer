@@ -4,8 +4,8 @@
 // Rust側(デスクトップ: `src-tauri/src/conversion.rs`、Web版:
 // `crates/pcv-wasm/src/dto.rs`)はどちらも同じ形の`ConversionStageBreakdown`
 // (秒単位のDuration・点数・ファイルサイズ)を作る。この関数は値の整形
-// (文字列の組み立て)だけを行う純粋関数にしてあり、`src/ui/shell/LayerPanel.tsx`
-// の「内訳をコピー」ボタンが呼ぶ。プラットフォーム固有の情報(ブラウザ・
+// (文字列の組み立て)だけを行う純粋関数にしてあり、`src/state/useConversionSession.ts`
+// が呼ぶ(表示と「内訳をコピー」ボタンは`src/ui/layers/LayerInfoSection.tsx`)。プラットフォーム固有の情報(ブラウザ・
 // 論理コア数・メモリ)は呼び出し側が`ConversionBreakdownMeta`として渡す
 // (このファイル自身はDOM/navigatorに触れない。テストしやすくするため)。
 
