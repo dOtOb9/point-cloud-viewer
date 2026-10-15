@@ -9,23 +9,53 @@
 export interface DataSource {
   fetchBench(sizeBytes: number): Promise<ArrayBuffer>;
   open(path: string, readerPoolSize?: number): Promise<OpenedCloud>;
-  readNode(key: string): Promise<ArrayBuffer>;
+  readNode(cloudId: number, key: string): Promise<ArrayBuffer>;
+  close(cloudId: number): Promise<void>;
 }
 ```
+
+### cloudId: 複数のファイルを同時に開く
+
+`open` は**他に開いているファイルを閉じません**（複数同時に開ける）。返る `OpenedCloud` の `cloudId` が「開いたファイルの識別子」で、
+`readNode` と `close` に渡します。Tauri では Rust 側の世代番号が、Web では Worker の表のキーが `cloudId` です。
+`close(cloudId)` はリーダー（Tauri: ファイルハンドルのプール、Web: Worker の wasm リーダー）を手放します。
+閉じたあとの `readNode`、および古い世代宛ての要求は `StaleNodeRequestError`（`stale-node-error.ts`。Tauri では HTTP 409）になり、
+呼び出し側（`NodeLoader`）が**黙って捨てます**。知らない `cloudId` を `close` してもエラーにしません。
+
+renderer は `cloudId` を知りません。`useFileOpen.ts` の `addOpenedLayer` が
+`readNode: (key) => source.readNode(opened.cloudId, key)` と `cloudId` を閉じ込めた関数にして renderer に渡します
+（`NodeReader` インターフェース、`DataSource.ts`）。ファイルを閉じるのは `useLayers.ts` の `removeLayer`（[レイヤー操作](../flows/layers.md)）。
 
 `open` の `path` の意味は実装によって違います。`TauriSource` ではファイルシステム
 パス（または Android の `content://` URI）、`WebSource` ではローカルファイルを
 指す `"file:<連番>"` キーか URL です。分類は [`web-protocol.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/datasource/web-protocol.ts) の
 `classifyOpenPath`（純粋関数）が行います。
 
+### 点群ツールの API（`tools.ts`）
+
+選択・断面・結合は、**選んだレイヤーのファイルから新しい COPC を作る**関数です（元は書き換えない。ADR-0018）。
+型は [`tools.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/datasource/tools.ts) にあり、デスクトップ（`tauri.ts`）と Web（`web.ts`）で同じ形です。
+
+- `ExtractFilter` — `ScreenPolygonFilter`（画面上の多角形と `viewProj`。多角形の中に映り、カメラの手前にある点）または `OrientedBoxFilter`（断面の板）。座標はファイルの実座標（f64）。
+- `extractToCopc(path, filter, options)` — フィルターに合う点だけを新しい COPC にする。点が 0 なら `EMPTY_SELECTION_MESSAGE`（「選んだ範囲に点がありません」）で失敗。
+  デスクトップは `tauri.ts` の関数（Tauri コマンド `extract_copc`）、Web は `WebSource.extractToCopc`（Worker + OPFS）。
+- `mergeCopcs(paths, options)` — 開いている複数の COPC を一つにする（デスクトップ `merge_copcs`、Web `WebSource.mergeCopcs`）。CRS が無いファイルは通し、理由を `warnings` で返す。CRS が違えば失敗。
+- `ToolResult` — `outputPath`（そのまま `DataSource.open()` に渡せる）・`pointCount`・`warnings`（エラーログへ）。`ToolOptions` — 進捗コールバックと一時フォルダ。
+
+これらを呼ぶのは `src/state/usePointCloudTools.ts` です。デスクトップでは変換と同じ `conversion-progress` イベントで進捗が来るため、
+変換側が取り違えないよう `toolRunningRef` で区別しています。
+
 ## `tauri.ts`: デスクトップ・Android 実装
 
 [`TauriSource`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/datasource/tauri.ts) は `DataSource` を実装し、`pcv://`（`convertFileSrc`）でノードを取得し、
-`invoke` で `open_copc` 等の制御コマンドを呼びます。このファイルはほかにも、
-ファイル選択ダイアログ（`@tauri-apps/plugin-dialog`）、更新通知で使うリリース
-ページを開く処理（`@tauri-apps/plugin-opener`）、アプリバージョンの取得
-（`@tauri-apps/api/app`）を持ちます。**Tauri 系のパッケージを import するのは
-すべてここに閉じています。**
+`invoke` で `open_copc`・`close_copc` 等の制御コマンドを呼びます。ノードの URL は
+`"<cloudId>/<level>-<x>-<y>-<z>"`（`tauri-protocol.ts` の `buildNodeRequestPath`）を `convertFileSrc` に渡して作ります。
+このファイルはほかにも次を持ちます。**Tauri 系のパッケージを import するのはすべてここに閉じています。**
+
+- ファイル選択・ドロップ: `pickLocalFiles`（複数選択）・`pickLocalFile`・`onFilesDropped`（OS のドロップ）・`pickTempDirectory`
+- 変換: `startLasConversion`・`startMultiLasConversion`・`cancelLasConversion`、進捗・完了・失敗のイベント購読 `onConversionProgress`／`onConversionDone`／`onConversionFailed`
+- 点群ツール: `extractToCopc`・`mergeCopcs`（下の「点群ツールの API」）
+- バックエンドのコンソールへの報告 `reportToBackendConsole`、アプリバージョンの取得 `getAppVersion`、更新通知で使うリリースページを開く処理
 
 ## `web.ts`・`copc.worker.ts`: Web 実装
 
@@ -40,8 +70,9 @@ export interface DataSource {
 います。これにより、Worker を実際に起動できない `vitest` 環境でも
 メッセージの組み立てが正しいかをテストできます。
 
-Web Worker は1本だけ生成されます（`web.ts` の `createRealWorker`）。デスクトップ版の
+ノード読み出し用の Web Worker は1本だけ生成されます（`web.ts` の `createRealWorker`）。デスクトップ版の
 ようにリーダーをプールして並列読み出しする仕組みはありません（[ADR-0012](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0012-web-worker-sync-io.md)）。
+変換の読み込み段階だけは、メモリを共有しない LAZ 展開専用 Worker（`laz-decompress.worker.ts`。範囲分割は `decompress-partition.ts`）を複数立てて並列化します（SharedArrayBuffer が使えないため）。
 
 ## `opfs.ts`: Web 版の変換用一時ファイル
 
@@ -65,6 +96,12 @@ Web Worker は1本だけ生成されます（`web.ts` の `createRealWorker`）�
 `crates/pcv-convert/src/copc_detect.rs` と同じ考え方を、Web 版にも一貫させています。
 Web 側には `las` 相当のパーサライブラリが無いため、LAS ヘッダーのバイナリ
 レイアウトを自前で最小限だけ読んでいます。
+
+## `source-format.ts`: 変換経路の振り分け（Web 版）
+
+`isCopcFile`（ヘッダー）は「変換が要るか」を、`detectSourceFormatByName`（拡張子。大文字小文字を区別しない。Rust の `detect_format` と同じ考え方）は
+「どの変換経路に回すか」（`lasLaz`／`pcd`／`ply`／`e57`／`unknown`）を決めます。PCD を LAS/LAZ の見積もりに回して
+「空き容量が足りません」と誤判定した実機不具合から分けられました。呼ぶのは `useFileOpen.ts` の `openFile`（[ファイルを開く](../flows/open-file.md)）。
 
 ## `update-check.ts`: 更新通知（デスクトップ・Android 共通）
 
