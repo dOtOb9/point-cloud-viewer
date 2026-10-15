@@ -34,7 +34,7 @@ Tauri + React を選びました。
   └───────┬───────┘
           │
   ┌───────▼───────┐
-  │  src-tauri    │  pcv://<level-x-y-z> でノードのバイナリを配信
+  │  src-tauri    │  pcv://<cloudId>/<level-x-y-z> でノードのバイナリを配信
   │ (CopcPool)    │  複数のCopcFileをプールし並行読み出し(ADR-0007)
   └───────┬───────┘
           │ カスタムプロトコル(invokeではない。ADR-0001)
@@ -60,7 +60,8 @@ Tauri + React を選びました。
 └──────────────────┘     └──────────────┘
       │ 進捗イベント(読み込み点数)
       ▼
-  src-tauriがeventで通知 → LayerPanelが表示 → 完了後そのままCOPCとして開く
+  src-tauriがeventで通知 → 変換の進捗ダイアログ・レイヤー情報が表示 → 完了後そのままCOPCとして開く
+  （useConversionSession → useFileOpen の openFile。詳しくは「処理の流れ」章の「ファイルを開く」）
 ```
 
 Android 特有の点は、ファイルの入手経路だけです。デスクトップは `std::fs::File::open`
@@ -126,6 +127,26 @@ Web Worker の中で動かします。
 だけです。ファイルパスを開く・変換を始める、といった軽い指示は Tauri では
 `invoke`、Web では `postMessage` のメッセージで送りますが、**点群そのもの（数百万点）
 はここを通りません**。これが [ADR-0001](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0001-architecture.md) の実測（`invoke` は Windows で遅い）に基づく設計です。
+
+## 画面の中の「レイヤー」
+
+開いた点群と計測の結果は、すべて**レイヤー**として扱われます。複数のファイルを同時に開けて
+（`cloudId` で区別。`DataSource.open` は他のファイルを閉じない）、着色・点の形と大きさ・表示/非表示は
+レイヤーごとに持ちます。点予算は全レイヤーで一つを分け合います。点群に対する機能（選択・断面・結合）は
+「選んだレイヤーから**新しいレイヤーを作る**」形に揃えてあり、元のレイヤーは書き換えません
+（[ADR-0018](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0018-layer-centric-operations.md)）。
+計測も、結果が**計測レイヤー**として一覧に加わります。
+
+フロントエンドの層は次のとおり（くわしくは各章）。
+
+| 層 | 役割 | 章 |
+|---|---|---|
+| `src/datasource/` | Tauri と Web の違いを閉じ込める（`DataSource`） | [datasource](./frontend/datasource.md) |
+| `src/state/` | 関心ごとごとの hook。`useCopcViewer` が組み立てる | [state](./frontend/state.md) |
+| `src/renderer/` | WebGPU 描画。React を知らない | [renderer](./frontend/renderer.md) |
+| `src/ui/` | 役割ごとのフォルダに分かれた画面の部品 | [ui](./frontend/ui-shell.md) |
+
+リファクタリングで「この処理はどこから始まるのか」を探すときは、[処理の流れ（入口つき）](./flows/README.md) の章を開いてください。
 
 ## まず読むファイル
 

@@ -37,11 +37,16 @@ pub struct NodeKey {
 }
 ```
 
-この文字列1本が、`pcv://` の URL に乗る唯一のセグメントです。`convertFileSrc`
+この文字列に、開いているファイルの番号 `cloudId`（Rust 側の世代番号）を前置きした
+`"<cloudId>/<level>-<x>-<y>-<z>"` が、`pcv://` の URL に乗る唯一のセグメントです
+（組み立ては `src/datasource/tauri-protocol.ts` の `buildNodeRequestPath`）。`convertFileSrc`
 （Tauri のカスタムプロトコル用ヘルパー）がパス全体を1セグメントとして
 `encodeURIComponent` するため、複数セグメントのパス（`/node/<key>` のような形）は
-使えないという制約があり、それに合わせてこの1文字列形式を選びました
-（[M1 タスクシート](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/M1-point-rendering.md) M1-2 の「M0 で判明している落とし穴」）。
+使えず、`/` は `%2F` になって届きます。Rust 側（`src-tauri/src/lib.rs` の `parse_pcv_path`）が
+パーセントデコードしてから `cloudId` とキーに分けます。複数のファイルを同時に開けるので、
+キーだけではどのファイルのノードか分からない、というのが `cloudId` を前置きする理由です
+（[M1 タスクシート](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/M1-point-rendering.md) M1-2 の「M0 で判明している落とし穴」、
+`TaskSheets/L1-multi-layer.md`）。
 
 hierarchy 全体は `Hierarchy` 型（`BTreeMap<NodeKey, HierarchyNode>`）として保持され、
 各ノードは点数と空間的な境界（`bounds_min`/`bounds_max`）を持ちます。この境界は
@@ -93,13 +98,13 @@ GPU に渡すことは一度もありません。
 [規約4](./conventions.md#規約4-大きいデータは-pcv-カスタムプロトコルで運ぶ) を参照してください。
 
 ```
-フロント: fetch(convertFileSrc("0-0-0-0", "pcv"))
+フロント: fetch(convertFileSrc("<cloudId>/0-0-0-0", "pcv"))   ← TauriSource.readNode
    ↓
 src-tauri: register_asynchronous_uri_scheme_protocol のハンドラ
    ↓
 tauri::async_runtime::spawn_blocking でブロッキングスレッドへ
    ↓
-CopcPool（独立したCopcFileを複数本保持）から1本借りる
+その cloudId のファイルの CopcPool（独立したCopcFileを複数本保持）から1本借りる
    ↓
 file.read_node(key) でそのノードのLAZチャンクだけを伸長
    ↓
@@ -120,7 +125,7 @@ COPC の読み込みはすべて専用の Web Worker（[`src/datasource/copc.wor
 
 ```
 メインスレッド                         Worker
-useCopcViewer.ts                      copc.worker.ts
+WebSource (web.ts)                    copc.worker.ts
   │  postMessage(open/readNode)          │
   ├──────────────────────────────────────▶
   │                                      pcv-wasm (WasmCopcFile) が
@@ -140,6 +145,11 @@ URL を開く場合は、サーバーが CORS と HTTP Range の両方に対応�
 対応していなければ、黙って全体取得にフォールバックするのではなく、最初の Range
 プローブの時点でエラーにします（「ファイルサイズに関わらず開く時間とメモリが
 一定」という COPC アーキテクチャの主張を、Web 版だけが裏切らないようにするためです）。
+
+## 次に読むページ
+
+呼び出しの順序（どの関数が何を呼ぶか）は [処理の流れ（入口つき）](./flows/README.md) の章にまとめています。
+ファイルを開く流れは[ファイルを開く](./flows/open-file.md)、毎フレームのノード選択と読み込み要求は[毎フレームの描画](./flows/render-frame.md)です。
 
 ## まず読むファイル
 
