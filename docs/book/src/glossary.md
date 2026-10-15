@@ -83,7 +83,7 @@ Web Worker の中では `FileSystemSyncAccessHandle` により同期的な読み
 ## ADR（Architecture Decision Record）
 
 設計判断とその理由を記録する文書形式。このリポジトリでは
-`TaskSheets/ADR-0001`〜`ADR-0013` として蓄積されています。→ [設計判断の索引](./adr-index.md)
+`TaskSheets/ADR-0001`〜`ADR-0018` として蓄積されています。→ [設計判断の索引](./adr-index.md)
 
 ## `pcv://`
 
@@ -96,3 +96,56 @@ Web Worker の中では `FileSystemSyncAccessHandle` により同期的な読み
 `src/datasource/DataSource.ts` で定義される TypeScript のインターフェース。
 Tauri 版（`TauriSource`）と Web 版（`WebSource`）がこれを実装し、レンダラや
 UI はこのインターフェースだけを見ます。→ [datasource の章](./frontend/datasource.md)
+
+## レイヤー（layer）
+
+画面の左パネルに並ぶ 1 件。開いた点群ファイル 1 つ、または計測の結果 1 つに当たります。
+React 側は `ViewerLayer`（`src/state/layers.ts`）、renderer 側は内部の `Layer`（`point-cloud-renderer.ts`）で、
+同じ id（`layer-N`）で結ばれます。着色・点の形と大きさ・表示/非表示はレイヤーごとに持ちます。
+点群に対する機能は「選んだレイヤーから**新しいレイヤーを作る**」形に揃えてあります（ADR-0018）。
+→ [レイヤー操作](./flows/layers.md)
+
+## cloudId
+
+`DataSource.open()` が返す、開いたファイルの識別子。`readNode(cloudId, key)` と `close(cloudId)` に渡します。
+Tauri では Rust 側の世代番号（`pcv://<cloudId>/<ノードキー>` の前置き）、Web では Worker の表のキーです。
+renderer は `cloudId` を知らず、`addLayer` に渡す `readNode` が `cloudId` を閉じ込めています。
+→ [datasource の章](./frontend/datasource.md)
+
+## 計測レイヤー（measurement layer）
+
+距離・高さ・面積の計測結果を持つレイヤー。点は持たず（`pointCount = 0`、`cloudId = -1`）、renderer にも入りません。
+元の点群レイヤーの CRS を引き継ぎ（単位の換算のため）、3D ビューには SVG（`MeasureOverlay`）で重ねて描きます。
+`isMeasureLayer(layer)` で見分けます。→ [計測](./flows/measure.md)
+
+## ピック（pick）
+
+画面上の点（クリック位置）から 3D 座標を求めること。点は CPU に残していないので、**描いた深度を GPU から読み戻して**逆射影します。
+粗い読み戻し→狭い near/far で小窓だけ描き直して精度を取る、の二段階です（`PointCloudRenderer.pickPoint`、`pick-math.ts`）。
+→ [計測](./flows/measure.md)
+
+## 表示単位（display unit）
+
+長さをメートルで出すかフィートで出すかの設定（`DisplayUnit`、`src/state/units.ts`・`useDisplayUnit.ts`）。
+ファイルの座標は CRS の単位のままで、CRS から読んだ m 換算係数を通して表示単位にします。係数が不明なときは換算せず、その旨を添えます。
+→ [設定と単位](./flows/settings.md)
+
+## LOD A
+
+「点間隔が 0.5 画素を下回った親」の子孫を、ノード選択の候補に入れない規則（`MIN_NODE_SPACING_PIXELS`、`node-selection.ts`）。
+画素より細かい点は読んでも見た目が変わらないため。→ [毎フレームの描画](./flows/render-frame.md)
+
+## 止まったら上限（HQ-2）
+
+カメラが止まって 500ms たったら点予算を上限まで上げ、動き出したら描く前に元へ戻す仕組み（`idle-boost.ts`）。
+→ [毎フレームの描画](./flows/render-frame.md)
+
+## 中央優先度（center priority）
+
+画面中央に近いノードを優先して読み込むための重み（`center-priority.ts`）。画面空間誤差に掛けます。
+強さと下限は設定の「読み込み優先」で変えられます。→ [設定と単位](./flows/settings.md)
+
+## hook（フック）
+
+React の関数で、状態や副作用を持つもの（`useXxx`）。このアプリでは `src/state/` に、関心ごとごとに 1 ファイルずつあり、
+`useCopcViewer` が組み立てます。→ [state の章](./frontend/state.md)
