@@ -14,7 +14,7 @@ import { ViewerPanel } from "../ViewerPanel";
 import { ConversionDialog } from "./ConversionDialog";
 import { ErrorDialog } from "./ErrorDialog";
 import { glassSurfaceClass } from "../common/glass";
-import { LayerPanel } from "./LayerPanel";
+import { LayerPanel } from "../layers/LayerPanel";
 import { Ribbon } from "../ribbon/Ribbon";
 import { SettingsModal } from "./SettingsModal";
 import { StatusBar } from "./StatusBar";

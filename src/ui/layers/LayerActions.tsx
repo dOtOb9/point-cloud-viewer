@@ -5,7 +5,7 @@ import { isMeasureLayer } from "../../state/layers";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { shouldDeleteLayerOnKey } from "./layer-delete-key";
 import { RibbonButton } from "../ribbon/RibbonButton";
-import { AppearanceDialog, ColorModeDialog } from "./ViewDialogs";
+import { AppearanceDialog, ColorModeDialog } from "../shell/ViewDialogs";
 
 /**
  * L2-A: レイヤー情報の下に置く「選択中のレイヤーへの操作」ボタン列(着色・見た目・削除)。
