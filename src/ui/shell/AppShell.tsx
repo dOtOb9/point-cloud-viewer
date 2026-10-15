@@ -12,7 +12,7 @@ import { MeasureOverlay } from "../tools/MeasureOverlay";
 import { LayerToolOverlay } from "../tools/LayerToolOverlay";
 import { SectionDialog } from "../tools/SectionDialog";
 import { ToolProgressDialog } from "../tools/ToolProgressDialog";
-import { ViewerPanel } from "../ViewerPanel";
+import { ViewerPanel } from "./ViewerPanel";
 import { ConversionDialog } from "../dialogs/ConversionDialog";
 import { ErrorDialog } from "../dialogs/ErrorDialog";
 import { glassSurfaceClass } from "../common/glass";
