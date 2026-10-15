@@ -1,10 +1,14 @@
-# pcv-convert: LAS/LAZ から COPC への変換、他形式の取り込み
+# pcv-convert: LAS/LAZ から COPC への変換、他形式の取り込み、結合・抽出
 
-`crates/pcv-convert` は生の LAS/LAZ を COPC へ変換する処理と、E57/PLY/PCD を
-LAS 経由で取り込む処理を持ちます。`pcv-core` とは別クレートに分けてあり、
-`pcv-core` が [規約1](../conventions.md) の対象（wasm32 でビルドできる）であり続けるため、
-変換の重い処理（out-of-core の一時ファイル、`copc-writer` への依存）はこちらに
-閉じ込められています。
+`crates/pcv-convert` は、生の LAS/LAZ を COPC へ変換する処理、E57/PLY/PCD の取り込み、
+複数ファイルの結合、COPC から条件に合う点だけを取り出す処理を持ちます。
+`pcv-core` とは別クレートに分けてあり、`pcv-core` が [規約1](../conventions.md) の対象
+（wasm32 でビルドできる）であり続けるため、変換の重い処理（out-of-core の一時ファイル、
+`copc-writer` への依存）はこちらに閉じ込められています。デスクトップ・Android 用で、Web 版は使いません
+（Web 版は [pcv-wasm](./pcv-wasm.md) が同じ `vendor/copc-writer` を直接呼びます）。
+
+流れとして読みたいときは、先に [変換の中身](../flows/conversion.md)・
+[点の選択・断面・結合](../flows/point-cloud-tools.md)の章を見てください。この章はクレートの地図です。
 
 [`src/lib.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/lib.rs) のモジュール構成が、このクレートの歴史をそのまま表しています。
 
@@ -13,16 +17,19 @@ LAS 経由で取り込む処理を持ちます。`pcv-core` とは別クレー�
 - point:   入力LAS/LAZの読み込みと、メモリ上で持つ点の表現
 - octree:  素朴なoctree分割
 - writer:  COPCファイルの組み立て
-- import:  M4-4。E57/PLY/PCD → LAS のインポータ(独立した経路)
 
-## M4-3（本番の変換経路。copc-writerを使う）
-- streaming:    copc-writerを呼ぶ本体
+## M4-3 以降（本番の変換経路。copc-writerを使う）
+- streaming:      LAS/LAZ 1ファイルの変換の本体(convert_and_timings)
+- merge:          複数ファイルの結合(M4-14。アプリからも呼ぶ。L2-C でCRS無しを通す寛容モード)
+- extract:        COPCから条件に合う点だけを新しいCOPCにする(L2-C。点の選択・断面)
+- import:         E57/PLY/PCDの取り込み(M4-9。中間のLASは作らない)
+- stage_timings:  段階ごとの所要時間(M4-12)
 - write_metadata: 元のLASヘッダーからCopcWriteMetadataを組み立てる
-- crs_override: 元ヘッダーのCRSからWKT文字列を解決する
-- copc_detect:  拡張子ではなくヘッダーでCOPCかどうかを判定する
-- cache:        同じファイルを二度変換しない
-- output_path:  変換結果の置き場所を決める
-- disk_space:   変換前の空き容量チェック
+- crs_override:   元ヘッダーのCRSからWKT文字列を解決する
+- copc_detect:    拡張子ではなくヘッダーでCOPCかどうかを判定する
+- cache:          同じファイルを二度変換しない(単一ファイル・複数ファイルの指紋)
+- output_path:    変換結果の置き場所を決める
+- disk_space:     変換前の空き容量チェック
 ```
 
 ## なぜ2つの実装があるのか
@@ -41,28 +48,28 @@ LAS 経由で取り込む処理を持ちます。`pcv-core` とは別クレー�
 
 ## `streaming.rs`: 本番の変換経路
 
-[`src/streaming.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/streaming.rs) が実際に使われる変換の本体です。当初は `copc-writer` の
+[`src/streaming.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/streaming.rs) が実際に使われる変換の本体です。入口は `convert_and_timings`
+（パスから開く版は `convert_path_and_timings`）です。当初は `copc-writer` の
 一括関数（パスを渡すだけの高水準 API）を使う設計でしたが、**Android でも変換する**
-という方針変更を受けて、低水準 API `write_streaming_with_cancel` を使う形に
+という方針変更を受けて、低水準 API `write_streaming_with_cancel_and_timings` を使う形に
 変わりました。理由は、Android のファイル選択が返す `content://` URI は
 パス文字列ではなく `std::fs::File`（ファイルディスクリプタ）としてしか得られず、
-パスを要求する一括関数には渡せないためです。低水準 API は `R: Read + Seek` から
-作った点のイテレータを受け取るため、デスクトップのパスも Android の
-`content://` も最終的に同じ `std::fs::File` として扱い、**1本の経路に統一**しています。
+パスを要求する一括関数には渡せないためです。低水準 API は点のイテレータを受け取るため、
+デスクトップのパスも Android の `content://` も最終的に同じ `std::fs::File` として扱い、
+**1本の経路に統一**しています。
 
-**変換の並列化は本書の執筆時点で作業中です。** デスクトップ・Android 側では、
-読み込み段階の内訳を実測した結果 LAZ の展開がボトルネックだと分かり、`las`
-クレートの `laz-parallel` フィーチャ（`laz` クレートの `rayon` ベースの並列展開
-への入口）を有効にする形で対応されています（コード自体の変更は最小限で、
-1回のバッチが複数の LAZ チャンクをまたぐよう `READ_BATCH_SIZE` を調整した
-のが主な変更です）。Web 版（[pcv-wasm の章](./pcv-wasm.md)）側の並列化は
-本書の執筆時点ではまだ行われていません。最新の状況は
-[`TaskSheets/M4-import-and-conversion.md`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/M4-import-and-conversion.md) の M4-7 節を確認してください。
+LAZ の展開は `las` クレートの `laz-parallel` フィーチャ（`rayon`）で並列にしてあります（M4-7）。
+1回の `fill_points` が複数の LAZ チャンクをまたがないと並列化の余地が無いため、`READ_BATCH_SIZE` を
+64Ki 点から 1Mi 点に増やしました（`beer.laz`、20論理コアでの実測: 64Ki で 1.69倍、1Mi で 5.33倍。
+`streaming.rs` 冒頭の表）。ノードの圧縮と LOD の分割は `vendor/copc-writer` 側で、
+`parallel-compress` フィーチャのスレッドで動きます（`Cargo.toml` で有効化。
+[vendor/copc-writer の章](./copc-writer.md)）。Web 版は `rayon` が使えないので、独立した
+Web Worker に範囲を分担させます（[pcv-wasm の章](./pcv-wasm.md)）。
 
 副産物として、点のイテレータを自前で回すため、読み込んだ点数を数えて
 **進捗として報告できる**ようになりました（`copc-writer` 自身は進捗コールバックを
-持っていません）。読み込み完了後（octree 構築・チャンク圧縮・書き出し）は
-`write_streaming_with_cancel` の呼び出し内部で一括して行われるため、外から
+持っていません）。読み込み完了後（LOD の分割・チャンク圧縮・書き出し）は
+`write_streaming_with_cancel_and_timings` の呼び出し内部で一括して行われるため、外から
 フックできず、進捗は「段階名」だけになります。
 
 キャンセルは `copc_core::CancelCheck` トレイトで最初から対応されており、
@@ -82,17 +89,46 @@ LAS 経由で取り込む処理を持ちます。`pcv-core` とは別クレー�
   から WKT を組み立てます。対応外の系は CRS が失われることを許容します
 - [`copc_detect.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/copc_detect.rs) — 拡張子ではなく、COPC info VLR の有無でヘッダーから判定します
 - [`cache.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/cache.rs) — 変換結果の隣に指紋（サイズ・更新日時）のサイドカーを置き、同じファイルを
-  二度変換しないようにします
+  二度変換しないようにします。複数ファイル用の指紋（`multi_fingerprint_of_paths`）もあります
 - [`output_path.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/output_path.rs) — `<元ファイル名>.copc.laz` を元ファイルの隣に、書けなければ
   アプリのキャッシュディレクトリに置きます
 - [`disk_space.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/disk_space.rs) — ADR-0006 の実測（入力の約11倍の一時ディスクを使う）を根拠に、
-  変換前に空き容量を確認します（Windows は `GetDiskFreeSpaceExW`、Unix 系/Android は `statvfs`）
+  変換前に空き容量を確認します（Windows は `GetDiskFreeSpaceExW`、Unix 系/Android は `statvfs`）。
+  この係数は ADR-0019 の前の方式での実測で、新方式では再計測していません（安全側の見積もりとして残っています）
+- [`stage_timings.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/stage_timings.rs) — `copc-writer` の2つの計測構造体（読み込み側・後処理側）を
+  画面に出す「変換の内訳」用の1つにまとめます
+
+## `merge.rs`: 複数ファイルの結合
+
+[`src/merge.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/merge.rs) は、元は開発者向けの CLI（`examples/merge_las_to_copc.rs`）専用でしたが、
+M4-14 でアプリ（`src-tauri` の `start_multi_las_conversion`）からも呼ぶようになりました。新しい octree や writer は書かず、
+「複数ファイルを順に読んで1本のイテレータにする」（`MultiFileLasPoints`）だけで、単一ファイルと同じ
+`write_streaming_with_cancel_and_timings` に渡します。
+
+- `summarize_headers_lenient` — アプリの既定。全ファイルのヘッダーだけを読み、点のレイアウトの一致を確認する。
+  CRS が無いファイルは通して警告にする（`HeaderSummary::crs_warnings`）。CRS を持つファイル同士の食い違いは `MergeError::CrsMismatch`
+- `summarize_headers` / `summarize_headers_with_options` — 厳格なモード（CLI の既定と `--assume-missing-crs-is-first`）
+- CRS の比較には `pcv_core::crs::CrsId` を使う（`Crs` 列挙型は対応外の CRS を「不明」にしてしまい、
+  「CRS が無い」と区別できないため。[pcv-core の章](./pcv-core.md)）
+- `merge_paths_and_timings` — アプリが呼ぶ入口。COPC も `las::Reader` が LAZ として読めるので、そのまま結合できる
+
+## `extract.rs`: 条件に合う点だけを新しい COPC にする
+
+[`src/extract.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/extract.rs) の `extract_path_and_timings` が、`pcv_core::extract::ExtractPoints`
+（条件と交わるノードだけを読むイテレータ）を `write_streaming_with_cancel_and_timings` に渡します。
+0点なら出力を作らず `ExtractError::EmptySelection` です。読み側は1ノードぶんしか抱えないので、
+メモリは点数に比例しません（テスト `buffer_is_bounded_by_largest_node`）。
 
 ## `import/`: E57・PLY・PCD の取り込み
 
 [`src/import/`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/import) は [ADR-0008](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md) が対応すると決めた3形式の取り込みです。
-`copc-writer` が入力に取れるのは LAS/LAZ だけなので、**E57/PLY/PCD はいったん
-プレーンな LAS に書き出し、既存の LAS/LAZ → COPC 経路にそのまま乗せる**設計です。
+M4-4 の最初の設計は「いったんプレーンな LAS に書き出す」でしたが、全点をメモリに貯めること、中間 LAS の余計な I/O が
+問題で、**M4-9 で作り直しました。各形式を「1点読むたびに spill へ書く」`PointSource`（`import/point.rs`）にして、
+中間 LAS は作りません**（`las_out.rs` は削除済み）。
+
+入口は `import/mod.rs` の `convert_to_copc_and_timings`（形式は `detect_format` が拡張子から判定）で、
+`import/convert.rs` の `run_import` が点を `SpillWriter` に流し、あとは LAS/LAZ と同じ `copc-writer` の経路です。
+`src-tauri/src/conversion.rs` の `run_conversion_thread` から呼ばれています（アプリに配線済みです）。
 
 | 形式 | 使用クレート | 備考 |
 |---|---|---|
@@ -101,18 +137,17 @@ LAS 経由で取り込む処理を持ちます。`pcv-core` とは別クレー�
 | [PCD](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/import/pcd.rs) | `pcd-rs` 0.13.0 | binary_compressed（LZF 圧縮）にも対応 |
 
 [`scale.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/import/scale.rs) は、座標の値域から LAS の scale/offset（mm 以下の精度を狙う）を
-選ぶ純粋関数です。[`las_out.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/import/las_out.rs) が共通の点群表現からプレーンな LAS を書き出します。
+選ぶ純粋関数です。CRS は推測せず「不明」のままです。色・強度の値域の扱いは形式ごとに異なり、
+各ファイル冒頭のコメントと
+[ADR-0008 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#追記2026-09-25-e57--ply--pcd--lasの実装m4-4) にあります。
 
-E57/PLY/PCD は CRS の概念を持たない、または値域メタデータを持たないことが多いため、
-色・強度の値域の扱いは形式ごとに異なります。詳細は各ファイル冒頭のコメントと
-[ADR-0008 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#追記2026-09-25-e57--ply--pcd--lasの実装m4-4) を参照してください。
-
-**このインポータはアプリへの配線（UI からファイルを選んで取り込む導線）を
-持っていません。** 「E57/PLY/PCD → LAS の変換」の実装と検証までが範囲で、
-アプリへの配線は別タスクとして残っています。
+Web 版で取り込めるのは PCD だけで、`crates/pcv-wasm/src/pcd_import.rs` に PCD の読み込みを**意図的に複製**しています
+（`pcv-wasm` が別ワークスペースで、`pcv-convert` に依存すると `rayon` が wasm32 のビルドに混入するため）。
+E57/PLY が Web で取り込めるかは確認していません。
 
 ## まず読むファイル
 
-- [`crates/pcv-convert/src/streaming.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/streaming.rs) — 本番の変換経路
+- [`crates/pcv-convert/src/streaming.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/streaming.rs) — 本番の変換経路（LAS/LAZ 1ファイル）
+- [`crates/pcv-convert/src/merge.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/merge.rs)・[`extract.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/extract.rs) — 結合と抽出
 - [`crates/pcv-convert/src/import/mod.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/import/mod.rs) — E57/PLY/PCD 取り込みの入口
 - [`TaskSheets/ADR-0006-conversion-strategy.md`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0006-conversion-strategy.md) — なぜ `copc-writer` を選んだか、実測値
