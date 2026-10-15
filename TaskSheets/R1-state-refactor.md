@@ -31,7 +31,7 @@ Relation to the existing hooks: `useLayerTool.ts`, `useMeasureTool.ts` and `useD
 `addMeasurement`; the unit setting is independent). They were not changed. `usePointCloudTools.ts` is the
 "run a tool" side; `useLayerTool.ts` is the "draw on the screen" side; the header comment of each says so.
 
-Commits: `3a319a0` (pure functions and tests), `8f51b25` (the hook split).
+Commits: `e5b428b` (pure functions and tests), `a3c5f55` (the hook split).
 
 ## Why this way
 
