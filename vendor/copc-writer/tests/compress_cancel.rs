@@ -1,20 +1,9 @@
-//! M4-10(`TaskSheets/M4-import-and-conversion.md`)の回帰テスト:
-//! ノードごとのLAZ圧縮を並列化(`parallel-compress`)した後も、キャンセル
-//! (`CancelCheck`)が働くことを確かめる。
+//! Cancellation (`CancelCheck`) stops the conversion near its end, in the node
+//! compression, and the call returns `Cancelled`.
 //!
-//! `compress_nodes_parallel`は、バッチ(`rayon`で並列圧縮するノードの
-//! まとまり)ごとに1回`cancel.check()`を呼ぶほか、各ノードの点を読み出す
-//! `encode_node_points`も(`CANCEL_POLL_STRIDE`点ごとに、最低でもノードの
-//! 最初の点で)`cancel.check()`を呼ぶ(`writer.rs`参照)。これが並列化後も
-//! 働くことを、`parallel_lod_cancel.rs`と同じ「呼ばれた回数を数えて途中で
-//! キャンセルを返す`CancelCheck`」で確かめる。
-//!
-//! octreeの分割(`build_lod_index`)自体も`cancel.check()`を呼ぶため、
-//! 「LOD構築が完全に終わった後、圧縮の最後の方」でキャンセルが入るよう、
-//! 一度キャンセルせずに最後まで実行して全体の呼び出し回数を数え、
-//! その直前(残り少ない回数)でキャンセルする2段構えにする。これにより、
-//! マシンのスレッド数やLOD構築側の呼び出し回数を仮定せずに、決定的に
-//! 「圧縮フェーズの終盤でキャンセルする」状況を作れる。
+//! A first run without cancelling counts all `cancel.check()` calls; the second
+//! run cancels ten calls before the end. One worker is used so the number of
+//! calls is the same in both runs (with several threads it varies slightly).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -65,7 +54,7 @@ fn record(seed: u32) -> LasPointRecord {
     }
 }
 
-const POINT_COUNT: u32 = 200_000;
+const POINT_COUNT: u32 = 40_000;
 const MAX_POINTS_PER_NODE: u32 = 50;
 
 fn build_spill_reader(fs: &MemoryScratchFs) -> copc_writer::SpillReader {
@@ -96,7 +85,9 @@ fn cancellation_stops_parallel_compress_and_leaves_no_leftover_output() {
         &counting_fs,
         baseline_output,
         counting_reader,
-        &CopcWriterParams::new(MAX_POINTS_PER_NODE).with_parallel_node_compression(true),
+        &CopcWriterParams::new(MAX_POINTS_PER_NODE)
+            .with_memory_budget_bytes(1024 * 1024)
+            .with_max_concurrent_subtrees(1),
         &counter,
         &CopcWriteMetadata::default(),
     )
@@ -122,7 +113,9 @@ fn cancellation_stops_parallel_compress_and_leaves_no_leftover_output() {
         &cancel_fs,
         cancelled_output,
         cancel_reader,
-        &CopcWriterParams::new(MAX_POINTS_PER_NODE).with_parallel_node_compression(true),
+        &CopcWriterParams::new(MAX_POINTS_PER_NODE)
+            .with_memory_budget_bytes(1024 * 1024)
+            .with_max_concurrent_subtrees(1),
         &cancel,
         &CopcWriteMetadata::default(),
     );

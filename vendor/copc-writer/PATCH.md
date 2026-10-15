@@ -577,3 +577,43 @@ vendor/copc-writer/Cargo.toml --all-targets -- -D warnings`は本タスクと無
 `append_lod_selection_to_order`を`select_for_parent_and_split_children`に置き換え、
 子の列を1回読んで等間隔に選び、残りを新しい一時ファイルへ書いて子に渡すようにした。
 理由・採らなかった案・測定は`TaskSheets/M4-16-lod-sampling-bias.md`。
+
+## ADR-0019 (L3-B): the LOD builder carries point records, small subtrees are finished in memory
+
+Design and reasons: `TaskSheets/ADR-0019-record-carrying-lod.md`. Measurements:
+`TaskSheets/BENCH-conversion-profile.md` ("after ADR-0019").
+
+What changed in this crate:
+
+- `src/lod.rs` is rewritten. A *run* is a file of fixed-width spill records. `expand_run` partitions a run
+  that does not fit the memory budget into 8 child runs with one sequential read and one sequential write, and
+  deletes the run. The parent keeps its points by the M4-16 rule (evenly across each child run). The per-octant
+  counts of a child run are counted while it is written (`RunTask::counts`), so only the root run needs a counting
+  pass. A run that fits is loaded and `build_in_memory` builds the rest of the subtree from `Vec<u8>` buffers.
+  The "order" file of point indices, the index width switch (L3-A's `IndexWidth`) and the random reads of the
+  spill by index are gone from production code.
+- `src/lod_reference.rs` (test only) keeps the old index-based builder. `lod::tests::record_builder_matches_index_reference`
+  checks that, for several inputs and for different mixes of disk and memory levels, every node holds exactly the same
+  points in the same order as the old builder.
+- `src/node_pipeline.rs` (new) runs the tasks and compresses the nodes. One thread: depth first. With
+  `parallel-compress`: `workers` threads take tasks from a shared stack (newest first) and a bounded channel feeds
+  the writer thread; chunks are written in the order they finish (COPC does not need an order; the hierarchy has the
+  offsets). `rayon` is no longer used (`parallel-compress` now only switches the std threads on; `parallel-lod` is an
+  empty feature kept so that `pcv-convert`'s feature list still resolves).
+- `CopcWriterParams` has two new fields: `memory_budget_bytes` (default 1 GiB desktop, 256 MiB Android, 64 MiB wasm32)
+  and `max_concurrent_subtrees` (default: logical CPUs, at most 8; 1 without `parallel-compress`). A run is finished in
+  memory when it is at most `memory_budget_bytes / (2 * workers)` bytes.
+- `writer.rs`: the writer works on a `SpillReader` only. `write_source*` (generic `CopcPointSource`) copies the source into a
+  spill first. `write_copc_from_spill_with_fs_and_batch_sizes` and its test were removed (no batches any more).
+- `scratch.rs` (native): `finish_temp` no longer calls `sync_all` (temporary files never have to survive a crash), and
+  `open_at` reads the file with ordinary reads instead of through the memory map (sequential reads through the map
+  page-faulted on every 4 KiB page, about 190 MB/s measured on the development machine, Windows).
+- `PostProcessStageTimings`: `lod_index_build` is now the wall-clock time during which at least one run was being
+  partitioned on disk; `node_compression` is the rest of the node pass (subtrees in memory, compression, chunk writes).
+  The two overlap in reality when there are several threads, so compare their sum with the old sum, not each with its old value.
+- Output: chunk order in the file changed (subtree order, or completion order with several threads), so the recorded
+  hash in `crates/pcv-convert/tests/streaming_conversion.rs` was updated. `crates/pcv-convert/examples/compare_copc_nodes.rs`
+  compares two COPC files node by node (multiset of points per node).
+- Tests: `tests/lod_runs_bounded.rs` (live temp bytes peak at about two copies of the data; open files do not grow with
+  points), `tests/heap_is_bounded.rs` (counting allocator: heap peak flat from 50,000 to 400,000 points),
+  `tests/lod_cancel.rs`, `tests/compress_cancel.rs`, `tests/scratch_read_is_bounded.rs` (adapted).

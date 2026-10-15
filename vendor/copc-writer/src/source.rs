@@ -1,10 +1,9 @@
 //! Point-data sources consumed by the COPC writer.
 
-use std::sync::Mutex;
-
-use copc_core::{Bounds, ColumnData, Error, LasColumnBatch, LasDimension, LasPointRecord, Result};
-
-use crate::spill::SpillReader;
+use copc_core::{
+    deserialize_le_into, Bounds, ColumnData, Error, LasColumnBatch, LasDimension, LasPointRecord,
+    Result, StreamingLayout,
+};
 
 /// Normalized point fields consumed by the COPC writer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -350,39 +349,28 @@ fn unexpected_column_type(dimension: LasDimension, expected: &str, actual: &Colu
     ))
 }
 
-/// Source view over a finalized writer spill file.
-pub(crate) struct SpillSource<'a> {
-    reader: &'a SpillReader,
-    /// M4-8: `RefCell`は`Sync`でないため`Mutex`にした
-    /// (`spill.rs`の`SpillReader::record_scratch`と同じ理由)。
-    scratch: Mutex<LasPointRecord>,
+/// Turns spill records (the byte layout of `copc_core::serialize_le`) back
+/// into `CopcPointFields`, reusing one scratch record.
+///
+/// Since ADR-0019 the LOD builder passes the records themselves down to the
+/// nodes, so each node decodes its own points here when it is encoded.
+pub(crate) struct RecordDecoder<'a> {
+    layout: &'a StreamingLayout,
+    record: LasPointRecord,
 }
 
-impl<'a> SpillSource<'a> {
-    pub(crate) fn new(reader: &'a SpillReader) -> Self {
+impl<'a> RecordDecoder<'a> {
+    pub(crate) fn new(layout: &'a StreamingLayout) -> Self {
         Self {
-            reader,
-            scratch: Mutex::new(LasPointRecord::default()),
+            layout,
+            record: LasPointRecord::default(),
         }
     }
-}
 
-impl CopcPointSource for SpillSource<'_> {
-    fn len(&self) -> usize {
-        self.reader.len()
-    }
-
-    #[inline]
-    fn xyz(&self, index: usize) -> Result<(f64, f64, f64)> {
-        self.reader.xyz_at(index)
-    }
-
-    fn fields_into(&self, index: usize, out: &mut CopcPointFields) -> Result<()> {
-        let mut record = self
-            .scratch
-            .lock()
-            .expect("scratchのロックが汚染されていない");
-        self.reader.record_into(index, &mut record)?;
+    pub(crate) fn fields_into(&mut self, bytes: &[u8], out: &mut CopcPointFields) -> Result<()> {
+        deserialize_le_into(bytes, self.layout, &mut self.record)
+            .map_err(|e| Error::InvalidData(format!("decode spill record: {e}")))?;
+        let record = &self.record;
         out.x = record.x;
         out.y = record.y;
         out.z = record.z;
@@ -408,12 +396,35 @@ impl CopcPointSource for SpillSource<'_> {
         out.extra_bytes.extend_from_slice(&record.extra_bytes);
         Ok(())
     }
+}
 
-    fn extra_byte_count(&self) -> u16 {
-        self.reader.layout().extra_bytes
-    }
-
-    fn extra_bytes_vlrs(&self) -> &[las::Vlr] {
-        &self.reader.layout().extra_bytes_descriptors
+/// The reverse of `RecordDecoder`: a `LasPointRecord` for the spill, from the
+/// fields a `CopcPointSource` gives. Used to feed a generic source through the
+/// same spill-based writer.
+pub(crate) fn record_from_fields(fields: &CopcPointFields) -> LasPointRecord {
+    LasPointRecord {
+        x: fields.x,
+        y: fields.y,
+        z: fields.z,
+        intensity: fields.intensity,
+        return_number: fields.return_number,
+        number_of_returns: fields.number_of_returns,
+        classification: fields.classification,
+        scan_direction_flag: fields.scan_direction_flag != 0,
+        edge_of_flight_line: fields.edge_of_flight_line != 0,
+        scan_angle: fields.scan_angle,
+        user_data: fields.user_data,
+        point_source_id: fields.point_source_id,
+        synthetic: fields.synthetic != 0,
+        key_point: fields.key_point != 0,
+        withheld: fields.withheld != 0,
+        overlap: fields.overlap != 0,
+        scan_channel: fields.scan_channel,
+        gps_time: fields.gps_time,
+        red: fields.red,
+        green: fields.green,
+        blue: fields.blue,
+        extra_bytes: fields.extra_bytes.clone(),
+        ..LasPointRecord::default()
     }
 }

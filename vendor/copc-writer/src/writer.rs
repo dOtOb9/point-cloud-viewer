@@ -15,11 +15,11 @@ use std::time::Duration;
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use copc_core::{
-    Bounds, CancelCheck, CopcInfo, Entry, Error, LasPointRecord, Result, StreamingLayout, VoxelKey,
+    Bounds, CancelCheck, CopcInfo, Error, LasPointRecord, Result, StreamingLayout, VoxelKey,
     MAX_EVLR_COUNT, MAX_VLR_COUNT,
 };
 use las::point::Format as LasFormat;
-use laz::{LasZipCompressor, LazVlrBuilder};
+use laz::LazVlrBuilder;
 // 2026-10-07の緊急修正: `std::time::Instant::now()`はwasm32-unknown-unknownでは
 // panicする(`metadata.rs`冒頭のコメント参照)。`write_copc_from_spill_with_fs`
 // (pcv-wasmが呼ぶ本番の変換経路)は`stage_timings`に常に`None`を渡すので
@@ -39,16 +39,17 @@ use crate::las_out::{
     regular_las_vlrs_bytes, write_evlr_header, write_las_evlr, write_las_vlr, write_vlr_header,
     LasHeader, LAS_EVLR_HEADER_BYTES, LAS_VLR_HEADER_BYTES,
 };
-use crate::lod::{build_lod_index, cube_from_bounds};
+use crate::lod::{cube_from_bounds, LodParams, RunTask};
 use crate::metadata::{
     CopcWriteMetadata, OutputLasMetadata, LASZIP_VLR_RECORD_ID, LASZIP_VLR_USER_ID,
 };
-use crate::scratch::{ScratchFs, ScratchReader};
-use crate::source::{CopcPointFields, CopcPointSource, SpillSource};
+use crate::node_pipeline::{write_chunks, NodeContext, PartitionClock};
+use crate::scratch::ScratchFs;
+use crate::source::{record_from_fields, CopcPointFields, CopcPointSource};
 use crate::spill::{SpillReader, SpillWriter};
 use crate::validate::{
     quantize_xyz, scan_angle_to_las_scaled, validate_source_points,
-    validate_streaming_layout_supported, validate_write_setup, PointStats,
+    validate_streaming_layout_supported, validate_write_setup,
 };
 use crate::CANCEL_POLL_STRIDE;
 
@@ -84,6 +85,54 @@ pub struct CopcWriterParams {
     /// tests/streaming_conversion.rs`参照)。本番の呼び出し側(`pcv-convert`)は
     /// このフィールドを変更せず、既定値(featureが有効なら並列)のまま使う。
     pub parallel_node_compression: bool,
+    /// ADR-0019: memory the conversion may use to finish octree subtrees in
+    /// memory (the records of all subtrees being built at the same moment,
+    /// counted twice because a subtree is split into a second set of
+    /// buffers). A run of point records that fits its share is loaded and
+    /// finished in memory; a bigger one is split on disk first. The default
+    /// is 1 GiB on desktop, 256 MiB on Android and 64 MiB on Web. This is not
+    /// a hard limit on the whole process: compression buffers, the read
+    /// buffers of the disk passes and the compressed chunks waiting to be
+    /// written come on top, but none of them grows with the point count.
+    pub memory_budget_bytes: u64,
+    /// ADR-0019: how many octree subtrees are built and compressed at the
+    /// same time (worker threads). The default is the number of logical CPUs,
+    /// at most 8, and 1 when `parallel-compress` is off (Web). Each subtree
+    /// gets `memory_budget_bytes / (2 * this)` of records. It is ignored (1
+    /// is used) when `parallel_node_compression` is false.
+    pub max_concurrent_subtrees: usize,
+}
+
+/// Default for `CopcWriterParams::memory_budget_bytes`.
+fn default_memory_budget_bytes() -> u64 {
+    if cfg!(target_arch = "wasm32") {
+        64 * 1024 * 1024
+    } else if cfg!(target_os = "android") {
+        256 * 1024 * 1024
+    } else {
+        1024 * 1024 * 1024
+    }
+}
+
+/// Default for `CopcWriterParams::max_concurrent_subtrees`.
+fn default_max_concurrent_subtrees() -> usize {
+    if cfg!(feature = "parallel-compress") {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(8)
+    } else {
+        1
+    }
+}
+
+/// Number of threads that build subtrees, from the parameters.
+fn subtree_workers(params: &CopcWriterParams) -> usize {
+    if cfg!(feature = "parallel-compress") && params.parallel_node_compression {
+        params.max_concurrent_subtrees.max(1)
+    } else {
+        1
+    }
 }
 
 impl CopcWriterParams {
@@ -91,7 +140,21 @@ impl CopcWriterParams {
         Self {
             max_points_per_node,
             parallel_node_compression: cfg!(feature = "parallel-compress"),
+            memory_budget_bytes: default_memory_budget_bytes(),
+            max_concurrent_subtrees: default_max_concurrent_subtrees(),
         }
+    }
+
+    /// Sets `memory_budget_bytes`.
+    pub fn with_memory_budget_bytes(mut self, bytes: u64) -> Self {
+        self.memory_budget_bytes = bytes;
+        self
+    }
+
+    /// Sets `max_concurrent_subtrees`.
+    pub fn with_max_concurrent_subtrees(mut self, count: usize) -> Self {
+        self.max_concurrent_subtrees = count;
+        self
     }
 
     /// ノードごとのLAZ圧縮を並列で行うかどうかを明示的に指定する
@@ -191,22 +254,46 @@ pub fn write_source_with_cancel<S: CopcPointSource>(
             "cannot write empty cloud to COPC".into(),
         ));
     }
-    // LOD索引の置き場所は、今までと同じくOS既定の一時ディレクトリ
-    // (`lod.rs`の旧`new_index_tempfile`と同じ選び方)。出力先は`path`の
-    // 親ディレクトリを使う(`NativeScratchFs::create_output`がそこから導く)。
+    // The writer works on a spill (ADR-0019 carries the spill's records through
+    // the octree), so a generic source is copied into one first. Temporary
+    // files go to the OS temp directory; the output goes next to `path`.
     let fs = NativeScratchFs::new(std::env::temp_dir());
-    write_copc_inner(
-        path,
-        source,
+    // A generic source has not been validated at spill intake, so run the full
+    // check first (points inside the declared bounds, encodable coordinates).
+    let output_metadata = metadata.to_output();
+    let offset = output_metadata
+        .offset
+        .unwrap_or((bounds.min.0, bounds.min.1, bounds.min.2));
+    validate_write_setup(bounds, output_metadata.scale, offset)?;
+    validate_source_points(source, bounds, output_metadata.scale, offset, cancel)?;
+    let layout = StreamingLayout {
+        point_format: if has_color { 7 } else { 6 },
+        has_gps: true,
         has_color,
-        bounds,
+        has_nir: false,
+        has_waveform: false,
+        extra_bytes: source.extra_byte_count(),
+        extra_bytes_descriptors: source.extra_bytes_vlrs().to_vec(),
+    };
+    let mut spill = SpillWriter::create(&fs, layout)?;
+    let mut fields = CopcPointFields::default();
+    for index in 0..source.len() {
+        if index.is_multiple_of(CANCEL_POLL_STRIDE) {
+            cancel.check()?;
+        }
+        source.fields_into(index, &mut fields)?;
+        spill.push(&record_from_fields(&fields))?;
+    }
+    let reader = spill.finalize()?;
+    write_copc_from_spill(
+        path,
+        reader,
         params,
         cancel,
         &metadata.to_output(),
-        None,
         &fs,
         None,
-        None,
+        Some(bounds),
     )
 }
 
@@ -451,35 +538,6 @@ pub fn write_copc_from_spill_with_fs_and_timings(
     Ok(timings)
 }
 
-/// M4-10(`TaskSheets/M4-import-and-conversion.md`)の回帰テスト専用。
-/// `write_copc_from_spill_with_fs`と同じ処理を行い、あわせて
-/// `compress_nodes_parallel`が実際に処理したバッチ(`rayon`で並列圧縮する
-/// ノードのまとまり)ごとのノード数を返す。`parallel_node_compression`が
-/// falseの場合、またはそもそも`parallel-compress`フィーチャが無効な
-/// ビルドでは常に空になる(バッチという概念が無い逐次経路のため)。
-/// 本番の変換経路はこちらを呼ばない。
-pub fn write_copc_from_spill_with_fs_and_batch_sizes(
-    fs: &dyn ScratchFs,
-    path: &Path,
-    reader: SpillReader,
-    params: &CopcWriterParams,
-    cancel: &(dyn CancelCheck + Sync),
-    metadata: &CopcWriteMetadata,
-) -> Result<Vec<usize>> {
-    let mut batch_sizes = Vec::new();
-    write_copc_from_spill(
-        path,
-        reader,
-        params,
-        cancel,
-        &metadata.to_output(),
-        fs,
-        None,
-        Some(&mut batch_sizes),
-    )?;
-    Ok(batch_sizes)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn write_copc_from_spill(
     path: &Path,
@@ -488,8 +546,8 @@ fn write_copc_from_spill(
     cancel: &(dyn CancelCheck + Sync),
     metadata: &OutputLasMetadata,
     fs: &dyn ScratchFs,
-    stage_timings: Option<&mut PostProcessStageTimings>,
-    batch_sizes: Option<&mut Vec<usize>>,
+    mut stage_timings: Option<&mut PostProcessStageTimings>,
+    bounds_override: Option<Bounds>,
 ) -> Result<()> {
     cancel.check()?;
     if params.max_points_per_node == 0 {
@@ -503,49 +561,18 @@ fn write_copc_from_spill(
             "cannot write empty cloud to COPC".into(),
         ));
     }
-    let has_color = reader.layout().has_color;
-    let bounds = reader.bounds();
-    let stats = reader.stats();
-    let source = SpillSource::new(&reader);
-    write_copc_inner(
-        path,
-        &source,
-        has_color,
-        bounds,
-        params,
-        cancel,
-        metadata,
-        Some(stats),
-        fs,
-        stage_timings,
-        batch_sizes,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn write_copc_inner<S: CopcPointSource>(
-    path: &Path,
-    source: &S,
-    has_color: bool,
-    bounds: Bounds,
-    params: &CopcWriterParams,
-    cancel: &(dyn CancelCheck + Sync),
-    metadata: &OutputLasMetadata,
-    intake_stats: Option<PointStats>,
-    fs: &dyn ScratchFs,
-    mut stage_timings: Option<&mut PostProcessStageTimings>,
-    batch_sizes: Option<&mut Vec<usize>>,
-) -> Result<()> {
-    cancel.check()?;
-    if params.max_points_per_node == 0 {
-        return Err(Error::InvalidInput(
-            "max_points_per_node must be greater than zero".into(),
-        ));
-    }
+    // Copy what is needed from the spill reader; the reader itself is handed
+    // over to the LOD builder below and the spill file goes away with it.
+    let layout = reader.layout().clone();
+    let has_color = layout.has_color;
+    let bounds = bounds_override.unwrap_or_else(|| reader.bounds());
+    let point_stats = reader.stats();
+    let total_points = reader.len();
+    let record_width = reader.record_width();
     let point_format_id = if has_color { 7u8 } else { 6u8 };
     let mut point_format =
         LasFormat::new(point_format_id).map_err(|e| Error::Las(format!("point format: {e}")))?;
-    let extra_byte_count = source.extra_byte_count();
+    let extra_byte_count = layout.extra_bytes;
     let point_record_length = point_format
         .len()
         .checked_add(extra_byte_count)
@@ -566,27 +593,10 @@ fn write_copc_inner<S: CopcPointSource>(
         (scale_x, scale_y, scale_z),
         (offset_x, offset_y, offset_z),
     )?;
-    // Spill-backed sources validate records and accumulate stats at intake;
-    // other sources need the full validation pass here. Quantization-range
-    // failures for intake-validated sources surface during encoding instead,
-    // where the atomic output rename still prevents partial files.
-    let point_stats = match intake_stats {
-        Some(stats) => stats,
-        None => validate_source_points(
-            source,
-            bounds,
-            (scale_x, scale_y, scale_z),
-            (offset_x, offset_y, offset_z),
-            cancel,
-        )?,
-    };
+    // The spill validated every record and gathered the statistics at intake
+    // (`point_stats`). Quantization-range failures surface while the nodes
+    // are encoded, where the atomic output rename still prevents partial files.
     let (center, halfsize) = cube_from_bounds(&bounds);
-
-    let lod_build_start = Instant::now();
-    let lod_index = build_lod_index(source, center, halfsize, params, cancel, fs)?;
-    if let Some(timings) = stage_timings.as_mut() {
-        timings.lod_index_build += lod_build_start.elapsed();
-    }
     cancel.check()?;
 
     let header_write_start = Instant::now();
@@ -604,7 +614,7 @@ fn write_copc_inner<S: CopcPointSource>(
     let las_header_size = 375u32;
     let regular_crs_vlr_count = metadata.regular_crs_vlr_count();
     let regular_crs_vlr_bytes = metadata.regular_crs_vlr_bytes()?;
-    let extra_bytes_vlrs = source.extra_bytes_vlrs();
+    let extra_bytes_vlrs = layout.extra_bytes_descriptors.as_slice();
     let extra_bytes_vlr_bytes = regular_las_vlrs_bytes(extra_bytes_vlrs)?;
     let pass_through_vlr_bytes = regular_las_vlrs_bytes(&metadata.pass_through_vlrs)?;
     let number_of_vlrs = u32::try_from(
@@ -666,7 +676,7 @@ fn write_copc_inner<S: CopcPointSource>(
         offset: (offset_x, offset_y, offset_z),
         bounds,
         legacy_point_count: 0,
-        total_point_count: source.len() as u64,
+        total_point_count: total_points as u64,
         offset_to_first_evlr: 0,
         number_of_evlrs,
         extended_return_counts: point_stats.extended_return_counts,
@@ -715,22 +725,44 @@ fn write_copc_inner<S: CopcPointSource>(
         timings.header_and_hierarchy_write += header_write_start.elapsed();
     }
 
-    let compress_start = Instant::now();
-    let hierarchy = compress_nodes_dispatch(
-        &mut writer,
-        &var_vlr,
-        &lod_index,
-        source,
-        (scale_x, scale_y, scale_z),
-        (offset_x, offset_y, offset_z),
-        usize::from(point_record_length),
-        &point_format,
+    // ADR-0019: partitioning the octree on disk, building small subtrees in
+    // memory and compressing the nodes are one pass now, and they overlap when
+    // there are several worker threads. The timings are wall-clock time:
+    // `lod_index_build` is the time during which at least one run was being
+    // partitioned on disk, `node_compression` is the rest of the pass (building
+    // subtrees in memory, compressing, writing the chunks).
+    let node_phase_start = Instant::now();
+    let workers = subtree_workers(params);
+    let clock = PartitionClock::new();
+    let node_ctx = NodeContext {
+        layout: &layout,
+        lod: LodParams {
+            max_points_per_node: params.max_points_per_node as usize,
+            record_width,
+            in_memory_run_bytes: params.memory_budget_bytes / (2 * workers as u64),
+        },
+        output_record_len: usize::from(point_record_length),
+        scale: (scale_x, scale_y, scale_z),
+        offset: (offset_x, offset_y, offset_z),
+        point_format: &point_format,
+        var_vlr: &var_vlr,
         cancel,
-        params.parallel_node_compression,
-        batch_sizes,
-    )?;
+        fs,
+        clock: &clock,
+    };
+    let root_task = RunTask {
+        key: VoxelKey::root(),
+        bounds: Bounds::cube(center, halfsize),
+        run: reader.into_run(),
+        counts: None,
+    };
+    let written = write_chunks(&mut writer, &node_ctx, workers, root_task)?;
+
+    let hierarchy = written.hierarchy;
     if let Some(timings) = stage_timings.as_mut() {
-        timings.node_compression += compress_start.elapsed();
+        let node_phase = node_phase_start.elapsed();
+        timings.lod_index_build += written.disk_partition_time;
+        timings.node_compression += node_phase.saturating_sub(written.disk_partition_time);
     }
 
     let hierarchy_write_start = Instant::now();
@@ -802,413 +834,10 @@ fn write_copc_inner<S: CopcPointSource>(
     Ok(())
 }
 
-/// Reads one node's ordered source indexes from the LOD order file and
-/// encodes its points into `raw` (`node.count * record_len` bytes).
-///
-/// M4-6a: `order`から都度`open_at(node.start)`で読み出し専用ストリームを
-/// 開き直す(以前は`BufReader<File>`を使い回して`seek`していたが、
-/// `ScratchReader`の抽象はオフセット指定の開き直しだけを提供するので、
-/// これで置き換えた。ネイティブ実装はmmap済みの領域を指すだけなので、
-/// 開き直しの実コストはほぼ無い)。
-///
-/// M4-13追記(`TaskSheets/M4-import-and-conversion.md`): `order.open_at(..)`が
-/// 返すストリームは、OPFS実装(`crates/pcv-wasm/src/opfs.rs`の
-/// `OpfsSeqReader`)では一切バッファを持たない。以前はここで
-/// `read_u32::<LittleEndian>()`(4バイト)を`node.count`回、つまり**1点につき
-/// 1回**呼んでいたため、OPFS上では無バッファの`FileSystemSyncAccessHandle.read()`
-/// JSコールが点数ぶん発生し、所有者の実機で「ノードの圧縮」の時間の大半を
-/// 占めていた(50万点のBEFORE計測で呼び出し500,020回・153秒、ノード圧縮
-/// 全体のほぼ100%)。`lod.rs`の`open_index_run`は同じ`open_at`を
-/// `BufReader::with_capacity(INDEX_IO_BUFFER_BYTES, ..)`で包んでいたが、
-/// ここだけ書き漏れていた。
-///
-/// `BufReader`で包み、1回のJS呼び出しでノード1つぶんのorderデータ
-/// (`node.count * INDEX_RECORD_BYTES`バイト、既定の`max_points_per_node`
-/// =10万点なら最大約390KiB)をまとめて読むようにする。バッファ容量は
-/// `lod.rs`の`INDEX_IO_BUFFER_BYTES`(1MiB、既存の実績ある値)と
-/// ノード自身のデータ量の小さい方(`index_buffer_bytes`)にする:
-/// ノードが1MiBより小さければ(既定設定ではほぼ常にそう)ムダに大きく
-/// 確保せず、ノードのデータ全体がちょうど1回のバッファ充填に収まる。
-/// ネイティブ実装(mmap)は元々バッファの有無で速度が変わらないため、
-/// この変更はOPFS(Web)専用の改善でも、ネイティブの挙動は変えない
-/// (出力はバイト同一のまま。読む順序・読む値は変わらず、読み出し単位が
-/// 大きくなるだけ)。
-///
-/// # メモリ
-///
-/// `encode_node_points`は`compress_nodes_sequential`・
-/// `compress_nodes_parallel`のどちらでも**常に1ノードずつ逐次**呼ばれる
-/// (`compress_nodes_parallel`は各バッチ内で`encode_node_points`を
-/// 普通の`for`ループで回してから、できあがった生バイト列の圧縮
-/// (`compress_standalone_chunk`)だけを`par_iter`で並列化している。
-/// つまりこの関数自体が複数スレッドから同時に呼ばれることは無い)。
-/// そのため、このバッファが同時に複数個存在することは無く、追加メモリの
-/// ピークは常に1インスタンスぶん: 高々`INDEX_IO_BUFFER_BYTES`
-/// (1MiB) × 同時読み出し数1 = **1MiB**。
-#[allow(clippy::too_many_arguments)]
-fn encode_node_points<S: CopcPointSource>(
-    node: &crate::lod::LodNodeRange,
-    order: &dyn ScratchReader,
-    index_width: crate::lod::IndexWidth,
-    source: &S,
-    fields: &mut CopcPointFields,
-    raw: &mut Vec<u8>,
-    record_len: usize,
-    scale: (f64, f64, f64),
-    offset: (f64, f64, f64),
-    point_format: &LasFormat,
-    cancel: &(dyn CancelCheck + Sync),
-) -> Result<()> {
-    raw.clear();
-    let raw_len = node
-        .count
-        .checked_mul(record_len)
-        .ok_or_else(|| Error::InvalidInput("node point buffer size overflows usize".into()))?;
-    raw.resize(raw_len, 0);
-    let index_buffer_bytes = node
-        .count
-        .saturating_mul(index_width.bytes() as usize)
-        .min(crate::lod::INDEX_IO_BUFFER_BYTES);
-    let mut index_reader = BufReader::with_capacity(index_buffer_bytes, order.open_at(node.start)?);
-    for point_index in 0..node.count {
-        if point_index.is_multiple_of(CANCEL_POLL_STRIDE) {
-            cancel.check()?;
-        }
-        let source_index = index_width
-            .read(&mut index_reader)
-            .map_err(|e| Error::io("read LOD order", e))? as usize;
-        source.fields_into(source_index, fields)?;
-        encode_point_record(
-            &mut raw[point_index * record_len..(point_index + 1) * record_len],
-            fields,
-            scale,
-            offset,
-            source_index,
-            point_format,
-        )?;
-    }
-    Ok(())
-}
-
-fn hierarchy_entry(key: VoxelKey, offset: u64, byte_size: u64, count: usize) -> Result<Entry> {
-    Ok(Entry {
-        key,
-        offset,
-        byte_size: i32::try_from(byte_size)
-            .map_err(|_| Error::InvalidInput("LAZ chunk exceeds COPC i32 byte size".into()))?,
-        point_count: i32::try_from(count)
-            .map_err(|_| Error::InvalidInput("node point count exceeds COPC i32 range".into()))?,
-    })
-}
-
-/// M4-10(`TaskSheets/M4-import-and-conversion.md`): `compress_nodes_sequential`
-/// と`compress_nodes_parallel`(`parallel-compress`フィーチャが有効なときだけ
-/// コンパイルされる)のどちらを呼ぶかを、`CopcWriterParams::
-/// parallel_node_compression`(実行時のフラグ)で選ぶ。
-///
-/// M4-8では`#[cfg(feature = "parallel-compress")]`で関数そのものを排他的に
-/// 切り替えていたため、同じビルド内で両方の経路を実行できなかった
-/// (ハッシュ一致の回帰テストと点集合一致のテストを同じcrateで両立できない)。
-/// M4-10で所有者が「バイト単位の一致」を「点の集合の一致」へ条件を緩めたのを
-/// 機に、両方の実装を常にコンパイルし(フィーチャがオフなら逐次だけ)、
-/// 実行時フラグで切り替える形に変えた。`parallel-compress`フィーチャが無効な
-/// ビルド(Web/wasm32)では、`parallel_node_compression`の値に関わらず常に
-/// 逐次経路を使う(並列実装自体がコンパイルされていないため)。
-#[cfg(feature = "parallel-compress")]
-#[allow(clippy::too_many_arguments)]
-fn compress_nodes_dispatch<W: Write + Seek + Send + Sync, S: CopcPointSource>(
-    writer: &mut W,
-    var_vlr: &laz::LazVlr,
-    lod_index: &crate::lod::LodIndex,
-    source: &S,
-    scale: (f64, f64, f64),
-    offset: (f64, f64, f64),
-    record_len: usize,
-    point_format: &LasFormat,
-    cancel: &(dyn CancelCheck + Sync),
-    want_parallel: bool,
-    batch_sizes: Option<&mut Vec<usize>>,
-) -> Result<Vec<Entry>> {
-    if want_parallel {
-        return compress_nodes_parallel(
-            writer,
-            var_vlr,
-            lod_index,
-            source,
-            scale,
-            offset,
-            record_len,
-            point_format,
-            cancel,
-            batch_sizes,
-        );
-    }
-    let _ = batch_sizes; // 逐次経路にはバッチという概念が無い。
-    compress_nodes_sequential(
-        writer,
-        var_vlr,
-        lod_index,
-        source,
-        scale,
-        offset,
-        record_len,
-        point_format,
-        cancel,
-    )
-}
-
-#[cfg(not(feature = "parallel-compress"))]
-#[allow(clippy::too_many_arguments)]
-fn compress_nodes_dispatch<W: Write + Seek + Send + Sync, S: CopcPointSource>(
-    writer: &mut W,
-    var_vlr: &laz::LazVlr,
-    lod_index: &crate::lod::LodIndex,
-    source: &S,
-    scale: (f64, f64, f64),
-    offset: (f64, f64, f64),
-    record_len: usize,
-    point_format: &LasFormat,
-    cancel: &(dyn CancelCheck + Sync),
-    want_parallel: bool,
-    batch_sizes: Option<&mut Vec<usize>>,
-) -> Result<Vec<Entry>> {
-    // `parallel-compress`が無効なビルド(Web/wasm32)では並列実装自体が
-    // コンパイルされていないため、フラグの値に関わらず常に逐次。
-    let _ = want_parallel;
-    let _ = batch_sizes;
-    compress_nodes_sequential(
-        writer,
-        var_vlr,
-        lod_index,
-        source,
-        scale,
-        offset,
-        record_len,
-        point_format,
-        cancel,
-    )
-}
-
-/// Compress each LOD node into one COPC chunk, returning the hierarchy
-/// entries. Sequential implementation: one `LasZipCompressor` streams every
-/// chunk in order.
-#[allow(clippy::too_many_arguments)]
-fn compress_nodes_sequential<W: Write + Seek + Send + Sync, S: CopcPointSource>(
-    writer: &mut W,
-    var_vlr: &laz::LazVlr,
-    lod_index: &crate::lod::LodIndex,
-    source: &S,
-    scale: (f64, f64, f64),
-    offset: (f64, f64, f64),
-    record_len: usize,
-    point_format: &LasFormat,
-    cancel: &(dyn CancelCheck + Sync),
-) -> Result<Vec<Entry>> {
-    let mut compressor = LasZipCompressor::new(&mut *writer, var_vlr.clone())
-        .map_err(|e| Error::Las(format!("compressor: {e}")))?;
-    let mut hierarchy = Vec::with_capacity(lod_index.nodes.len());
-    let mut raw = Vec::new();
-    let mut fields = CopcPointFields::default();
-    let mut chunk_start_file_offset = compressor
-        .get_mut()
-        .stream_position()
-        .map_err(|e| Error::io("record chunk start", e))?;
-    chunk_start_file_offset = chunk_start_file_offset
-        .checked_add(8)
-        .ok_or_else(|| Error::InvalidInput("LAZ point-data offset overflows u64".into()))?;
-
-    for node in &lod_index.nodes {
-        cancel.check()?;
-        encode_node_points(
-            node,
-            lod_index.order.as_ref(),
-            lod_index.index_width,
-            source,
-            &mut fields,
-            &mut raw,
-            record_len,
-            scale,
-            offset,
-            point_format,
-            cancel,
-        )?;
-        compressor
-            .compress_many(&raw)
-            .map_err(|e| Error::Las(format!("compress chunk: {e}")))?;
-        compressor
-            .finish_current_chunk()
-            .map_err(|e| Error::Las(format!("finish chunk: {e}")))?;
-        let after = compressor
-            .get_mut()
-            .stream_position()
-            .map_err(|e| Error::io("record chunk end", e))?;
-        hierarchy.push(hierarchy_entry(
-            node.key,
-            chunk_start_file_offset,
-            after.checked_sub(chunk_start_file_offset).ok_or_else(|| {
-                Error::InvalidData("LAZ compressor moved before the chunk start".into())
-            })?,
-            node.count,
-        )?);
-        chunk_start_file_offset = after;
-    }
-
-    cancel.check()?;
-    compressor
-        .done()
-        .map_err(|e| Error::Las(format!("finish compressor: {e}")))?;
-    Ok(hierarchy)
-}
-
-/// Compress each LOD node into one COPC chunk, returning the hierarchy
-/// entries. Parallel implementation: node point buffers are encoded
-/// sequentially in bounded batches, compressed on rayon workers (each node is
-/// one standalone LAZ chunk), then written in node order; the LAZ chunk table
-/// and its offset are emitted to match the sequential layout.
-///
-/// Peak memory is roughly `2 * batch * max_points_per_node * record_len`
-/// bytes for the raw and compressed batch buffers, with
-/// `batch = 2 * rayon::current_num_threads()`.
-#[cfg(feature = "parallel-compress")]
-#[allow(clippy::too_many_arguments)]
-fn compress_nodes_parallel<W: Write + Seek + Send, S: CopcPointSource>(
-    writer: &mut W,
-    var_vlr: &laz::LazVlr,
-    lod_index: &crate::lod::LodIndex,
-    source: &S,
-    scale: (f64, f64, f64),
-    offset: (f64, f64, f64),
-    record_len: usize,
-    point_format: &LasFormat,
-    cancel: &(dyn CancelCheck + Sync),
-    mut batch_sizes: Option<&mut Vec<usize>>,
-) -> Result<Vec<Entry>> {
-    use laz::laszip::{ChunkTable, ChunkTableEntry};
-    use rayon::prelude::*;
-
-    let table_offset_position = writer
-        .stream_position()
-        .map_err(|e| Error::io("record chunk table offset position", e))?;
-    writer
-        .write_i64::<LittleEndian>(-1)
-        .map_err(|e| Error::io("write chunk table offset placeholder", e))?;
-
-    let mut hierarchy = Vec::with_capacity(lod_index.nodes.len());
-    let mut chunk_table = ChunkTable::with_capacity(lod_index.nodes.len());
-    let mut fields = CopcPointFields::default();
-    let mut chunk_start_file_offset = table_offset_position + 8;
-    let batch_size = rayon::current_num_threads().max(1) * 2;
-
-    for batch in lod_index.nodes.chunks(batch_size) {
-        cancel.check()?;
-        if let Some(sizes) = batch_sizes.as_mut() {
-            sizes.push(batch.len());
-        }
-        let mut raw_chunks = Vec::with_capacity(batch.len());
-        for node in batch {
-            let mut raw = Vec::new();
-            encode_node_points(
-                node,
-                lod_index.order.as_ref(),
-                lod_index.index_width,
-                source,
-                &mut fields,
-                &mut raw,
-                record_len,
-                scale,
-                offset,
-                point_format,
-                cancel,
-            )?;
-            raw_chunks.push(raw);
-        }
-
-        let compressed: Vec<Result<Vec<u8>>> = raw_chunks
-            .par_iter()
-            .map(|raw| compress_standalone_chunk(raw, var_vlr))
-            .collect();
-
-        for (node, chunk) in batch.iter().zip(compressed) {
-            let chunk = chunk?;
-            writer
-                .write_all(&chunk)
-                .map_err(|e| Error::io("write LAZ chunk", e))?;
-            hierarchy.push(hierarchy_entry(
-                node.key,
-                chunk_start_file_offset,
-                chunk.len() as u64,
-                node.count,
-            )?);
-            chunk_table.push(ChunkTableEntry {
-                point_count: node.count as u64,
-                byte_count: chunk.len() as u64,
-            });
-            chunk_start_file_offset = chunk_start_file_offset
-                .checked_add(chunk.len() as u64)
-                .ok_or_else(|| Error::InvalidInput("LAZ point-data offset overflows u64".into()))?;
-        }
-    }
-
-    cancel.check()?;
-    let chunk_table_position = writer
-        .stream_position()
-        .map_err(|e| Error::io("record chunk table position", e))?;
-    chunk_table
-        .write_to(&mut *writer, var_vlr)
-        .map_err(|e| Error::io("write chunk table", e))?;
-    let end_position = writer
-        .stream_position()
-        .map_err(|e| Error::io("record chunk table end", e))?;
-    writer
-        .seek(SeekFrom::Start(table_offset_position))
-        .map_err(|e| Error::io("seek chunk table offset", e))?;
-    let chunk_table_position = i64::try_from(chunk_table_position)
-        .map_err(|_| Error::InvalidInput("LAZ chunk table offset exceeds i64 range".into()))?;
-    writer
-        .write_i64::<LittleEndian>(chunk_table_position)
-        .map_err(|e| Error::io("patch chunk table offset", e))?;
-    writer
-        .seek(SeekFrom::Start(end_position))
-        .map_err(|e| Error::io("seek end of point data", e))?;
-    Ok(hierarchy)
-}
-
-/// Compress one node's raw points as a standalone variable-size LAZ chunk and
-/// return exactly the chunk bytes (no chunk-table offset, no chunk table).
-#[cfg(feature = "parallel-compress")]
-fn compress_standalone_chunk(raw_points: &[u8], var_vlr: &laz::LazVlr) -> Result<Vec<u8>> {
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    let mut compressor = LasZipCompressor::new(&mut cursor, var_vlr.clone())
-        .map_err(|e| Error::Las(format!("chunk compressor: {e}")))?;
-    compressor
-        .compress_many(raw_points)
-        .map_err(|e| Error::Las(format!("compress chunk: {e}")))?;
-    compressor
-        .done()
-        .map_err(|e| Error::Las(format!("finish chunk: {e}")))?;
-    drop(compressor);
-    let bytes = cursor.into_inner();
-    // A LAZ point-data stream starts with an i64 offset to the chunk table;
-    // the single chunk's bytes sit between that offset field and the table.
-    let table_position = i64::from_le_bytes(
-        bytes[0..8]
-            .try_into()
-            .map_err(|_| Error::InvalidData("truncated LAZ chunk stream".into()))?,
-    );
-    let table_position = usize::try_from(table_position)
-        .map_err(|_| Error::InvalidData("invalid LAZ chunk table offset".into()))?;
-    if table_position < 8 || table_position > bytes.len() {
-        return Err(Error::InvalidData(
-            "LAZ chunk table offset out of range".into(),
-        ));
-    }
-    Ok(bytes[8..table_position].to_vec())
-}
-
 /// Encode one point directly into the PDRF 6/7 record layout, avoiding the
 /// per-point `las::raw::Point` construction (and its `extra_bytes` clone) in
 /// the hot compression loop.
-fn encode_point_record(
+pub(crate) fn encode_point_record(
     buf: &mut [u8],
     fields: &CopcPointFields,
     scale: (f64, f64, f64),
@@ -1385,7 +1014,9 @@ mod tests {
             &output,
             layout,
             points,
-            &CopcWriterParams::new(500),
+            // A small budget makes the octree split on disk; with the default 1 GiB these
+            // 5000 points would be finished in memory and `lod_index_build` would be 0.
+            &CopcWriterParams::new(500).with_memory_budget_bytes(64 * 1024),
             &CopcWriteMetadata::default(),
             &spill_dir,
             &copc_core::NeverCancel,

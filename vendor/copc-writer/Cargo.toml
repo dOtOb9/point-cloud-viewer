@@ -62,16 +62,16 @@ default = ["native-fs"]
 # この2クレートへの依存自体が外れ、メモリ上の実装(`MemoryScratchFs`)だけが
 # 残る。
 native-fs = ["dep:tempfile", "dep:memmap2"]
-# M4-8(TaskSheets/M4-import-and-conversion.md): 元々`parallel`はノードごとの
-# LAZ圧縮(`writer.rs`のcompress_nodes、upstreamが元から持っていた実装)だけを
-# 指していたが、octreeの分割(`lod.rs`のbuild_lod_index)も並列化したため、
-# 2つに分けた。`parallel`は両方まとめて有効にする従来どおりの名前として残す。
-# 分けた理由: 一方だけが出力のバイト一致を崩した場合に、どちらが原因かを
-# 切り分けて計測・判断するため(「測っていないことを実測したと書かない」と
-# 同じ精神で、2つの独立した変更を1つのフラグにまとめて検証を曖昧にしない)。
+# ADR-0019: `parallel-compress` turns on the worker threads that build octree
+# subtrees in memory and compress their nodes (`src/node_pipeline.rs`). They
+# are plain `std::thread`s now, so `rayon` is no longer a dependency. Web
+# (wasm32) leaves it off and runs everything on one thread.
+# `parallel-lod` used to switch on the parallel octree split (M4-8). The split
+# is part of the same pipeline now; the name stays, doing nothing, so that
+# dependents' feature lists (`crates/pcv-convert`) keep resolving.
 parallel = ["parallel-lod", "parallel-compress"]
-parallel-lod = ["dep:rayon"]
-parallel-compress = ["dep:rayon"]
+parallel-lod = []
+parallel-compress = []
 
 [lib]
 name = "copc_writer"
@@ -92,10 +92,6 @@ version = "0.12"
 
 [dependencies.memmap2]
 version = "0.9"
-optional = true
-
-[dependencies.rayon]
-version = "1"
 optional = true
 
 [dependencies.tempfile]
@@ -125,34 +121,25 @@ version = "0.8"
 name = "scratch_read_is_bounded"
 path = "tests/scratch_read_is_bounded.rs"
 
-# M4-8: octree分割(LOD構築)の並列化(`parallel-lod`フィーチャ)で同時に開く
-# 一時ファイルの数が点数に比例しないことの回帰テスト。
-# `tests/parallel_lod_open_files_bounded.rs`参照。`parallel-lod`が無効な
-# ビルド(既定)ではこのテストはスキップされる。
+# ADR-0019: the disk runs are deleted as soon as they are partitioned, and
+# the heap does not grow with the point count.
 [[test]]
-name = "parallel_lod_open_files_bounded"
-path = "tests/parallel_lod_open_files_bounded.rs"
-required-features = ["parallel-lod"]
+name = "lod_runs_bounded"
+path = "tests/lod_runs_bounded.rs"
 
-# M4-8: octree分割の並列化後もキャンセルが働くことの回帰テスト。
-# `tests/parallel_lod_cancel.rs`参照。
+# The heap peak does not grow with the point count (counting allocator).
 [[test]]
-name = "parallel_lod_cancel"
-path = "tests/parallel_lod_cancel.rs"
-required-features = ["parallel-lod"]
+name = "heap_is_bounded"
+path = "tests/heap_is_bounded.rs"
+required-features = ["native-fs"]
 
-# M4-10(TaskSheets/M4-import-and-conversion.md): ノードごとのLAZ圧縮の並列化
-# (`parallel-compress`)で、同時に圧縮するノード数(バッチサイズ)が
-# ノード数(≒点数)に比例しないことの回帰テスト。
-# `tests/parallel_compress_batch_bounded.rs`参照。
+# Cancellation works in the disk levels and in the worker threads.
 [[test]]
-name = "parallel_compress_batch_bounded"
-path = "tests/parallel_compress_batch_bounded.rs"
-required-features = ["parallel-compress"]
+name = "lod_cancel"
+path = "tests/lod_cancel.rs"
 
-# M4-10: ノードごとのLAZ圧縮の並列化後もキャンセルが働くことの回帰テスト。
-# `tests/parallel_compress_cancel.rs`参照。
+# Cancellation works in the compression phase.
 [[test]]
-name = "parallel_compress_cancel"
-path = "tests/parallel_compress_cancel.rs"
-required-features = ["parallel-compress"]
+name = "compress_cancel"
+path = "tests/compress_cancel.rs"
+

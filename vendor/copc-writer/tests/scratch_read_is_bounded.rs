@@ -205,7 +205,9 @@ fn spill_reads_stay_bounded_regardless_of_point_count() {
         spill_reader,
         // max_points_per_nodeを小さくし、lod.rsのoctree分割(partition_index_run
         // の繰り返し呼び出し)を実際に起こす。
-        &CopcWriterParams::new(5_000),
+        // A 16 MiB memory budget: the 2M points (about 86 MB) are split on disk first,
+        // and the subtrees that are loaded in memory are read in 1 MiB pieces.
+        &CopcWriterParams::new(5_000).with_memory_budget_bytes(16 * 1024 * 1024),
         &NeverCancel,
         &CopcWriteMetadata::default(),
     )

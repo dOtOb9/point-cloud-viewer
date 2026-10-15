@@ -229,7 +229,9 @@ mod tests {
             SyntheticSource { count: 5_000 },
             &output,
             &spill_dir,
-            &CopcWriterParams::new(500),
+            // A small memory budget makes the octree split on disk (ADR-0019);
+            // with the default these 5000 points are finished in memory.
+            &CopcWriterParams::new(500).with_memory_budget_bytes(64 * 1024),
             &copc_core::NeverCancel,
             None,
             |_progress| {},

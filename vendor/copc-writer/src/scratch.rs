@@ -405,10 +405,10 @@ mod native {
                     "finish_temp called on an output-scoped scratch file".into(),
                 ));
             }
-            self.file
-                .as_file()
-                .sync_all()
-                .map_err(|e| Error::io("sync temp file", e))?;
+            // No `sync_all` here: a temporary file is read back by this same
+            // process, so it never has to survive a crash. Syncing every run
+            // file made the disk levels of the LOD builder wait for the disk
+            // (ADR-0019 writes many large run files).
             let mmap_file = self
                 .file
                 .reopen()
@@ -472,8 +472,17 @@ mod native {
     }
 
     impl ScratchReader for NativeScratchReader {
+        /// A sequential stream is read from the file itself with ordinary read
+        /// calls, not through the memory map. The LOD builder (ADR-0019) reads
+        /// whole run files front to back; reading a mapped file that way
+        /// page-faults on every 4 KiB page and ran at about 190 MB/s on the
+        /// development machine (Windows), also when the file was in the cache.
         fn open_at(&self, offset: u64) -> Result<Box<dyn std::io::Read + Send>> {
-            self.shared.open_at(offset)
+            let mut file = std::fs::File::open(&self._path)
+                .map_err(|e| Error::io("open temp file for reading", e))?;
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|e| Error::io("seek temp file", e))?;
+            Ok(Box::new(file))
         }
 
         fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {

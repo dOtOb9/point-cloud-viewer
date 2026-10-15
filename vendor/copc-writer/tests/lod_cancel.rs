@@ -1,18 +1,11 @@
-//! M4-8(`TaskSheets/M4-import-and-conversion.md`)の回帰テスト:
-//! octreeの分割(LOD構築)を並列化した後も、キャンセル(`CancelCheck`)が
-//! 働くことを確かめる。
+//! Cancellation (`CancelCheck`) stops the octree construction and the node
+//! compression, with one worker and with several, and every temporary file is
+//! released afterwards (RAII), also on the cancelled path.
 //!
-//! 並列ワーカー(`rayon`)はそれぞれ独立に`cancel.check()`を呼ぶ
-//! (`lod.rs`の`LodIndexBuilder::assign`が元から持っていたポーリングを
-//! そのまま使い回しているだけで、並列化のために変えていない)ため、
-//! 1つの共有フラグを立てれば全ワーカーがそれぞれ気づいて止まるはず。
-//! これを、呼ばれた回数を数えて途中でキャンセルを返す`CancelCheck`実装で
-//! 確かめる(タイミング依存のスリープを使わず、決定的に「分割の途中で
-//! キャンセルする」状況を作る)。
-//!
-//! あわせて、キャンセルされた経路でも一時ファイルが(`tests/
-//! scratch_read_is_bounded.rs`と同じ`ScratchFs`ラップで)全て手放される
-//! (RAIIで片付く)ことも確認する。
+//! The cancel hook counts its calls and returns `Cancelled` after a fixed
+//! number of them, so the test needs no sleeps and cancels in the middle of
+//! the work. A small memory budget makes the conversion split runs on disk
+//! first, so the cancel lands in the disk levels.
 
 use std::io::{Read, Result as IoResult, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -153,8 +146,7 @@ fn record(seed: u32) -> LasPointRecord {
     }
 }
 
-#[test]
-fn cancellation_stops_parallel_lod_build_and_leaves_no_open_temp_files() {
+fn run_cancelled(workers: usize) {
     // 十分な点数・多段の分割が起きる小さいmax_points_per_nodeで、octree分割の
     // 途中(1回目のcancel.check()では止まらないがすぐ後で止まる)にキャンセルが
     // 入るようにする。
@@ -194,7 +186,9 @@ fn cancellation_stops_parallel_lod_build_and_leaves_no_open_temp_files() {
         &fs,
         output_path,
         spill_reader,
-        &CopcWriterParams::new(MAX_POINTS_PER_NODE),
+        &CopcWriterParams::new(MAX_POINTS_PER_NODE)
+            .with_memory_budget_bytes(256 * 1024)
+            .with_max_concurrent_subtrees(workers),
         &cancel,
         &CopcWriteMetadata::default(),
     );
@@ -208,4 +202,14 @@ fn cancellation_stops_parallel_lod_build_and_leaves_no_open_temp_files() {
         0,
         "キャンセル経路でも一時ファイルは全て手放される(RAII)はず"
     );
+}
+
+#[test]
+fn cancellation_stops_one_worker_and_leaves_no_open_temp_files() {
+    run_cancelled(1);
+}
+
+#[test]
+fn cancellation_stops_several_workers_and_leaves_no_open_temp_files() {
+    run_cancelled(4);
 }

@@ -604,7 +604,6 @@ dependencies = [
  "las",
  "laz",
  "memmap2",
- "rayon",
  "tempfile",
  "web-time",
 ]

@@ -361,7 +361,12 @@ fn native_output_hash_matches_recorded_value() {
     // 固定した今は、実行する日に関わらずこの値になるはず)。
     // M4-16: 親ノードへ入れる点の選び方を「先頭から」から「等間隔」に変えたため、
     // ノードの中身が変わり値を更新した(前の値は0x1835_0A7E_294F_68C3)。
-    const EXPECTED_HASH: u64 = 0xA705_3768_F45A_CD58;
+    // ADR-0019: the chunks are written in subtree order (a node, then its
+    // children in octant order) instead of sorted by key, so the bytes changed
+    // (previous value 0xA705_3768_F45A_CD58). The points in each node did not
+    // change: `lod::tests::record_builder_matches_index_reference` in
+    // vendor/copc-writer checks that against the old index-based builder.
+    const EXPECTED_HASH: u64 = 0xFF62_5CC3_B65A_C122;
     assert_eq!(
         hash,
         EXPECTED_HASH,
@@ -468,7 +473,10 @@ fn parallel_compress_point_set_matches_sequential() {
         &source,
         &sequential_output,
         &spill_dir,
-        &CopcWriterParams::new(50).with_parallel_node_compression(false),
+        // A small memory budget: runs are split on disk and finished in memory (ADR-0019).
+        &CopcWriterParams::new(50)
+            .with_memory_budget_bytes(256 * 1024)
+            .with_parallel_node_compression(false),
         &not_cancelled(),
         no_progress_reporting,
     )
@@ -479,7 +487,9 @@ fn parallel_compress_point_set_matches_sequential() {
         &source,
         &parallel_output,
         &spill_dir,
-        &CopcWriterParams::new(50).with_parallel_node_compression(true),
+        &CopcWriterParams::new(50)
+            .with_memory_budget_bytes(256 * 1024)
+            .with_parallel_node_compression(true),
         &not_cancelled(),
         no_progress_reporting,
     )

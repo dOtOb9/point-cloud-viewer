@@ -14,7 +14,10 @@
 mod hierarchy_pages;
 mod las_out;
 mod lod;
+#[cfg(test)]
+mod lod_reference;
 mod metadata;
+mod node_pipeline;
 mod scratch;
 mod source;
 mod spill;
@@ -46,6 +49,6 @@ pub use writer::{write_streaming_with_cancel_and_timings, IngestStageTimings};
 // (`parallel-compress`)の並列バッチ構成を確かめる回帰テスト専用API
 // (`vendor/copc-writer/tests/parallel_compress_batch_bounded.rs`からのみ使う)。
 pub use writer::{
-    write_copc_from_spill_with_fs, write_copc_from_spill_with_fs_and_batch_sizes,
-    write_copc_from_spill_with_fs_and_timings, CopcWriterParams, PostProcessStageTimings,
+    write_copc_from_spill_with_fs, write_copc_from_spill_with_fs_and_timings, CopcWriterParams,
+    PostProcessStageTimings,
 };

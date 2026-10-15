@@ -19,6 +19,31 @@ use crate::validate::{validate_spill_record, PointStats};
 
 const SPILL_IO_BUFFER_BYTES: usize = 1024 * 1024;
 
+/// Every spill record starts with x, y, z as three little-endian f64
+/// (`copc_core::streaming::serialize_le`). The LOD builder (`lod.rs`) reads
+/// the position of a record through `record_xyz` only, so the day the record
+/// layout changes there is one place to fix.
+pub(crate) const RECORD_XYZ_BYTES: usize = 24;
+
+/// x, y, z of one spill record. `record` must hold at least
+/// `RECORD_XYZ_BYTES` bytes (`LodParams::validate` checks the record width).
+#[inline]
+pub(crate) fn record_xyz(record: &[u8]) -> (f64, f64, f64) {
+    let axis = |at: usize| {
+        f64::from_le_bytes([
+            record[at],
+            record[at + 1],
+            record[at + 2],
+            record[at + 3],
+            record[at + 4],
+            record[at + 5],
+            record[at + 6],
+            record[at + 7],
+        ])
+    };
+    (axis(0), axis(8), axis(16))
+}
+
 /// Streams `LasPointRecord` values to a process-local temporary spill file.
 ///
 /// Records are validated at intake (coordinates, scan angle, LAS field
@@ -154,6 +179,20 @@ impl SpillReader {
         self.stats
     }
 
+    /// Bytes per record in the spill file.
+    pub(crate) fn record_width(&self) -> usize {
+        self.record_width
+    }
+
+    /// Hands the spill file over to the LOD builder as its root run. The
+    /// spill is deleted when the builder has partitioned it (ADR-0019).
+    pub(crate) fn into_run(self) -> crate::lod::Run {
+        crate::lod::Run {
+            reader: self.reader,
+            count: self.count,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.count
     }
@@ -190,14 +229,11 @@ impl SpillReader {
         // x/y/zは常にレコード先頭24バイト(copc_core::streaming::serialize_le
         // 参照)なので、レコード全体ではなくこの24バイトだけを範囲読みする。
         let start = self.record_offset(index)?;
-        let mut buf = [0u8; 24];
+        let mut buf = [0u8; RECORD_XYZ_BYTES];
         self.reader
             .read_at(start, &mut buf)
             .map_err(|e| Error::InvalidData(format!("read spill record {index}: {e}")))?;
-        let x = f64::from_le_bytes(buf[0..8].try_into().expect("spill x width"));
-        let y = f64::from_le_bytes(buf[8..16].try_into().expect("spill y width"));
-        let z = f64::from_le_bytes(buf[16..24].try_into().expect("spill z width"));
-        Ok((x, y, z))
+        Ok(record_xyz(&buf))
     }
 
     pub fn record_at(&self, index: usize) -> Result<LasPointRecord> {
