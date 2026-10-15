@@ -1,30 +1,12 @@
-import { labelAnchor, measurementLabelLines, measurementSegments, type Measurement } from "../../state/measure";
+import { measurementLabelLines, measurementSegments, type Measurement } from "../../state/measure";
 import { projectPoint, projectSegment } from "../../renderer/screen-project";
 import type { LengthUnits } from "../../state/units";
+import { labelAnchorOnScreen, type Frame } from "./measure-frame";
 
 // Draws one measurement (lines, vertices, label) as SVG elements inside MeasureOverlay's <svg>.
-// Also holds `Frame` (the camera/canvas snapshot one frame is drawn with) and its helpers,
-// because both this file and MeasureOverlay need them.
 
 const STROKE = "#fbbf24";
 const STROKE_SELECTED = "#f97316";
-
-export interface Frame {
-  viewProj: number[];
-  up: readonly [number, number, number];
-  width: number;
-  height: number;
-}
-
-export function sameFrame(a: Frame | null, b: Frame): boolean {
-  if (!a || a.width !== b.width || a.height !== b.height) return false;
-  for (let i = 0; i < 16; i++) if (a.viewProj[i] !== b.viewProj[i]) return false;
-  return true;
-}
-
-export function labelAnchorOnScreen(measurement: Measurement, frame: Frame) {
-  return projectPoint(frame.viewProj, labelAnchor(measurement), frame.width, frame.height);
-}
 
 function Label({ lines, x, y }: { lines: string[]; x: number; y: number }) {
   return (

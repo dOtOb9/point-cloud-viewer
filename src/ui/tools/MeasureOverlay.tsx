@@ -6,7 +6,8 @@ import { measurementLabelLines, type Measurement } from "../../state/measure";
 import { labelShifts } from "../../renderer/screen-project";
 import { lengthUnitsFor } from "../../state/units";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
-import { labelAnchorOnScreen, MeasurementShape, sameFrame, type Frame } from "./MeasurementShape";
+import { labelAnchorOnScreen, sameFrame, type Frame } from "./measure-frame";
+import { MeasurementShape } from "./MeasurementShape";
 
 // L2-D: an SVG laid over the 3D view that draws measurement lines, vertices and labels.
 //
