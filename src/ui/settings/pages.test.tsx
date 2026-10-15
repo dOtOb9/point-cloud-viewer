@@ -5,7 +5,10 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { BackgroundDialog, EdlDialog, LoadPriorityDialog, PointBudgetDialog } from "./SettingsPages";
+import { BackgroundDialog } from "./pages/BackgroundDialog";
+import { EdlDialog } from "./pages/EdlDialog";
+import { LoadPriorityDialog } from "./pages/LoadPriorityDialog";
+import { PointBudgetDialog } from "./pages/PointBudgetDialog";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -48,7 +51,7 @@ function unmount(m: { root: ReturnType<typeof createRoot>; container: HTMLElemen
   m.container.remove();
 }
 
-describe("SettingsPages", () => {
+describe("settings pages", () => {
   it("背景: ラジオで3つから選べ、グリッドのチェックでsetterが呼ばれる", () => {
     const { viewer, setters } = fakeViewer();
     const m = mount(<BackgroundDialog viewer={viewer} open onBack={() => {}} onClose={() => {}} />);

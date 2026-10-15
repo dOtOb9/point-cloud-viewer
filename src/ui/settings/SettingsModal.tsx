@@ -21,19 +21,17 @@ import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 import { RIBBON_BUTTON_CLASS } from "../ribbon/ribbon-styles";
 import { settingsNavReducer, visibleSettingsPages, type SettingsPageId } from "./settings-nav";
-import {
-  AnimationDialog,
-  BackgroundDialog,
-  EdlDialog,
-  UnitDialog,
-  LoadPriorityDialog,
-  PointBudgetDialog,
-  RenderScaleDialog,
-  StorageDialog,
-  TempDirDialog,
-  ThemeDialog,
-  UpdateDialog,
-} from "./SettingsPages";
+import { AnimationDialog } from "./pages/AnimationDialog";
+import { BackgroundDialog } from "./pages/BackgroundDialog";
+import { EdlDialog } from "./pages/EdlDialog";
+import { LoadPriorityDialog } from "./pages/LoadPriorityDialog";
+import { PointBudgetDialog } from "./pages/PointBudgetDialog";
+import { RenderScaleDialog } from "./pages/RenderScaleDialog";
+import { StorageDialog } from "./pages/StorageDialog";
+import { TempDirDialog } from "./pages/TempDirDialog";
+import { ThemeDialog } from "./pages/ThemeDialog";
+import { UnitDialog } from "./pages/UnitDialog";
+import { UpdateDialog } from "./pages/UpdateDialog";
 
 interface Props {
   open: boolean;
@@ -60,7 +58,7 @@ const PAGE_BUTTONS: Record<SettingsPageId, { icon: LucideIcon; label: string }> 
 
 /**
  * 設定。L1-E (ADR-0017 追記2): 一覧は「アイコン+名前のボタン」の集合だけで、
- * ボタンを押すと一覧を閉じて、その項目専用のダイアログ(SettingsPages.tsx)が開く。
+ * ボタンを押すと一覧を閉じて、その項目専用のダイアログ(pages/*.tsx)が開く。
  * どちらを開いているかは `settings-nav.ts` の reducer が持つ(一覧と専用は同時に開かない)。
  * 設定画面は不透明(ADR-0005。`Dialog`自体が不透明)。
  */
