@@ -5,7 +5,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { AppearanceDialog, ColorModeDialog } from "./ViewDialogs";
+import { AppearanceDialog } from "./AppearanceDialog";
+import { ColorModeDialog } from "./ColorModeDialog";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
