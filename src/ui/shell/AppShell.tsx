@@ -18,7 +18,7 @@ import { ErrorDialog } from "../dialogs/ErrorDialog";
 import { glassSurfaceClass } from "../common/glass";
 import { LayerPanel } from "../layers/LayerPanel";
 import { Ribbon } from "../ribbon/Ribbon";
-import { SettingsModal } from "./SettingsModal";
+import { SettingsModal } from "../settings/SettingsModal";
 import { StatusBar } from "../status/StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 import { UpdateNotice } from "../status/UpdateNotice";
