@@ -13,7 +13,7 @@ use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Duration;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 use copc_core::{
     Bounds, CancelCheck, CopcInfo, Entry, Error, LasPointRecord, Result, StreamingLayout, VoxelKey,
     MAX_EVLR_COUNT, MAX_VLR_COUNT,
@@ -849,6 +849,7 @@ fn write_copc_inner<S: CopcPointSource>(
 fn encode_node_points<S: CopcPointSource>(
     node: &crate::lod::LodNodeRange,
     order: &dyn ScratchReader,
+    index_width: crate::lod::IndexWidth,
     source: &S,
     fields: &mut CopcPointFields,
     raw: &mut Vec<u8>,
@@ -866,15 +867,15 @@ fn encode_node_points<S: CopcPointSource>(
     raw.resize(raw_len, 0);
     let index_buffer_bytes = node
         .count
-        .saturating_mul(crate::lod::INDEX_RECORD_BYTES as usize)
+        .saturating_mul(index_width.bytes() as usize)
         .min(crate::lod::INDEX_IO_BUFFER_BYTES);
     let mut index_reader = BufReader::with_capacity(index_buffer_bytes, order.open_at(node.start)?);
     for point_index in 0..node.count {
         if point_index.is_multiple_of(CANCEL_POLL_STRIDE) {
             cancel.check()?;
         }
-        let source_index = index_reader
-            .read_u32::<LittleEndian>()
+        let source_index = index_width
+            .read(&mut index_reader)
             .map_err(|e| Error::io("read LOD order", e))? as usize;
         source.fields_into(source_index, fields)?;
         encode_point_record(
@@ -1021,6 +1022,7 @@ fn compress_nodes_sequential<W: Write + Seek + Send + Sync, S: CopcPointSource>(
         encode_node_points(
             node,
             lod_index.order.as_ref(),
+            lod_index.index_width,
             source,
             &mut fields,
             &mut raw,
@@ -1108,6 +1110,7 @@ fn compress_nodes_parallel<W: Write + Seek + Send, S: CopcPointSource>(
             encode_node_points(
                 node,
                 lod_index.order.as_ref(),
+                lod_index.index_width,
                 source,
                 &mut fields,
                 &mut raw,

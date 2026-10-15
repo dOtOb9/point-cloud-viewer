@@ -14,7 +14,6 @@ use crate::source::CopcPointSource;
 use crate::writer::CopcWriterParams;
 use crate::CANCEL_POLL_STRIDE;
 
-pub(crate) const INDEX_RECORD_BYTES: u64 = 4;
 pub(crate) const INDEX_IO_BUFFER_BYTES: usize = 1024 * 1024;
 /// Hard cap on octree subdivision depth: deeper voxel keys would overflow the
 /// i32 key coordinates (level 30 keys reach 2^30). The layered LAZ compressor
@@ -24,12 +23,73 @@ pub(crate) const INDEX_IO_BUFFER_BYTES: usize = 1024 * 1024;
 /// rather than producing an oversized chunk.
 const MAX_OCTREE_DEPTH: u32 = 30;
 
+/// Width of one point index in the temporary LOD index files (root run,
+/// partitions, remainders and the final order file).
+///
+/// Why two widths: a file with at most 2^32 points needs only 4 bytes per
+/// index, and that is the common case. Always writing 8 bytes would double
+/// every LOD temp file (about 4 GB per live copy at 1 billion points) for no
+/// gain. Above 2^32 points the indices no longer fit in a u32, so the files
+/// switch to 8 bytes. The width is chosen once from the total point count and
+/// then carried with every run, so readers and writers always agree.
+/// Test-only switch that makes `IndexWidth::for_total_points` pick 8 bytes.
+#[cfg(test)]
+pub(crate) static FORCE_WIDE_INDEX: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IndexWidth {
+    U32,
+    U64,
+}
+
+impl IndexWidth {
+    /// Indices are `0..total_points`, so the largest one is `total_points - 1`.
+    pub(crate) fn for_total_points(total_points: u64) -> Self {
+        if total_points <= u64::from(u32::MAX) + 1 {
+            IndexWidth::U32
+        } else {
+            IndexWidth::U64
+        }
+    }
+
+    pub(crate) fn bytes(self) -> u64 {
+        match self {
+            IndexWidth::U32 => 4,
+            IndexWidth::U64 => 8,
+        }
+    }
+
+    pub(crate) fn read<R: Read>(self, reader: &mut R) -> std::io::Result<u64> {
+        match self {
+            IndexWidth::U32 => reader.read_u32::<LittleEndian>().map(u64::from),
+            IndexWidth::U64 => reader.read_u64::<LittleEndian>(),
+        }
+    }
+
+    pub(crate) fn write<W: Write>(self, writer: &mut W, index: u64) -> std::io::Result<()> {
+        match self {
+            IndexWidth::U32 => {
+                let narrow = u32::try_from(index).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "LOD index does not fit the 32-bit index width",
+                    )
+                })?;
+                writer.write_u32::<LittleEndian>(narrow)
+            }
+            IndexWidth::U64 => writer.write_u64::<LittleEndian>(index),
+        }
+    }
+}
+
 pub(crate) struct LodIndex {
     pub(crate) nodes: Vec<LodNodeRange>,
-    /// 各ノードの点インデックス列("order")を保持する読み出し専用ハンドル。
-    /// `node.start`から`node.count`個の`u32`を読めば、そのノードに属する
-    /// 元の点インデックスが得られる(`writer.rs`の`encode_node_points`参照)。
+    /// Read-only handle to the per-node point index lists ("order"). Reading
+    /// `node.count` indices of `index_width` at `node.start` gives the source
+    /// point indices of that node (see `encode_node_points` in `writer.rs`).
     pub(crate) order: Box<dyn ScratchReader>,
+    pub(crate) index_width: IndexWidth,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +103,7 @@ struct IndexRun {
     reader: Box<dyn ScratchReader>,
     start: u64,
     count: usize,
+    width: IndexWidth,
 }
 
 #[cfg(not(feature = "parallel-lod"))]
@@ -55,9 +116,10 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
     fs: &dyn ScratchFs,
 ) -> Result<LodIndex> {
     cancel.check()?;
-    let total_points = checked_total_points(source)?;
+    let total_points = checked_total_points(source);
+    let width = choose_index_width(total_points);
     let max_points_per_node = checked_max_points_per_node(params)?;
-    let root_run = write_root_index_run(total_points, cancel, fs)?;
+    let root_run = write_root_index_run(total_points, width, cancel, fs)?;
     let mut order_offset = 0;
     let mut nodes = Vec::new();
     let order_writer = fs.create_temp("order")?;
@@ -82,7 +144,11 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
         boxed.finish_temp()?
     };
     nodes.sort_by_key(|node| node.key);
-    Ok(LodIndex { nodes, order })
+    Ok(LodIndex {
+        nodes,
+        order,
+        index_width: width,
+    })
 }
 
 /// Parallel implementation: M4-8(`TaskSheets/M4-import-and-conversion.md`)で
@@ -127,10 +193,11 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
     use rayon::prelude::*;
 
     cancel.check()?;
-    let total_points = checked_total_points(source)?;
+    let total_points = checked_total_points(source);
+    let width = choose_index_width(total_points);
     let max_points_per_node = checked_max_points_per_node(params)?;
     let bounds = Bounds::cube(center, halfsize);
-    let root_run = write_root_index_run(total_points, cancel, fs)?;
+    let root_run = write_root_index_run(total_points, width, cancel, fs)?;
 
     // ルートが葉に収まるなら分割の余地が無い。逐次版と全く同じ処理にする。
     if root_run.count <= max_points_per_node {
@@ -153,7 +220,11 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
                 .map_err(|e| Error::io("flush LOD index order", e.into_error()))?;
             boxed.finish_temp()?
         };
-        return Ok(LodIndex { nodes, order });
+        return Ok(LodIndex {
+            nodes,
+            order,
+            index_width: width,
+        });
     }
 
     // ルート自身の割り当て分は、逐次版の`LodIndexBuilder::assign`と全く同じ
@@ -232,7 +303,11 @@ pub(crate) fn build_lod_index<S: CopcPointSource>(
         .map_err(|e| Error::io("flush LOD index order", e.into_error()))?
         .finish_temp()?;
     nodes.sort_by_key(|node| node.key);
-    Ok(LodIndex { nodes, order })
+    Ok(LodIndex {
+        nodes,
+        order,
+        index_width: width,
+    })
 }
 
 /// 1つの部分木(あるオクタント以下の全て)の処理結果。並列ワーカーから
@@ -306,10 +381,20 @@ fn copy_scratch_reader<W: Write>(reader: &dyn ScratchReader, len: u64, out: &mut
     Ok(())
 }
 
-fn checked_total_points<S: CopcPointSource>(source: &S) -> Result<u32> {
-    u32::try_from(source.len()).map_err(|_| {
-        Error::InvalidInput("COPC writer supports at most u32::MAX points per file".into())
-    })
+fn choose_index_width(total_points: u64) -> IndexWidth {
+    #[cfg(test)]
+    if FORCE_WIDE_INDEX.load(std::sync::atomic::Ordering::SeqCst) {
+        return IndexWidth::U64;
+    }
+    IndexWidth::for_total_points(total_points)
+}
+
+/// The point count as u64. There is no upper limit here any more: the index
+/// files switch to 8-byte indices above 2^32 points (`IndexWidth`). On wasm32
+/// `source.len()` is a 32-bit usize, so the web build is still limited by the
+/// address space, not by this function.
+fn checked_total_points<S: CopcPointSource>(source: &S) -> u64 {
+    source.len() as u64
 }
 
 fn checked_max_points_per_node(params: &CopcWriterParams) -> Result<usize> {
@@ -387,18 +472,21 @@ impl<S: CopcPointSource, W: Write> LodIndexBuilder<'_, S, W> {
 }
 
 fn write_root_index_run(
-    total_points: u32,
+    total_points: u64,
+    width: IndexWidth,
     cancel: &(dyn CancelCheck + Sync),
     fs: &dyn ScratchFs,
 ) -> Result<IndexRun> {
+    let count = usize::try_from(total_points)
+        .map_err(|_| Error::InvalidInput("point count exceeds usize range".into()))?;
     let temp = fs.create_temp("root")?;
     let mut writer = BufWriter::with_capacity(INDEX_IO_BUFFER_BYTES, temp);
     for index in 0..total_points {
-        if (index as usize).is_multiple_of(CANCEL_POLL_STRIDE) {
+        if index.is_multiple_of(CANCEL_POLL_STRIDE as u64) {
             cancel.check()?;
         }
-        writer
-            .write_u32::<LittleEndian>(index)
+        width
+            .write(&mut writer, index)
             .map_err(|e| Error::io("write root LOD index", e))?;
     }
     let boxed = writer
@@ -408,7 +496,8 @@ fn write_root_index_run(
     Ok(IndexRun {
         reader,
         start: 0,
-        count: total_points as usize,
+        count,
+        width,
     })
 }
 
@@ -427,8 +516,9 @@ fn partition_index_run<S: CopcPointSource>(
         if read_index.is_multiple_of(CANCEL_POLL_STRIDE) {
             cancel.check()?;
         }
-        let index = reader
-            .read_u32::<LittleEndian>()
+        let index = run
+            .width
+            .read(&mut reader)
             .map_err(|e| Error::io("read LOD partition index", e))?;
         let (x, y, z) = source.xyz(index as usize)?;
         let octant = child_octant(center, x, y, z);
@@ -438,10 +528,11 @@ fn partition_index_run<S: CopcPointSource>(
                 fs.create_temp("partition")?,
             ));
         }
-        writers[octant]
+        let partition_writer = writers[octant]
             .as_mut()
-            .ok_or_else(|| Error::InvalidData("partition writer was not created".into()))?
-            .write_u32::<LittleEndian>(index)
+            .ok_or_else(|| Error::InvalidData("partition writer was not created".into()))?;
+        run.width
+            .write(partition_writer, index)
             .map_err(|e| Error::io("write LOD partition index", e))?;
         counts[octant] += 1;
     }
@@ -459,6 +550,7 @@ fn partition_index_run<S: CopcPointSource>(
             reader,
             start: 0,
             count: counts[octant],
+            width: run.width,
         });
     }
     Ok(children)
@@ -545,14 +637,17 @@ fn select_for_parent_and_split_children<W: Write>(
             if i.is_multiple_of(CANCEL_POLL_STRIDE) {
                 cancel.check()?;
             }
-            let index = reader
-                .read_u32::<LittleEndian>()
+            let index = child
+                .width
+                .read(&mut reader)
                 .map_err(|e| Error::io("read selected LOD index", e))?;
             let i = i as u64;
             if (i + 1) * k / n > i * k / n {
-                append_index_to_order(order_writer, order_offset, index)?;
+                append_index_to_order(order_writer, order_offset, child.width, index)?;
             } else if let Some(rest) = rest_writer.as_mut() {
-                rest.write_u32::<LittleEndian>(index)
+                child
+                    .width
+                    .write(rest, index)
                     .map_err(|e| Error::io("write LOD remainder index", e))?;
             }
         }
@@ -564,6 +659,7 @@ fn select_for_parent_and_split_children<W: Write>(
                 reader: boxed.finish_temp()?,
                 start: 0,
                 count: child.count - selected,
+                width: child.width,
             });
         }
     }
@@ -581,10 +677,11 @@ fn append_index_run_to_order<W: Write>(
         if read_index.is_multiple_of(CANCEL_POLL_STRIDE) {
             cancel.check()?;
         }
-        let index = reader
-            .read_u32::<LittleEndian>()
+        let index = run
+            .width
+            .read(&mut reader)
             .map_err(|e| Error::io("read LOD index", e))?;
-        append_index_to_order(order_writer, order_offset, index)?;
+        append_index_to_order(order_writer, order_offset, run.width, index)?;
     }
     Ok(())
 }
@@ -592,13 +689,14 @@ fn append_index_run_to_order<W: Write>(
 fn append_index_to_order<W: Write>(
     order_writer: &mut W,
     order_offset: &mut u64,
-    index: u32,
+    width: IndexWidth,
+    index: u64,
 ) -> Result<()> {
-    order_writer
-        .write_u32::<LittleEndian>(index)
+    width
+        .write(order_writer, index)
         .map_err(|e| Error::io("write LOD index order", e))?;
     *order_offset = order_offset
-        .checked_add(INDEX_RECORD_BYTES)
+        .checked_add(width.bytes())
         .ok_or_else(|| Error::InvalidInput("LOD index order exceeds u64 range".into()))?;
     Ok(())
 }
@@ -900,20 +998,79 @@ mod tests {
         )
     }
 
-    fn read_lod_index(index: &LodIndex) -> Result<Vec<(VoxelKey, Vec<u32>)>> {
+    fn read_lod_index(index: &LodIndex) -> Result<Vec<(VoxelKey, Vec<u64>)>> {
         let mut out = Vec::new();
         for node in &index.nodes {
             let mut reader = index.order.open_at(node.start)?;
             let mut indices = Vec::with_capacity(node.count);
             for _ in 0..node.count {
                 indices.push(
-                    reader
-                        .read_u32::<LittleEndian>()
+                    index
+                        .index_width
+                        .read(&mut reader)
                         .map_err(|e| Error::io("read LOD order", e))?,
                 );
             }
             out.push((node.key, indices));
         }
         Ok(out)
+    }
+
+    #[test]
+    fn index_width_switches_above_u32_range() {
+        assert_eq!(IndexWidth::for_total_points(0), IndexWidth::U32);
+        // The largest index of 2^32 points is u32::MAX, which still fits.
+        assert_eq!(IndexWidth::for_total_points(1 << 32), IndexWidth::U32);
+        assert_eq!(IndexWidth::for_total_points((1 << 32) + 1), IndexWidth::U64);
+        assert_eq!(
+            IndexWidth::for_total_points(10_000_000_000),
+            IndexWidth::U64
+        );
+
+        let big = 9_999_999_999u64;
+        let mut bytes = Vec::new();
+        IndexWidth::U64.write(&mut bytes, big).unwrap();
+        assert_eq!(bytes.len() as u64, IndexWidth::U64.bytes());
+        assert_eq!(IndexWidth::U64.read(&mut bytes.as_slice()).unwrap(), big);
+        // The narrow width refuses to truncate silently.
+        assert!(IndexWidth::U32.write(&mut Vec::new(), big).is_err());
+    }
+
+    /// The 8-byte index files must give exactly the same nodes and point
+    /// order as the 4-byte ones (forced here, because a real file above
+    /// 2^32 points is too large for a unit test).
+    #[test]
+    fn wide_index_files_give_the_same_order() {
+        let points: Vec<CopcPointFields> = (0..600)
+            .map(|i| CopcPointFields {
+                x: f64::from((i * 37) % 101),
+                y: f64::from((i * 53) % 103),
+                z: f64::from((i * 71) % 107),
+                return_number: 1,
+                number_of_returns: 1,
+                ..CopcPointFields::default()
+            })
+            .collect();
+        let source = VecSource { points };
+        let bounds = source_bounds(&source);
+        let (center, halfsize) = cube_from_bounds(&bounds);
+        let params = CopcWriterParams::new(9);
+        let fs = MemoryScratchFs::new();
+
+        // Other tests may run in parallel; the order does not depend on the
+        // width, so a flipped flag there is harmless, but `narrow` is built
+        // first and only checked for equality, not for its width.
+        let narrow =
+            build_lod_index(&source, center, halfsize, &params, &NeverCancel, &fs).unwrap();
+        FORCE_WIDE_INDEX.store(true, std::sync::atomic::Ordering::SeqCst);
+        let wide = build_lod_index(&source, center, halfsize, &params, &NeverCancel, &fs);
+        FORCE_WIDE_INDEX.store(false, std::sync::atomic::Ordering::SeqCst);
+        let wide = wide.unwrap();
+        assert_eq!(wide.index_width, IndexWidth::U64);
+
+        assert_eq!(
+            read_lod_index(&narrow).unwrap(),
+            read_lod_index(&wide).unwrap()
+        );
     }
 }
