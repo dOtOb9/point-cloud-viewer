@@ -5,13 +5,15 @@
 //! file and the order of points inside a node may differ; what must be equal is
 //! the set of nodes and, for every node, the multiset of points as the viewer
 //! sees them (`pcv-core` node buffer: relative position, color, intensity,
-//! classification).
+//! classification). The files are compared node by node, so memory stays at
+//! about one node per file whatever the number of points (L3-C: the first
+//! version held both files, which took 30 GiB for 325 million points).
 //!
 //! ```text
 //! cargo run -p pcv-convert --release --example compare_copc_nodes -- <a.copc.laz> <b.copc.laz>
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use pcv_core::{CopcFile, NodeKey, HEADER_BYTES, POINT_STRIDE};
@@ -31,46 +33,48 @@ fn main() {
     }
 }
 
-/// Every node as its sorted list of point records.
-fn read_nodes(path: &Path) -> Result<BTreeMap<NodeKey, Vec<Vec<u8>>>, String> {
-    let mut file = CopcFile::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let keys: Vec<NodeKey> = file.hierarchy().nodes().map(|node| node.key).collect();
-    let mut nodes = BTreeMap::new();
-    for key in keys {
-        let buffer = file
-            .read_node(key)
-            .map_err(|e| format!("{}: node {key:?}: {e}", path.display()))?;
-        let body = buffer
-            .bytes
-            .get(HEADER_BYTES..)
-            .ok_or_else(|| format!("node {key:?}: buffer shorter than its header"))?;
-        let mut points: Vec<Vec<u8>> = body
-            .as_chunks::<POINT_STRIDE>()
-            .0
-            .iter()
-            .map(|point| point.to_vec())
-            .collect();
-        points.sort();
-        nodes.insert(key, points);
-    }
-    Ok(nodes)
+/// The sorted point records of one node.
+fn read_node(file: &mut CopcFile, key: NodeKey, path: &Path) -> Result<Vec<Vec<u8>>, String> {
+    let buffer = file
+        .read_node(key)
+        .map_err(|e| format!("{}: node {key:?}: {e}", path.display()))?;
+    let body = buffer
+        .bytes
+        .get(HEADER_BYTES..)
+        .ok_or_else(|| format!("node {key:?}: buffer shorter than its header"))?;
+    let mut points: Vec<Vec<u8>> = body
+        .as_chunks::<POINT_STRIDE>()
+        .0
+        .iter()
+        .map(|point| point.to_vec())
+        .collect();
+    points.sort();
+    Ok(points)
+}
+
+fn node_keys(file: &CopcFile) -> BTreeSet<NodeKey> {
+    file.hierarchy().nodes().map(|node| node.key).collect()
 }
 
 fn compare(a: &Path, b: &Path) -> Result<String, String> {
-    let nodes_a = read_nodes(a)?;
-    let nodes_b = read_nodes(b)?;
-    if nodes_a.len() != nodes_b.len() {
+    let mut file_a = CopcFile::open(a).map_err(|e| format!("{}: {e}", a.display()))?;
+    let mut file_b = CopcFile::open(b).map_err(|e| format!("{}: {e}", b.display()))?;
+    let keys_a = node_keys(&file_a);
+    let keys_b = node_keys(&file_b);
+    if keys_a.len() != keys_b.len() {
         return Err(format!(
             "node count differs: {} vs {}",
-            nodes_a.len(),
-            nodes_b.len()
+            keys_a.len(),
+            keys_b.len()
         ));
     }
     let mut total = 0usize;
-    for ((key_a, points_a), (key_b, points_b)) in nodes_a.iter().zip(&nodes_b) {
+    for (key_a, key_b) in keys_a.iter().zip(&keys_b) {
         if key_a != key_b {
             return Err(format!("node keys differ: {key_a:?} vs {key_b:?}"));
         }
+        let points_a = read_node(&mut file_a, *key_a, a)?;
+        let points_b = read_node(&mut file_b, *key_b, b)?;
         if points_a != points_b {
             return Err(format!(
                 "node {key_a:?} differs ({} vs {} points)",
@@ -80,5 +84,5 @@ fn compare(a: &Path, b: &Path) -> Result<String, String> {
         }
         total += points_a.len();
     }
-    Ok(format!("{} nodes, {total} points", nodes_a.len()))
+    Ok(format!("{} nodes, {total} points", keys_a.len()))
 }
