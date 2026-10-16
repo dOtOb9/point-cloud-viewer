@@ -44,6 +44,7 @@ use crate::metadata::{
     CopcWriteMetadata, OutputLasMetadata, LASZIP_VLR_RECORD_ID, LASZIP_VLR_USER_ID,
 };
 use crate::node_pipeline::{write_chunks, NodeContext, PartitionClock};
+use crate::record::{LasTransform, LAS_XYZ_BYTES};
 use crate::scratch::ScratchFs;
 use crate::source::{record_from_fields, CopcPointFields, CopcPointSource};
 use crate::spill::{SpillReader, SpillWriter};
@@ -275,7 +276,11 @@ pub fn write_source_with_cancel<S: CopcPointSource>(
         extra_bytes: source.extra_byte_count(),
         extra_bytes_descriptors: source.extra_bytes_vlrs().to_vec(),
     };
-    let mut spill = SpillWriter::create(&fs, layout)?;
+    let transform = LasTransform {
+        scale: output_metadata.scale,
+        offset,
+    };
+    let mut spill = SpillWriter::create(&fs, layout, Some(transform))?;
     let mut fields = CopcPointFields::default();
     for index in 0..source.len() {
         if index.is_multiple_of(CANCEL_POLL_STRIDE) {
@@ -355,7 +360,8 @@ where
     // これは改修前から変わっていない挙動で、`TaskSheets/
     // M4-import-and-conversion.md`のM4-1bが記録した既知の仕様)。
     let spill_fs = NativeScratchFs::new(spill_dir);
-    let mut spill = SpillWriter::create(&spill_fs, layout)?;
+    let output_metadata = metadata.to_output();
+    let mut spill = SpillWriter::create(&spill_fs, layout, output_metadata.transform())?;
     let mut iter = points.into_iter();
     let mut index = 0usize;
     loop {
@@ -384,7 +390,7 @@ where
         reader,
         params,
         cancel,
-        &metadata.to_output(),
+        &output_metadata,
         &lod_fs,
         stage_timings,
         None,
@@ -443,7 +449,7 @@ fn convert_las_to_copc_streaming_inner(
         OutputLasMetadata::from_las_header(reader.header(), &source_evlrs, crs_wkt_override);
     let layout = StreamingLayout::from_las_header(reader.header());
     let spill_fs = NativeScratchFs::new(spill_dir);
-    let mut spill = SpillWriter::create(&spill_fs, layout)?;
+    let mut spill = SpillWriter::create(&spill_fs, layout, output_metadata.transform())?;
     let mut point_data = las::PointDataBuilder::new()
         .for_header(reader.header())
         .build();
@@ -568,9 +574,9 @@ fn write_copc_from_spill(
     let bounds = bounds_override.unwrap_or_else(|| reader.bounds());
     let point_stats = reader.stats();
     let total_points = reader.len();
-    let record_width = reader.record_width();
+    let record_format = reader.format();
     let point_format_id = if has_color { 7u8 } else { 6u8 };
-    let mut point_format =
+    let point_format =
         LasFormat::new(point_format_id).map_err(|e| Error::Las(format!("point format: {e}")))?;
     let extra_byte_count = layout.extra_bytes;
     let point_record_length = point_format
@@ -581,7 +587,6 @@ fn write_copc_from_spill(
                 "point record length with {extra_byte_count} extra bytes exceeds LAS u16 range"
             ))
         })?;
-    point_format.extra_bytes = extra_byte_count;
 
     let (scale_x, scale_y, scale_z) = metadata.scale;
     let (offset_x, offset_y, offset_z) =
@@ -593,9 +598,22 @@ fn write_copc_from_spill(
         (scale_x, scale_y, scale_z),
         (offset_x, offset_y, offset_z),
     )?;
+    // A spill with quantized coordinates holds the integers of the output, so
+    // the output must use the scale and offset it was written with.
+    if let Some(spilled) = record_format.transform() {
+        let output = LasTransform {
+            scale: (scale_x, scale_y, scale_z),
+            offset: (offset_x, offset_y, offset_z),
+        };
+        if spilled != output {
+            return Err(Error::InvalidInput(format!(
+                "the spill was written with LAS transform {spilled:?} but the output uses {output:?}"
+            )));
+        }
+    }
     // The spill validated every record and gathered the statistics at intake
-    // (`point_stats`). Quantization-range failures surface while the nodes
-    // are encoded, where the atomic output rename still prevents partial files.
+    // (`point_stats`). Wide records are quantized while the nodes are encoded
+    // (a failure there leaves no partial file: the output is renamed at the end).
     let (center, halfsize) = cube_from_bounds(&bounds);
     cancel.check()?;
 
@@ -735,16 +753,14 @@ fn write_copc_from_spill(
     let workers = subtree_workers(params);
     let clock = PartitionClock::new();
     let node_ctx = NodeContext {
-        layout: &layout,
         lod: LodParams {
             max_points_per_node: params.max_points_per_node as usize,
-            record_width,
+            format: record_format,
             in_memory_run_bytes: params.memory_budget_bytes / (2 * workers as u64),
         },
         output_record_len: usize::from(point_record_length),
         scale: (scale_x, scale_y, scale_z),
         offset: (offset_x, offset_y, offset_z),
-        point_format: &point_format,
         var_vlr: &var_vlr,
         cancel,
         fs,
@@ -845,41 +861,54 @@ pub(crate) fn encode_point_record(
     point_index: usize,
     format: &LasFormat,
 ) -> Result<()> {
-    debug_assert!(format.is_extended && !format.has_nir && !format.has_waveform);
     debug_assert_eq!(usize::from(format.len()), buf.len());
     let (ix, iy, iz) = quantize_xyz(point_index, fields.x, fields.y, fields.z, scale, offset)?;
     buf[0..4].copy_from_slice(&ix.to_le_bytes());
     buf[4..8].copy_from_slice(&iy.to_le_bytes());
     buf[8..12].copy_from_slice(&iz.to_le_bytes());
-    buf[12..14].copy_from_slice(&fields.intensity.to_le_bytes());
-    buf[14] = fields.return_number | (fields.number_of_returns << 4);
-    buf[15] = fields.synthetic
+    encode_point_body(&mut buf[LAS_XYZ_BYTES..], fields, point_index, format)
+}
+
+/// Everything of a PDRF 6/7 record except the 12 bytes of x, y, z: `body` is
+/// the record from byte 12 on. The spill records (`record.rs`) keep this part
+/// as it is and store x, y, z in their own form.
+pub(crate) fn encode_point_body(
+    body: &mut [u8],
+    fields: &CopcPointFields,
+    point_index: usize,
+    format: &LasFormat,
+) -> Result<()> {
+    debug_assert!(format.is_extended && !format.has_nir && !format.has_waveform);
+    debug_assert_eq!(usize::from(format.len()) - LAS_XYZ_BYTES, body.len());
+    body[0..2].copy_from_slice(&fields.intensity.to_le_bytes());
+    body[2] = fields.return_number | (fields.number_of_returns << 4);
+    body[3] = fields.synthetic
         | (fields.key_point << 1)
         | (fields.withheld << 2)
         | (fields.overlap << 3)
         | (fields.scan_channel << 4)
         | (fields.scan_direction_flag << 6)
         | (fields.edge_of_flight_line << 7);
-    buf[16] = fields.classification;
-    buf[17] = fields.user_data;
-    buf[18..20].copy_from_slice(&scan_angle_to_las_scaled(fields.scan_angle).to_le_bytes());
-    buf[20..22].copy_from_slice(&fields.point_source_id.to_le_bytes());
-    buf[22..30].copy_from_slice(&fields.gps_time.to_le_bytes());
-    let mut cursor = 30;
+    body[4] = fields.classification;
+    body[5] = fields.user_data;
+    body[6..8].copy_from_slice(&scan_angle_to_las_scaled(fields.scan_angle).to_le_bytes());
+    body[8..10].copy_from_slice(&fields.point_source_id.to_le_bytes());
+    body[10..18].copy_from_slice(&fields.gps_time.to_le_bytes());
+    let mut cursor = 18;
     if format.has_color {
-        buf[30..32].copy_from_slice(&fields.red.to_le_bytes());
-        buf[32..34].copy_from_slice(&fields.green.to_le_bytes());
-        buf[34..36].copy_from_slice(&fields.blue.to_le_bytes());
-        cursor = 36;
+        body[18..20].copy_from_slice(&fields.red.to_le_bytes());
+        body[20..22].copy_from_slice(&fields.green.to_le_bytes());
+        body[22..24].copy_from_slice(&fields.blue.to_le_bytes());
+        cursor = 24;
     }
-    if fields.extra_bytes.len() != buf.len() - cursor {
+    if fields.extra_bytes.len() != body.len() - cursor {
         return Err(Error::InvalidInput(format!(
             "point {point_index} has {} extra byte(s), expected {}",
             fields.extra_bytes.len(),
-            buf.len() - cursor
+            body.len() - cursor
         )));
     }
-    buf[cursor..].copy_from_slice(&fields.extra_bytes);
+    body[cursor..].copy_from_slice(&fields.extra_bytes);
     Ok(())
 }
 

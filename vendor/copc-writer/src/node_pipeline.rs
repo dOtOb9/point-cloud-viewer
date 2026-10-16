@@ -6,7 +6,7 @@
 //! a standalone LAZ chunk, and writes the chunks.
 //!
 //! - `NodeContext` runs one task (`run_task`): it expands the run, encodes the
-//!   node's spill records to the LAS point layout and compresses them. A run
+//!   node's records to the LAS point layout (`record.rs`) and compresses them. A run
 //!   that fits the memory budget is loaded and compressed node by node
 //!   straight from memory.
 //! - `ChunkWriter` appends chunks to the output, builds the hierarchy entries
@@ -39,16 +39,15 @@ use std::io::{Seek, SeekFrom, Write};
 use std::sync::Mutex;
 
 use byteorder::{LittleEndian, WriteBytesExt};
-use copc_core::{CancelCheck, Entry, Error, Result, StreamingLayout, VoxelKey};
-use las::point::Format as LasFormat;
+use copc_core::{CancelCheck, Entry, Error, Result, VoxelKey};
 use laz::laszip::{ChunkTable, ChunkTableEntry};
 use laz::{LasZipCompressor, LazVlr};
 use web_time::{Duration, Instant};
 
 use crate::lod::{build_in_memory, expand_run, read_run, Expanded, LodParams, RunTask};
+use crate::record::LAS_XYZ_BYTES;
 use crate::scratch::ScratchFs;
-use crate::source::{CopcPointFields, RecordDecoder};
-use crate::writer::encode_point_record;
+use crate::validate::quantize_xyz;
 use crate::CANCEL_POLL_STRIDE;
 
 /// One node, compressed as a standalone LAZ chunk.
@@ -116,13 +115,11 @@ impl PartitionClock {
 
 /// Everything needed to run a task. Shared by all workers.
 pub(crate) struct NodeContext<'a> {
-    pub(crate) layout: &'a StreamingLayout,
     pub(crate) lod: LodParams,
     /// Bytes of one LAS point record in the output (PDRF 6/7 plus extra bytes).
     pub(crate) output_record_len: usize,
     pub(crate) scale: (f64, f64, f64),
     pub(crate) offset: (f64, f64, f64),
-    pub(crate) point_format: &'a LasFormat,
     pub(crate) var_vlr: &'a LazVlr,
     pub(crate) cancel: &'a (dyn CancelCheck + Sync),
     pub(crate) fs: &'a dyn ScratchFs,
@@ -136,7 +133,7 @@ impl NodeContext<'_> {
         self.clock.leave();
         match expanded? {
             Expanded::FitsInMemory(task) => {
-                let records = read_run(&task.run, self.lod.record_width)?;
+                let records = read_run(&task.run, self.lod.format.width())?;
                 // The run file is not needed any more.
                 drop(task.run);
                 let mut nodes = Vec::new();
@@ -167,35 +164,63 @@ impl NodeContext<'_> {
         }
     }
 
-    /// Encodes the spill records of one node to LAS point records and
-    /// compresses them as one standalone LAZ chunk.
+    /// Compresses the records of one node as one standalone LAZ chunk.
+    ///
+    /// Quantized records are the output's point records already (`record.rs`),
+    /// so they go to the compressor as they are. Wide records have f64
+    /// coordinates, which are quantized here.
     fn compress_node(&self, key: VoxelKey, records: &[u8]) -> Result<CompressedNode> {
-        let point_count = records.len() / self.lod.record_width;
+        let format = self.lod.format;
+        let width = format.width();
+        let point_count = records.len() / width;
+        let bytes = match format.transform() {
+            Some(_) => {
+                if width != self.output_record_len {
+                    return Err(Error::InvalidData(format!(
+                        "spill record is {width} bytes but the output point record is {}",
+                        self.output_record_len
+                    )));
+                }
+                self.cancel.check()?;
+                compress_standalone_chunk(records, self.var_vlr)?
+            }
+            None => {
+                let raw = self.wide_to_output_records(records, point_count)?;
+                compress_standalone_chunk(&raw, self.var_vlr)?
+            }
+        };
+        Ok(CompressedNode {
+            key,
+            point_count,
+            bytes,
+        })
+    }
+
+    /// Wide records (f64 x, y, z) to the output's point records.
+    fn wide_to_output_records(&self, records: &[u8], point_count: usize) -> Result<Vec<u8>> {
+        let format = self.lod.format;
         let raw_len = point_count
             .checked_mul(self.output_record_len)
             .ok_or_else(|| Error::InvalidInput("node point buffer size overflows usize".into()))?;
         let mut raw = vec![0u8; raw_len];
-        let mut decoder = RecordDecoder::new(self.layout);
-        let mut fields = CopcPointFields::default();
         for (i, (record, out)) in records
-            .chunks_exact(self.lod.record_width)
+            .chunks_exact(format.width())
             .zip(raw.chunks_exact_mut(self.output_record_len))
             .enumerate()
         {
             if i.is_multiple_of(CANCEL_POLL_STRIDE) {
                 self.cancel.check()?;
             }
-            decoder.fields_into(record, &mut fields)?;
+            let (x, y, z) = format.xyz(record);
             // `i` is the position inside the node; it only appears in the
             // message of a coordinate that cannot be encoded.
-            encode_point_record(out, &fields, self.scale, self.offset, i, self.point_format)?;
+            let (ix, iy, iz) = quantize_xyz(i, x, y, z, self.scale, self.offset)?;
+            out[0..4].copy_from_slice(&ix.to_le_bytes());
+            out[4..8].copy_from_slice(&iy.to_le_bytes());
+            out[8..12].copy_from_slice(&iz.to_le_bytes());
+            out[LAS_XYZ_BYTES..].copy_from_slice(format.body(record));
         }
-        let bytes = compress_standalone_chunk(&raw, self.var_vlr)?;
-        Ok(CompressedNode {
-            key,
-            point_count,
-            bytes,
-        })
+        Ok(raw)
     }
 }
 

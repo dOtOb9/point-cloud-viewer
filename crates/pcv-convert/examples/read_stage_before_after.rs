@@ -47,7 +47,7 @@ fn measure_read_stage(path: &Path, batch_size: u64, parallel: bool, label: &str)
         .for_header(reader.header())
         .build();
 
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriterを作れなかった");
+    let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriterを作れなかった");
 
     let start = Instant::now();
     loop {

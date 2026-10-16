@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use copc_core::{LasPointRecord, NeverCancel, Result, StreamingLayout};
 use copc_writer::{
-    write_copc_from_spill_with_fs, CopcWriteMetadata, CopcWriterParams, MemoryScratchFs, ScratchFs,
-    ScratchReader, ScratchWriter, SpillWriter,
+    write_copc_from_spill_with_fs, CopcWriteMetadata, CopcWriterParams, LasTransform,
+    MemoryScratchFs, ScratchFs, ScratchReader, ScratchWriter, SpillWriter,
 };
 
 #[derive(Clone, Default)]
@@ -140,6 +140,22 @@ fn record(seed: u32) -> LasPointRecord {
     }
 }
 
+/// The output scale and offset. With `compact` the spill stores them as i32
+/// (the production path); without it the spill keeps f64 coordinates.
+const TRANSFORM: LasTransform = LasTransform {
+    scale: (0.001, 0.001, 0.001),
+    offset: (0.0, 0.0, 0.0),
+};
+
+fn metadata(compact: bool) -> CopcWriteMetadata {
+    let mut metadata = CopcWriteMetadata::default();
+    if compact {
+        metadata.scale = Some(TRANSFORM.scale);
+        metadata.offset = Some(TRANSFORM.offset);
+    }
+    metadata
+}
+
 struct Measured {
     spill_bytes: u64,
     peak_bytes: u64,
@@ -152,6 +168,7 @@ fn convert(
     max_points_per_node: u32,
     memory_budget: u64,
     workers: usize,
+    compact: bool,
 ) -> Measured {
     let tracker = Tracker::default();
     let fs = TrackingFs {
@@ -167,7 +184,8 @@ fn convert(
         extra_bytes: 0,
         extra_bytes_descriptors: Vec::new(),
     };
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+    let mut spill = SpillWriter::create(&fs, layout, compact.then_some(TRANSFORM))
+        .expect("SpillWriter::create");
     for seed in 0..point_count {
         spill.push(&record(seed)).expect("spill.push");
     }
@@ -182,7 +200,7 @@ fn convert(
             .with_memory_budget_bytes(memory_budget)
             .with_max_concurrent_subtrees(workers),
         &NeverCancel,
-        &CopcWriteMetadata::default(),
+        &metadata(compact),
     )
     .expect("write_copc_from_spill_with_fs");
 
@@ -197,8 +215,8 @@ fn convert(
 #[test]
 fn live_temp_bytes_peak_at_about_two_copies_of_the_data() {
     // 200,000 points against a 256 KiB budget: several levels are split on disk.
-    for workers in [1, 4] {
-        let m = convert(200_000, 500, 256 * 1024, workers);
+    for (workers, compact) in [(1, true), (4, true), (4, false)] {
+        let m = convert(200_000, 500, 256 * 1024, workers, compact);
         assert!(m.spill_bytes > 0);
         assert!(
             m.peak_bytes <= m.spill_bytes * 21 / 10,
@@ -220,8 +238,8 @@ fn live_temp_bytes_peak_at_about_two_copies_of_the_data() {
 #[test]
 fn concurrently_open_temp_files_do_not_scale_with_point_count() {
     // Ten times the points must not mean ten times the files alive at once.
-    let small = convert(20_000, 500, 256 * 1024, 4);
-    let large = convert(200_000, 500, 256 * 1024, 4);
+    let small = convert(20_000, 500, 256 * 1024, 4, true);
+    let large = convert(200_000, 500, 256 * 1024, 4, true);
     assert!(small.peak_files > 0);
     assert!(
         large.peak_files <= small.peak_files * 3,

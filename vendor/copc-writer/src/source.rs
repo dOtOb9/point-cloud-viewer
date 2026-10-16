@@ -1,9 +1,6 @@
 //! Point-data sources consumed by the COPC writer.
 
-use copc_core::{
-    deserialize_le_into, Bounds, ColumnData, Error, LasColumnBatch, LasDimension, LasPointRecord,
-    Result, StreamingLayout,
-};
+use copc_core::{Bounds, ColumnData, Error, LasColumnBatch, LasDimension, LasPointRecord, Result};
 
 /// Normalized point fields consumed by the COPC writer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -349,56 +346,40 @@ fn unexpected_column_type(dimension: LasDimension, expected: &str, actual: &Colu
     ))
 }
 
-/// Turns spill records (the byte layout of `copc_core::serialize_le`) back
-/// into `CopcPointFields`, reusing one scratch record.
-///
-/// Since ADR-0019 the LOD builder passes the records themselves down to the
-/// nodes, so each node decodes its own points here when it is encoded.
-pub(crate) struct RecordDecoder<'a> {
-    layout: &'a StreamingLayout,
-    record: LasPointRecord,
+/// Fills `out` with the fields of `record` that the output can store. The
+/// spill encodes them into its records (`spill.rs`). `has_gps` is false for
+/// sources without GPS time (the output field is then 0).
+pub(crate) fn fields_from_record(
+    record: &LasPointRecord,
+    has_gps: bool,
+    out: &mut CopcPointFields,
+) {
+    out.x = record.x;
+    out.y = record.y;
+    out.z = record.z;
+    out.intensity = record.intensity;
+    out.return_number = record.return_number;
+    out.number_of_returns = record.number_of_returns;
+    out.synthetic = u8::from(record.synthetic);
+    out.key_point = u8::from(record.key_point);
+    out.withheld = u8::from(record.withheld);
+    out.overlap = u8::from(record.overlap);
+    out.scan_channel = record.scan_channel;
+    out.scan_direction_flag = u8::from(record.scan_direction_flag);
+    out.edge_of_flight_line = u8::from(record.edge_of_flight_line);
+    out.classification = record.classification;
+    out.user_data = record.user_data;
+    out.scan_angle = record.scan_angle;
+    out.point_source_id = record.point_source_id;
+    out.gps_time = if has_gps { record.gps_time } else { 0.0 };
+    out.red = record.red;
+    out.green = record.green;
+    out.blue = record.blue;
+    out.extra_bytes.clear();
+    out.extra_bytes.extend_from_slice(&record.extra_bytes);
 }
 
-impl<'a> RecordDecoder<'a> {
-    pub(crate) fn new(layout: &'a StreamingLayout) -> Self {
-        Self {
-            layout,
-            record: LasPointRecord::default(),
-        }
-    }
-
-    pub(crate) fn fields_into(&mut self, bytes: &[u8], out: &mut CopcPointFields) -> Result<()> {
-        deserialize_le_into(bytes, self.layout, &mut self.record)
-            .map_err(|e| Error::InvalidData(format!("decode spill record: {e}")))?;
-        let record = &self.record;
-        out.x = record.x;
-        out.y = record.y;
-        out.z = record.z;
-        out.intensity = record.intensity;
-        out.return_number = record.return_number;
-        out.number_of_returns = record.number_of_returns;
-        out.synthetic = u8::from(record.synthetic);
-        out.key_point = u8::from(record.key_point);
-        out.withheld = u8::from(record.withheld);
-        out.overlap = u8::from(record.overlap);
-        out.scan_channel = record.scan_channel;
-        out.scan_direction_flag = u8::from(record.scan_direction_flag);
-        out.edge_of_flight_line = u8::from(record.edge_of_flight_line);
-        out.classification = record.classification;
-        out.user_data = record.user_data;
-        out.scan_angle = record.scan_angle;
-        out.point_source_id = record.point_source_id;
-        out.gps_time = record.gps_time;
-        out.red = record.red;
-        out.green = record.green;
-        out.blue = record.blue;
-        out.extra_bytes.clear();
-        out.extra_bytes.extend_from_slice(&record.extra_bytes);
-        Ok(())
-    }
-}
-
-/// The reverse of `RecordDecoder`: a `LasPointRecord` for the spill, from the
+/// The reverse of `fields_from_record`: a `LasPointRecord` for the spill, from the
 /// fields a `CopcPointSource` gives. Used to feed a generic source through the
 /// same spill-based writer.
 pub(crate) fn record_from_fields(fields: &CopcPointFields) -> LasPointRecord {

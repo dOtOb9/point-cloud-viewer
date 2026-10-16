@@ -18,6 +18,7 @@ mod lod;
 mod lod_reference;
 mod metadata;
 mod node_pipeline;
+mod record;
 mod scratch;
 mod source;
 mod spill;
@@ -27,6 +28,7 @@ mod writer;
 pub(crate) const CANCEL_POLL_STRIDE: usize = 4_096;
 
 pub use metadata::CopcWriteMetadata;
+pub use record::LasTransform;
 #[cfg(feature = "native-fs")]
 pub use scratch::NativeScratchFs;
 pub use scratch::{MemoryScratchFs, ScratchFs, ScratchReader, ScratchWriter};

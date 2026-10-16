@@ -256,7 +256,7 @@ fn peak_open_temp_files_at_depth(depth: u32) -> usize {
         extra_bytes: 0,
         extra_bytes_descriptors: Vec::new(),
     };
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+    let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriter::create");
     for point in points_forcing_depth(depth) {
         spill.push(&point).expect("spill.push");
     }

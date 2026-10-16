@@ -192,7 +192,7 @@ fn spill_reads_stay_bounded_regardless_of_point_count() {
         extra_bytes: 0,
         extra_bytes_descriptors: Vec::new(),
     };
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+    let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriter::create");
     for seed in 0..POINT_COUNT {
         spill.push(&record(seed)).expect("spill.push");
     }

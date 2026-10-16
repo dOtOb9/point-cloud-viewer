@@ -74,7 +74,7 @@ fn batched_feed_via_memory_scratch_fs_produces_openable_copc() {
         .build();
 
     let fs = MemoryScratchFs::new();
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+    let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriter::create");
 
     // `WasmConverter::feed`と同じ手順: 小さいバッチに分けて読み、spillへ書く。
     // バッチ境界をまたいでも点が欠けたり重複したりしないことを、後で

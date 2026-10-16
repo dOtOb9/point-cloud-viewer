@@ -94,7 +94,7 @@ fn push_order_and_reopen(records: &[LasPointRecord]) -> (u64, BTreeSet<(u64, u64
         extra_bytes_descriptors: Vec::new(),
     };
     let fs = MemoryScratchFs::new();
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriterを作れなかった");
+    let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriterを作れなかった");
     for record in records {
         spill.push(record).expect("pushに失敗した");
     }

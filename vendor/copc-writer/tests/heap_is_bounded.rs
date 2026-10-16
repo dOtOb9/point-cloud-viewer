@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use copc_core::{LasPointRecord, NeverCancel, StreamingLayout};
 use copc_writer::{
-    write_copc_from_spill_with_fs, CopcWriteMetadata, CopcWriterParams, NativeScratchFs,
-    SpillWriter,
+    write_copc_from_spill_with_fs, CopcWriteMetadata, CopcWriterParams, LasTransform,
+    NativeScratchFs, SpillWriter,
 };
 
 struct CountingAllocator;
@@ -73,9 +73,27 @@ fn record(seed: u32) -> LasPointRecord {
     }
 }
 
+/// The output scale and offset. With `compact` the spill stores them as i32
+/// (the production path); without it the spill keeps f64 coordinates.
+fn transform() -> LasTransform {
+    LasTransform {
+        scale: (0.001, 0.001, 0.001),
+        offset: (0.0, 0.0, 0.0),
+    }
+}
+
+fn metadata(compact: bool) -> CopcWriteMetadata {
+    let mut metadata = CopcWriteMetadata::default();
+    if compact {
+        metadata.scale = Some(transform().scale);
+        metadata.offset = Some(transform().offset);
+    }
+    metadata
+}
+
 /// Converts `point_count` points and returns the heap peak, in bytes, above
 /// what was live before the conversion started.
-fn heap_peak(point_count: u32, workers: usize) -> usize {
+fn heap_peak(point_count: u32, workers: usize, compact: bool) -> usize {
     let dir = tempfile::tempdir().expect("tempdir");
     let fs = NativeScratchFs::new(dir.path());
     let layout = StreamingLayout {
@@ -87,7 +105,8 @@ fn heap_peak(point_count: u32, workers: usize) -> usize {
         extra_bytes: 0,
         extra_bytes_descriptors: Vec::new(),
     };
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+    let mut spill =
+        SpillWriter::create(&fs, layout, compact.then(transform)).expect("SpillWriter::create");
     for seed in 0..point_count {
         spill.push(&record(seed)).expect("spill.push");
     }
@@ -103,7 +122,7 @@ fn heap_peak(point_count: u32, workers: usize) -> usize {
             .with_memory_budget_bytes(4 * 1024 * 1024)
             .with_max_concurrent_subtrees(workers),
         &NeverCancel,
-        &CopcWriteMetadata::default(),
+        &metadata(compact),
     )
     .expect("write_copc_from_spill_with_fs");
     PEAK.load(Ordering::Relaxed).saturating_sub(before)
@@ -111,19 +130,19 @@ fn heap_peak(point_count: u32, workers: usize) -> usize {
 
 #[test]
 fn heap_peak_does_not_grow_with_the_point_count() {
-    for workers in [1, 4] {
-        let small = heap_peak(50_000, workers);
-        let large = heap_peak(400_000, workers);
+    for (workers, compact) in [(1, true), (4, true), (4, false)] {
+        let small = heap_peak(150_000, workers, compact);
+        let large = heap_peak(400_000, workers, compact);
         eprintln!(
-            "workers {workers}: heap peak {small} bytes at 50,000 points, {large} bytes at 400,000"
+            "workers {workers}, compact {compact}: heap peak {small} bytes at 150,000 points, {large} bytes at 400,000"
         );
         assert!(small > 0);
-        // 8 times the points. The peak is dominated by fixed buffers (the
+        // About 2.7 times the points. The peak is dominated by fixed buffers (the
         // disk passes, the budget), so it should stay about the same.
         assert!(
             large <= small * 3 / 2 + 2 * 1024 * 1024,
             "heap peak grew with the point count ({workers} worker(s)): \
-             {small} bytes at 50,000 points, {large} bytes at 400,000"
+             {small} bytes at 150,000 points, {large} bytes at 400,000"
         );
     }
 }

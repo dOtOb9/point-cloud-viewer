@@ -37,8 +37,8 @@ use std::io::{BufWriter, Read, Write};
 
 use copc_core::{Bounds, CancelCheck, Error, Result, VoxelKey};
 
+use crate::record::RecordFormat;
 use crate::scratch::{ScratchFs, ScratchReader, ScratchWriter};
-use crate::spill::{record_xyz, RECORD_XYZ_BYTES};
 use crate::CANCEL_POLL_STRIDE;
 
 /// Output buffer per child run file while partitioning.
@@ -74,8 +74,8 @@ pub(crate) struct RunTask {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LodParams {
     pub(crate) max_points_per_node: usize,
-    /// Bytes per record. The first `RECORD_XYZ_BYTES` bytes hold x, y, z.
-    pub(crate) record_width: usize,
+    /// How the records are laid out (x, y, z first, then the LAS body).
+    pub(crate) format: RecordFormat,
     /// A run of at most this many bytes is finished in memory.
     pub(crate) in_memory_run_bytes: u64,
 }
@@ -87,17 +87,11 @@ impl LodParams {
                 "max_points_per_node must be greater than zero".into(),
             ));
         }
-        if self.record_width < RECORD_XYZ_BYTES {
-            return Err(Error::InvalidInput(format!(
-                "point record is {} bytes, shorter than the {RECORD_XYZ_BYTES} bytes of x/y/z",
-                self.record_width
-            )));
-        }
         Ok(())
     }
 
     fn fits_in_memory(&self, run: &Run) -> bool {
-        let run_bytes = (run.count as u64).saturating_mul(self.record_width as u64);
+        let run_bytes = (run.count as u64).saturating_mul(self.format.width() as u64);
         run.count <= self.max_points_per_node || run_bytes <= self.in_memory_run_bytes
     }
 }
@@ -172,12 +166,13 @@ fn partition(
     cancel: &(dyn CancelCheck + Sync),
     fs: &dyn ScratchFs,
 ) -> Result<(Vec<u8>, [ChildRun; 8])> {
-    let width = params.record_width;
+    let format = params.format;
+    let width = format.width();
     let center = bounds.center();
 
     let counts = match counts {
         Some(counts) => counts,
-        None => count_octants(run, center, width, cancel)?,
+        None => count_octants(run, center, format, cancel)?,
     };
     let total: usize = counts.iter().sum();
     if total != run.count {
@@ -211,7 +206,7 @@ fn partition(
     while let Some(block) = blocks.next_block()? {
         cancel.check()?;
         for record in block.chunks_exact(width) {
-            let (x, y, z) = record_xyz(record);
+            let (x, y, z) = format.xyz(record);
             let octant = child_octant(center, x, y, z);
             if pickers[octant].pick_next() {
                 node_parts[octant].extend_from_slice(record);
@@ -259,15 +254,16 @@ fn partition(
 fn count_octants(
     run: &Run,
     center: (f64, f64, f64),
-    width: usize,
+    format: RecordFormat,
     cancel: &(dyn CancelCheck + Sync),
 ) -> Result<[usize; 8]> {
     let mut counts = [0usize; 8];
+    let width = format.width();
     let mut blocks = RunBlocks::open(run, width)?;
     while let Some(block) = blocks.next_block()? {
         cancel.check()?;
         for record in block.chunks_exact(width) {
-            counts[record_octant(center, record)] += 1;
+            counts[record_octant(center, format, record)] += 1;
         }
     }
     Ok(counts)
@@ -285,7 +281,8 @@ pub(crate) fn build_in_memory(
     cancel: &(dyn CancelCheck + Sync),
     emit: &mut dyn FnMut(VoxelKey, Vec<u8>) -> Result<()>,
 ) -> Result<()> {
-    let width = params.record_width;
+    let format = params.format;
+    let width = format.width();
     let count = records.len() / width;
     if count == 0 {
         return Ok(());
@@ -303,7 +300,7 @@ pub(crate) fn build_in_memory(
         if i.is_multiple_of(CANCEL_POLL_STRIDE) {
             cancel.check()?;
         }
-        let octant = record_octant(center, record);
+        let octant = record_octant(center, format, record);
         octants.push(octant as u8);
         counts[octant] += 1;
     }
@@ -405,8 +402,8 @@ impl RunBlocks {
     }
 }
 
-fn record_octant(center: (f64, f64, f64), record: &[u8]) -> usize {
-    let (x, y, z) = record_xyz(record);
+fn record_octant(center: (f64, f64, f64), format: RecordFormat, record: &[u8]) -> usize {
+    let (x, y, z) = format.xyz(record);
     child_octant(center, x, y, z)
 }
 
@@ -487,7 +484,8 @@ pub(crate) fn cube_from_bounds(bounds: &Bounds) -> ((f64, f64, f64), f64) {
 mod tests {
     use super::*;
 
-    use copc_core::{deserialize_le_into, LasPointRecord, NeverCancel, StreamingLayout};
+    use crate::record::LasTransform;
+    use copc_core::{LasPointRecord, NeverCancel, StreamingLayout};
 
     use crate::lod_reference::reference_nodes;
     use crate::scratch::MemoryScratchFs;
@@ -553,25 +551,28 @@ mod tests {
     }
 
     /// Writes `points` to a spill and returns the root run plus the record width.
-    fn root_run(points: &[LasPointRecord], fs: &dyn ScratchFs) -> (Run, usize) {
-        let mut writer = SpillWriter::create(fs, layout()).unwrap();
+    fn root_run(
+        points: &[LasPointRecord],
+        transform: Option<LasTransform>,
+        fs: &dyn ScratchFs,
+    ) -> (Run, RecordFormat) {
+        let mut writer = SpillWriter::create(fs, layout(), transform).unwrap();
         for p in points {
             writer.push(p).unwrap();
         }
         let reader = writer.finalize().unwrap();
-        let width = reader.record_width();
-        (reader.into_run(), width)
+        let format = reader.format();
+        (reader.into_run(), format)
     }
 
-    /// The ids (`gps_time`) of the points in `records`.
-    fn ids(records: &[u8], width: usize) -> Vec<f64> {
-        let layout = layout();
-        let mut out = LasPointRecord::default();
+    /// The ids (`gps_time`) of the points in `records`. The GPS time is the
+    /// first f64 of the record body (after the 10 bytes before it).
+    fn ids(records: &[u8], format: RecordFormat) -> Vec<f64> {
         records
-            .chunks_exact(width)
+            .chunks_exact(format.width())
             .map(|record| {
-                deserialize_le_into(record, &layout, &mut out).unwrap();
-                out.gps_time
+                let at = format.xyz_bytes() + 10;
+                f64::from_le_bytes(record[at..at + 8].try_into().unwrap())
             })
             .collect()
     }
@@ -582,6 +583,7 @@ mod tests {
     /// ids of their points) and the number of runs finished in memory.
     fn driver_nodes(
         points: &[LasPointRecord],
+        transform: Option<LasTransform>,
         max_points: usize,
         in_memory_run_bytes: u64,
         cancel: &(dyn CancelCheck + Sync),
@@ -589,10 +591,11 @@ mod tests {
     ) -> Result<(Vec<(VoxelKey, Vec<f64>)>, usize)> {
         let bounds = bounds_of(points);
         let (center, halfsize) = cube_from_bounds(&bounds);
-        let (run, width) = root_run(points, fs);
+        let (run, format) = root_run(points, transform, fs);
+        let width = format.width();
         let params = LodParams {
             max_points_per_node: max_points,
-            record_width: width,
+            format,
             in_memory_run_bytes,
         };
         let mut stack = vec![RunTask {
@@ -616,7 +619,7 @@ mod tests {
                         &params,
                         cancel,
                         &mut |key, records| {
-                            nodes.push((key, ids(&records, width)));
+                            nodes.push((key, ids(&records, format)));
                             Ok(())
                         },
                     )?;
@@ -626,7 +629,7 @@ mod tests {
                     node_records,
                     children,
                 } => {
-                    nodes.push((key, ids(&node_records, width)));
+                    nodes.push((key, ids(&node_records, format)));
                     stack.extend(children.into_iter().rev());
                 }
             }
@@ -641,7 +644,14 @@ mod tests {
         in_memory_run_bytes: u64,
         fs: &dyn ScratchFs,
     ) -> Result<(Vec<(VoxelKey, Vec<f64>)>, usize)> {
-        driver_nodes(points, max_points, in_memory_run_bytes, &NeverCancel, fs)
+        driver_nodes(
+            points,
+            None,
+            max_points,
+            in_memory_run_bytes,
+            &NeverCancel,
+            fs,
+        )
     }
 
     fn reference(
@@ -728,6 +738,49 @@ mod tests {
                         e.0
                     );
                 }
+            }
+        }
+    }
+
+    /// L3-C: with i32 records the octants are decided from the stored
+    /// integers. For points that sit on the output grid (as the points of a
+    /// LAS file do) that is the same decision as from the f64 coordinates, so
+    /// the nodes are exactly those of the f64 reference builder.
+    #[test]
+    fn quantized_records_match_index_reference_for_grid_points() {
+        let transform = LasTransform {
+            scale: (0.01, 0.01, 0.001),
+            offset: (500.0, -20.0, 3.0),
+        };
+        let snap =
+            |v: f64, scale: f64, offset: f64| ((v - offset) / scale).round() * scale + offset;
+        let fs = MemoryScratchFs::new();
+        let cases: Vec<(&str, Vec<LasPointRecord>, usize)> = vec![
+            ("scattered 5000, node 100", scattered(5_000, 1), 100),
+            ("scan lines 40x40, node 33", scan_lines(40), 33),
+        ];
+        for (name, points, max_points) in cases {
+            let points: Vec<LasPointRecord> = points
+                .into_iter()
+                .map(|mut p| {
+                    p.x = snap(p.x + 500.0, 0.01, 500.0);
+                    p.y = snap(p.y - 20.0, 0.01, -20.0);
+                    p.z = snap(p.z + 3.0, 0.001, 3.0);
+                    p
+                })
+                .collect();
+            let expected = reference(&points, max_points, &fs);
+            for in_memory_run_bytes in [0u64, 2_000, u64::MAX] {
+                let (actual, _) = driver_nodes(
+                    &points,
+                    Some(transform),
+                    max_points,
+                    in_memory_run_bytes,
+                    &NeverCancel,
+                    &fs,
+                )
+                .unwrap();
+                assert_eq!(expected, actual, "{name}, limit {in_memory_run_bytes}");
             }
         }
     }
@@ -873,7 +926,7 @@ mod tests {
         }
         let fs = MemoryScratchFs::new();
         let points = scattered(2_000, 4);
-        let result = driver_nodes(&points, 50, 0, &CancelNow, &fs);
+        let result = driver_nodes(&points, None, 50, 0, &CancelNow, &fs);
         assert!(matches!(result, Err(Error::Cancelled)));
     }
 }

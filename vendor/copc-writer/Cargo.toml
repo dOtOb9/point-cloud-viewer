@@ -143,3 +143,9 @@ path = "tests/lod_cancel.rs"
 name = "compress_cancel"
 path = "tests/compress_cancel.rs"
 
+
+# L3-C: spill records with i32 coordinates give the same file as f64 ones.
+[[test]]
+name = "compact_records_match_wide"
+path = "tests/compact_records_match_wide.rs"
+required-features = ["native-fs"]

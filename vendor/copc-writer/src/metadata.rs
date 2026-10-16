@@ -22,6 +22,7 @@ use las::raw;
 use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::las_out::LAS_VLR_HEADER_BYTES;
+use crate::record::LasTransform;
 
 pub(crate) const LASZIP_VLR_USER_ID: &str = "laszip encoded";
 pub(crate) const LASZIP_VLR_RECORD_ID: u16 = 22204;
@@ -66,6 +67,14 @@ pub struct CopcWriteMetadata {
 }
 
 impl CopcWriteMetadata {
+    /// The LAS transform of the output when both `scale` and `offset` are set.
+    /// Pass it to `SpillWriter::create` so that the spill holds the output's
+    /// integer coordinates (about 40% smaller records); with `None` the spill
+    /// keeps f64 coordinates.
+    pub fn transform(&self) -> Option<LasTransform> {
+        self.to_output().transform()
+    }
+
     pub(crate) fn to_output(&self) -> OutputLasMetadata {
         let mut out = OutputLasMetadata {
             file_source_id: self.file_source_id,
@@ -137,6 +146,17 @@ impl Default for OutputLasMetadata {
 }
 
 impl OutputLasMetadata {
+    /// The scale and offset of the output when both are fixed up front. The
+    /// spill then stores quantized coordinates (`record.rs`). `None` when the
+    /// offset is left to the writer (it defaults to the minimum corner of the
+    /// bounds, which is only known after the last point).
+    pub(crate) fn transform(&self) -> Option<LasTransform> {
+        self.offset.map(|offset| LasTransform {
+            scale: self.scale,
+            offset,
+        })
+    }
+
     pub(crate) fn from_las_header(
         header: &las::Header,
         source_evlrs: &[las::Vlr],

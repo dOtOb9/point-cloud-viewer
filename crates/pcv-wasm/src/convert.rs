@@ -375,7 +375,8 @@ impl WasmConverter {
 
         let handles = handles_from_js_array(&scratch_handles)?;
         let fs = OpfsScratchFs::new(handles, output_handle);
-        let spill = SpillWriter::create(&fs, layout.clone()).map_err(to_js_error)?;
+        let spill =
+            SpillWriter::create(&fs, layout.clone(), metadata.transform()).map_err(to_js_error)?;
 
         Ok(Self {
             reader,
@@ -1038,7 +1039,7 @@ mod tests {
         let layout = StreamingLayout::from_las_header(&header);
 
         let fs = MemoryScratchFs::new();
-        let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+        let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriter::create");
         for i in 0..point_count {
             let point = las::Point {
                 x: f64::from((i * 37) % 500) * 0.1,

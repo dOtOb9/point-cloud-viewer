@@ -259,7 +259,7 @@ impl WasmPcdConverter {
             extra_bytes: 0,
             extra_bytes_descriptors: Vec::new(),
         };
-        let spill = SpillWriter::create(&fs, layout).map_err(to_js_error)?;
+        let spill = SpillWriter::create(&fs, layout, None).map_err(to_js_error)?;
 
         Ok(Self {
             reader,

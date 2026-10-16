@@ -124,7 +124,7 @@ fn main() {
         .for_header(disk_reader.header())
         .build();
 
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriterを作れなかった");
+    let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriterを作れなかった");
 
     let mut read_time = Duration::ZERO;
     let mut spill_time = Duration::ZERO;

@@ -617,3 +617,46 @@ What changed in this crate:
 - Tests: `tests/lod_runs_bounded.rs` (live temp bytes peak at about two copies of the data; open files do not grow with
   points), `tests/heap_is_bounded.rs` (counting allocator: heap peak flat from 50,000 to 400,000 points),
   `tests/lod_cancel.rs`, `tests/compress_cancel.rs`, `tests/scratch_read_is_bounded.rs` (adapted).
+
+## L3-C: compact spill and run records (36 bytes per point for point format 3)
+
+Measurements: `TaskSheets/BENCH-conversion-profile.md` ("after L3-C"). Options B and C of
+`TaskSheets/BENCH-multi-billion.md` section 3.
+
+Before, a spill record was the generic `copc_core::serialize_le` form: 57 bytes for point format 3 with RGB (x, y, z as
+three f64 = 24 bytes, one byte per flag, scan angle as f32, ...). Now a record is the point as the output COPC stores it
+(`src/record.rs`): the LAS PDRF 6/7 record. Nothing is stored that the output cannot hold, so nothing the output
+keeps is lost.
+
+| layout | quantized (`SpillWriter::create(.., Some(transform))`) | wide (`None`) |
+|---|---|---|
+| x, y, z | 3 x i32, the output's integers (12 B) | 3 x f64 (24 B) |
+| rest | 18 B (24 B with RGB) + extra bytes, exactly bytes 12.. of the output record | same |
+| no colour (PDRF 6) | 30 B | 42 B |
+| with colour (PDRF 7) | 36 B | 48 B |
+
+(Point format 3 with GPS time and RGB was 57 B; without colour and with GPS 51 B. With the quantized form it is 36 B and 30 B.)
+
+- `SpillWriter::create` has a third argument, `Option<LasTransform>` (scale and offset of the output). The callers
+  that know them before the first point pass `CopcWriteMetadata::transform()` (LAS/LAZ streaming and merge, Web
+  converter, Web extract, `write_source`). `write_copc_from_spill` refuses a spill whose transform differs from the
+  output's. The E57/PLY/PCD import (`pcv-convert` `import/convert.rs`, `pcv-wasm` `pcd_import.rs`) chooses the offset from
+  the bounds after the last point, so it passes `None` and keeps the wide form (quantized when a node is encoded, as before).
+- A point is encoded once, at `SpillWriter::push`, with the same `encode_point_record` the node encoder used
+  (`writer.rs`; split into `encode_point_record` and `encode_point_body`). A coordinate that does not fit i32 now fails at
+  `push` instead of when its node is encoded (same message, earlier).
+- The nodes need no re-encoding: for quantized records `compress_node` hands the records to the LAZ compressor as they are.
+  Wide records are converted in `wide_to_output_records`.
+- The octree decides the octant of a point from `scale * i + offset` of the stored integer (`RecordFormat::xyz`), which is the
+  coordinate the output stores. For points that sit on the output grid (every LAS point read with the output's own scale and
+  offset) this is the same decision as from the f64, bit for bit, because the `las` crate computes the same expression. A point
+  that is not on the grid and lies within half a step of the plane between two octants may land in the other octant than
+  before (the output is still valid COPC). Merged files with a different scale/offset than the first file can hit this.
+- `SpillReader::xyz_at`, `record_at`, `record_into` (random access to a record) are gone: nothing in production used them.
+  `SpillReader::into_run` is the only way to read a spill. `RecordDecoder` (`source.rs`) is gone; `fields_from_record`
+  replaces it for the write side. `NodeContext` no longer carries the layout or the LAS format.
+- `NIR` and waveform layouts are refused in `SpillWriter::create` (they were refused later by the writer; the records cannot hold them).
+- Tests: `src/record.rs` (widths), `src/spill.rs` (stored bytes equal the output's record bytes, scan angle, range errors, wide and
+  quantized), `src/lod.rs` (`quantized_records_match_index_reference_for_grid_points`), `tests/compact_records_match_wide.rs`
+  (quantized and wide spills give byte-identical COPC files, with colour and without, with and without GPS, one thread, disk
+  and memory levels), `tests/lod_runs_bounded.rs` and `tests/heap_is_bounded.rs` (both forms).

@@ -96,7 +96,7 @@ fn batched_pcd_feed_via_memory_scratch_fs_produces_openable_copc() {
         extra_bytes_descriptors: Vec::new(),
     };
     let fs = MemoryScratchFs::new();
-    let mut spill = SpillWriter::create(&fs, layout).expect("SpillWriter::create");
+    let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriter::create");
 
     // `WasmPcdConverter::feed`と同じ手順: バッチに分けて読み、spillへ書く。
     const BATCH_SIZE: usize = 256;

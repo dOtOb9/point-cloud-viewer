@@ -102,7 +102,7 @@ pub(crate) fn run_import<S: PointSource>(
     };
 
     let spill_fs = NativeScratchFs::new(spill_dir);
-    let mut spill = SpillWriter::create(&spill_fs, layout).map_err(ImportError::Copc)?;
+    let mut spill = SpillWriter::create(&spill_fs, layout, None).map_err(ImportError::Copc)?;
 
     // M4-12(`TaskSheets/M4-import-and-conversion.md`):
     // `source.for_each_point`はE57/PLY/PCDの読み込み(パース)と、このクレートの

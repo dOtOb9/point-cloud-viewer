@@ -109,7 +109,7 @@ impl WasmExtractor {
 
         let handles = handles_from_js_array(&scratch_handles)?;
         let fs = OpfsScratchFs::new(handles, output_handle);
-        let spill = SpillWriter::create(&fs, layout).map_err(to_js_error)?;
+        let spill = SpillWriter::create(&fs, layout, metadata.transform()).map_err(to_js_error)?;
 
         Ok(Self {
             points,
