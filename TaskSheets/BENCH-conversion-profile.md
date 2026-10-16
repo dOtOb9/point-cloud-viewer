@@ -211,3 +211,74 @@ At t = 239 s free space reached 24.7 GB and the monitor killed the process (exit
 Private memory stayed at 94-308 MiB for the 240 s that ran (sampled), so the memory property held in the part that ran.
 To run (c) or (b), about 130-150 GB free would be needed (estimate: spill 38.5 GB + up to 2.1x-spill live run bytes, the bound tested in `tests/lod_runs_bounded.rs`, + 9 GB output);
 or lower the watchdog limit, which was not done here because C: is shared with other work.
+
+## After L3-C (compact spill and run records), 2026-10-17
+
+Change: the spill and LOD run records are the output's point record, with x, y, z as the output's i32 (options B and C of
+`BENCH-multi-billion.md` section 3). Record size per point (from `record::tests::record_widths`):
+
+| point format of the input | output format | before | after |
+|---|---|---|---|
+| 3 (GPS time + RGB), the Tokyo data | 7 | 57 B | **36 B** |
+| 1 or 6 (GPS time, no RGB) | 6 | 51 B | **30 B** |
+| E57/PLY/PCD import (offset known only after the last point, so x, y, z stay f64) | 6 or 7 | 49 B (RGB, no GPS) | 48 B (RGB), 42 B (no RGB) |
+
+Extra bytes are added to each figure as before. Format 8/10 (NIR) and waveform formats are refused as before (now already in `SpillWriter::create`).
+The 36 B is exactly the size of the PDRF 7 record in the output, so node compression no longer re-encodes quantized records.
+
+### Is the output the same?
+
+- Unit tests: the stored bytes of a spill record equal what `encode_point_record` makes for the output (`spill::tests`), the record builder gives the same nodes
+  as the f64 index reference for grid points (`lod::tests::quantized_records_match_index_reference_for_grid_points`), and
+  `tests/compact_records_match_wide.rs` writes the same 30,000 points through a quantized spill and a wide (f64, the old layout) spill and requires
+  **byte-identical COPC files** (RGB / no RGB, with / without GPS, 3 extra bytes, disk levels and all-in-memory, one thread). `cargo test --workspace` passes
+  including `streaming_conversion.rs`, which records a hash of a converted file.
+- 4 tiles (09LD2626-2629, 30,043,046 points), release `merge_las_to_copc --sequential-compress` (one worker, so the chunk order is fixed), old build (commit b057ee9) and new build:
+  both outputs are 378,755,269 bytes with **the same SHA-256** (5CDF4CB7AAFCAFF2EB046F71BB7CC5B9BC32C4C5688FDD975AAC452F8807C314). The default parallel run of the new
+  build gives the same 593 nodes and 30,043,046 points per `compare_copc_nodes`.
+- 55 tiles (347,797,138 points): `compare_copc_nodes` old output vs new output: SAME, 6,462 nodes, 347,797,138 points (compares the multiset of the viewer's
+  point fields per node; the byte equality above is the check for all other fields). The first version of that tool kept both files in memory and
+  needed 30 GiB for this size, so it now compares node by node.
+- Where the result can differ (not seen in the data above): the octant of a point is decided from `scale * i + offset` of the stored integer. For points on the
+  output grid that equals the f64 coordinate (LAS reads give exactly that expression). A point off the grid within half a step of an octant plane may go to the
+  other child. Possible only with merged files whose scale/offset differ from the first file. The 55 tiles showed no difference.
+
+### Measured: 55 files, 347,797,138 points, same session, same script
+
+Release `merge_las_to_copc <data\tokyo-shibuya> <out> 100000 <spill_dir> --assume-missing-crs-is-first --timings`, TMP/TEMP and the spill dir under the scratchpad on C:,
+monitor aborts below 25 GB free, no other conversion process running at the start. One run each, old build (b057ee9) measured right after the new one on the same machine state.
+
+| Item | before (b057ee9, run today) | after L3-C |
+|---|---|---|
+| Read + decode | 34.04 s | 57.08 s |
+| Spill write (`push`) | 16.96 s | 38.45 s |
+| LOD index + node compression | 225.69 + 5.74 = 231.43 s | 109.54 + 5.62 = 115.16 s |
+| Header / hierarchy | 0.06 s | 0.99 s |
+| **Total (tool)** | **298.29 s** (wall 300 s) | **241.20 s** (wall 243 s) |
+| Output size | 4,221,548,961 bytes | 4,221,548,959 bytes |
+| Spill size (sampled) | 18.46 GiB (57 B x 347.8M, computed) | 11.66 GiB (sampled; 36 B x 347.8M) |
+| Peak private memory (sampled) | 308 MiB | 308 MiB |
+| Disk use (free before - lowest free) | 37.09 GB | 23.08 GB |
+
+(The L3-B table above recorded 294.56 s and 21.0 GB for the old method; the 294.56 s agrees with 298.29 s today, the 21.0 GB does not agree with the 37.09 GB measured now. 37.09 is
+2 x 18.46, the parent run plus the child runs of the first split, so the 21.0 figure probably missed the peak.)
+
+Reading: total 298 -> 241 s (-19%), disk peak 37.1 -> 23.1 GB (-38%, 2 x the spill, as the bound test says). The LOD + compression part halves (231 -> 115 s). The ingest part got
+longer: the spill write 17 -> 38 s is expected (each point is now quantized and encoded once at `push`, work that used to be done later in the node compression), but the read + decode
+34 -> 57 s is code that this change did not touch, so it is probably run-to-run noise (cold input cache, other load); with one run each this is not separated. The ingest is a single thread, so
+quantizing at `push` costs about 21 s here; moving it to the reader threads would be a next step (not done).
+
+An earlier run of the new build for this table showed 670.81 s. It was **discarded**: the monitor wrote no sample between t = 293 s and t = 669 s and the process used only 16 CPU seconds in that gap,
+so the machine itself was paused (most likely suspended); the output of that run was still valid and was used for the node comparison above. Its process counters at the end were 89.9 GiB read and
+71.5 GiB written (L3-B run: 136.7 GiB read, ~112 GiB written), i.e. the explicit I/O fell by about a third, as the smaller records predict.
+
+### (c) 110 files, 726M points: not run
+
+Free space before: 69.3 GB (after deleting my outputs). Estimated peak from the (a) ratio: 23.08 GB x 726M / 347.8M = about 48 GB. Required: 48 + 25 (watchdog) = 73 GB > 69.3 GB, so it was not started.
+Needed to run it: about 75 GB free on C:. Not measured, no numbers claimed. (The old method would need about 77 GB for the peak alone by the same ratio.)
+
+### Not checked
+
+- Opening the new output in the viewer on a real GPU, and the Android build. The Web build was compiled (`npm run build:wasm`) and the unit/integration tests that use the Web code path
+  (`MemoryScratchFs`) pass; see the E2E result in the report.
+- Memory use on the Web with a real file in OPFS (only `MemoryScratchFs`).
