@@ -2717,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "pcv-tauri"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "android_logger",
  "copc-core",
