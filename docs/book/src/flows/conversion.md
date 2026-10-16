@@ -43,6 +43,7 @@
    進捗は `conversion-progress` イベント、完了は `conversion-done`、失敗は `conversion-failed`。
 4. `crates/pcv-convert/src/streaming.rs` `convert_and_timings` — `las::Reader` を作り、ヘッダーから `StreamingLayout`(`copc_core`)と出力メタデータ(`write_metadata::copc_write_metadata_from_source_header`)を作る。点を1バッチずつ読む `BatchedLasPoints`(イテレータ)を作る。
 5. `vendor/copc-writer/src/writer.rs` `write_streaming_with_cancel_and_timings` — イテレータの点を1点ずつ `SpillWriter::push` で一時ファイル(spill)に書く。ここまでが「読み込み」段階で、`push` が座標の範囲検査と bbox・点数の集計も行う(2回目の全点パスは無い)。
+   `push` は点を**出力の COPC と同じ形のレコード**に詰めて書く(`vendor/copc-writer/src/record.rs`。x,y,z は出力と同じ scale/offset の i32。形は [vendor/copc-writer の章](../rust/copc-writer.md)の「L3-C」)。そのため `SpillWriter::create` には出力の scale/offset(`CopcWriteMetadata::transform`)を渡す。
 6. `vendor/copc-writer/src/spill.rs` `SpillWriter::finalize` — spill を閉じて `SpillReader` にする。
 7. `writer.rs` `write_copc_from_spill`(`write_copc_from_spill_with_fs` から呼ばれる非公開の本体) — 出力ファイルのヘッダー・VLR を書き、`SpillReader::into_run` で spill を LOD の根の run にして `RunTask`(キーは根)を作る。
 8. `vendor/copc-writer/src/node_pipeline.rs` `write_chunks` → `run_tasks` — run を順に処理する(次の節)。
@@ -58,7 +59,8 @@
    子 run の「子自身の8分割ごとの点数」は書きながら数えておく(`RunTask::counts`)ので、数え直しの読みは根の run だけ。
    分割し終えた親 run のファイルは、その場で削除される(`drop(run)`)。
 3. 収まるとき(`Expanded::FitsInMemory`): `lod.rs` `read_run` で run を丸ごとメモリに読み、`build_in_memory` で残りの部分木をメモリ上の `Vec<u8>` だけで作る。ノードを1つ作るたびに `emit` で渡す。
-4. `node_pipeline.rs` `NodeContext::compress_node` — ノードのレコードを LAS の点形式に詰め直し(`writer.rs` の `encode_point_record`)、そのノード1つを独立した LAZ チャンクに圧縮する(`compress_standalone_chunk`)。
+4. `node_pipeline.rs` `NodeContext::compress_node` — ノードのレコードを、そのノード1つを独立した LAZ チャンクに圧縮する(`compress_standalone_chunk`)。
+   レコードは出力の LAS 点レコードそのもの(L3-C)なので、詰め直さずにそのまま圧縮器へ渡す。x,y,z が f64 のままのレコード(E57/PLY/PCD の取り込み)だけ、ここで `wide_to_output_records` が i32 に直す。
 5. `node_pipeline.rs` `ChunkWriter::push` — チャンクを出力に追記し、hierarchy の項目と LAZ のチャンクテーブルを作る。COPC はチャンクの順序を要求せず、hierarchy が各ノードの offset を持つため、順序は部分木ごと(複数スレッドなら終わった順)でよい。
 6. スレッド数: `run_tasks_inline`(1スレッド、深さ優先)か、`parallel-compress` フィーチャ有効時の `threaded::run_tasks_threaded`(`max_concurrent_subtrees` 本。新しい task から取る=スタック)。
    デスクトップは有効、Web は無効(`crates/pcv-wasm` は `default-features = false`)。
@@ -114,22 +116,24 @@ COPC のチャンクは**可変長**(ノードごとに点数が違う)ですが
 | 項目 | 値 | 出典 |
 |---|---|---|
 | ノードあたりの最大点数(既定) | 100,000(`CopcWriterParams::default`、Web は `DEFAULT_MAX_POINTS_PER_NODE`) | `vendor/copc-writer/src/writer.rs`、`src/datasource/web-protocol.ts` |
-| spill・run のレコード幅 | Tokyo の点形式3(GPS時刻+RGB)で 57 B/点。x,y,z の f64 が先頭24バイト | `TaskSheets/BENCH-multi-billion.md` §3 |
+| spill・run のレコード幅 | L3-C の後は出力の点レコードと同じ形: GPS時刻+RGB あり(出力は点形式7)で 36 B/点、RGB なし(点形式6)で 30 B/点(extra bytes があればその分を足す)。x,y,z は出力と同じ scale/offset の i32(12 B)。E57/PLY/PCD の取り込みだけ f64(24 B)のままで 48 B/点。L3-C の前は 57 B/点 | `vendor/copc-writer/src/record.rs`(`record_widths` テスト)、`TaskSheets/BENCH-multi-billion.md` §3 |
 | 小さな部分木をメモリで仕上げる予算(既定) | デスクトップ 1 GiB、Android 256 MiB、Web 64 MiB。1つの run は `予算 / (2 × スレッド数)` 以下ならメモリで仕上げる | `writer.rs` の `default_memory_budget_bytes`、`write_copc_from_spill`(`in_memory_run_bytes`) |
 | 同時に部分木を作るスレッド | 論理 CPU 数(最大8)。`parallel-compress` が無い Web は1 | `writer.rs` の `default_max_concurrent_subtrees` |
-| ディスクのピーク | 上位の段で親 run と8つの子 run が同時に在るため、レコードのデータ約2コピー(+最後に出力) | ADR-0019 の Decision 4、`vendor/copc-writer/tests/lod_runs_bounded.rs`(一時ファイルのバイト数は spill の 2.1 倍を超えない) |
+| ディスクのピーク | 上位の段で親 run と8つの子 run が同時に在るため、レコードのデータ約2コピー(+最後に出力)。渋谷55枚(347,797,138点)の実測: spill 11.66 GiB(36 B/点)に対し、ディスク使用量 23.08 GB(L3-C の前は spill 約 18.5 GiB に対し 37.09 GB) | ADR-0019 の Decision 4、`vendor/copc-writer/tests/lod_runs_bounded.rs`(一時ファイルのバイト数は spill の 2.1 倍を超えない)、`TaskSheets/BENCH-conversion-profile.md` の "After L3-C" |
 | 変換前の空き容量の見積もり | 入力サイズの 11 倍(デスクトップは `TEMP_SIZE_FACTOR`、Web は `SCRATCH_SIZE_FACTOR`) | `crates/pcv-convert/src/disk_space.rs`、`src/datasource/opfs.ts` |
 | Web の OPFS 一時ファイルのプール | 256 個(`OPFS_SCRATCH_POOL_SIZE`) | `crates/pcv-wasm/src/opfs.rs` |
 | Web の読み込みバッファ | 4 MiB(`READ_BUFFER_BYTES`)。展開 Worker のバッチは 64Ki 点、1 Worker あたり未消費2バッチまで | `crates/pcv-wasm/src/convert.rs`、`src/datasource/decompress-partition.ts` |
 
 メモリが点数に比例しないことを確かめるテスト:
-`vendor/copc-writer/tests/heap_is_bounded.rs`(計数アロケータ。50,000点と400,000点でヒープのピークが 11.6 MB のまま。1スレッド時、`TaskSheets/BENCH-conversion-profile.md`)、
+`vendor/copc-writer/tests/heap_is_bounded.rs`(計数アロケータ。150,000点と400,000点でヒープのピークが 10.5 MB のまま。圧縮レコード・f64 レコードとも、1スレッド・4スレッド。L3-C の後の実行結果)、
 `tests/lod_runs_bounded.rs`(開いている一時ファイルの数が点数に比例しない)、
 `tests/scratch_read_is_bounded.rs`(1回の読みのサイズが上限内)。
 
 ADR-0019 の**前**の実測(1,055,184,468点の結合): 全体 4641 秒、spill 56.0 GiB、ディスクのピーク 84.5 GiB、メモリ(private)のピーク 381 MiB(`BENCH-conversion-profile.md`)。
 ADR-0019 の**後**に測れたのは渋谷4枚(30,043,046点)だけで、旧 61.8 秒 → 新 35.2 秒、ノードの点の集合は `compare_copc_nodes` で同一でした(1回ずつの計測)。
-**3.5億・7億・10億点の再計測は未実施**です(計測中にディスクの空きが足りなくなり中止)。新方式で 10 億点が速くなるかは、まだ数字がありません。
+L3-C(レコードを小さくした後)の渋谷55枚(347,797,138点)は、同じ日・同じ手順で旧版 298.29 秒、新版 241.20 秒、ディスクの使用量(開始時の空き − 最小の空き)は旧版 37.09 GB、新版 23.08 GB でした
+(1回ずつの計測。内訳と、新旧で出力が同じことの確かめ方は `TaskSheets/BENCH-conversion-profile.md` の "After L3-C")。
+**3.5億点を超える再計測(7億・10億点)は未実施**です(110枚は必要な空き容量が足りず走らせていません)。新方式で 10 億点が速くなるかは、まだ数字がありません。
 
 ## 5. 関連する ADR・タスクシートと落とし穴
 

@@ -107,7 +107,7 @@ M4-6a/M4-6b の検証ではすり抜けていました。**
 
 **メモリとディスクの上限(テストで確かめてある)。**
 
-- `tests/heap_is_bounded.rs`: 計数アロケータで、50,000点と400,000点の入力でヒープのピークが同じ 11.6 MB(1スレッド)。4スレッドで 11.6 MB と 13.9 MB。
+- `tests/heap_is_bounded.rs`: 計数アロケータで、150,000点と400,000点の入力でヒープのピークが同じ 10.5 MB(i32 のレコードを1スレッド・4スレッド、f64 のレコードを4スレッド。L3-C の後の実行結果。前は 50,000点と400,000点で 11.6 MB)。
 - `tests/lod_runs_bounded.rs`: 生きている一時ファイルのバイト数が spill の約 2.1 倍を超えない(上位の段で親 run と子 run が同時に在る)。開いている一時ファイルの数が点数に比例しない。
 - `tests/lod_cancel.rs`・`tests/compress_cancel.rs`: キャンセルが効く。
 
@@ -119,6 +119,30 @@ ADR-0019 で番号そのものを運ばなくなったため、本番の経路�
 
 **native の `ScratchFs` の変更。** `NativeScratchFs` の `finish_temp` は `sync_all` を呼びません(一時ファイルは、クラッシュしても残る必要が無い)。
 `open_at` は mmap ではなく通常の read で順次読みします(mmap 越しの順次読みは4KBごとにページフォルトし、開発機の Windows で約 190 MB/s でした)。
+
+## L3-C: spill と run のレコードを小さくする
+
+ADR-0019 で run がレコードを運ぶようになったので、レコードの大きさがそのままディスクの使用量と読み書きの量になります。
+`vendor/copc-writer/src/record.rs` で、レコードを**出力の COPC の点レコード(LAS の点形式 6/7)そのもの**にしました。
+以前は `copc_core::serialize_le` の汎用形式で、Tokyo の点形式3(GPS時刻+RGB)で 57 B/点でした(`TaskSheets/BENCH-multi-billion.md` §3)。
+
+| 部分 | 内容 |
+|---|---|
+| x, y, z | 出力と同じ scale/offset で量子化した i32 が3つ(12 B)。`SpillWriter::create` に `Option<LasTransform>` を渡したとき |
+| 残り(body) | 強度・リターン番号・フラグ・分類・user data・走査角(i16)・点源 ID・GPS 時刻(f64)・RGB(あれば)・extra bytes。出力の点レコードの12バイト目以降と同じバイト列 |
+| 幅 | RGB なし(点形式6)30 B、RGB あり(点形式7)36 B。extra bytes はその分を足す |
+| 広い形(`None`) | x, y, z を f64 のまま(24 B)にして、RGB ありで 48 B。出力の offset を最後の点を見てから決める E57/PLY/PCD の取り込みだけが使う |
+
+- 点は `SpillWriter::push` で1回だけ出力の形に詰める(`writer.rs` の `encode_point_record`。ノードの圧縮が以前していたのと同じ処理)。
+  ノードの圧縮(`NodeContext::compress_node`)は、レコードをそのまま LAZ の圧縮器に渡します。広い形のときだけ `wide_to_output_records` で i32 にします。
+- 出力の scale/offset が違う spill は `write_copc_from_spill` が拒否します(spill の整数がそのまま出力の整数になるため)。
+  LAS/LAZ の変換・結合・Web の変換・抽出は、ヘッダーから作った `CopcWriteMetadata` の `transform()` を渡します。
+- octree の分割で点がどの子に入るかは、保存された整数から `scale * i + offset` で戻した座標で決めます(`RecordFormat::xyz`)。
+  LAS の点は出力と同じ scale/offset で読めば元の f64 とビットまで同じなので、LAS からの変換では以前と同じ決定になります。
+  格子の上に無い点が、2つの子の境目から scale の半分以内にあると、以前と違う子に入ることがあります(出力は正しい COPC のままです)。
+- 出力が変わらないことの確認: `tests/compact_records_match_wide.rs`(i32 の spill と f64 の spill で COPC がバイト単位で一致)と、
+  渋谷4枚(30,043,046点)を旧版と新版で 1 スレッド圧縮して SHA-256 が一致したこと(`TaskSheets/BENCH-conversion-profile.md` の "after L3-C")。
+- なくなったもの: `SpillReader` の `xyz_at`・`record_at`・`record_into`(1レコードの乱数アクセス。本番では使われていませんでした)と `RecordDecoder`。
 
 ## vendor/laz: 可変長チャンクの seek の修正
 
