@@ -164,6 +164,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     openFile: fileOpen.openFile,
     openFiles: fileOpen.openFiles,
     isBrowser: !isTauriEnvironment(),
+    reportError: errorLog.reportError,
     conversionProgress: conversion.conversionProgress,
     cancelConversion: conversion.cancelConversion,
     copyConversionBreakdownText: conversion.copyConversionBreakdownText,

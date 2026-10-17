@@ -9,6 +9,7 @@ const SOURCE_LABEL: Record<GpuErrorEntry["source"], string> = {
   conversion: "変換エラー",
   crs: "座標系の読み取りエラー",
   tool: "点群ツール",
+  "file-dialog": "ファイル選択ダイアログのエラー",
 };
 
 function formatTimestamp(ms: number): string {

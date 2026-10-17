@@ -7,7 +7,7 @@ import type { CachedConversionEntry, OpfsUsageBreakdown } from "../datasource/op
 import type { ExtractFilter } from "../datasource/tools";
 import type { RenderStats } from "../renderer/point-cloud-renderer";
 import type { BackgroundMode } from "../renderer/sky";
-import type { GpuErrorEntry } from "../renderer/gpu-error-log";
+import type { GpuErrorEntry, GpuErrorSource } from "../renderer/gpu-error-log";
 import type { ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
 import type { Measurement } from "./measure";
@@ -177,6 +177,8 @@ export interface CopcViewerState {
   openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
   /** True in the browser build. The toolbar's open button (`buttons/OpenFileButton.tsx`) uses it to switch between the Tauri file dialog and the Web file input. */
   isBrowser: boolean;
+  /** Sends a message to the existing error banner and log (ADR-0011). `source` defaults to "gpu". */
+  reportError: (message: string, source?: GpuErrorSource) => void;
   /**
    * M4-3: 生LAS/LAZの変換中(`status === "converting"`)の進捗。読み込み段階は
    * `{phase: "reading", pointsRead, totalPoints, elapsedSecs}`で正確な割合が
