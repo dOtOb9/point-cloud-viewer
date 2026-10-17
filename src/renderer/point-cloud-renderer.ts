@@ -290,8 +290,9 @@ export class PointCloudRenderer {
    *  **既定値はM3-8でコンストラクタに移った**（デスクトップはオン=変更前と
    *  同じ、モバイルはオフ。`defaultRenderSettings()`参照）。 */
   private edlEnabled: boolean;
-  private edlStrength = DEFAULT_EDL_STRENGTH;
-  private edlRadiusPx = DEFAULT_EDL_RADIUS_PX;
+  // Strength and radius have no setter and no UI; they stay at these constants (edl.ts).
+  private readonly edlStrength = DEFAULT_EDL_STRENGTH;
+  private readonly edlRadiusPx = DEFAULT_EDL_RADIUS_PX;
 
   /** ADR-0010追記: 中央優先度の強さ。`selectNodesForFrame`に渡し、画面中央からの
    *  距離に応じた重みを画面空間誤差に掛ける（`center-priority.ts`参照）。
@@ -564,10 +565,6 @@ export class PointCloudRenderer {
     if (layer) layer.colorMode = mode;
   }
 
-  getLayerColorMode(layerId: string): ColorMode | undefined {
-    return this.layers.get(layerId)?.colorMode;
-  }
-
   /**
    * そのレイヤーの点の形・大きさを変える（L2-B）。次のフレームから反映される。
    * 形は丸/四角のパイプラインが起動時に両方あるので、作り直しは要らない。
@@ -581,14 +578,6 @@ export class PointCloudRenderer {
   setLayerPointSize(layerId: string, px: number): void {
     const layer = this.layers.get(layerId);
     if (layer) layer.style = { ...layer.style, sizePx: sanitizePointSize(px) };
-  }
-
-  getLayerPointShape(layerId: string): PointShape | undefined {
-    return this.layers.get(layerId)?.style.shape;
-  }
-
-  getLayerPointSize(layerId: string): number | undefined {
-    return this.layers.get(layerId)?.style.sizePx;
   }
 
   /** 描画のとき、ノードのキー（"<通し番号>:<ノードキー>"）からそのレイヤーの点の見た目を引く。 */
@@ -725,6 +714,7 @@ export class PointCloudRenderer {
     this.cache.maxPoints = this.pointBudget * CACHE_BUDGET_MULTIPLIER;
   }
 
+  // Called by name from scripts/igpu-bench/bench.mjs (invisible to a reference search). Do not delete.
   getPointBudget(): number {
     return this.pointBudget;
   }
@@ -739,37 +729,14 @@ export class PointCloudRenderer {
     this.autoPointBudgetEnabled = enabled;
   }
 
+  // Called by name from scripts/igpu-bench/bench.mjs (invisible to a reference search). Do not delete.
   getAutoPointBudgetEnabled(): boolean {
     return this.autoPointBudgetEnabled;
   }
 
-  /** AN: アニメーションのオン/オフ（設定）。OSが「視差効果を減らす」ならオンでも動かさない。 */
-  /**
-   * AN-2: カメラが慣性・なめらかなズーム・視点移動のいずれかで動いている間true。
-   * 点予算の調整や、将来のHQ-2（止まったら最大画質）の「動いているか」の判定は、これを使う。
-   */
-  isCameraAnimating(): boolean {
-    return this.camera.isAnimating();
-  }
-
-  /** 計測・テスト用: カメラの現在の状態（毎フレーム読める。統計は500msごとなので粗い）。 */
-  debugCameraState(): {
-    yaw: number;
-    pitch: number;
-    distance: number;
-    target: [number, number, number];
-    animating: boolean;
-  } {
-    const c = this.camera;
-    return { yaw: c.yaw, pitch: c.pitch, distance: c.distance, target: [...c.target], animating: c.isAnimating() };
-  }
-
+  /** On/off of animation (setting). Even when on, nothing moves if the OS asks for reduced motion. */
   setAnimationEnabled(enabled: boolean): void {
     this.animationEnabled = enabled;
-  }
-
-  getAnimationEnabled(): boolean {
-    return this.animationEnabled;
   }
 
   /** 設定オン かつ OSが動きを減らす指定をしていない。毎フレーム問い合わせるので、OS設定の変更にも追従する。 */
@@ -782,17 +749,9 @@ export class PointCloudRenderer {
     this.backgroundMode = mode;
   }
 
-  getBackgroundMode(): BackgroundMode {
-    return this.backgroundMode;
-  }
-
   /** 地面グリッド（M2-0c補強B）: 向き・尺度・地平線の手がかりを与える。既定はオフ。 */
   setGridEnabled(enabled: boolean): void {
     this.gridEnabled = enabled;
-  }
-
-  getGridEnabled(): boolean {
-    return this.gridEnabled;
   }
 
   /** EDL(M2-1)のオン/オフ。オフのとき、合成パスへ渡す強さを0にすることで
@@ -801,38 +760,15 @@ export class PointCloudRenderer {
     this.edlEnabled = enabled;
   }
 
+  // Called by name from scripts/igpu-bench/bench.mjs (invisible to a reference search). Do not delete.
   getEdlEnabled(): boolean {
     return this.edlEnabled;
-  }
-
-  /** EDL(M2-1)の強さ。0で無効(強さ0でM1と同じ見た目になる、というタスクシートの
-   *  受け入れ条件は`edlShadingFactor`の性質そのもので満たされる。edl.ts参照)。 */
-  setEdlStrength(strength: number): void {
-    this.edlStrength = Math.max(0, strength);
-  }
-
-  getEdlStrength(): number {
-    return this.edlStrength;
-  }
-
-  /** EDL(M2-1)が近傍として見る距離（スクリーンピクセル単位）。タスクシートが
-   *  「望ましい」とした調整項目。 */
-  setEdlRadiusPx(radiusPx: number): void {
-    this.edlRadiusPx = Math.max(0, radiusPx);
-  }
-
-  getEdlRadiusPx(): number {
-    return this.edlRadiusPx;
   }
 
   /** ADR-0010追記: 中央優先度の強さ。0にすると今までどおり画面空間誤差だけの
    *  優先度になる（`center-priority.ts`の`centerPriorityWeight`参照）。 */
   setCenterPriorityStrength(strength: number): void {
     this.centerPriorityStrength = Math.max(0, strength);
-  }
-
-  getCenterPriorityStrength(): number {
-    return this.centerPriorityStrength;
   }
 
   /** 2026-10-08追記: 中央優先度の重みの下限（0〜1）。下げるほど、画面端の
@@ -850,10 +786,6 @@ export class PointCloudRenderer {
     this.minCenterPriorityWeight = Math.min(1, Math.max(0, minWeight));
   }
 
-  getMinCenterPriorityWeight(): number {
-    return this.minCenterPriorityWeight;
-  }
-
   /**
    * M3-8: レンダースケール(内部解像度 = 表示サイズ(CSS px) × この値。
    * devicePixelRatioは含めない。理由は`renderScale`フィールドのコメント参照)
@@ -865,20 +797,24 @@ export class PointCloudRenderer {
     this.applyCanvasSize();
   }
 
+  // Called by name from scripts/igpu-bench/bench.mjs (invisible to a reference search). Do not delete.
   getRenderScale(): number {
     return this.renderScale;
   }
 
+  // Called by name from scripts/igpu-bench/bench.mjs (invisible to a reference search). Do not delete.
   getPointShape(): PointShape {
     return this.pointShape;
   }
 
   /** M3-8: モバイル判定の結果(コンストラクタで一度だけ決めた値)。 */
+  // Called by name from scripts/igpu-bench/bench.mjs (invisible to a reference search). Do not delete.
   getIsMobile(): boolean {
     return this.isMobileProfile;
   }
 
   /** M3-8: 自動調整が動ける点予算の上限(端末プロファイルから決めた値)。 */
+  // Called by name from scripts/igpu-bench/bench.mjs (invisible to a reference search). Do not delete.
   getAutoPointBudgetMax(): number {
     return this.autoPointBudgetMax;
   }
