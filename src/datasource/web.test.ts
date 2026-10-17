@@ -185,12 +185,3 @@ describe("WebSource.close", () => {
     await closePromise;
   });
 });
-
-describe("WebSource.fetchBench", () => {
-  it("Workerを介さず指定サイズのArrayBufferを返す", async () => {
-    const { source, worker } = makeSource();
-    const buf = await source.fetchBench(16);
-    expect(buf.byteLength).toBe(16);
-    expect(worker.sent).toHaveLength(0);
-  });
-});

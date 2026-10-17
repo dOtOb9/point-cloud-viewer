@@ -32,7 +32,7 @@
 
 1. `src/datasource/tauri.ts` `TauriSource.readNode` — `buildNodeRequestPath(cloudId, key)`(`src/datasource/tauri-protocol.ts`)で `"<generation>/<level>-<x>-<y>-<z>"` を作り、`convertFileSrc(segment, "pcv")` で URL にして `fetch` する。
    Windows と Android では `http://pcv.localhost/...`、macOS と Linux では `pcv://localhost/...` の形になる。**区切りの `/` も1セグメントとしてまるごとパーセントエンコードされて届く**。
-2. `src-tauri/src/lib.rs` `handle_pcv_protocol` — 非同期のスキームハンドラ。`parse_pcv_path` で**先にパーセントデコードしてから** `PcvRequest::Node { generation, key }` に解析する。重い読み出しは `tauri::async_runtime::spawn_blocking` に逃がす。
+2. `src-tauri/src/lib.rs` `handle_pcv_protocol` — 非同期のスキームハンドラ。`parse_pcv_path` で**先にパーセントデコードしてから** `PcvNodeRequest { generation, key }` に解析する。重い読み出しは `tauri::async_runtime::spawn_blocking` に逃がす。
 3. `src-tauri/src/copc_state.rs` `read_node_bytes(state, generation, key)` — `CopcState`(`generation` → `Arc<CopcPool>` の表)のロックは `Arc` を複製する一瞬だけ持つ。表に無い世代は `ReadNodeError::Stale`。
 4. 同 `CopcPool::checkout` — プール(論理コア数ぶん開いた独立の `CopcFile`)から1本借りる。空きが無ければ `Condvar` で返却を待つ。
 5. `crates/pcv-core/src/copc.rs` `CopcFile::read_node` — hierarchy の `offset` / `byte_size` へ直接 seek し、そのノードの LAZ チャンクだけを展開(`copc-reader` の `CopcReader::read_node`)。色のビット深度を8ビットに直し、`crates/pcv-core/src/node_format.rs` `encode_node` が、ノードの原点を f32 に丸めた相対座標のバイナリにする。

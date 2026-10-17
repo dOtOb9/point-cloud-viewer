@@ -240,16 +240,6 @@ export class WebSource implements DataSource {
   }
 
   /**
-   * M0時点のTauri版ベンチ(`fetchBenchViaInvoke`との比較用)はTauriの`invoke`と
-   * カスタムプロトコルの転送速度差を測るためのものだった。Web版には比較対象の
-   * 2経路が無い(fetchが1つあるだけ)ので、Workerを介さずダミーバッファを
-   * 返すだけにしてある。
-   */
-  async fetchBench(sizeBytes: number): Promise<ArrayBuffer> {
-    return new ArrayBuffer(sizeBytes);
-  }
-
-  /**
    * 直近のopen/readNodeまでにWorkerが実際に読んだ合計バイト数。
    * 「ファイル全体を読んでいないこと」をブラウザのdevtoolsやUIから確認する
    * 手がかりとして公開している(DataSourceインターフェースの一部ではない)。

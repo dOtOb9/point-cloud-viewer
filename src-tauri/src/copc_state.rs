@@ -29,12 +29,10 @@
 //! という`Arc`のクローンを取り出す間だけロックし、実際の読み出しはロックの
 //! 外で行う（`read_node_bytes`参照）。
 //!
-//! プールサイズは当初`POOL_SIZE: usize = 8`という決め打ちの定数だったが、
-//! `ADR-0007-pcv-protocol-concurrency.md`の追記（並行数1/4/8/16/20の実測）で
-//! フロントの同時リクエスト数(4)が先に頭打ちになっていたと分かり、
-//! `default_pool_size()`（`std::thread::available_parallelism()`）から
-//! 動的に決める形に変えた。`open_copc`の`pool_size`引数で明示的に上書きも
-//! できる（計測ハーネス用）。
+//! The pool size was first a fixed constant `POOL_SIZE: usize = 8`. The addendum of
+//! `ADR-0007-pcv-protocol-concurrency.md` (measured at concurrency 1/4/8/16/20) showed that the frontend's
+//! number of concurrent requests (4) was the limit first, so it is now decided at run time by
+//! `default_pool_size()` (`std::thread::available_parallelism()`).
 //!
 //! 検討して採らなかった案は`CopcPool`のドキュメントコメントに書いた。
 //!
@@ -444,32 +442,27 @@ pub struct OpenCopcResponse {
     pub generation: u64,
 }
 
-/// COPCファイルを開き、以後の `pcv://<key>` リクエストがこのファイルを参照するようにする。
-/// 点数・BBOX・hierarchy一覧（メタデータのみ）をフロントに返す。
+/// Opens a COPC file so that later `pcv://` requests can read from it.
+/// Returns the point count, bounding box and hierarchy list (metadata only) to the frontend.
 ///
-/// hierarchyはノードあたり数十バイトのメタデータなので`invoke`で送る
-/// （大きい点データそのものではない。ADR-0001の「invokeは制御メッセージ専用」に沿う）。
+/// The hierarchy is metadata of a few tens of bytes per node, so it is sent with `invoke` (not the large
+/// point data itself; this follows ADR-0001, "invoke is for control messages only").
 ///
-/// `pool_size`を省略（`null`）すると`default_pool_size()`（論理コア数）を使う。
-/// 通常のUIからは省略して呼ぶ。明示的に渡せるのは
-/// `src/state/useNodeConcurrencyBench.ts`が並行数ごとにプールサイズも振って
-/// 計測するため（`ADR-0007-pcv-protocol-concurrency.md`参照）。同じファイルを
-/// 開き直すとプールを作り直すだけで、ハンドラの他の状態には影響しない。
+/// The reader pool size is `default_pool_size()` (the number of logical cores; see
+/// `ADR-0007-pcv-protocol-concurrency.md`).
 ///
-/// `path`はファイルシステムパス、またはAndroidの`content://` URI（OSのファイル
-/// 選択ダイアログが返したものをそのまま渡す。`src/datasource/tauri.ts`の
-/// `pickLocalFile()`参照）。`app`はTauriが自動で注入する（フロントから渡す
-/// 引数ではない）。
+/// `path` is a file system path, or an Android `content://` URI (passed as the OS file picker returned it;
+/// see `pickLocalFile()` in `src/datasource/tauri.ts`). `app` is injected by Tauri (the frontend does not
+/// pass it).
 #[tauri::command]
 pub fn open_copc(
     app: AppHandle,
     path: String,
-    pool_size: Option<usize>,
     state: State<CopcState>,
 ) -> Result<OpenCopcResponse, String> {
-    let pool_size = pool_size.unwrap_or_else(default_pool_size);
-    // パスかURIかは`tauri_plugin_fs`の判別に任せる（本ファイル冒頭のコメント参照）。
-    // Windowsのドライブレター(`C:\...`)はscheme長1文字のためPath扱いになる。
+    let pool_size = default_pool_size();
+    // Leave "path or URI" to `tauri_plugin_fs` (see the comment at the top of this file).
+    // A Windows drive letter (`C:\...`) is a one-character scheme, so it is treated as a Path.
     let pool =
         match FilePath::from_str(&path).unwrap_or_else(|e: std::convert::Infallible| match e {}) {
             FilePath::Path(p) => CopcPool::open_path(&p, pool_size)?,
@@ -752,9 +745,7 @@ mod tests {
             .contains_key(&response.generation));
     }
 
-    /// 受け入れ条件: パスから`CopcPool`が組めること。明示的なプールサイズが
-    /// そのまま反映されることも合わせて確認する（`useNodeConcurrencyBench`が
-    /// 依存している挙動）。
+    /// Acceptance: a `CopcPool` can be built from a path, and the given pool size is used as is.
     #[test]
     fn copc_pool_open_path_builds_pool_with_requested_size() {
         let (_dir, path) = synthetic_copc_file();

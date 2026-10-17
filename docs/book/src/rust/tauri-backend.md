@@ -98,10 +98,8 @@ Android の一時ディレクトリの扱いは少し込み入っています。
 - `setup_android_temp_dir()` — Android でのみ、起動直後にキャッシュディレクトリへ
   `TMPDIR` を向け直します
 
-`pcv://` の URL（1セグメント）を、M0 のベンチ用ダミーデータ（`/<size>`）か
-M1 のノードデータ（`/<generation>/<level>-<x>-<y>-<z>`）かで振り分ける処理もここにあります。
-`#[tauri::command]` でフロントから呼べる関数（`report_diagnostic`・`bench_invoke`・
-`default_bench_data_path`）は、どれも計測・診断用の小さな制御メッセージです。
+`pcv://` の URL（1セグメント）をノードデータの要求（`/<generation>/<level>-<x>-<y>-<z>`）として解析する処理もここにあります。
+`#[tauri::command]` でフロントから呼べる関数のうち、このファイルにあるのは `report_diagnostic`（フロントの診断メッセージを標準出力に出す）だけです。
 
 ## まず読むファイル
 

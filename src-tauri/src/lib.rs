@@ -107,102 +107,55 @@ fn setup_android_temp_dir(app: &tauri::App) {
 #[cfg(not(target_os = "android"))]
 fn setup_android_temp_dir(_app: &tauri::App) {}
 
-/// フロントの診断メッセージ（WebGPU プローブ結果、IPCベンチ結果など）を標準出力に出す。
-/// ADR-0001 の規約通り、これは制御メッセージであり、大きいデータはここを通さない。
+/// Prints a diagnostic message from the frontend (stats summaries, errors) to stdout.
+/// As ADR-0001 says, this is a control message; large data never goes through here.
 #[tauri::command]
 fn report_diagnostic(message: String) {
     println!("[frontend] {message}");
 }
 
-/// M0-3: `invoke` 経由でのスループット比較用。指定バイト数のダミーデータを返す。
-/// serde によって JSON の数値配列にシリアライズされるため、サイズが大きいと
-/// カスタムプロトコル（`pcv://`）に比べて著しく遅くなることを確認するためのコマンド。
-#[tauri::command]
-fn bench_invoke(size: usize) -> Vec<u8> {
-    vec![0u8; size]
-}
-
-/// M2: `pcv://` 並行リクエストの計測ハーネス（`useNodeConcurrencyBench`）用。
-/// `TaskSheets/TEST-DATA.md` のテストデータはリポジトリにコミットしないため
-/// （`.gitignore`済み、CIには無い）、`data/<filename>` を実行時に探して絶対パスを返す。
-/// 見つからなければ `None`（呼び出し側はベンチをスキップする）。
-///
-/// `env!("CARGO_MANIFEST_DIR")` はこのクレート（`src-tauri`）のディレクトリに
-/// 展開されるコンパイル時定数なので、`npm run tauri dev` を実行するカレント
-/// ディレクトリが何であっても同じ場所（リポジトリ直下の `data/`）を指す。
-#[tauri::command]
-fn default_bench_data_path(filename: String) -> Option<String> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("data")
-        .join(&filename);
-    if path.is_file() {
-        path.to_str().map(str::to_string)
-    } else {
-        None
-    }
-}
-
-/// `parse_pcv_path` が返す、パス解析の結果。
+/// A node data request parsed by `parse_pcv_path`: `/<generation>/<level>-<x>-<y>-<z>`.
 #[derive(Debug, PartialEq, Eq)]
-enum PcvRequest {
-    /// M0のベンチ用ダミーデータ要求: `/<size>`。
-    Bench { size: usize },
-    /// M1のノードデータ要求: `/<generation>/<level>-<x>-<y>-<z>`。
-    Node {
-        generation: u64,
-        key: pcv_core::NodeKey,
-    },
+struct PcvNodeRequest {
+    generation: u64,
+    key: pcv_core::NodeKey,
 }
 
-/// `pcv://<path>` を見て、M0のベンチ用ダミーデータ（`/<size>`）か
-/// M1のノードデータ（`/<generation>/<level>-<x>-<y>-<z>`）かを振り分ける。
+/// Parses the path of a `pcv://` node data request: `/<generation>/<level>-<x>-<y>-<z>`.
 ///
-/// # 緊急修正（v0.1.3ノード読み出し全滅）: パーセントデコードが必須
+/// # Hotfix (v0.1.3, every node read failed): percent-decoding is required
 ///
-/// フロントは `convertFileSrc` でURLを組み立てる。この関数（`@tauri-apps/api`が
-/// 読み込むJSから使われる、`tauri`クレートが注入する
-/// `window.__TAURI_INTERNALS__.convertFileSrc`。実体は`tauri`クレート
-/// `scripts/core.js`の`encodeURIComponent(filePath)`）は**渡した文字列全体を
-/// 1回の`encodeURIComponent`でエンコードしてから1セグメントとしてURLに埋め込む**。
-/// このため、ここで組み立てる文字列に含めた区切り文字（`/`や、v0.1.3までの`:`）も
-/// 丸ごとパーセントエンコードされて届く（`/`→`%2F`、`:`→`%3A`）。
+/// The frontend builds the URL with `convertFileSrc`. That function (the
+/// `window.__TAURI_INTERNALS__.convertFileSrc` injected by the `tauri` crate; its body is
+/// `encodeURIComponent(filePath)` in the crate's `scripts/core.js`) **encodes the whole string once with
+/// `encodeURIComponent` and embeds it in the URL as a single segment**. So the separators we put in the
+/// string (`/`, and `:` up to v0.1.3) arrive percent-encoded too (`/` -> `%2F`, `:` -> `%3A`).
 ///
-/// v0.1.3では区切りに`:`を使っていたが、**このデコードを一度も行っていなかった**
-/// ため、実際に届く`generation_str`は常に`"0%3A1-1-1-1"`のような文字列全体になり、
-/// `split_once(':')`が常に失敗して全てのノード要求が「unknown pcv:// path」で
-/// 失敗していた（Rust側のテストは`read_node_bytes`を`parse_pcv_path`を経由せず
-/// 直接呼んでいたため、この壊れ方を一度も検出できなかった。
-/// `TaskSheets/M1-point-rendering.md`参照）。
+/// v0.1.3 used `:` as the separator but **never decoded**, so `generation_str` was always the whole string
+/// such as `"0%3A1-1-1-1"`, `split_once(':')` always failed, and every node request failed with
+/// "unknown pcv:// path". (The Rust tests called `read_node_bytes` directly without going through
+/// `parse_pcv_path`, so they never caught it. See `TaskSheets/M1-point-rendering.md`.)
 ///
-/// 今回の修正: ①区切りを`:`から`/`に変更（`%2F`になってもデコードすれば`/`に戻る。
-/// 可読性のため、かつ後述のベンチ用`/<size>`と見た目で区別しやすいようにした。
-/// 動作上の正しさ自体は②のデコードが担っている）、②**解析の前に必ず一度
-/// パーセントデコードする**（`percent_encoding::percent_decode_str`。この
-/// クレートは`tauri`が内部で使う`url`クレート経由で既にビルドグラフに含まれて
-/// いるため、新しいクレートをビルドに追加するわけではない。`Cargo.toml`参照）。
+/// The fix: (1) the separator changed from `:` to `/` for readability (`%2F` decodes back to `/`;
+/// correctness itself comes from (2)), and (2) **always percent-decode once before parsing**
+/// (`percent_encoding::percent_decode_str`; the crate is already in the build graph through the `url`
+/// crate that `tauri` uses, so no new crate is added. See `Cargo.toml`).
 ///
-/// 旧形式（`:`区切り、`%3A`）は受け付けない: v0.1.3は上記の通りノード読み出しが
-/// 100%失敗しており、この形式で動いていたクライアントは存在しない
-/// （デスクトップ・Androidともにフロントとバックエンドは同じビルドで配布される
-/// ため、新旧混在も起きない）。互換コードを足す理由がないため追加しなかった。
-fn parse_pcv_path(path: &str) -> Result<PcvRequest, String> {
+/// The old form (`:` separator, `%3A`) is not accepted: as above, v0.1.3 failed 100% of node reads, so no
+/// client ever worked with it (desktop and Android ship the frontend and backend in the same build, so old
+/// and new never mix). There was no reason to add compatibility code.
+fn parse_pcv_path(path: &str) -> Result<PcvNodeRequest, String> {
     let segment = path.strip_prefix('/').unwrap_or(path);
     let decoded = percent_encoding::percent_decode_str(segment).decode_utf8_lossy();
 
-    if let Ok(size) = decoded.parse::<usize>() {
-        return Ok(PcvRequest::Bench { size });
-    }
-
-    // ノードデータ要求の形式: "<generation>/<level>-<x>-<y>-<z>"。`generation`は
-    // `open_copc`がフロントに返した値（`src/datasource/tauri.ts`の
-    // `TauriSource.currentGeneration`）をそのまま送り返したもの。ファイルを
-    // 切り替えた後に届いた古い世代のリクエストを`copc_state::read_node_bytes`が
-    // 見分けられるようにするため（`src-tauri/src/copc_state.rs`の`OpenedFile`の
-    // ドキュメントコメント、`TaskSheets/M4-import-and-conversion.md`参照）。
+    // Form: "<generation>/<level>-<x>-<y>-<z>". `generation` is the value `open_copc` returned to the
+    // frontend (`TauriSource.currentGeneration` in `src/datasource/tauri.ts`), sent back as is, so that
+    // `copc_state::read_node_bytes` can tell a request of an old generation that arrives after switching
+    // files (see the doc comment of `OpenedFile` in `src-tauri/src/copc_state.rs` and
+    // `TaskSheets/M4-import-and-conversion.md`).
     let Some((generation_str, key_str)) = decoded.split_once('/') else {
         return Err(format!(
-            "unknown pcv:// path (expected /<size> or /<generation>/<level>-<x>-<y>-<z>): {decoded}"
+            "unknown pcv:// path (expected /<generation>/<level>-<x>-<y>-<z>): {decoded}"
         ));
     };
     let generation = generation_str
@@ -211,66 +164,53 @@ fn parse_pcv_path(path: &str) -> Result<PcvRequest, String> {
     let key = key_str
         .parse::<pcv_core::NodeKey>()
         .map_err(|_| format!("unknown pcv:// node key: {key_str}"))?;
-    Ok(PcvRequest::Node { generation, key })
+    Ok(PcvNodeRequest { generation, key })
 }
 
-/// M2: 非同期版（`register_asynchronous_uri_scheme_protocol`）を使う。ノード読み出し
-/// （ディスクI/O + LAZ伸長）は`tauri::async_runtime::spawn_blocking`でブロッキング用
-/// スレッドプールに逃がし、Rustのメインスレッドを塞がない。これにより並行リクエストが
-/// 直列化しなくなる（`CopcState`側のロック粒度と`CopcFile`の`&mut self`制約への対処は
-/// `copc_state.rs`冒頭のコメントと`CopcPool`を参照。計測結果は
-/// `TaskSheets/ADR-0007-pcv-protocol-concurrency.md`）。
+/// M2: uses the asynchronous version (`register_asynchronous_uri_scheme_protocol`). Reading a node (disk
+/// I/O + LAZ decompression) is moved to the blocking thread pool with `tauri::async_runtime::spawn_blocking`
+/// so it does not block Rust's main thread. This keeps concurrent requests from being serialized (for the
+/// lock granularity of `CopcState` and the `&mut self` constraint of `CopcFile`, see the comment at the top
+/// of `copc_state.rs` and `CopcPool`; measurements are in `TaskSheets/ADR-0007-pcv-protocol-concurrency.md`).
 ///
-/// ベンチ用ダミーデータ（`/<size>`）は`vec![0u8; size]`を確保するだけでCPUを
-/// 使わないため、スレッドを分けずその場で応答する。
-///
-/// パス自体の解析（パーセントデコード含む）は`parse_pcv_path`に分離してある。
-/// `Request`/`UriSchemeResponder`を作らずに文字列だけでテストできるようにするため
-/// （下記`tests`モジュール参照）。
+/// Parsing the path (including percent-decoding) is split out into `parse_pcv_path` so it can be tested
+/// with plain strings, without building a `Request` / `UriSchemeResponder` (see the `tests` module below).
 fn handle_pcv_protocol(
     ctx: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
     responder: tauri::UriSchemeResponder,
 ) {
-    let (generation, key) = match parse_pcv_path(request.uri().path()) {
-        Ok(PcvRequest::Bench { size }) => {
-            responder.respond(octet_stream_response(vec![0u8; size]));
-            return;
-        }
-        Ok(PcvRequest::Node { generation, key }) => (generation, key),
+    let PcvNodeRequest { generation, key } = match parse_pcv_path(request.uri().path()) {
+        Ok(request) => request,
         Err(message) => {
             responder.respond(bad_request_response(&message));
             return;
         }
     };
 
-    // `ctx`はこのハンドラ呼び出しの間しか生きないので、spawn_blockingへ渡すために
-    // `AppHandle`を複製する（`AppHandle`は内部でArcを持つ薄いハンドルで、複製は安い）。
+    // `ctx` lives only during this handler call, so clone the `AppHandle` to pass it to spawn_blocking
+    // (`AppHandle` is a thin handle holding an Arc; cloning is cheap).
     let app_handle = ctx.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<CopcState>();
         let response = match copc_state::read_node_bytes(&state, generation, key) {
             Ok(bytes) => octet_stream_response(bytes),
-            // 通常のエラー（ファイル未オープン、キー不正など）。クライアント
-            // （フロント）の呼び方が悪いケースなので400。
+            // An ordinary error (file not open, bad key, ...). The client (frontend) called it wrongly, so 400.
             Err(copc_state::ReadNodeError::Normal(message)) => {
                 log::warn!("[pcv] failed to serve node {key}: {message}");
                 bad_request_response(&message)
             }
-            // M3: read_node内でpanicが起き、copc_state::read_node_bytesの
-            // catch_unwindで捕まえたもの。サーバ側（Rust側）の予期しない異常
-            // なので500。フロントはこれをerror dialog (src/ui/dialogs/ErrorDialog.tsx,
-            // source="node-read")に表示する（TaskSheets/ADR-0013-crash-visibility.md参照）。
+            // M3: a panic inside read_node, caught by catch_unwind in copc_state::read_node_bytes. An
+            // unexpected failure on the server (Rust) side, so 500. The frontend shows it in the error dialog
+            // (src/ui/dialogs/ErrorDialog.tsx, source="node-read"; see TaskSheets/ADR-0013-crash-visibility.md).
             Err(copc_state::ReadNodeError::Panicked(message)) => {
                 log::error!("[pcv] node {key} read panicked: {message}");
                 internal_server_error_response(&message)
             }
-            // ファイル切り替え時の不具合の修正: リクエストが指定した世代が、
-            // 現在開いているファイルの世代と一致しない。クライアントの呼び方の
-            // 誤りでも、サーバの異常でもない正常な競合状態なのでwarn/errorログは
-            // 出さず、専用のステータス(409)で返す。フロント（`StaleNodeRequestError`、
-            // `src/datasource/stale-node-error.ts`）はこれをエラーバナーに出さず
-            // 黙って捨てる。
+            // Fix for switching files: the generation in the request does not match the file open now.
+            // Neither a client mistake nor a server failure but a normal race, so no warn/error log; answer
+            // with a dedicated status (409). The frontend (`StaleNodeRequestError`,
+            // `src/datasource/stale-node-error.ts`) drops it silently instead of showing it in the banner.
             Err(copc_state::ReadNodeError::Stale) => {
                 log::debug!(
                     "[pcv] discarding stale request for node {key} (requested generation {generation})"
@@ -355,8 +295,6 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("pcv", handle_pcv_protocol)
         .invoke_handler(tauri::generate_handler![
             report_diagnostic,
-            bench_invoke,
-            default_bench_data_path,
             copc_state::open_copc,
             copc_state::close_copc,
             conversion::start_las_conversion,
@@ -376,16 +314,11 @@ mod tests {
     use pcv_core::NodeKey;
 
     #[test]
-    fn parses_bench_path() {
-        assert_eq!(parse_pcv_path("/123"), Ok(PcvRequest::Bench { size: 123 }));
-    }
-
-    #[test]
     fn parses_node_path_unencoded() {
         // 開発中にcurlやブラウザで直接叩く場合などに通る、デコード不要な形。
         assert_eq!(
             parse_pcv_path("/0/1-1-1-1"),
-            Ok(PcvRequest::Node {
+            Ok(PcvNodeRequest {
                 generation: 0,
                 key: NodeKey {
                     level: 1,
@@ -430,7 +363,7 @@ mod tests {
     fn parses_node_path_as_sent_by_convert_file_src_on_windows_and_android() {
         assert_eq!(
             parse_pcv_path("/0%2F1-1-1-1"),
-            Ok(PcvRequest::Node {
+            Ok(PcvNodeRequest {
                 generation: 0,
                 key: NodeKey {
                     level: 1,
@@ -452,7 +385,7 @@ mod tests {
         // ここでは世代番号が複数桁の場合の区切り位置だけを確認する。
         assert_eq!(
             parse_pcv_path("/42%2F3-0-0-0"),
-            Ok(PcvRequest::Node {
+            Ok(PcvNodeRequest {
                 generation: 42,
                 key: NodeKey {
                     level: 3,
@@ -494,11 +427,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_path_without_separator_that_is_not_a_bench_size() {
-        let err = parse_pcv_path("/not-a-number-or-node").unwrap_err();
-        assert!(
-            err.contains("unknown pcv:// path"),
-            "unexpected message: {err}"
-        );
+    fn rejects_path_without_separator() {
+        for path in ["/not-a-node", "/123"] {
+            let err = parse_pcv_path(path).unwrap_err();
+            assert!(
+                err.contains("unknown pcv:// path"),
+                "unexpected message for {path}: {err}"
+            );
+        }
     }
 }

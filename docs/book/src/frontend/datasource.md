@@ -7,8 +7,7 @@
 
 ```ts
 export interface DataSource {
-  fetchBench(sizeBytes: number): Promise<ArrayBuffer>;
-  open(path: string, readerPoolSize?: number): Promise<OpenedCloud>;
+  open(path: string): Promise<OpenedCloud>;
   readNode(cloudId: number, key: string): Promise<ArrayBuffer>;
   close(cloudId: number): Promise<void>;
 }

@@ -74,18 +74,6 @@ export async function getAppVersion(): Promise<string> {
 }
 
 /**
- * M2: 並行リクエストの計測ハーネス（`useNodeConcurrencyBench`）が使う。
- * `TaskSheets/TEST-DATA.md` のテストデータは `.gitignore` されておりCIには無いため、
- * リポジトリの `data/<filename>` を実行時に探し、無ければ `null` を返す
- * （呼び出し側はその場合ベンチをスキップする）。パス解決はRust側で
- * `CARGO_MANIFEST_DIR` から行うため、`npm run tauri dev` のカレントディレクトリに
- * 依存しない（Rust側の実装は `src-tauri/src/lib.rs` の `default_bench_data_path`）。
- */
-export async function resolveBenchDataPath(filename: string): Promise<string | null> {
-  return await invoke<string | null>("default_bench_data_path", { filename });
-}
-
-/**
  * M3: OSのファイル選択ダイアログを出し、選ばれたファイルのパス（デスクトップ）
  * または`content://` URI（Android）を返す。キャンセルされたら`null`。
  *
@@ -278,28 +266,11 @@ export async function onConversionFailed(
 }
 
 /**
- * DataSource の Tauri 実装。`pcv://` カスタムプロトコルでノードデータを取得する
- * （ADR-0001）。M0時点ではベンチ用エンドポイントを叩くだけ。
+ * The Tauri implementation of DataSource. Node data is fetched over the `pcv://` custom protocol (ADR-0001).
  */
 export class TauriSource implements DataSource {
-  async fetchBench(sizeBytes: number): Promise<ArrayBuffer> {
-    // convertFileSrc がプラットフォームごとのURL形式（Windows/Androidは
-    // http://pcv.localhost/..., macOS/Linuxは pcv://localhost/...）を組み立てる。
-    // 引数全体が1セグメントとして encodeURIComponent されるため、"/" を含む
-    // パスにはせず、サイズの数値だけを渡す（Rust側 handle_pcv_protocol も参照）。
-    const url = convertFileSrc(`${sizeBytes}`, "pcv");
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`pcv://${sizeBytes} failed: ${res.status}`);
-    }
-    return await res.arrayBuffer();
-  }
-
-  async open(path: string, readerPoolSize?: number): Promise<OpenedCloud> {
-    const dto = await invoke<OpenCopcResponseDto>("open_copc", {
-      path,
-      poolSize: readerPoolSize ?? null,
-    });
+  async open(path: string): Promise<OpenedCloud> {
+    const dto = await invoke<OpenCopcResponseDto>("open_copc", { path });
     return {
       // Rust側の世代番号がそのままcloudId。readNode(pcv://のURL)とcloseに渡す。
       cloudId: dto.generation,
@@ -343,20 +314,6 @@ export class TauriSource implements DataSource {
     }
     return await res.arrayBuffer();
   }
-}
-
-/**
- * M0-3 比較用。`invoke` 経由で同じサイズのダミーデータを取得する。
- * ADR-0001 の「invoke は Windows で遅い」という前提を裏付けるための比較対象であり、
- * DataSource の実装ではない（採用しない経路のため、インターフェースに含めない）。
- *
- * 受け取ったバイト数だけを返す（Uint8Array 等への変換コストを計測に混ぜないため）。
- * 変換自体のオーバーヘッドを除いても、Rust 側の serde_json による配列シリアライズと
- * JS 側の JSON.parse だけで invoke のコストは説明できる。
- */
-export async function fetchBenchViaInvoke(sizeBytes: number): Promise<number> {
-  const bytes = await invoke<number[]>("bench_invoke", { size: sizeBytes });
-  return bytes.length;
 }
 
 // --- L2-C: point-cloud tools (extraction, merge) ---

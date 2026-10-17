@@ -58,22 +58,10 @@ export interface NodeReader {
 
 export interface DataSource {
   /**
-   * M0時点ではCOPCノードの取得は未実装。`pcv://bench/<size>` から指定バイト数の
-   * ダミーデータを取得するだけのベンチ用メソッド。
+   * Opens a COPC file and returns the info of the whole cloud and the list of octree nodes.
+   * Files already open stay open (several can be open at once). `close` closes one.
    */
-  fetchBench(sizeBytes: number): Promise<ArrayBuffer>;
-
-  /**
-   * COPCファイルを開き、点群全体の情報とoctreeのノード一覧を取得する。
-   * 既に開いている他のファイルは閉じない（複数同時に開ける）。閉じるのは`close`。
-   *
-   * `readerPoolSize`は省略可能。Tauri実装では省略時にRust側が
-   * `default_pool_size()`（利用可能な並列度）で決める。明示的に渡せるのは
-   * `src/state/useNodeConcurrencyBench.ts`が並行数ごとにプールサイズも
-   * 振って計測するため（`TaskSheets/ADR-0007-pcv-protocol-concurrency.md`）。
-   * 通常のビューアはこの引数を渡さない。
-   */
-  open(path: string, readerPoolSize?: number): Promise<OpenedCloud>;
+  open(path: string): Promise<OpenedCloud>;
 
   /**
    * 指定したノードキーの点データを取得する。返るバイト列はM1-2で決めた
