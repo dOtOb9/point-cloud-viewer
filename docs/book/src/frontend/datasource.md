@@ -46,7 +46,7 @@ renderer は `cloudId` を知りません。`useFileOpen.ts` の `addOpenedLayer
 型は [`tools.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/datasource/tools.ts) にあり、デスクトップ（`tauri.ts`）と Web（`web.ts`）で同じ形です。
 
 - `ExtractFilter` — `ScreenPolygonFilter`（画面上の多角形と `viewProj`。多角形の中に映り、カメラの手前にある点）または `OrientedBoxFilter`（断面の板）。座標はファイルの実座標（f64）。
-- `extractToCopc(path, filter, options)` — フィルターに合う点だけを新しい COPC にする。点が 0 なら `EMPTY_SELECTION_MESSAGE`（「選んだ範囲に点がありません」）で失敗。
+- `extractToCopc(path, filter, options)` — フィルターに合う点だけを新しい COPC にする。点が 0 なら「選んだ範囲に点がありません」で失敗（Rust 側のエラー文をそのまま画面に出す）。
   デスクトップは `tauri.ts` の関数（Tauri コマンド `extract_copc`）、Web は `WebSource.extractToCopc`（Worker + OPFS）。
 - `mergeCopcs(paths, options)` — 開いている複数の COPC を一つにする（デスクトップ `merge_copcs`、Web `WebSource.mergeCopcs`）。CRS が無いファイルは通し、理由を `warnings` で返す。CRS が違えば失敗。
 - `ToolResult` — `outputPath`（そのまま `DataSource.open()` に渡せる）・`pointCount`・`warnings`（エラーログへ）。`ToolOptions` — 進捗コールバックと一時フォルダ。
@@ -61,7 +61,7 @@ renderer は `cloudId` を知りません。`useFileOpen.ts` の `addOpenedLayer
 `"<cloudId>/<level>-<x>-<y>-<z>"`（`tauri-protocol.ts` の `buildNodeRequestPath`）を `convertFileSrc` に渡して作ります。
 このファイルはほかにも次を持ちます。**Tauri 系のパッケージを import するのはすべてここに閉じています。**
 
-- ファイル選択・ドロップ: UI や state が呼ぶ入口は `file-picker.ts` の `pickFilesToOpen`・`onFilesDroppedToOpen`（Web と Tauri を切り替える）。Tauri 側の実体は `pickLocalFiles`（複数選択）・`pickLocalFile`・`onFilesDropped`（OS のドロップ）・`pickTempDirectory`
+- ファイル選択・ドロップ: UI や state が呼ぶ入口は `file-picker.ts` の `pickFilesToOpen`・`onFilesDroppedToOpen`（Web と Tauri を切り替える）。Tauri 側の実体は `pickLocalFiles`（複数選択）・`onFilesDropped`（OS のドロップ）・`pickTempDirectory`
 - 変換: `startLasConversion`・`startMultiLasConversion`・`cancelLasConversion`、進捗・完了・失敗のイベント購読 `onConversionProgress`／`onConversionDone`／`onConversionFailed`
 - 点群ツール: `extractToCopc`・`mergeCopcs`（下の「点群ツールの API」）
 - バックエンドのコンソールへの報告 `reportToBackendConsole`、アプリバージョンの取得 `getAppVersion`、更新通知で使うリリースページを開く処理

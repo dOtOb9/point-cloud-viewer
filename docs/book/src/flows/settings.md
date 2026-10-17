@@ -35,7 +35,7 @@
 | 一時ファイル（デスクトップのみ） | `TempDirDialog` | `viewer.pickAndSetTempDir`／`clearTempDir`（`useTempDir.ts`。フォルダ選択は `pickTempDirectory`、`src/datasource/tauri.ts`） | `useFileOpen`／`usePointCloudTools` が Rust に `tempDir` として渡す | localStorage `pcv-conversion-temp-dir` |
 | 保存領域（Web のみ） | `StorageDialog` | `viewer.refreshOpfsStorageInfo`／`removeOpfsCachedConversion` など（`useOpfsStorage.ts`） | OPFS の変換キャッシュ・作業フォルダ | OPFS 自体 |
 
-点の形・大きさ・着色は設定画面ではなく**レイヤーごと**（[レイヤー操作](./layers.md)）。`setPointShape`（`useDisplaySettings`）は「これから足すレイヤーの初期値」にだけ効く。
+点の形・大きさ・着色は設定画面ではなく**レイヤーごと**（[レイヤー操作](./layers.md)）。全体の点の形を変える設定は無い（形を省いて足したレイヤーの初期値は、端末プロファイルの既定値）。
 
 ### 端末ごとの既定値
 

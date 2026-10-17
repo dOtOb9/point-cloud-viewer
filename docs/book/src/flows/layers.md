@@ -18,7 +18,6 @@ UI の入口は `src/ui/layers/` の三つ。いずれも最後は `viewer.xxx(.
 | 着色 | `LayerActions.tsx` の「着色」→ `src/ui/dialogs/ColorModeDialog.tsx` | `setLayerColorMode(id, mode)` |
 | 見た目 | `LayerActions.tsx` の「見た目」→ `src/ui/dialogs/AppearanceDialog.tsx` | `setLayerPointShape(id, shape)`・`setLayerPointSize(id, px)` |
 | 削除 | `LayerActions.tsx` の削除ボタン、Delete キー（`layer-delete-key.ts` の `shouldDeleteLayerOnKey`）、右クリックメニュー | `removeLayer(id)` |
-| 視点のリセット | **今は呼ぶ UI がない**（`viewer.resetView` は `CopcViewerState` にあるが、`src/ui` のどこからも呼ばれていない） | `resetView()` |
 
 ## 流れ
 
@@ -43,7 +42,7 @@ UI の入口は `src/ui/layers/` の三つ。いずれも最後は `viewer.xxx(.
    計測レイヤーは対象外。`renderer.setLayerColorMode(id, resolved)` を呼び、一覧も更新。
 2. `setLayerPointShape`／`setLayerPointSize` — `renderer.setLayerPointShape`／`setLayerPointSize`（大きさは `sanitizePointSize` で丸める）。一覧も更新。
 3. renderer 側は `Layer.colorMode`・`Layer.style` を書き換えるだけ。反映は**次のフレーム**（[毎フレームの描画](./render-frame.md) の 8. で着色の uniform、9. で `nodeStyleOf`）。
-   形・大きさ・着色はすべて**レイヤーごと**。`setPointShape`（設定画面の既定値）は、これから足すレイヤーの初期値にだけ効く。
+   形・大きさ・着色はすべて**レイヤーごと**。レイヤーを足すときに形を省くと、端末プロファイルの既定値（`renderer` の `pointShape`、コンストラクタで決まり、後から変えられない）が初期値になる。
 
 ### 移動（focusLayer）
 
@@ -51,7 +50,6 @@ UI の入口は `src/ui/layers/` の三つ。いずれも最後は `viewer.xxx(.
    `renderer.focusBox(layer.info.min, layer.info.max)`（点の外接箱へ）。点群レイヤーは `renderer.focusLayer(id, orientation?)`。
 2. `PointCloudRenderer.focusLayer` → `moveCameraToLayer(layer, false, orientation)` — `layerFocusBounds`（`src/renderer/layer-focus.ts`）で範囲を決め、
    `camera.setSceneScale`・`applyGridBounds`（グリッドもそのレイヤーに合わせる）・`camera.animateTo(focusGoalFor(...))`。向き（yaw／pitch）は今のまま。
-3. `resetView()` は選択中のレイヤーを基準に `renderer.resetView(layerId)`（向きも初期へ）。「見えている全レイヤーの合併」を基準にしないのは、離れた場所のファイルでは合併が巨大でどれも見えなくなるため。
 
 ### 削除（removeLayer と source.close）
 

@@ -23,7 +23,7 @@ renderer は**複数のレイヤー**を持ちます（`Map<string, Layer>`。�
 - **全レイヤーで共有するもの**: 点予算、ノードキャッシュ、ノードローダー。キャッシュ・ローダーのキーは `"<通し番号>:<ノードキー>"`（`layer-key.ts`）でレイヤーごとに分かれる。
 - 操作: `addLayer`・`removeLayer`・`setLayerVisible`・`setLayerColorMode`・`setLayerPointShape`・`setLayerPointSize`。非表示のレイヤーはノード選択・読み込み・描画の対象外。
 - **`focusLayer(layerId, orientation?)`**: そのレイヤーへカメラを移す（視点移動のアニメーション。向きは今のまま）。グリッドの高さ・大きさもそのレイヤーに合わせる。
-  `addLayer` も最初のレイヤーは即座に、二つ目以降は `focusLayer` と同じ動きで移る。`focusBox(min, max)` は計測レイヤー（renderer の外にある）用、`resetView(layerId?)` は向きも初期に戻す。
+  `addLayer` も最初のレイヤーは即座に、二つ目以降は `focusLayer` と同じ動きで移る。`focusBox(min, max)` は計測レイヤー（renderer の外にある）用。
   範囲の計算は `layer-focus.ts`（`layerFocusBounds`・`focusGoalFor`）。
 - デバイス消失から復帰すると、各レイヤーの着色 uniform バッファは古いデバイスのものなので `null` にして、次に使うとき作り直す。
 
