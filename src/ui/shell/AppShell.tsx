@@ -19,7 +19,6 @@ import { glassSurfaceClass } from "../common/glass";
 import { LayerPanel } from "../layers/LayerPanel";
 import { Toolbar } from "../toolbar/Toolbar";
 import { SettingsModal } from "../settings/SettingsModal";
-import { isOpenRunningOrDone, statusErrorMessage } from "../../state/viewer-status";
 import { StatusBar } from "../status/StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 import { UpdateNotice } from "../status/UpdateNotice";
@@ -62,7 +61,7 @@ export function AppShell() {
   // useEffectでsetStateする代わりに、前回の値をstateに持って描画中に比較する
   // (Reactが推奨する「propsの変化に応じてstateを調整する」書き方。lintの
   // react-hooks/set-state-in-effectも避けられる)。
-  const viewerError = statusErrorMessage(viewer.status);
+  const viewerError = viewer.status.kind === "error" ? viewer.status.message : null;
   const [prev, setPrev] = useState({ statusKind: viewer.status.kind, errorCount: viewer.gpuErrors.length, error: viewerError });
   if (prev.statusKind !== viewer.status.kind || prev.errorCount !== viewer.gpuErrors.length || prev.error !== viewerError) {
     setPrev({ statusKind: viewer.status.kind, errorCount: viewer.gpuErrors.length, error: viewerError });
@@ -86,7 +85,9 @@ export function AppShell() {
 
   // 変換ダイアログを出す条件: 変換中、または変換が終わって結果を出している間。
   // 失敗・キャンセル(status.kind が "error"/"idle")のときは出さない(エラーダイアログが出る)。
-  const conversionFinished = viewer.selectedLayer?.conversionBreakdownText != null && isOpenRunningOrDone(viewer.status);
+  // A failure or a cancel leaves the status "error" / "idle"; any other kind means the open is running or done.
+  const openRunningOrDone = viewer.status.kind !== "error" && viewer.status.kind !== "idle";
+  const conversionFinished = viewer.selectedLayer?.conversionBreakdownText != null && openRunningOrDone;
   const conversionDialogVisible = conversionDialogOpen && (viewer.status.kind === "converting" || conversionFinished);
 
   const closeErrorDialog = () => {

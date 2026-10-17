@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isFileOpenBusy, isOpenRunningOrDone, openButtonLabel, statusErrorMessage, type ViewerStatus } from "./viewer-status";
+import { isFileOpenBusy, openButtonLabel, type ViewerStatus } from "./viewer-status";
 
 // One row per kind. A new kind must be added here too (the helpers would not compile without it).
 const ALL: ViewerStatus[] = [
@@ -30,30 +30,6 @@ describe("openButtonLabel", () => {
       ["converting", "変換中…"],
       ["ready", "開く"],
       ["error", "開く"],
-    ]);
-  });
-});
-
-describe("statusErrorMessage", () => {
-  it("returns the message only for the error kind", () => {
-    expect(ALL.map((s) => [s.kind, statusErrorMessage(s)])).toEqual([
-      ["idle", null],
-      ["opening", null],
-      ["converting", null],
-      ["ready", null],
-      ["error", "boom"],
-    ]);
-  });
-});
-
-describe("isOpenRunningOrDone", () => {
-  it("is false for idle (nothing or cancelled) and error", () => {
-    expect(ALL.map((s) => [s.kind, isOpenRunningOrDone(s)])).toEqual([
-      ["idle", false],
-      ["opening", true],
-      ["converting", true],
-      ["ready", true],
-      ["error", false],
     ]);
   });
 });

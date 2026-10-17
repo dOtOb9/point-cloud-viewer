@@ -1,6 +1,6 @@
 // The status of "open / convert a file", as one discriminated union (R5).
-// Pure: no React, no renderer. The state hooks write it with `setStatus`, the UI reads it through the
-// helpers below.
+// Pure: no React, no renderer. The state hooks write it with `setStatus`; the UI reads `status.kind` and uses the
+// two helpers below, which are used in more than one place.
 //
 // Why a plain string-literal `kind` tag, not a TypeScript `enum` or an `as const` object of kinds:
 // the tag is the same idea as a Rust `enum` with data or a Haskell ADT. `kind: "error"` is the only variant
@@ -42,35 +42,5 @@ export function openButtonLabel(status: ViewerStatus): string {
     case "ready":
     case "error":
       return "開く";
-  }
-}
-
-/** The error text to show in the panel and the error dialog, or null when the status is not an error. */
-export function statusErrorMessage(status: ViewerStatus): string | null {
-  switch (status.kind) {
-    case "error":
-      return status.message;
-    case "idle":
-    case "opening":
-    case "converting":
-    case "ready":
-      return null;
-  }
-}
-
-/**
- * True when the last open is running or finished well; false when nothing was opened yet, or it failed or
- * was cancelled (a failure and a cancel both leave "error" / "idle"). The conversion dialog shows the
- * result of a finished conversion only while this is true.
- */
-export function isOpenRunningOrDone(status: ViewerStatus): boolean {
-  switch (status.kind) {
-    case "opening":
-    case "converting":
-    case "ready":
-      return true;
-    case "idle":
-    case "error":
-      return false;
   }
 }

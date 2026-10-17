@@ -3,7 +3,6 @@ import { MEASURE_KIND_NAME, measurementLabelLines } from "../../state/measure";
 import { coordinateUnitLabel, formatCoordinate, lengthUnitsFor } from "../../state/units";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { formatCrsLong } from "../common/crs-format";
-import { statusErrorMessage } from "../../state/viewer-status";
 import { ConversionBreakdownPanel } from "./ConversionBreakdownPanel";
 
 // 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
@@ -22,7 +21,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
   // L1-D: 選択中のレイヤーの情報を出す。変換の内訳・ダウンロードは、それを作ったレイヤーを
   // 選んでいるときだけ出る（変換直後はそのレイヤーが選択になる）。
   const layer = viewer.selectedLayer;
-  const errorMessage = statusErrorMessage(viewer.status);
+  const errorMessage = viewer.status.kind === "error" ? viewer.status.message : null;
   const cloudInfo = layer?.info ?? null;
   // L2-D: the bounding box is shown in the chosen display unit (converted from the file unit).
   const [displayUnit] = useDisplayUnit();
