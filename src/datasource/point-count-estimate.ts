@@ -20,9 +20,8 @@
 // ここで行う判定は、LAS/LAZ・PCD・PLYいずれも**ヘッダー(ファイル先頭の
 // 小さい範囲)だけ**を読んで完結する(メインスレッドから`File.slice`+
 // `arrayBuffer()`/`text()`で読める。`FileReaderSync`のようなWorker専用APIは
-// 不要)。E57はXML+バイナリ構造で、スキャンごとの点数の合計をヘッダーだけから
-// 軽量に求める実装をこのセッションでは用意していない(Web版のE57変換自体を
-// 見送っているため。`TaskSheets/M4-import-and-conversion.md`参照)。
+// 不要)。E57はファイル先頭の48バイトとファイル末尾のXML(スキャンごとの
+// `recordCount`)だけを読む(R7。下の`estimatePointCountForE57File`参照)。
 
 /** LASヘッダーのバイト配置(ASPRS LAS仕様書)。`copc-header.ts`と同じ
  *  出典だが、見る場所が違う(あちらはVLR、こちらは点数)ので独立に持つ。 */

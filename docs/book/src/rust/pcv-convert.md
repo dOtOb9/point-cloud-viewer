@@ -141,9 +141,10 @@ M4-4 の最初の設計は「いったんプレーンな LAS に書き出す」�
 各ファイル冒頭のコメントと
 [ADR-0008 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#追記2026-09-25-e57--ply--pcd--lasの実装m4-4) にあります。
 
-Web 版で取り込めるのは PCD だけで、`crates/pcv-wasm/src/pcd_import.rs` に PCD の読み込みを**意図的に複製**しています
+Web 版も PCD・PLY・E57 を取り込めます。`crates/pcv-wasm/src/` の `pcd_import.rs`・`ply_import.rs`・`e57_import.rs` に、
+それぞれの読み込みを**意図的に複製**しています
 （`pcv-wasm` が別ワークスペースで、`pcv-convert` に依存すると `rayon` が wasm32 のビルドに混入するため）。
-E57/PLY が Web で取り込めるかは確認していません。
+片方を直したらもう片方も直します。
 
 ## まず読むファイル
 

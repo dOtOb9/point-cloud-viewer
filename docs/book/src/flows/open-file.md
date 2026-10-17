@@ -3,7 +3,7 @@
 ## 何をするか
 
 利用者が選んだ（またはドロップした）ファイルを、レイヤーとして画面に出します。
-COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/PCD は先に COPC へ**変換**してから同じ道に乗せます。
+COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/E57/PLY/PCD は先に COPC へ**変換**してから同じ道に乗せます。
 開いたものは**いつも新しいレイヤーとして足します**（既存のレイヤーは置き換えない）。
 
 ## 入口
@@ -11,12 +11,12 @@ COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/PCD は先に COPC �
 | きっかけ | 最初に呼ばれるもの |
 |---|---|
 | 「開く」（全プラットフォーム共通） | `src/ui/toolbar/buttons/OpenFileButton.tsx` の `ToolbarButton`（`data-testid="open-button"`）を押す → `pickFilesToOpen()`（`src/datasource/file-picker.ts`）→ `viewer.openFiles(picked)`。キャンセルは `null` で、何もしない |
-| ↳ Web での選択 | `pickFilesToOpen` が、DOM に付けない `<input type="file" multiple>` を作って `click()` する（`accept` は `source-format.ts` の `openableFormatsOn("web")` から作る）。`click()` は押した瞬間に同期で呼ぶ（`await` の後だとブラウザに止められる）。結果は `File[]` |
-| ↳ デスクトップ・Android での選択 | `pickFilesToOpen` が `pickLocalFiles()`（`src/datasource/tauri.ts`）を呼ぶ。ダイアログの絞り込みは `openableFormatsOn("desktop")` から作る。結果はパス `string[]` |
+| ↳ Web での選択 | `pickFilesToOpen` が、DOM に付けない `<input type="file" multiple>` を作って `click()` する（`accept` は `source-format.ts` の `OPENABLE_EXTENSIONS` から作る）。`click()` は押した瞬間に同期で呼ぶ（`await` の後だとブラウザに止められる）。結果は `File[]` |
+| ↳ デスクトップ・Android での選択 | `pickFilesToOpen` が `pickLocalFiles()`（`src/datasource/tauri.ts`）を呼ぶ。ダイアログの絞り込みも `OPENABLE_EXTENSIONS` から作る。結果はパス `string[]` |
 | ドラッグ&ドロップ | `src/state/useFileDrop.ts` の `useFileDrop` → `onFilesDroppedToOpen()`（`file-picker.ts`。Web は DOM の `drop`、デスクトップは `onFilesDropped`）→ `openFiles` |
 
-開ける形式の一覧は `src/datasource/source-format.ts` の `OPENABLE_FORMATS` の1か所です。Web にはまだ PLY / E57 の変換が無いので、
-一時的に `NOT_YET_CONVERTIBLE_ON_WEB` で外しています（Web とデスクトップを揃えたら、このリストと使う側を消す）。
+開ける形式の一覧は `src/datasource/source-format.ts` の `OPENABLE_EXTENSIONS`（`las` `laz` `e57` `ply` `pcd`）の1か所です。
+Web もデスクトップも同じ形式を開けます。
 
 どれも `src/state/useFileOpen.ts` の `openFiles` に着く。
 
@@ -28,8 +28,8 @@ COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/PCD は先に COPC �
    - **Web で `File` が来たとき**: `src/datasource/copc-header.ts` の `isCopcFile(file)` でヘッダーを見て COPC か判定する（拡張子では判定しない）。
      COPC なら `WebSource.registerFile(file)`（`src/datasource/web.ts`）で `"file:<連番>"` のキーにする。
      COPC でなければ `detectSourceFormatByName`（`src/datasource/source-format.ts`）で形式を決め、
-     PLY/E57 は「Web 版ではまだ変換できない」と表示して終わり。LAS/LAZ は `WebSource.startConversion`、
-     PCD は `WebSource.startPcdConversion`。結果が `"converting"` なら `status = "converting"` にして**ここで return**（続きは 4.）。
+     PCD・PLY・E57 は `WebSource.startPointFileConversion(file, format, ...)`（1本の経路。形式は Worker が Rust のクラスを選ぶのに使う）、
+     それ以外（LAS/LAZ）は `WebSource.startConversion`。結果が `"converting"` なら `status = "converting"` にして**ここで return**（続きは 4.）。
      `"cached"` なら変換済みの出力をそのまま開く。容量不足（`"insufficientSpaceWeb"`）はエラーログへ。
    - **デスクトップ・Android のとき**: `startLasConversion(path, tempDir)`（`src/datasource/tauri.ts`）を**必ず先に**呼ぶ。
      COPC なら Rust がヘッダーだけ読んで `alreadyCopc` を返す。生の LAS/LAZ/PCD は `cached`（変換済み）／`insufficientSpace`／

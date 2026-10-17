@@ -92,6 +92,18 @@ impl WasmCopcFile {
 [`src/pcd_import.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/pcd_import.rs) の `WasmPcdConverter` は、PCD を直接 spill に流す変換です。LAZ のような分担展開は無く、逐次の `feed` のみです。
 PCD の読み込みは `crates/pcv-convert/src/import/pcd.rs` を**意図的に複製**しています(`pcv-wasm` は別ワークスペースで、`pcv-convert` に依存すると `rayon` が wasm32 のビルドに混入するため)。
 
+### `WasmPointFileConverter`: PLY・E57 の取り込み(R7)
+
+[`src/point_file_import.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/point_file_import.rs) の `WasmPointFileConverter` は、
+PLY と E57 を直接 spill に流す変換です。`new(format, ...)` / `totalPoints` / `feed` / `finish` の形は `WasmPcdConverter` と同じで、
+「次の点を1つ返す」読み元だけが形式ごとに違います(`ply_import.rs` の `PlyStream`、`e57_import.rs` の `E57Stream`)。
+どちらも `crates/pcv-convert/src/import/` からの**意図的な複製**です(理由は PCD と同じ)。
+
+E57 の `e57` クレートは、点を返すイテレータが `E57Reader` を借用します。`feed` の呼び出しをまたいでイテレータを持つには
+自己参照になるため、`E57Stream` は reader を `Box::into_raw` で生ポインタにし、`Drop` で「イテレータ、reader」の順に解放します
+(`unsafe` は `open_scan` と `Drop` の2か所だけ)。イテレータを毎回作り直して読み済みの点を飛ばす案は、先頭から再展開するため点数の2乗に
+なるので採りませんでした。1回の呼び出しで全部変換する案は、Worker がキャンセルのメッセージを受け取れないので採りませんでした。
+
 ## `opfs.rs`: OPFS 上の一時ファイル
 
 [`opfs.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/opfs.rs) が `copc_writer::ScratchFs` の OPFS 実装（`OpfsScratchFs`）です。

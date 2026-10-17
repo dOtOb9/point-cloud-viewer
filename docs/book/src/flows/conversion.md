@@ -21,7 +21,7 @@
 | デスクトップの複数ファイル(LAS/LAZ を1つにまとめる) | 同 `start_multi_las_conversion` |
 | Web の LAS/LAZ | `src/datasource/web.ts` の `WebSource.startConversion` → `src/datasource/copc.worker.ts` の `handleConvertStart` |
 | Web の複数ファイル | `WebSource.startMultiConversion` → `copc.worker.ts` の `handleConvertMultiStart` |
-| Web の PCD | `WebSource.startPcdConversion` → `copc.worker.ts` の `handlePcdConvertStart` |
+| Web の PCD・PLY・E57 | `WebSource.startPointFileConversion` → `copc.worker.ts` の `handlePointFileConvertStart` |
 
 画面側の呼び出し元は `src/state/useFileOpen.ts` です(`startLasConversion`・`startMultiLasConversion`・`source.startConversion` などを呼ぶ)。
 進捗・完了・失敗の受け取りは `src/state/useConversionSession.ts` です。
@@ -100,7 +100,7 @@ Web は1本の Worker(`copc.worker.ts`)の中で動き、OPFS に一時ファイ
 5. `converter.finish()`(`WasmConverter::finish`) — `copc_writer::write_copc_from_spill_with_fs_and_timings` を `OpfsScratchFs`(`crates/pcv-wasm/src/opfs.rs`)で呼ぶ。以降は 3-B と同じ(1スレッド)。**この間はキャンセルできない。**
 6. `opfs.writeCacheMeta` の後 `convert-done` を返す。成功・失敗・キャンセルのどれでも `finally` で一時ファイルを消す(失敗時は出力も消す)。
 7. 複数ファイルは `runMultiConversion`: 先に `inspectLasHeaderSummary` で全ファイルのヘッダーを見て、レイアウトの食い違いと(CRS を持つファイル同士の)CRS の食い違いを止める。1本の `WasmConverter` に `setDeclaredTotals` で合計点数を渡し、`openNextFile` で読み元だけを切り替える。
-8. PCD は `runPcdConversion` → `WasmPcdConverter`(`crates/pcv-wasm/src/pcd_import.rs`)。並列展開は無い(逐次の `feed` のみ)。
+8. PCD・PLY・E57 は `runPointFileConversion`(形式で Rust のクラスを選ぶ)。PCD は `WasmPcdConverter`(`crates/pcv-wasm/src/pcd_import.rs`)、PLY・E57 は `WasmPointFileConverter`(`point_file_import.rs`。読み元は `ply_import.rs` と `e57_import.rs`)。どれも並列展開は無く、逐次の `feed` のみ。空き容量の見積もりは各ファイルの点数(PCD の `POINTS`、PLY の `element vertex`、E57 は XML の `recordCount` の合計)から求める。
 
 #### vendor/laz のパッチ(Web の分担展開に必須)
 
