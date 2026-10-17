@@ -62,6 +62,18 @@ export function useFileOpen({
   const { deviceProfileDefaults } = display;
 
   /**
+   * An open failed: show the text in the panel (status) and also keep it in the error log, so the text is
+   * still in the banner / history after the panel text goes away (the panel is cleared when a later tool succeeds).
+   */
+  const failOpen = useCallback(
+    (message: string) => {
+      reportError(message, "conversion");
+      setStatus({ kind: "error", message });
+    },
+    [reportError, setStatus],
+  );
+
+  /**
    * Open `path` with the DataSource and add it to the renderer and the list as a new layer (the new layer
    * becomes the selection). Shared by `openFile` and by the tool results (L2-F). Returns the layer id.
    * `isConversionContinuation`: attach the pending conversion result (name, breakdown, download) to this layer.
@@ -156,11 +168,9 @@ export function useFileOpen({
                 path = outcome.outputPath;
                 break;
               case "opfsUnavailable":
-                setStatus({
-                  kind: "error",
-                  message:
-                    "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
-                });
+                failOpen(
+                  "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
+                );
                 return;
               case "insufficientSpace":
                 // `ConversionOutcome` is shared with the desktop build, but WebSource always returns
@@ -235,7 +245,7 @@ export function useFileOpen({
         console.log(summary);
         await reportToBackendConsole(summary);
       } catch (e) {
-        setStatus({ kind: "error", message: String(e) });
+        failOpen(String(e));
       }
     },
     [
@@ -245,6 +255,7 @@ export function useFileOpen({
       clearConversionProgress,
       rememberConvertingSource,
       reportError,
+      failOpen,
       tempDir,
       addOpenedLayer,
       deviceProfileDefaults.isMobile,
@@ -281,11 +292,7 @@ export function useFileOpen({
       // (naming the files).
       const nonLasNames = names.filter((n) => detectSourceFormatByName(n) !== "lasLaz");
       if (nonLasNames.length > 0) {
-        setStatus({
-          kind: "error",
-          message:
-            `複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`,
-        });
+        failOpen(`複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`);
         return;
       }
 
@@ -312,11 +319,9 @@ export function useFileOpen({
             setStatus({ kind: "converting" });
             return;
           case "opfsUnavailable":
-            setStatus({
-              kind: "error",
-              message:
-                "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。",
-            });
+            failOpen(
+              "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。",
+            );
             return;
           case "insufficientSpace":
             reportError(describeInsufficientSpaceDesktop(outcome.requiredBytes, outcome.availableBytes), "conversion");
@@ -342,7 +347,7 @@ export function useFileOpen({
             return;
         }
       } catch (e) {
-        setStatus({ kind: "error", message: String(e) });
+        failOpen(String(e));
       }
     },
     [
@@ -353,6 +358,7 @@ export function useFileOpen({
       clearConversionProgress,
       rememberConvertingSource,
       reportError,
+      failOpen,
       tempDir,
       deviceProfileDefaults.isMobile,
       refreshOpfsStorageInfo,
