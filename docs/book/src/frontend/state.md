@@ -68,7 +68,7 @@ hook は **依存を引数で受け取り**、お互いを import しません�
 - `useLayerTool.ts` — 点の選択（画面上の多角形）と断面（2点を結ぶ線）のマウス操作。結果は `viewer.extractFromLayer` で新しいレイヤーになる。
   `usePointCloudTools` が「ツールを走らせる側」、`useLayerTool` が「画面に描く側」。
 - `useDisplayUnit.ts` — 表示単位（m／ft）。hook というよりモジュール単位の小さなストア（[設定と単位](../flows/settings.md)）。
-- `useFileDrop.ts` — ドラッグ&ドロップで開く（[ファイルを開く](../flows/open-file.md)）。
+- `useFileDrop.ts` — ドラッグ&ドロップで開く（受け取り方の違いは `datasource/file-picker.ts`）（[ファイルを開く](../flows/open-file.md)）。
 - `useTheme.ts` — ダーク／ライトの判定。判定（`resolveTheme`）は DOM や `localStorage` に触れない純粋関数で、`useTheme.test.ts` で直接検証。
 - `useWebGpuSupport.ts` — `probeWebGpu()` で非対応端末を見分け、`AppShell` が専用画面に差し替える（[起動](../flows/startup.md)）。
 - `useUpdateCheck.ts` — 起動時の更新チェック（`tauri dev` 中は走らせない）。

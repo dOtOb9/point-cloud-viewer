@@ -10,9 +10,13 @@ COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/PCD は先に COPC �
 
 | きっかけ | 最初に呼ばれるもの |
 |---|---|
-| Web の「開く」 | `src/ui/toolbar/buttons/OpenFileButton.tsx` の `ToolbarButton` を押す → 隠し `<input type="file" data-testid="file-input">` を `click()` → その `onChange` → `viewer.openFiles(files)`（ボタンは両プラットフォームで同じ `ToolbarButton`。違うのはファイルの選び方だけ） |
-| デスクトップ・Android の「開く」 | 同ファイルの `ToolbarButton` の `onClick` → `pickLocalFiles()`（`src/datasource/tauri.ts`）→ `viewer.openFiles(paths)` |
-| ドラッグ&ドロップ | `src/state/useFileDrop.ts` の `useFileDrop`（Web は DOM の `drop`、デスクトップは `onFilesDropped`）→ `openFiles` |
+| 「開く」（全プラットフォーム共通） | `src/ui/toolbar/buttons/OpenFileButton.tsx` の `ToolbarButton`（`data-testid="open-button"`）を押す → `pickFilesToOpen()`（`src/datasource/file-picker.ts`）→ `viewer.openFiles(picked)`。キャンセルは `null` で、何もしない |
+| ↳ Web での選択 | `pickFilesToOpen` が、DOM に付けない `<input type="file" multiple>` を作って `click()` する（`accept` は `source-format.ts` の `openableFormatsOn("web")` から作る）。`click()` は押した瞬間に同期で呼ぶ（`await` の後だとブラウザに止められる）。結果は `File[]` |
+| ↳ デスクトップ・Android での選択 | `pickFilesToOpen` が `pickLocalFiles()`（`src/datasource/tauri.ts`）を呼ぶ。ダイアログの絞り込みは `openableFormatsOn("desktop")` から作る。結果はパス `string[]` |
+| ドラッグ&ドロップ | `src/state/useFileDrop.ts` の `useFileDrop` → `onFilesDroppedToOpen()`（`file-picker.ts`。Web は DOM の `drop`、デスクトップは `onFilesDropped`）→ `openFiles` |
+
+開ける形式の一覧は `src/datasource/source-format.ts` の `OPENABLE_FORMATS` の1か所です。Web にはまだ PLY / E57 の変換が無いので、
+一時的に `NOT_YET_CONVERTIBLE_ON_WEB` で外しています（Web とデスクトップを揃えたら、このリストと使う側を消す）。
 
 どれも `src/state/useFileOpen.ts` の `openFiles` に着く。
 
@@ -76,5 +80,5 @@ COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/PCD は先に COPC �
   依存（`tempDir` など）を変えるときは、`useFileOpen.ts` 末尾の `openFileRef.current = openFile` の effect も見ること。
 - 変換結果の内訳・ダウンロードは「その変換で作ったレイヤー」に付く。完了ハンドラが先に `openFile` を呼ぶと内訳が消えた不具合が
   あった（2026-10-08。`PendingConversionResult` のコメント）。第二引数 `true` が「変換の続き」の目印。
-- E2E が使う `data-testid`（`file-input`・`conversion-breakdown`・`download-link`・`viewer-error`）は、UI を作り直しても付け直すこと。
+- E2E が使う `data-testid`（`open-button`・`conversion-breakdown`・`download-link`・`viewer-error`）は、UI を作り直しても付け直すこと。
 - ファイル選択は OS のダイアログとドロップだけ（パスを人に打たせない。所有者の要件）。

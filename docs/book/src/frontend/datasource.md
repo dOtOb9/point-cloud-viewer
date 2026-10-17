@@ -51,7 +51,7 @@ renderer は `cloudId` を知りません。`useFileOpen.ts` の `addOpenedLayer
 `"<cloudId>/<level>-<x>-<y>-<z>"`（`tauri-protocol.ts` の `buildNodeRequestPath`）を `convertFileSrc` に渡して作ります。
 このファイルはほかにも次を持ちます。**Tauri 系のパッケージを import するのはすべてここに閉じています。**
 
-- ファイル選択・ドロップ: `pickLocalFiles`（複数選択）・`pickLocalFile`・`onFilesDropped`（OS のドロップ）・`pickTempDirectory`
+- ファイル選択・ドロップ: UI や state が呼ぶ入口は `file-picker.ts` の `pickFilesToOpen`・`onFilesDroppedToOpen`（Web と Tauri を切り替える）。Tauri 側の実体は `pickLocalFiles`（複数選択）・`pickLocalFile`・`onFilesDropped`（OS のドロップ）・`pickTempDirectory`
 - 変換: `startLasConversion`・`startMultiLasConversion`・`cancelLasConversion`、進捗・完了・失敗のイベント購読 `onConversionProgress`／`onConversionDone`／`onConversionFailed`
 - 点群ツール: `extractToCopc`・`mergeCopcs`（下の「点群ツールの API」）
 - バックエンドのコンソールへの報告 `reportToBackendConsole`、アプリバージョンの取得 `getAppVersion`、更新通知で使うリリースページを開く処理
