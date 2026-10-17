@@ -56,12 +56,34 @@ export interface NodeReader {
   readNode(key: string): Promise<ArrayBuffer>;
 }
 
+/**
+ * What `prepareToOpen` reports. Every kind really happens on the platform that returns it.
+ * - `ready`: `path` is a COPC path/key that `open()` accepts (already COPC, or a cached conversion).
+ * - `converting`: a conversion started; the "done" event continues (useConversionSession.ts opens the result).
+ * - `failed`: `summary` is the short text for the panel status, `details` the long text for the error log.
+ */
+export type PrepareOutcome =
+  | { kind: "ready"; path: string }
+  | { kind: "converting" }
+  | { kind: "failed"; summary: string; details: string };
+
 export interface DataSource {
   /**
    * Opens a COPC file and returns the info of the whole cloud and the list of octree nodes.
    * Files already open stay open (several can be open at once). `close` closes one.
    */
   open(path: string): Promise<OpenedCloud>;
+
+  /**
+   * Makes the chosen file(s) ready to open: one COPC opens as it is; anything else is converted (several
+   * LAS/LAZ are merged into one COPC). Desktop: items are paths (`start_las_conversion` /
+   * `start_multi_las_conversion`). Web: items are `File`s, or one string (an OPFS key from the conversion
+   * continuation, which is already ready). `tempDir` is used by the desktop, `isMobile` by the Web.
+   */
+  prepareToOpen(
+    items: string[] | File[],
+    options: { tempDir: string | null; isMobile: boolean },
+  ): Promise<PrepareOutcome>;
 
   /**
    * 指定したノードキーの点データを取得する。返るバイト列はM1-2で決めた

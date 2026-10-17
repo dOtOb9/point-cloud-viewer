@@ -6,7 +6,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { DataSource, OpenedCloud } from "./DataSource";
+import type { DataSource, OpenedCloud, PrepareOutcome } from "./DataSource";
+import { toPrepareOutcome } from "./prepare-outcome";
 import {
   toCloudInfo,
   toHierarchyNodeInfo,
@@ -120,8 +121,8 @@ export async function pickLocalFile(): Promise<string | null> {
  * 挙動」「PLY/PCD/E57の複数選択は対象外、他と一緒に選ばれたら明確なエラー」)。
  */
 /**
- * ADR-0017: OSからウィンドウへファイルをドラッグ&ドロップしたときのイベント
- * (デスクトップのTauri版。Webはブラウザ標準のdrop eventを`useFileDrop.ts`が直接扱う)。
+ * ADR-0017: the event for files dragged from the OS onto the window (desktop Tauri build only). On the Web
+ * the browser's own drop event is handled in `file-picker.ts`, not here.
  * 規約2のため、Tauriのイベント購読はこのファイルの中に閉じ込め、呼び出し側には
  * 「ドロップされたパス」「ドラッグ中かどうか」のコールバックと解除関数だけを見せる。
  * ※デスクトップ/Android実機での動作は未確認(Webビルドでは呼ばれない)。
@@ -270,6 +271,26 @@ export async function onConversionFailed(
  * The Tauri implementation of DataSource. Node data is fetched over the `pcv://` custom protocol (ADR-0001).
  */
 export class TauriSource implements DataSource {
+  /**
+   * `DataSource.prepareToOpen` for the desktop. Items are paths. One path: `start_las_conversion` (a COPC
+   * comes back as `alreadyCopc` after a header read; a raw file checks the cache, then the free space, then
+   * starts converting). Several paths: `start_multi_las_conversion`. `isMobile` is not used.
+   */
+  async prepareToOpen(
+    items: string[] | File[],
+    options: { tempDir: string | null; isMobile: boolean },
+  ): Promise<PrepareOutcome> {
+    const paths: string[] = [];
+    for (const item of items) {
+      if (typeof item !== "string") throw new Error("ローカルファイルの選択はWeb版でのみサポートしています");
+      paths.push(item);
+    }
+    if (paths.length === 1) {
+      return toPrepareOutcome(await startLasConversion(paths[0], options.tempDir), false);
+    }
+    return toPrepareOutcome(await startMultiLasConversion(paths, options.tempDir), true);
+  }
+
   async open(path: string): Promise<OpenedCloud> {
     const dto = await invoke<OpenCopcResponseDto>("open_copc", { path });
     return {

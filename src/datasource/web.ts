@@ -14,7 +14,10 @@
 //
 // 分類は`web-protocol.ts`の`classifyOpenPath`(純粋関数、テスト対象)が行う。
 
-import type { DataSource, OpenedCloud } from "./DataSource";
+import type { DataSource, OpenedCloud, PrepareOutcome } from "./DataSource";
+import { isCopcFile } from "./copc-header";
+import { toPrepareOutcome } from "./prepare-outcome";
+import { detectSourceFormatByName } from "./source-format";
 import { toCloudInfo, toHierarchyNodeInfo } from "./copc-dto";
 import {
   toConversionProgress,
@@ -198,6 +201,41 @@ export class WebSource implements DataSource {
     const key = makeFileKey(this.nextFileSequence++);
     this.localFiles.set(key, file);
     return key;
+  }
+
+  /**
+   * `DataSource.prepareToOpen` for the Web. One string is an OPFS key from the conversion continuation: it
+   * is ready as it is. One `File`: a COPC opens as it is, anything else goes to the conversion route of its
+   * format. Several `File`s: the merge route. `tempDir` is not used (OPFS has no temp directory setting).
+   */
+  async prepareToOpen(
+    items: string[] | File[],
+    options: { tempDir: string | null; isMobile: boolean },
+  ): Promise<PrepareOutcome> {
+    const first = items[0];
+    if (typeof first === "string") {
+      if (items.length !== 1) throw new Error("複数ファイルの選択はこの環境では対応していません");
+      return { kind: "ready", path: first };
+    }
+    const files = items as File[];
+    if (files.length > 1) {
+      return toPrepareOutcome(await this.startMultiConversion(files, options.isMobile), true);
+    }
+
+    // M4-6b: decide by the header, not the extension (`copc-header.ts`, same idea as Rust
+    // `copc_detect.rs`). A COPC opens as it is; raw LAS/LAZ is converted in OPFS on the Web too.
+    if (await isCopcFile(first)) {
+      return { kind: "ready", path: this.registerFile(first) };
+    }
+    // M4-9: decide the format first, then the conversion route. (A real-device bug: every non-COPC
+    // file used to go to the LAS/LAZ route, so PCD was wrongly judged "not enough space".)
+    // PCD, PLY and E57 share one route (R7); everything else goes to the LAS/LAZ route.
+    const format = detectSourceFormatByName(first.name);
+    const outcome =
+      format === "pcd" || format === "ply" || format === "e57"
+        ? await this.startPointFileConversion(first, format, options.isMobile)
+        : await this.startConversion(first, options.isMobile);
+    return toPrepareOutcome(outcome, false);
   }
 
   async open(path: string): Promise<OpenedCloud> {
