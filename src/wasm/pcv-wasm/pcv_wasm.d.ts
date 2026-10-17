@@ -230,6 +230,33 @@ export class WasmPcdConverter {
 }
 
 /**
+ * Web PLY / E57 to COPC converter. Used by `runPointFileConversion` in
+ * `src/datasource/copc.worker.ts`.
+ */
+export class WasmPointFileConverter {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Read at most `batch_size` points and write them to the spill.
+     */
+    feed(batch_size: number): any;
+    /**
+     * Build the octree and write the COPC to the OPFS output handle
+     * (same steps as `WasmPcdConverter::finish`).
+     */
+    finish(): any;
+    /**
+     * `format` is `"ply"` or `"e57"` (lower case, as `detectSourceFormatByName` returns it).
+     */
+    constructor(format: string, file: File, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+    /**
+     * The point count the file header declares (the progress denominator). E57 can yield
+     * fewer points than declared (missing grid slots are skipped).
+     */
+    totalPoints(): number;
+}
+
+/**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
  * 追えるようにするため。標準の`std::panic`フックをそのまま`console.error`に
@@ -286,6 +313,7 @@ export interface InitOutput {
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
     readonly __wbg_wasmextractor_free: (a: number, b: number) => void;
     readonly __wbg_wasmpcdconverter_free: (a: number, b: number) => void;
+    readonly __wbg_wasmpointfileconverter_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
     readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
     readonly lastAllocationFailureMessage: () => [number, number];
@@ -314,6 +342,10 @@ export interface InitOutput {
     readonly wasmpcdconverter_finish: (a: number) => [number, number, number];
     readonly wasmpcdconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];
     readonly wasmpcdconverter_totalPoints: (a: number) => number;
+    readonly wasmpointfileconverter_feed: (a: number, b: number) => [number, number, number];
+    readonly wasmpointfileconverter_finish: (a: number) => [number, number, number];
+    readonly wasmpointfileconverter_new: (a: number, b: number, c: any, d: any, e: any, f: number, g: number, h: number) => [number, number, number];
+    readonly wasmpointfileconverter_totalPoints: (a: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

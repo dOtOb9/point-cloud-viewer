@@ -17,11 +17,14 @@
 mod alloc_guard;
 mod convert;
 mod dto;
+mod e57_import;
 mod extract;
 mod file_reader;
 mod http_reader;
 mod opfs;
 mod pcd_import;
+mod ply_import;
+mod point_file_import;
 mod range_math;
 mod stats;
 mod util;
@@ -41,6 +44,8 @@ pub use convert::WasmConverter;
 pub use extract::WasmExtractor;
 // M4-6/M4-9追記: Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`が使う。
 pub use pcd_import::WasmPcdConverter;
+// R7: Web PLY / E57 to COPC conversion. Used by `src/datasource/copc.worker.ts`.
+pub use point_file_import::WasmPointFileConverter;
 
 /// 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば
 /// そのメッセージを返す。`src/datasource/copc.worker.ts`が変換失敗の

@@ -478,6 +478,80 @@ export class WasmPcdConverter {
 if (Symbol.dispose) WasmPcdConverter.prototype[Symbol.dispose] = WasmPcdConverter.prototype.free;
 
 /**
+ * Web PLY / E57 to COPC converter. Used by `runPointFileConversion` in
+ * `src/datasource/copc.worker.ts`.
+ */
+export class WasmPointFileConverter {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmPointFileConverterFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmpointfileconverter_free(ptr, 0);
+    }
+    /**
+     * Read at most `batch_size` points and write them to the spill.
+     * @param {number} batch_size
+     * @returns {any}
+     */
+    feed(batch_size) {
+        const ret = wasm.wasmpointfileconverter_feed(this.__wbg_ptr, batch_size);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Build the octree and write the COPC to the OPFS output handle
+     * (same steps as `WasmPcdConverter::finish`).
+     * @returns {any}
+     */
+    finish() {
+        const ptr = this.__destroy_into_raw();
+        const ret = wasm.wasmpointfileconverter_finish(ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * `format` is `"ply"` or `"e57"` (lower case, as `detectSourceFormatByName` returns it).
+     * @param {string} format
+     * @param {File} file
+     * @param {Array<any>} scratch_handles
+     * @param {FileSystemSyncAccessHandle} output_handle
+     * @param {string} output_name
+     * @param {number} max_points_per_node
+     */
+    constructor(format, file, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmpointfileconverter_new(ptr0, len0, file, scratch_handles, output_handle, ptr1, len1, max_points_per_node);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmPointFileConverterFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The point count the file header declares (the progress denominator). E57 can yield
+     * fewer points than declared (missing grid slots are skipped).
+     * @returns {number}
+     */
+    totalPoints() {
+        const ret = wasm.wasmpointfileconverter_totalPoints(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmPointFileConverter.prototype[Symbol.dispose] = WasmPointFileConverter.prototype.free;
+
+/**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
  * 追えるようにするため。標準の`std::panic`フックをそのまま`console.error`に
@@ -904,6 +978,9 @@ const WasmExtractorFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmPcdConverterFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmpcdconverter_free(ptr, 1));
+const WasmPointFileConverterFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmpointfileconverter_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

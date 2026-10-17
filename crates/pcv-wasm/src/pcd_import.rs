@@ -116,7 +116,7 @@ const SCALE_CANDIDATES: [f64; 8] = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 
 /// `crates/pcv-convert/src/import/scale.rs`の`choose_scale_offset`と同じ
 /// ロジック(複製の理由はモジュールドキュメント参照。テストは同クレート側で
 /// 既に手厚く行われているため、ここでは最小限の回帰テストだけ持つ)。
-fn choose_scale_offset(
+pub(crate) fn choose_scale_offset(
     min: (f64, f64, f64),
     max: (f64, f64, f64),
 ) -> ((f64, f64, f64), (f64, f64, f64)) {
