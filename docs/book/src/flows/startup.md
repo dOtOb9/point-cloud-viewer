@@ -8,26 +8,25 @@
 
 ## 入口
 
-`src/main.tsx`（`ReactDOM.createRoot(...).render(<App />)`。`React.StrictMode` で包んである）。
+`src/main.tsx`（`ReactDOM.createRoot(...).render(<AppShell />)`。`React.StrictMode` で包んである）。
 
 ## 流れ
 
-1. `src/main.tsx` — `App` を描画する。
-2. `src/App.tsx` の `App` — `AppShell` を返すだけ。
-3. `src/ui/shell/AppShell.tsx` の `AppShell` — state の hook をここで**一度だけ**呼ぶ。
+1. `src/main.tsx` — `AppShell` を描画する。
+2. `src/ui/shell/AppShell.tsx` の `AppShell` — state の hook をここで**一度だけ**呼ぶ。
    `useCopcViewer()`・`useTheme()`・`useWebGpuSupport()`・`useUpdateCheck()`・`useMeasureTool()`・`useLayerTool()`・`useFileDrop()`。
-4. `src/state/useWebGpuSupport.ts` の `useWebGpuSupport` — effect の中で `src/renderer/webgpu-probe.ts` の
+3. `src/state/useWebGpuSupport.ts` の `useWebGpuSupport` — effect の中で `src/renderer/webgpu-probe.ts` の
    `probeWebGpu()`（`navigator.gpu` と `requestAdapter()` の確認だけ。描画はしない）を呼ぶ。
    結果が `status: "done"` で `supported: false` なら、`AppShell` は全体を
    `src/ui/shell/UnsupportedDeviceScreen.tsx` に差し替えて終わる（WebGL2 には落とさない。ADR-0002）。
-5. `src/state/useCopcViewer.ts` の `useCopcViewer` — 関心ごとごとの hook を**決まった順に**呼んで組み立てる:
+4. `src/state/useCopcViewer.ts` の `useCopcViewer` — 関心ごとごとの hook を**決まった順に**呼んで組み立てる:
    `useErrorLog` → `useDisplaySettings` → `useRendererLifecycle` → `useLayers` → `useOpfsStorage` → `useTempDir` →
    `useConversionSession` → `useFileOpen` → `usePointCloudTools`。
    `rendererRef`・`sourceRef` はここで作る（`useDisplaySettings` が `rendererRef` を、`useRendererLifecycle` が
    `useDisplaySettings` の `onStats` を必要とする循環を、ref を組み立て側で作ることで避けている）。
-   `useRendererLifecycle` を `useConversionSession` より前に呼ぶ順序には意味がある（6. が `sourceRef` を埋め、
+   `useRendererLifecycle` を `useConversionSession` より前に呼ぶ順序には意味がある（5. が `sourceRef` を埋め、
    `useConversionSession` の effect がそれを読む。effect は呼んだ順に動く）。
-6. `src/state/useRendererLifecycle.ts` の `useRendererLifecycle` — マウント時の effect（一度だけ）で次をする。
+5. `src/state/useRendererLifecycle.ts` の `useRendererLifecycle` — マウント時の effect（一度だけ）で次をする。
    - `new PointCloudRenderer(canvas)` を作り `rendererRef` に入れる。
    - `isTauriEnvironment()`（`src/datasource/environment.ts`）で `new TauriSource()`（`src/datasource/tauri.ts`）か
      `new WebSource()`（`src/datasource/web.ts`。中で Web Worker を一本作る）を選び `sourceRef` に入れる。
@@ -37,16 +36,16 @@
      `renderer.onNodeLoadErrorReported`（後ろの二つは `reportError` へ。[エラーの流れ](./errors.md)）。
    - `renderer.init()` が成功したら `renderer.start()`。失敗したら `setError(String(e))`。
    - `window` の `resize` を購読し `renderer.resize(...)` を呼ぶ。アンマウントで `renderer.dispose()`。
-7. `src/renderer/point-cloud-renderer.ts` の `PointCloudRenderer` のコンストラクタ — `defaultRenderSettings(readDeviceProfileInput())`
+6. `src/renderer/point-cloud-renderer.ts` の `PointCloudRenderer` のコンストラクタ — `defaultRenderSettings(readDeviceProfileInput())`
    （`src/renderer/device-profile.ts`）で、モバイル判定・レンダースケール・点の形・EDL・点予算の既定値を決める。
    `NodeCache`・`NodeLoader`・`GpuResources` を作る（`NodeLoader` は一つで全レイヤーを扱う）。
    同じ関数を `useDisplaySettings` も呼ぶので、初期値は握手なしで一致する。
-8. `PointCloudRenderer.init()` → `src/renderer/gpu-resources.ts` の `GpuResources.init()`（中の `setupDevice()`）—
+7. `PointCloudRenderer.init()` → `src/renderer/gpu-resources.ts` の `GpuResources.init()`（中の `setupDevice()`）—
    `navigator.gpu.requestAdapter()` → `requestDevice()` → `canvas.getContext("webgpu")`。`device.onuncapturederror`
    と `device.lost` の監視をここで張る。パイプラインの生成は `initWithErrorScope` で一つずつ囲み、
    失敗したら「どの生成が失敗したか」が分かるメッセージにする。
    続いて `PointCloudRenderer.init()` が `attachOrbitControls`（`src/renderer/orbit-camera.ts`）でマウス・タッチ操作をつなぐ。
-9. `PointCloudRenderer.start()` — `requestAnimationFrame` のループを始める。毎フレーム `renderOnce(time)` が呼ばれる
+8. `PointCloudRenderer.start()` — `requestAnimationFrame` のループを始める。毎フレーム `renderOnce(time)` が呼ばれる
    （[毎フレームの描画](./render-frame.md)）。
 
 ## 状態の持ち場所
