@@ -31,7 +31,6 @@ export interface MeasureToolState {
   /** Short notice to show on screen (e.g. "点がありません"), or null. */
   notice: string | null;
   /** Start measuring. If another kind is active, its points are discarded and it switches. */
-  start: (kind: MeasureKind) => void;
   /** Stop (also discards points entered so far). */
   stop: () => void;
   /** Stop if it is the same kind, otherwise start (for the toolbar buttons). */
@@ -82,7 +81,6 @@ export function useMeasureTool(
     [setPointsBoth],
   );
 
-  const start = useCallback((kind: MeasureKind) => reset(kind), [reset]);
   const stop = useCallback(() => reset(null), [reset]);
   const toggle = useCallback((kind: MeasureKind) => reset(modeRef.current === kind ? null : kind), [reset]);
 
@@ -199,5 +197,5 @@ export function useMeasureTool(
     };
   }, []);
 
-  return { mode, points, notice, start, stop, toggle, finish };
+  return { mode, points, notice, stop, toggle, finish };
 }

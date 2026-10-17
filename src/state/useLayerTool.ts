@@ -38,7 +38,6 @@ export interface LayerToolState {
   /** "section": both points are picked and the dialog for thickness and height range should be shown. */
   sectionReady: boolean;
   notice: string | null;
-  start: (mode: LayerToolMode) => void;
   stop: () => void;
   toggle: (mode: LayerToolMode) => void;
   /** "select": close the polygon and extract (same as Enter or double click). */
@@ -100,7 +99,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
     },
     [setPolygonBoth, setSectionBoth],
   );
-  const start = useCallback((m: LayerToolMode) => reset(m), [reset]);
   const stop = useCallback(() => reset(null), [reset]);
   const toggle = useCallback((m: LayerToolMode) => reset(modeRef.current === m ? null : m), [reset]);
 
@@ -269,7 +267,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
     sectionPoints,
     sectionReady: mode === "section" && sectionPoints.length >= 2,
     notice,
-    start,
     stop,
     toggle,
     finishPolygon,
