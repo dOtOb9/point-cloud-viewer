@@ -8,7 +8,7 @@
 
 ## 入口
 
-`src/ui/ribbon/RibbonToolsGroup.tsx` の計測ボタンの `onClick` → `measure.toggle(kind)`
+`src/ui/toolbar/buttons/MeasureButton.tsx` の計測ボタンの `onClick` → `measure.toggle(kind)`
 （`kind` は `"distance" | "height" | "area"`）。`measure` は `src/state/useMeasureTool.ts` の `useMeasureTool(viewer, canvasRef)` が返す値で、`AppShell` が作る。
 
 ## 流れ

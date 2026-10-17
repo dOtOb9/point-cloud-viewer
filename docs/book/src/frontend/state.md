@@ -71,7 +71,7 @@ hook は **依存を引数で受け取り**、お互いを import しません�
 - `useTheme.ts` — ダーク／ライトの判定。判定（`resolveTheme`）は DOM や `localStorage` に触れない純粋関数で、`useTheme.test.ts` で直接検証。
 - `useWebGpuSupport.ts` — `probeWebGpu()` で非対応端末を見分け、`AppShell` が専用画面に差し替える（[起動](../flows/startup.md)）。
 - `useUpdateCheck.ts` — 起動時の更新チェック（`tauri dev` 中は走らせない）。
-- `useNarrowViewport.ts` — 幅 768px 未満かどうか（リボンの畳み・レイヤーパネルのドロワー化）。
+- `useNarrowViewport.ts` — 幅 768px 未満かどうか（ツールバーの角丸・端寄せ・レイヤーパネルのドロワー化）。
 
 ## 状態を持つ場所の見分け方
 

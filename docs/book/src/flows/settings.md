@@ -2,12 +2,12 @@
 
 ## 何をするか
 
-リボンの「設定」で開く設定の一覧と、各ページの値が、どの hook の setter を通って renderer（または別の場所）に届くか、
+ツールバーの「設定」で開く設定の一覧と、各ページの値が、どの hook の setter を通って renderer（または別の場所）に届くか、
 そしてどれが localStorage に**保存される**かをまとめます。設定の値の多くは**保存されません**（再起動すると端末ごとの既定値に戻る）。
 
 ## 入口
 
-`src/ui/ribbon/RibbonSettingsGroup.tsx` の「設定」ボタン → `AppShell` の `setSettingsOpen(true)` → `src/ui/settings/SettingsModal.tsx` の `SettingsModal`。
+`src/ui/toolbar/buttons/SettingsButton.tsx` の「設定」ボタン → `AppShell` の `setSettingsOpen(true)` → `src/ui/settings/SettingsModal.tsx` の `SettingsModal`。
 
 ## 流れ
 

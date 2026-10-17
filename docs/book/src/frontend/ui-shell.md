@@ -3,7 +3,7 @@
 `src/ui/` は [ADR-0005](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0005-ui-shell.md)（ガラスの質感）と
 [ADR-0017](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0017-ui-shell-ribbon.md)（レイアウトの再構築）が決めた UI シェルの実装です。3D ビューを
 ウィンドウ全面に敷き、UI はその上に浮かぶ半透明のガラス面として構成する方針（ADR-0005）は変わっていません。
-レイアウト自体は、デスクトップの点群/GIS 系ソフトに多い「上部リボン + 左レイヤーツリー + 下部ステータスバー」に
+レイアウト自体は、デスクトップの点群/GIS 系ソフトに多い「上部ツールバー + 左レイヤーツリー + 下部ステータスバー」に
 2026-10 に再構築しました（ADR-0017）。
 
 R2（[`TaskSheets/R2-ui-components.md`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R2-ui-components.md)）で、
@@ -14,7 +14,7 @@ R2（[`TaskSheets/R2-ui-components.md`](https://github.com/dOtOb9/point-cloud-vi
 | フォルダ | 主なファイル | 役割 |
 |---|---|---|
 | `shell/` | `AppShell.tsx`・`ViewerPanel.tsx`・`UnsupportedDeviceScreen.tsx` | 画面全体の組み立て。**読み始めはここ** |
-| `ribbon/` | `Ribbon.tsx`・`RibbonButton.tsx`・`RibbonFileGroup.tsx`・`RibbonToolsGroup.tsx`・`RibbonSettingsGroup.tsx`・`ribbon-styles.ts`・`useRibbonDragScroll.ts` | 上部のリボン（ファイル／ツール／設定の3グループ） |
+| `toolbar/` | `Toolbar.tsx`・`ToolbarButton.tsx`・`ToolbarSeparator.tsx`・`toolbar-state.ts`・`toolbar-styles.ts`・`useToolbarDragScroll.ts`・`buttons/`（ボタン1つ1ファイル） | 上部のツールバー（グループ見出しなしの1列。区切り線で仕切る） |
 | `layers/` | `LayerPanel.tsx`・`LayerList.tsx`・`LayerContextMenu.tsx`・`LayerActions.tsx`・`LayerInfoSection.tsx`・`ConversionBreakdownPanel.tsx`・`LayerStatsDetails.tsx`・`layer-delete-key.ts` | 左のレイヤー欄（一覧・右クリックメニュー・操作ボタン・情報・変換の内訳・詳細統計） |
 | `dialogs/` | `Dialog.tsx`・`dialog-styles.ts`・`CloseButton.tsx`・`OptionRow.tsx`・`ColorModeDialog.tsx`・`AppearanceDialog.tsx`・`ConversionDialog.tsx`・`ErrorDialog.tsx` | 共通のダイアログ枠と、設定・ツール以外のダイアログ |
 | `settings/` | `SettingsModal.tsx`・`SettingsPageDialog.tsx`・`settings-nav.ts`・`pages/*.tsx` | 設定の一覧と、1ページ1ファイルの設定ページ |
@@ -22,7 +22,7 @@ R2（[`TaskSheets/R2-ui-components.md`](https://github.com/dOtOb9/point-cloud-vi
 | `status/` | `StatusBar.tsx`・`UpdateNotice.tsx` | 下部のステータスバーと更新通知 |
 | `common/` | `glass.ts`・`crs-format.ts`・`useTransitionMount.ts` | 複数のフォルダが使う小さな部品 |
 
-テストは各ファイルの隣にあります（`*.test.ts(x)`）。クラス名の文字列だけのファイル（`ribbon-styles.ts`・`dialog-styles.ts`）は、使う側のフォルダに置いてあります。
+テストは各ファイルの隣にあります（`*.test.ts(x)`）。クラス名の文字列だけのファイル（`toolbar-styles.ts`・`dialog-styles.ts`）は、使う側のフォルダに置いてあります。
 
 ## 組み立て役: `AppShell.tsx`
 
@@ -35,7 +35,7 @@ R2（[`TaskSheets/R2-ui-components.md`](https://github.com/dOtOb9/point-cloud-vi
 <div class="fixed inset-0">
   <ViewerPanel />                 ← 3Dビュー(canvas)、全面
   <MeasureOverlay /> <MeasureHud /> <LayerToolOverlay />   ← 3Dビューの上: 計測の線とラベル、案内、点の選択・断面の描画
-  <Ribbon />                      ← 上部、ファイル/ツール/設定の3グループ
+  <Toolbar />                     ← 上部、1列のボタン（開く｜計測・選択・断面・結合｜設定）
   <LayerPanel />                  ← 左、レイヤー一覧+操作ボタン+レイヤー情報、折りたたみ可
   <StatusBar />                   ← 下部、1行（表示点数/予算・fps・CRS・読み込み進捗・ログ）
   <SettingsModal />               ← 不透明なモーダル（一覧 → 項目ごとのダイアログ）
@@ -51,8 +51,8 @@ R2（[`TaskSheets/R2-ui-components.md`](https://github.com/dOtOb9/point-cloud-vi
 「変換が始まった」「新しいエラーが出た」も `AppShell` が検出し、対応するダイアログを自動で開きます
 （描画中に前回の値と比べる書き方。effect の中の `setState` を避けるため）。
 
-768px 未満（`useNarrowViewport`）では `Ribbon` がハンバーガーメニューに畳まれ、
-`LayerPanel` は画面を覆うドロワーになります（`Ribbon.tsx`／`LayerPanel.tsx` 参照）。
+768px 未満（`useNarrowViewport`）では `Toolbar` が端まで広がって角丸をやめ（幅が足りなければ横スクロール）、
+`LayerPanel` は画面を覆うドロワーになります（`Toolbar.tsx`／`LayerPanel.tsx` 参照）。
 
 WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported === false`）は、
 `AppShell` がこの全体を [`UnsupportedDeviceScreen`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/UnsupportedDeviceScreen.tsx) に差し替えます
@@ -63,7 +63,7 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 
 | 部品 | 内容 |
 |---|---|
-| [`Ribbon.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/ribbon/Ribbon.tsx)（上部） | 3グループ。**ファイル**（`RibbonFileGroup`: 「開く」。Web は隠した `<input type="file">`、デスクトップ・Android は OS のダイアログ）、**ツール**（`RibbonToolsGroup`: 距離・高さ・面積の計測、点の選択、断面、複数レイヤー（結合））、**設定**（`RibbonSettingsGroup`: 設定を開く） |
+| [`Toolbar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/toolbar/Toolbar.tsx)（上部） | ボタンを1列に並べるだけ。順に「開く」（`buttons/OpenFileButton.tsx`: Web は隠した `<input type="file">`、デスクトップ・Android は OS のダイアログ）｜距離・高さ・面積（`MeasureButton.tsx`）・点の選択（`SelectPointsButton.tsx`）・断面（`SectionButton.tsx`）・複数レイヤー（`MergeLayersButton.tsx`）｜設定（`SettingsButton.tsx`）。各ボタンが「いつ押せるか」を自分のファイルで決める |
 | [`LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/layers/LayerPanel.tsx)（左） | レイヤー一覧（`LayerList.tsx`: 表示チェック・選択・ダブルクリックで移動・右クリックメニュー）+ 操作ボタン（`LayerActions.tsx`: 着色・見た目・移動・削除）+ レイヤー情報（`LayerInfoSection.tsx`: ファイル名・点数・CRS・範囲・変換の進捗/内訳/エラー。計測レイヤーのときは計測結果）+ 詳細統計（`LayerStatsDetails.tsx`、折りたたみ） |
 | [`StatusBar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/status/StatusBar.tsx)（下部、1行） | 表示点数/点予算、fps、CRS、読み込み進捗、エラーログを開くボタン |
 | [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/settings/SettingsModal.tsx) | 設定の一覧（アイコン+名前のボタン）。押すと `pages/*.tsx` の専用ダイアログへ。詳しくは[設定と単位](../flows/settings.md) |
@@ -93,7 +93,7 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 という [ADR-0005](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0005-ui-shell.md) のリスクへの対処です。ダイアログ類（設定・変換・エラーなど、`Dialog.tsx` を使うもの）は
 意図的にガラスを使わず、不透明です（設定/ログは密なフォーム・ログの可読性のため、エラーはどんな背景の
 上でも確実に読めるようにするため）。UI シェル再構築(ADR-0017)でレイアウトを変えた際も、この区別は
-そのまま維持しました(`Ribbon`・`LayerPanel`・`StatusBar`・`UpdateNotice` と、3D ビューの上の `MeasureHud`・`LayerToolOverlay` の案内はガラス、ダイアログ類は不透明)。
+そのまま維持しました(`Toolbar`・`LayerPanel`・`StatusBar`・`UpdateNotice` と、3D ビューの上の `MeasureHud`・`LayerToolOverlay` の案内はガラス、ダイアログ類は不透明)。
 
 ガラスのオン/オフというユーザー設定は無く、常にガラスです（ADR-0017）。ただしモバイル端末では端末プロファイル（`device-profile.ts`）が `glassEnabled` を false にしてぼかしを自動で切り、
 `OPAQUE_GLASS_SURFACE`（不透明な tint のみ）に切り替わります（[M3-8](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/M3-release-and-update.md)、
@@ -114,6 +114,6 @@ ADR-0017 で中央の `ErrorDialog` に置き換えました（バナーは廃�
 ## まず読むファイル
 
 - [`src/ui/shell/AppShell.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/shell/AppShell.tsx) — 組み立て役。ここから各部品を辿る
-- [`src/ui/ribbon/Ribbon.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/ribbon/Ribbon.tsx) — 上部リボン。3グループの束ね役
+- [`src/ui/toolbar/Toolbar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/toolbar/Toolbar.tsx) — 上部ツールバー。ボタンを並べる束ね役。各ボタンは `buttons/` に1ファイルずつ
 - [`src/ui/layers/LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/layers/LayerPanel.tsx) — 左パネル。レイヤー一覧+操作ボタン+情報の束ね役
 - [`src/ui/settings/SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/settings/SettingsModal.tsx) — 設定の一覧。各項目は `pages/` に1ファイルずつ

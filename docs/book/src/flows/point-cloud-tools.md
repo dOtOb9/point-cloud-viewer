@@ -18,7 +18,7 @@
 |---|---|
 | 点の選択(多角形を閉じる) | `src/state/useLayerTool.ts` の `finishPolygon` → `viewer.extractFromLayer(..., "選択")` |
 | 断面(厚みと高さを確定) | 同 `confirmSection` → `viewer.extractFromLayer(..., "断面", box.normal)` |
-| 結合(リボンの「複数レイヤー」) | `src/ui/ribbon/Ribbon.tsx` の `onMerge` → `viewer.mergeSelectedLayers()` |
+| 結合(ツールバーの「複数レイヤー」) | `src/ui/toolbar/buttons/MergeLayersButton.tsx` の `onClick` → `viewer.mergeSelectedLayers()` |
 
 `viewer.extractFromLayer` / `viewer.mergeSelectedLayers` の実体は `src/state/usePointCloudTools.ts`(`useCopcViewer.ts` が組み立てて公開している)です。
 
@@ -26,7 +26,7 @@
 
 ### 3-A. 共通(UI → state → datasource)
 
-1. UI — `src/ui/ribbon/RibbonToolsGroup.tsx`(ボタン)、`src/ui/tools/LayerToolOverlay.tsx`(多角形・断面線の表示)、`src/ui/tools/SectionDialog.tsx`(断面の厚み・高さ)、`src/ui/tools/ToolProgressDialog.tsx`(進捗とキャンセル)。
+1. UI — `src/ui/toolbar/buttons/`（`MeasureButton.tsx`・`SelectPointsButton.tsx`・`SectionButton.tsx`・`MergeLayersButton.tsx`。ボタン）、`src/ui/tools/LayerToolOverlay.tsx`(多角形・断面線の表示)、`src/ui/tools/SectionDialog.tsx`(断面の厚み・高さ)、`src/ui/tools/ToolProgressDialog.tsx`(進捗とキャンセル)。
 2. `src/state/useLayerTool.ts` — 3D ビュー上のマウス操作を受ける。
    - 点の選択: `addPolygonVertex` が頂点(画面のピクセル座標)を貯め、最初の頂点のときのカメラの `viewProj` を覚える。カメラが動いたら多角形を捨てて描き直させる(頂点が点群の同じ場所に載らなくなるため)。`finishPolygon` が `pixelToNdc`(`src/state/tool-math.ts`)で NDC に直し、`{ kind: "screenPolygon", viewProj, polygonNdc }` を作る。
    - 断面: `addSectionPoint` が `viewer.pickPoint`(GPU の深度から3D の点を拾う)で2点を貯める。`confirmSection` が `sectionBox`(`tool-math.ts`)で `{ kind: "orientedBox", center, axes, halfExtents }` を作る。2点が同じ鉛直線上なら向きが決まらないので止める。
