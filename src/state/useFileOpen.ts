@@ -1,21 +1,19 @@
 // Opening files: `openFile` (one path or File), `openFiles` (several LAS/LAZ merged into one COPC), and
 // `addOpenedLayer` (open a COPC with the DataSource and add it to the renderer and the layer list).
-// Flow: a COPC is opened at once. A raw LAS/LAZ/PCD/PLY/E57 first goes to conversion (useConversionSession.ts owns the
-// progress and the "done" event); when the conversion finishes, the event calls `openFile(output, true)` again.
+// Flow: both go through `source.prepareToOpen` (the DataSource decides: a COPC is ready at once; a raw
+// LAS/LAZ/PCD/PLY/E57 is converted, useConversionSession.ts owns the progress and the "done" event); when the
+// conversion finishes, the event calls `openFile(output, true)` again.
 // Used by: useCopcViewer.ts (exposes openFile/openFiles); usePointCloudTools.ts uses `addOpenedLayer` for tool results.
 // Entry: `useFileOpen(deps)`. Errors are put in `setStatus({ kind: "error", message })` (and the banner when long).
 import { useCallback, useEffect, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { TauriSource, reportToBackendConsole, startLasConversion, startMultiLasConversion } from "../datasource/tauri";
-import { WebSource } from "../datasource/web";
-import { isCopcFile } from "../datasource/copc-header";
-import { describeInsufficientSpaceWeb, multiDisplayNameFor } from "../datasource/opfs";
+import { reportToBackendConsole } from "../datasource/tauri";
+import { multiDisplayNameFor } from "../datasource/opfs";
 import { detectSourceFormatByName } from "../datasource/source-format";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { DEFAULT_POINT_SIZE_PX } from "../renderer/layer-focus";
 import { addLayerToState, initialColorModeFor, type LayersState } from "./layers";
-import { describeInsufficientSpaceDesktop } from "../datasource/prepare-outcome";
 import { basenameOfPath } from "./open-file-text";
 import type { ConversionSession } from "./useConversionSession";
 import type { DisplaySettings } from "./useDisplaySettings";
@@ -37,12 +35,16 @@ export interface FileOpenDeps {
 }
 
 export interface FileOpen {
-  /** Desktop: a path string. Web: a URL string, or a `File` from a drop or the file picker. */
+  /**
+   * Open one file (same path as `openFiles([item])`). Desktop: a path string. Web: a `File` from a drop or the file
+   * picker, or a string that is an OPFS key (only from the conversion continuation, `isConversionContinuation`).
+   */
   openFile: (pathOrFile: string | File, isConversionContinuation?: boolean) => Promise<void>;
   /**
-   * Called when two or more files are chosen: merge the LAS/LAZ into one COPC and open it (`start_multi_las_conversion`
-   * in `src-tauri`, `WebSource.startMultiConversion` on the Web). One file behaves like `openFile`. If PLY/PCD/E57
-   * are mixed in, a clear error is shown before any conversion is tried (a mix of LAS/LAZ only is fine).
+   * Open the chosen files: `DataSource.prepareToOpen` makes them ready (one COPC opens as it is; anything else is
+   * converted; several LAS/LAZ are merged into one COPC), then the layer is added, or the conversion runs and the
+   * "done" event continues. If PLY/PCD/E57 are mixed into several files, a clear error is shown before any
+   * conversion is tried (a mix of LAS/LAZ only is fine).
    */
   openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
   addOpenedLayer: (
@@ -69,13 +71,14 @@ export function useFileOpen({
   const { deviceProfileDefaults } = display;
 
   /**
-   * An open failed: show the text in the panel (status) and also keep it in the error log, so the text is
+   * An open failed: show `summary` in the panel (status) and keep `details` in the error log, so the text is
    * still in the banner / history after the panel text goes away (the panel is cleared when a later tool succeeds).
+   * Most failures have one text for both (`details` defaults to `summary`).
    */
   const failOpen = useCallback(
-    (message: string) => {
-      reportError(message, "conversion");
-      setStatus({ kind: "error", message });
+    (summary: string, details: string = summary) => {
+      reportError(details, "conversion");
+      setStatus({ kind: "error", message: summary });
     },
     [reportError, setStatus],
   );
@@ -135,119 +138,60 @@ export function useFileOpen({
     [rendererRef, sourceRef, nextLayerId, takePendingConversion, commitLayers, layersStateRef, reportError, deviceProfileDefaults.pointShape],
   );
 
-  const openFile = useCallback(
-    async (pathOrFile: string | File, isConversionContinuation = false) => {
+  /**
+   * The one path for every open: `openFile` and `openFiles` both end up here.
+   * 1. Several items must all be LAS/LAZ (checked here, before anything is converted).
+   * 2. `source.prepareToOpen` makes the item(s) ready: a COPC opens as it is, anything else is converted.
+   *    What differs between the Web and the desktop build lives in the DataSource, not here.
+   * 3. `ready` -> add the layer; `converting` -> wait for the "done" event; `failed` -> show the texts.
+   */
+  const openItems = useCallback(
+    async (items: string[] | File[], isConversionContinuation: boolean) => {
+      if (items.length === 0) return;
       const renderer = rendererRef.current;
       const source = sourceRef.current;
       if (!renderer || !source) return;
 
       setStatus({ kind: "opening" });
       clearConversionProgress();
-      try {
-        // On the Web, a local file arrives as a `File`. `DataSource.open()` takes only strings, so it is
-        // turned into a key by `WebSource.registerFile()` first (TauriSource has no way to take a File;
-        // the file picker is shown only on the Web, so the source is a WebSource here).
-        let path: string;
-        if (typeof pathOrFile === "string") {
-          path = pathOrFile;
-        } else if (source instanceof WebSource) {
-          // M4-6b: decide by the header, not the extension (`copc-header.ts`, same idea as Rust
-          // `copc_detect.rs`). A COPC opens as it is; raw LAS/LAZ is converted in OPFS on the Web too.
-          if (await isCopcFile(pathOrFile)) {
-            path = source.registerFile(pathOrFile);
-          } else {
-            // M4-9: decide the format first, then the conversion route. (A real-device bug: every non-COPC
-            // file used to go to the LAS/LAZ route, so PCD was wrongly judged "not enough space".)
-            // PCD, PLY and E57 share one route (R7); everything else goes to the LAS/LAZ route.
-            const format = detectSourceFormatByName(pathOrFile.name);
-            // M4-12: remember the source file name; the done handler registered once at mount reads it.
-            rememberConvertingSource(pathOrFile.name);
-            const outcome =
-              format === "pcd" || format === "ply" || format === "e57"
-                ? await source.startPointFileConversion(pathOrFile, format, deviceProfileDefaults.isMobile)
-                : await source.startConversion(pathOrFile, deviceProfileDefaults.isMobile);
-            switch (outcome.kind) {
-              case "alreadyCopc":
-                // startConversion never returns this (isCopcFile was checked before); kept for exhaustiveness.
-                path = outcome.path;
-                break;
-              case "cached":
-                path = outcome.outputPath;
-                break;
-              case "opfsUnavailable":
-                failOpen(
-                  "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
-                );
-                return;
-              case "insufficientSpace":
-                // `ConversionOutcome` is shared with the desktop build, but WebSource always returns
-                // "insufficientSpaceWeb" below (see `checkInsufficientSpace` in web.ts). This branch exists
-                // for exhaustiveness and should not be reached.
-                setStatus({ kind: "error", message: "空き容量が足りません" });
-                return;
-              // M4-6: the Web build returns "insufficientSpaceWeb" (different contents from the desktop one).
-              case "insufficientSpaceWeb": {
-                reportError(
-                  describeInsufficientSpaceWeb({
-                    requiredBytes: outcome.requiredBytes,
-                    quotaBytes: outcome.quotaBytes,
-                    usageBytes: outcome.usageBytes,
-                    persisted: outcome.persisted,
-                    reclaimableBytes: outcome.reclaimableBytes,
-                  }),
-                  "conversion",
-                );
-                setStatus({ kind: "error", message: "空き容量が足りません" });
-                // Reflect the current usage before the settings page (delete / allow persistence) is shown.
-                void refreshOpfsStorageInfo();
-                return;
-              }
-              case "converting":
-                // The "done" event handler (useConversionSession.ts) continues and opens the result.
-                setStatus({ kind: "converting" });
-                return;
-            }
-          }
-        } else {
-          throw new Error("ローカルファイルの選択はWeb版でのみサポートしています");
-        }
 
-        // M4-3: the desktop build (and Android) always goes through start_las_conversion first. A COPC
-        // returns `alreadyCopc` after reading only the header. A raw LAS/LAZ checks the converted cache
-        // (`cached`), then free space, then starts converting (`converting`: return here; the
-        // `onConversionDone` handler continues through `openFileRef`).
-        if (source instanceof TauriSource) {
-          // M4-12: same reason as the Web branch.
-          rememberConvertingSource(basenameOfPath(path));
-          const outcome = await startLasConversion(path, tempDir);
-          switch (outcome.kind) {
-            case "alreadyCopc":
-              path = outcome.path;
-              break;
-            case "cached":
-              path = outcome.outputPath;
-              break;
-            case "insufficientSpace":
-              reportError(describeInsufficientSpaceDesktop(outcome.requiredBytes, outcome.availableBytes), "conversion");
-              setStatus({ kind: "error", message: "空き容量が足りません" });
-              return;
-            case "converting":
-              // The onConversionDone handler continues.
-              setStatus({ kind: "converting" });
-              return;
-          }
+      const names = items.map((item) => (typeof item === "string" ? basenameOfPath(item) : item.name));
+
+      // LAS/LAZ may be mixed; if PLY/PCD/E57 is among several files, say so before converting (naming the files).
+      if (items.length > 1) {
+        const nonLasNames = names.filter((n) => detectSourceFormatByName(n) !== "lasLaz");
+        if (nonLasNames.length > 0) {
+          failOpen(`複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`);
+          return;
+        }
+      }
+
+      // M4-12: remember the source name before converting; the "done" handler (useConversionSession.ts) reads it.
+      // Several files: sorted, so the name does not depend on the selection order (e.g. "09LD2626 ほか54ファイル").
+      const displayName = items.length > 1 ? multiDisplayNameFor([...names].sort()) : names[0];
+      rememberConvertingSource(displayName);
+
+      try {
+        const outcome = await source.prepareToOpen(items, { tempDir, isMobile: deviceProfileDefaults.isMobile });
+        if (outcome.kind === "failed") {
+          failOpen(outcome.summary, outcome.details);
+          // Reflect the current usage before the settings page (delete / allow persistence) is shown.
+          // (Does nothing on the desktop build: useOpfsStorage.ts.)
+          void refreshOpfsStorageInfo();
+          return;
+        }
+        if (outcome.kind === "converting") {
+          // The "done" event handler (useConversionSession.ts) continues and opens the result.
+          setStatus({ kind: "converting" });
+          return;
         }
 
         // Name in the layer list: for a conversion result, the name of the pending result (taken inside
-        // addOpenedLayer); for a desktop path or a Web URL, the part after the last separator; for a picked File, its name.
-        const opened = await addOpenedLayer(
-          path,
-          typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name,
-          isConversionContinuation,
-        );
+        // addOpenedLayer); otherwise the chosen file's name.
+        const opened = await addOpenedLayer(outcome.path, displayName, isConversionContinuation);
         setStatus({ kind: "ready" });
 
-        const label = typeof pathOrFile === "string" ? pathOrFile : pathOrFile.name;
+        const label = typeof items[0] === "string" && items.length === 1 ? items[0] : displayName;
         const summary = `[M1] opened ${label}: points=${opened.pointCount} nodes=${opened.nodeCount}`;
         console.log(summary);
         await reportToBackendConsole(summary);
@@ -261,115 +205,23 @@ export function useFileOpen({
       setStatus,
       clearConversionProgress,
       rememberConvertingSource,
-      reportError,
       failOpen,
       tempDir,
-      addOpenedLayer,
       deviceProfileDefaults.isMobile,
       refreshOpfsStorageInfo,
+      addOpenedLayer,
     ],
   );
 
-  /**
-   * M4-14: entry for a multiple selection. Almost the same decisions as `openFile` (cache, not enough
-   * space, start conversion), simpler because the target is always several LAS/LAZ (the "already COPC" check
-   * and the PCD/E57 branches exist only in the single-file `openFile`).
-   */
+  const openFile = useCallback(
+    (pathOrFile: string | File, isConversionContinuation = false) =>
+      openItems([pathOrFile] as string[] | File[], isConversionContinuation),
+    [openItems],
+  );
+
   const openFiles = useCallback(
-    async (pathsOrFiles: string[] | File[]) => {
-      if (pathsOrFiles.length === 0) return;
-      if (pathsOrFiles.length === 1) {
-        await openFileRef.current(pathsOrFiles[0]);
-        return;
-      }
-
-      const renderer = rendererRef.current;
-      const source = sourceRef.current;
-      if (!renderer || !source) return;
-
-      setStatus({ kind: "opening" });
-      clearConversionProgress();
-
-      const isFileArray = typeof pathsOrFiles[0] !== "string";
-      const names = isFileArray
-        ? (pathsOrFiles as File[]).map((f) => f.name)
-        : (pathsOrFiles as string[]).map(basenameOfPath);
-
-      // Acceptance condition: LAS/LAZ may be mixed; if PLY/PCD/E57 is among them, say so before converting
-      // (naming the files).
-      const nonLasNames = names.filter((n) => detectSourceFormatByName(n) !== "lasLaz");
-      if (nonLasNames.length > 0) {
-        failOpen(`複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`);
-        return;
-      }
-
-      // Same reason as M4-12 in `openFile`: remember the display name before converting. Sorted so the
-      // name does not depend on the selection order (e.g. "09LD2626 ほか54ファイル").
-      rememberConvertingSource(multiDisplayNameFor([...names].sort()));
-
-      try {
-        const outcome =
-          isFileArray && source instanceof WebSource
-            ? await source.startMultiConversion(pathsOrFiles as File[], deviceProfileDefaults.isMobile)
-            : !isFileArray && source instanceof TauriSource
-              ? await startMultiLasConversion(pathsOrFiles as string[], tempDir)
-              : null;
-        if (outcome === null) {
-          throw new Error("複数ファイルの選択はこの環境では対応していません");
-        }
-
-        switch (outcome.kind) {
-          case "cached":
-            void openFileRef.current(outcome.outputPath, true);
-            return;
-          case "converting":
-            setStatus({ kind: "converting" });
-            return;
-          case "opfsUnavailable":
-            failOpen(
-              "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。",
-            );
-            return;
-          case "insufficientSpace":
-            reportError(describeInsufficientSpaceDesktop(outcome.requiredBytes, outcome.availableBytes), "conversion");
-            setStatus({ kind: "error", message: "空き容量が足りません" });
-            return;
-          case "insufficientSpaceWeb":
-            reportError(
-              describeInsufficientSpaceWeb({
-                requiredBytes: outcome.requiredBytes,
-                quotaBytes: outcome.quotaBytes,
-                usageBytes: outcome.usageBytes,
-                persisted: outcome.persisted,
-                reclaimableBytes: outcome.reclaimableBytes,
-              }),
-              "conversion",
-            );
-            setStatus({ kind: "error", message: "空き容量が足りません" });
-            void refreshOpfsStorageInfo();
-            return;
-          case "alreadyCopc":
-            // The merge route never returns this (it always makes a new COPC). Kept for exhaustiveness.
-            void openFileRef.current(outcome.path, true);
-            return;
-        }
-      } catch (e) {
-        failOpen(String(e));
-      }
-    },
-    [
-      rendererRef,
-      sourceRef,
-      openFileRef,
-      setStatus,
-      clearConversionProgress,
-      rememberConvertingSource,
-      reportError,
-      failOpen,
-      tempDir,
-      deviceProfileDefaults.isMobile,
-      refreshOpfsStorageInfo,
-    ],
+    (pathsOrFiles: string[] | File[]) => openItems(pathsOrFiles, false),
+    [openItems],
   );
 
   // Keep `openFileRef` at the latest `openFile` after every render, so the event handlers registered once
