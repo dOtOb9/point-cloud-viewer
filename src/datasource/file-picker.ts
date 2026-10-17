@@ -5,7 +5,7 @@
 // imports the Tauri packages). Web: a plain `<input type="file">` and the window's DOM drag events.
 
 import { isTauriEnvironment } from "./environment";
-import { fileExtensionsOf, openableFormatsOn } from "./source-format";
+import { OPENABLE_EXTENSIONS } from "./source-format";
 import { onFilesDropped, pickLocalFiles } from "./tauri";
 
 /**
@@ -40,10 +40,8 @@ function pickFilesOnWeb(): Promise<File[] | null> {
     input.type = "file";
     // M4-14: several files can be chosen (one file behaves as before).
     input.multiple = true;
-    // M4-3/M4-6b/M4-9: raw LAS/LAZ and PCD can be chosen too (the Web build converts them to COPC on OPFS).
-    input.accept = fileExtensionsOf(openableFormatsOn("web"))
-      .map((ext) => `.${ext}`)
-      .join(",");
+    // Raw LAS/LAZ, E57, PLY and PCD can be chosen too (the Web build converts them to COPC on OPFS).
+    input.accept = OPENABLE_EXTENSIONS.map((ext) => `.${ext}`).join(",");
     input.addEventListener("change", () => {
       const files = Array.from(input.files ?? []);
       resolve(files.length > 0 ? files : null);

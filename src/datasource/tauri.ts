@@ -28,14 +28,14 @@ import { isTauriEnvironment } from "./environment";
 import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
 import { StaleNodeRequestError } from "./stale-node-error";
 import { buildNodeRequestPath } from "./tauri-protocol";
-import { fileExtensionsOf, openableFormatsOn } from "./source-format";
+import { OPENABLE_EXTENSIONS } from "./source-format";
 
 /**
- * The file dialog filter, built from `openableFormatsOn("desktop")` (`source-format.ts`). The display name
+ * The file dialog filter, built from `OPENABLE_EXTENSIONS` (`source-format.ts`). The display name
  * also lists ".copc.laz": a COPC is a .laz, so the "laz" extension already covers it.
  */
 function openDialogFilters(): { name: string; extensions: string[] }[] {
-  const extensions = fileExtensionsOf(openableFormatsOn("desktop"));
+  const extensions = [...OPENABLE_EXTENSIONS];
   const shown = extensions.flatMap((ext) => (ext === "laz" ? [".laz", ".copc.laz"] : [`.${ext}`]));
   return [{ name: `点群ファイル (${shown.join(" / ")})`, extensions }];
 }

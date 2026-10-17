@@ -1,23 +1,15 @@
 import { describe, expect, it } from "vitest";
-import {
-  detectSourceFormatByName,
-  fileExtensionsOf,
-  NOT_YET_CONVERTIBLE_ON_WEB,
-  openableFormatsOn,
-} from "./source-format";
+import { detectSourceFormatByName, OPENABLE_EXTENSIONS } from "./source-format";
 
-describe("openable formats", () => {
-  it("desktop lists every format in the dialog order", () => {
-    expect(fileExtensionsOf(openableFormatsOn("desktop"))).toEqual(["las", "laz", "e57", "ply", "pcd"]);
+describe("OPENABLE_EXTENSIONS", () => {
+  it("lists every format in the desktop dialog order", () => {
+    expect([...OPENABLE_EXTENSIONS]).toEqual(["las", "laz", "e57", "ply", "pcd"]);
   });
 
-  it("web lacks the formats in NOT_YET_CONVERTIBLE_ON_WEB", () => {
-    expect(fileExtensionsOf(openableFormatsOn("web"))).toEqual(["las", "laz", "pcd"]);
-    expect(NOT_YET_CONVERTIBLE_ON_WEB).toEqual(["ply", "e57"]);
-  });
-
-  it("unknown has no extensions", () => {
-    expect(fileExtensionsOf(["unknown"])).toEqual([]);
+  it("every openable extension is recognised by detectSourceFormatByName", () => {
+    for (const ext of OPENABLE_EXTENSIONS) {
+      expect(detectSourceFormatByName(`file.${ext}`)).not.toBe("unknown");
+    }
   });
 });
 
