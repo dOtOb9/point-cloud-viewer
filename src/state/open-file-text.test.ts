@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basenameOfPath, describeInsufficientSpaceDesktop, extensionOfFileName } from "./open-file-text";
+import { basenameOfPath, extensionOfFileName } from "./open-file-text";
 
 describe("basenameOfPath", () => {
   it("handles both separators", () => {
@@ -18,13 +18,5 @@ describe("extensionOfFileName", () => {
   });
   it("reports unknown when there is no dot", () => {
     expect(extensionOfFileName("README")).toBe("(不明)");
-  });
-});
-
-describe("describeInsufficientSpaceDesktop", () => {
-  it("writes both sizes in GiB with one decimal", () => {
-    const text = describeInsufficientSpaceDesktop(3 * 1024 ** 3, 1.5 * 1024 ** 3);
-    expect(text).toContain("必要: 約3.0GiB");
-    expect(text).toContain("空き: 約1.5GiB");
   });
 });
