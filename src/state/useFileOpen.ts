@@ -9,7 +9,7 @@ import { TauriSource, reportToBackendConsole, startLasConversion, startMultiLasC
 import { WebSource } from "../datasource/web";
 import { isCopcFile } from "../datasource/copc-header";
 import { describeInsufficientSpaceWeb, multiDisplayNameFor } from "../datasource/opfs";
-import { detectSourceFormatByName } from "../datasource/source-format";
+import { NOT_YET_CONVERTIBLE_ON_WEB, detectSourceFormatByName } from "../datasource/source-format";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
@@ -142,7 +142,7 @@ export function useFileOpen({
             // PLY/E57 have no Web conversion yet (M4-import-and-conversion.md, M4-9/M4-6), so say so here
             // instead of running a misleading space check.
             const format = detectSourceFormatByName(pathOrFile.name);
-            if (format === "ply" || format === "e57") {
+            if (NOT_YET_CONVERTIBLE_ON_WEB.includes(format)) {
               setStatus({
                 kind: "error",
                 message:

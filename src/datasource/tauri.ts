@@ -28,6 +28,17 @@ import { isTauriEnvironment } from "./environment";
 import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
 import { StaleNodeRequestError } from "./stale-node-error";
 import { buildNodeRequestPath } from "./tauri-protocol";
+import { fileExtensionsOf, openableFormatsOn } from "./source-format";
+
+/**
+ * The file dialog filter, built from `openableFormatsOn("desktop")` (`source-format.ts`). The display name
+ * also lists ".copc.laz": a COPC is a .laz, so the "laz" extension already covers it.
+ */
+function openDialogFilters(): { name: string; extensions: string[] }[] {
+  const extensions = fileExtensionsOf(openableFormatsOn("desktop"));
+  const shown = extensions.flatMap((ext) => (ext === "laz" ? [".laz", ".copc.laz"] : [`.${ext}`]));
+  return [{ name: `点群ファイル (${shown.join(" / ")})`, extensions }];
+}
 
 // `open_copc` (src-tauri/src/copc_state.rs) がJSONで返す形。DTOの中身とcamelCaseへの
 // 変換自体は`copc-dto.ts`にある（Web版の`pcv-wasm`も同じ形のJSONを返すため共有する）。
@@ -95,12 +106,7 @@ export async function pickLocalFile(): Promise<string | null> {
     // M4-9: E57/PLY/PCDも同じダイアログから選べるようにする(受け入れ条件)。
     // どの形式かは拡張子で判定する(`pcv_convert::import::detect_format`、
     // `start_las_conversion`側で分岐する)。
-    filters: [
-      {
-        name: "点群ファイル (.las / .laz / .copc.laz / .e57 / .ply / .pcd)",
-        extensions: ["las", "laz", "e57", "ply", "pcd"],
-      },
-    ],
+    filters: openDialogFilters(),
   });
 }
 
@@ -139,12 +145,7 @@ export async function pickLocalFiles(): Promise<string[] | null> {
   return await openFileDialog({
     multiple: true,
     directory: false,
-    filters: [
-      {
-        name: "点群ファイル (.las / .laz / .copc.laz / .e57 / .ply / .pcd)",
-        extensions: ["las", "laz", "e57", "ply", "pcd"],
-      },
-    ],
+    filters: openDialogFilters(),
   });
 }
 
