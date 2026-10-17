@@ -46,10 +46,14 @@ test("LASファイルを選ぶとWeb版で変換され、内訳とダウンロ�
     // (`src/ui/shell/AppShell.tsx`のゲート)。ここで失敗すれば、CI環境が
     // WebGPUを使えていないことがすぐ分かる(`playwright.config.ts`の
     // `channel: "chromium"`のコメント参照)。
-    const fileInput = page.getByTestId("file-input");
-    await expect(fileInput).toBeAttached({ timeout: 30_000 });
-
-    await fileInput.setInputFiles(lasPath);
+    // Press the open button and hand the file over through the browser's file chooser
+    // (R6: this also covers "button -> picker").
+    const openButton = page.getByTestId("open-button");
+    await expect(openButton).toBeVisible({ timeout: 30_000 });
+    const chooserPromise = page.waitForEvent("filechooser");
+    await openButton.click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles(lasPath);
 
     // 完了を待つ: 固定の待ち時間ではなく、「変換の内訳」パネルが実際に
     // 表示されるまで待つ(画面の状態で待つ。タスクの要求)。wasmの初期化

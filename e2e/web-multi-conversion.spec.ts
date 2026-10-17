@@ -57,11 +57,15 @@ test("複数のLASファイルを一緒に選ぶとWeb版で1つにマージさ�
   try {
     await page.goto("./");
 
-    const fileInput = page.getByTestId("file-input");
-    await expect(fileInput).toBeAttached({ timeout: 30_000 });
+    const openButton = page.getByTestId("open-button");
+    await expect(openButton).toBeVisible({ timeout: 30_000 });
+    const chooserPromise = page.waitForEvent("filechooser");
+    await openButton.click();
+    const chooser = await chooserPromise;
 
-    // 受け入れ条件: 複数ファイルを一緒に選べる(`multiple`属性)。
-    await fileInput.setInputFiles(lasPaths);
+    // 受け入れ条件: 複数ファイルを一緒に選べる(chooserが複数選択を許す)。
+    expect(chooser.isMultiple()).toBe(true);
+    await chooser.setFiles(lasPaths);
 
     const breakdown = page.getByTestId("conversion-breakdown");
     await expect(breakdown).toBeVisible({ timeout: 60_000 });
