@@ -114,7 +114,7 @@ export type CopcViewerState = Pick<
     | "setMinCenterPriorityWeight"
   > &
   Pick<ErrorLog, "gpuErrors" | "errorHistory" | "reportError" | "dismissGpuError"> &
-  Pick<FileOpen, "openFile" | "openFiles"> &
+  Pick<FileOpen, "openFiles"> &
   Pick<
     ConversionSession,
     "conversionProgress" | "convertingFileName" | "cancelConversion" | "copyConversionBreakdownText"

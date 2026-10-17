@@ -1,7 +1,7 @@
 // The viewer state the UI sees: `useCopcViewer()` returns [canvasRef, CopcViewerState].
 // This file only assembles. Each group of fields is made by one hook, one file per concern (TaskSheets/R1-state-refactor.md):
 //
-//   viewer-types.ts          the shape of CopcViewerState (types only)
+//   viewer-types.ts          CopcViewerState, built with Pick from the hooks' interfaces below (types only; no field is declared twice)
 //   useRendererLifecycle.ts  create / dispose the renderer and the data source (rendererRef, sourceRef)
 //   useErrorLog.ts           gpuErrors, errorHistory, reportError, dismissGpuError
 //   useDisplaySettings.ts    point budget, background, grid, EDL, animation, render scale, shape, center priority, stats
@@ -159,7 +159,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     gpuErrors: errorLog.gpuErrors,
     errorHistory: errorLog.errorHistory,
     convertingFileName: conversion.convertingFileName,
-    openFile: fileOpen.openFile,
     openFiles: fileOpen.openFiles,
     isBrowser: !isTauriEnvironment(),
     reportError: errorLog.reportError,
