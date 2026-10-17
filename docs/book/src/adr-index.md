@@ -24,6 +24,7 @@ ADR（Architecture Decision Record、設計判断の記録）は、**なぜ**そ
 | [ADR-0016](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0016-e2e-web-conversion.md) | Web 版の変換を実ブラウザで通す E2E | Playwright を CI に入れた。`data-testid` を残す約束の出どころ |
 | [ADR-0017](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0017-ui-shell-ribbon.md) | UI シェルをリボン+レイヤーツリー+ステータスバーに | エラーはバナーから中央ダイアログへ。ガラスの質感は維持 |
 | [ADR-0018](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0018-layer-centric-operations.md) | 機能は「選んだレイヤーから新しいレイヤーを作る」 | 元のレイヤーは書き換えない。選択・断面・結合・計測がこの形 |
+| [ADR-0020](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0020-web-conversion-is-core.md) | Web 版でも変換するのは中心の機能 | 建設会社ではデスクトップアプリの許可が下りにくい。Web だけの変換コード（約2割）は必要な費用で、減らすのは複製や分岐の方 |
 
 ## 各 ADR の構成
 
