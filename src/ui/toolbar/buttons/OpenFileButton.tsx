@@ -29,9 +29,21 @@ export function OpenFileButton({ viewer }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const busy = isFileOpenBusy(viewer.status);
 
+  // How a click on the button reaches `viewer.openFiles`. The two platforms take different routes.
+  //
+  // Web: a browser does not let JavaScript open the OS file dialog directly; only an
+  // `<input type="file">` can. So the Web flow is split across two places in this file:
+  //   1. here: click the hidden input (rendered below only when `viewer.isBrowser`) and return.
+  //      The browser shows its dialog, but nothing comes back to this function.
+  //   2. the input's `onChange` (below): when the user has picked files, it receives them as
+  //      `File` objects (no paths in a browser) and passes them to `viewer.openFiles`.
+  //   The `isBrowser` check here and the one around the input must agree: `click()` needs the input.
+  //
+  // Desktop/Android: the Tauri dialog (`pickLocalFiles`) is awaited and returns file paths,
+  // so the whole flow stays in this function and no hidden input is rendered.
   async function pickAndOpen() {
     if (viewer.isBrowser) {
-      // The browser's own picker; the input's onChange opens the chosen files.
+      // Step 1 of the Web flow; step 2 is the input's onChange below.
       inputRef.current?.click();
       return;
     }
@@ -57,6 +69,8 @@ export function OpenFileButton({ viewer }: Props) {
         disabled={busy}
         onClick={() => void pickAndOpen()}
       />
+      {/* Web only: the hidden input that opens the browser's dialog and receives the picked files
+          (step 2 of the Web flow described above `pickAndOpen`). */}
       {viewer.isBrowser && (
         <input
           type="file"
