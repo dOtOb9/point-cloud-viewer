@@ -10,7 +10,7 @@ COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/PCD は先に COPC �
 
 | きっかけ | 最初に呼ばれるもの |
 |---|---|
-| Web の「開く」 | `src/ui/toolbar/buttons/OpenFileButton.tsx` の隠し `<input type="file" data-testid="file-input">` の `onChange` → `viewer.openFiles(files)` |
+| Web の「開く」 | `src/ui/toolbar/buttons/OpenFileButton.tsx` の `ToolbarButton` を押す → 隠し `<input type="file" data-testid="file-input">` を `click()` → その `onChange` → `viewer.openFiles(files)`（ボタンは両プラットフォームで同じ `ToolbarButton`。違うのはファイルの選び方だけ） |
 | デスクトップ・Android の「開く」 | 同ファイルの `ToolbarButton` の `onClick` → `pickLocalFiles()`（`src/datasource/tauri.ts`）→ `viewer.openFiles(paths)` |
 | ドラッグ&ドロップ | `src/state/useFileDrop.ts` の `useFileDrop`（Web は DOM の `drop`、デスクトップは `onFilesDropped`）→ `openFiles` |
 

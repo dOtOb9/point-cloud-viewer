@@ -63,7 +63,7 @@ WebGPU が非対応と確定した場合（`useWebGpuSupport().result.supported 
 
 | 部品 | 内容 |
 |---|---|
-| [`Toolbar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/toolbar/Toolbar.tsx)（上部） | ボタンを1列に並べるだけ。順に「開く」（`buttons/OpenFileButton.tsx`: Web は隠した `<input type="file">`、デスクトップ・Android は OS のダイアログ）｜距離・高さ・面積（`MeasureButton.tsx`）・点の選択（`SelectPointsButton.tsx`）・断面（`SectionButton.tsx`）・複数レイヤー（`MergeLayersButton.tsx`）｜設定（`SettingsButton.tsx`）。各ボタンが「いつ押せるか」を自分のファイルで決める |
+| [`Toolbar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/toolbar/Toolbar.tsx)（上部） | ボタンを1列に並べるだけ。順に「開く」（`buttons/OpenFileButton.tsx`: どちらも `ToolbarButton`。Web は隠した `<input type="file">` を `click()`、デスクトップ・Android は OS のダイアログ。ダイアログを開けなかったときは `viewer.reportError` でバナーに出す）｜距離・高さ・面積（`MeasureButton.tsx`）・点の選択（`SelectPointsButton.tsx`）・断面（`SectionButton.tsx`）・複数レイヤー（`MergeLayersButton.tsx`）｜設定（`SettingsButton.tsx`）。各ボタンが「いつ押せるか」を自分のファイルで決める |
 | [`LayerPanel.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/layers/LayerPanel.tsx)（左） | レイヤー一覧（`LayerList.tsx`: 表示チェック・選択・ダブルクリックで移動・右クリックメニュー）+ 操作ボタン（`LayerActions.tsx`: 着色・見た目・移動・削除）+ レイヤー情報（`LayerInfoSection.tsx`: ファイル名・点数・CRS・範囲・変換の進捗/内訳/エラー。計測レイヤーのときは計測結果）+ 詳細統計（`LayerStatsDetails.tsx`、折りたたみ） |
 | [`StatusBar.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/status/StatusBar.tsx)（下部、1行） | 表示点数/点予算、fps、CRS、読み込み進捗、エラーログを開くボタン |
 | [`SettingsModal.tsx`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/ui/settings/SettingsModal.tsx) | 設定の一覧（アイコン+名前のボタン）。押すと `pages/*.tsx` の専用ダイアログへ。詳しくは[設定と単位](../flows/settings.md) |
