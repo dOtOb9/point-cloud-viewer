@@ -38,13 +38,13 @@
 
 ### 3. 変換の失敗・キャンセル・容量不足
 
-1. 容量不足は `useFileOpen.ts` の `openFile`／`openFiles` が、`describeInsufficientSpaceWeb`（`src/datasource/opfs.ts`）または `describeInsufficientSpaceDesktop`（`src/state/open-file-text.ts`）の文を `reportError(..., "conversion")` に流し、`status = { kind: "error", message: "空き容量が足りません" }`。
+1. 容量不足は `prepareToOpen` が `failed { summary: "空き容量が足りません", details }` を返し（`details` は `describeInsufficientSpaceWeb`（`src/datasource/opfs.ts`）または `describeInsufficientSpaceDesktop`（`src/datasource/prepare-outcome.ts`）の文）、`useFileOpen.ts` が `details` を `reportError(..., "conversion")` に流し、`status = { kind: "error", message: summary }`。
 2. 変換中の失敗は `useConversionSession.ts` の `reportConversionFailure(message, cancelled)` — 進捗を消し、`status` を `{ kind: "error", message }`（キャンセルなら `{ kind: "idle" }`）にし、
    `reportError("変換に失敗しました: ..." または "変換をキャンセルしました", "conversion")`。
    - デスクトップ: Rust の `emit_failed`（`src-tauri/src/conversion.rs`）が `conversion-failed` イベントを送り、`onConversionFailed`（`src/datasource/tauri.ts`）が受ける。
    - Web: Worker が `convert-failed` を送り、`WebSource.onConvertFailed` が受ける。Worker の `describeConversionFailure`（`src/datasource/copc.worker.ts`）は、
      wasm のトラップなら `alloc_guard` が残した確保失敗の理由か「メモリ不足の可能性」を添える。
-3. 変換の呼び出し自体の例外は `openFile` の `catch` → `setStatus("error")`・`setError(String(e))`。
+3. 変換の呼び出し自体の例外は `useFileOpen.ts` の `openItems` の `catch` → `setStatus("error")`・`setError(String(e))`。
 
 ### 4. Rust の panic
 

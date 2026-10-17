@@ -8,10 +8,20 @@
 ```ts
 export interface DataSource {
   open(path: string): Promise<OpenedCloud>;
+  prepareToOpen(items: string[] | File[], options: { tempDir: string | null; isMobile: boolean }): Promise<PrepareOutcome>;
   readNode(cloudId: number, key: string): Promise<ArrayBuffer>;
   close(cloudId: number): Promise<void>;
 }
 ```
+
+### prepareToOpen: 開く前の準備
+
+選んだファイルを「`open` に渡せる COPC」にする操作です。COPC ならそのまま、そうでなければ変換（複数 LAS/LAZ は結合）します。
+Web とデスクトップで同じことをするので、`useFileOpen.ts` は `instanceof` で分けずにこれを呼びます。
+結果の `PrepareOutcome` は `ready { path }`（`open` に渡せるパス／キー）・`converting`（完了イベントが続きを開く）・
+`failed { summary, details }`（`summary` はパネル、`details` はエラーログ）の3つです。
+`WebSource` は `File` を受けて OPFS で変換し（`tempDir` は使わない）、`TauriSource` は Rust のコマンドを呼びます（`isMobile` は使わない）。
+`ConversionOutcome` から `PrepareOutcome` への変換と文言は `prepare-outcome.ts` です（[ファイルを開く](../flows/open-file.md)）。
 
 ### cloudId: 複数のファイルを同時に開く
 
@@ -100,7 +110,7 @@ Web 側には `las` 相当のパーサライブラリが無いため、LAS ヘ�
 
 `isCopcFile`（ヘッダー）は「変換が要るか」を、`detectSourceFormatByName`（拡張子。大文字小文字を区別しない。Rust の `detect_format` と同じ考え方）は
 「どの変換経路に回すか」（`lasLaz`／`pcd`／`ply`／`e57`／`unknown`）を決めます。PCD を LAS/LAZ の見積もりに回して
-「空き容量が足りません」と誤判定した実機不具合から分けられました。呼ぶのは `useFileOpen.ts` の `openFile`（[ファイルを開く](../flows/open-file.md)）。
+「空き容量が足りません」と誤判定した実機不具合から分けられました。呼ぶのは `WebSource.prepareToOpen`（`useFileOpen.ts` の `openFile`／`openFiles` から。[ファイルを開く](../flows/open-file.md)）。
 
 ## `update-check.ts`: 更新通知（デスクトップ・Android 共通）
 

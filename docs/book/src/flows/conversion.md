@@ -23,7 +23,7 @@
 | Web の複数ファイル | `WebSource.startMultiConversion` → `copc.worker.ts` の `handleConvertMultiStart` |
 | Web の PCD・PLY・E57 | `WebSource.startPointFileConversion` → `copc.worker.ts` の `handlePointFileConvertStart` |
 
-画面側の呼び出し元は `src/state/useFileOpen.ts` です(`startLasConversion`・`startMultiLasConversion`・`source.startConversion` などを呼ぶ)。
+画面側の呼び出し元は `src/state/useFileOpen.ts` です(`source.prepareToOpen` を呼び、それが中で `startLasConversion`・`startMultiLasConversion`・`startConversion` などを呼ぶ)。
 進捗・完了・失敗の受け取りは `src/state/useConversionSession.ts` です。
 
 ## 3. 流れ
