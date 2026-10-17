@@ -81,10 +81,42 @@ phone crashes in M4-11 (`TaskSheets/M4-import-and-conversion.md`, "M4-6 追記4"
 
 ## Record (filled in by the implementer)
 
-- Files touched:
+- Files touched: `src/state/{useLayers,useDisplaySettings,useLayerTool,useMeasureTool,useCopcViewer,viewer-types}.ts`,
+  `src/ui/layers/LayerActions.test.tsx` (removed two dead mock fields), `src/datasource/{tauri,tools,node-format,web}.ts`
+  (`web.ts`: only a comment), `src/renderer/{point-cloud-renderer,colormap,edl,scene-bounds,node-cache}.ts`,
+  `docs/book/src/{flows/layers,flows/settings,frontend/datasource,frontend/renderer}.md`. `scripts/igpu-bench/bench.mjs` is unchanged.
 - Deleted (including cascades):
+  - `useLayers.resetView` (type, Pick list, assembly) and, as a cascade, `PointCloudRenderer.resetView` (nothing else called it).
+    The now unused import `DEFAULT_PITCH` in the renderer went too. `focusedLayer()` and `visibleSceneBounds()` are still used elsewhere.
+  - `useDisplaySettings` `pointShape` / `setPointShape` (state, type, Pick list, assembly), cascade `PointCloudRenderer.setPointShape`,
+    and the `setPointShape` / `pointShape` mock fields in `LayerActions.test.tsx`.
+  - `LayerToolState.start`, `MeasureToolState.start` (and their `useCallback`s).
+  - `pickLocalFile` (tauri.ts), `EMPTY_SELECTION_MESSAGE` (tools.ts), `NODE_FLAG_INTENSITY`, `NODE_FLAG_CLASSIFICATION` (node-format.ts;
+    a comment now says bits 1 and 2 exist on the Rust side and are not read here).
+  - Renderer: `getLayerColorMode`, `getLayerPointShape`, `getLayerPointSize`, `isCameraAnimating`, `debugCameraState`,
+    `getAnimationEnabled`, `getBackgroundMode`, `getGridEnabled`, `setEdlStrength`, `getEdlStrength`, `setEdlRadiusPx`,
+    `getEdlRadiusPx`, `getCenterPriorityStrength`, `getMinCenterPriorityWeight`. `edlStrength` / `edlRadiusPx` have no setter any more,
+    so they are now `private readonly` (still initialised from `DEFAULT_EDL_STRENGTH` / `DEFAULT_EDL_RADIUS_PX`, still read when drawing).
+  - `NodeCache.values`, `COLOR_MODES`, `DEFAULT_COLOR_MODE`, `mergeValueRanges`, the type `Vec3` in `edl.ts`
+    (other files have their own `Vec3` from `up-axis.ts`; those are different symbols and stay).
+  - Comment fixes while touching: the orphaned doc comment of `pickLocalFiles` (it sat above `onFilesDropped`) was rewritten above
+    `pickLocalFiles`; two comments that named `EMPTY_SELECTION_MESSAGE` now give the text itself.
 - Kept although listed, and why:
-- What `find-unused-ts.cjs` still reports at the end:
-- `renderer.setPointShape` / the global shape: what was found:
-- Commands run and their results (tsc, lint, vitest counts, E2E, CI run id):
-- Not checked:
+  - `NodeCache.get`: the script reports it as UNUSED, but `PointCloudRenderer` passes the `NodeCache` to `selectNodesForFrame` as a
+    `NodeSelectionCache` (`{ get(key) }`; `node-selection.ts` calls `cache.get`). The language service does not follow that
+    structural match. Deleting it broke `tsc`, and it is also the LRU "touch". Restored; this is a false positive of the script.
+  - The 7 bench getters, with a one-line comment above each.
+- What `find-unused-ts.cjs` still reports at the end: the 7 bench getters (UNUSED, called by name from bench.mjs), `NodeCache.get`
+  (structural, above), the hook members passed inside `useCopcViewer.ts` (`*Deps` fields, `layersStateRef`, `commitLayers`,
+  `nextLayerId`, `extraSelectedIds`, `addOpenedLayer`, `openFile`, `onStats`, ...), and the TEST-ONLY items unchanged
+  (`getLastBytesRead`, `elevationToColor`, `intensityToColor`, `classificationToColor`, `DEFAULT_EDL_ENABLED`, `linearizeDepth`,
+  `edlShadingFactor`, `layerNodeKey`, `identity`, `totalCachedPoints`, `NodeLoader.reset`, `selectNodesForFrame`, `setUpAxis`,
+  `closestHierarchyHit`, `DistanceStats.*`, `PolygonStats.*`, `projectToNdc`).
+- `renderer.setPointShape` / the global shape: what was found: the renderer field `pointShape` is still read in three places: the default
+  style of a layer added without `LayerInput.pointShape`, `defaultNodeStyle()`, and the stats (`RenderStats.pointShape`, shown in
+  `LayerStatsDetails`). It is set once in the constructor from `defaultRenderSettings()`; the removed setter was the only thing that changed
+  it. So the field and `getPointShape` (bench) stay, only the setter and the hook state went, and the field is now `readonly`.
+  `useFileOpen` reads `deviceProfileDefaults.pointShape`, not the removed hook state, so the shape of newly opened layers is unchanged.
+- Commands run and their results (tsc, lint, vitest counts, E2E, CI run id): `npx tsc --noEmit` clean, `npm run lint` clean,
+  `npx vitest run` 575 passed (575). E2E (Playwright, PCV_E2E_PORT=4391): 4 passed (25.4s). CI: see below.
+- Not checked: the screen (nothing was opened in a browser or the desktop app by the implementer); the owner checks above are still to do.
