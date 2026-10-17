@@ -12,6 +12,8 @@ interface Props {
   primary?: boolean;
   /** Selected / ON button: draws a 3px primary (green) line along the bottom edge (ADR-0017). Used by the running tool buttons. */
   active?: boolean;
+  /** `data-testid` for E2E (only the buttons the E2E specs press set it; see CLAUDE.md). */
+  testId?: string;
 }
 
 /**
@@ -19,9 +21,10 @@ interface Props {
  * アイコンは`lucide-react`(ADR-0017に選定理由とライセンスを記録)。アイコンは
  * 飾りなので`aria-hidden`にし、ボタンの名前は下の文字ラベルが担う。
  */
-export function ToolbarButton({ icon: Icon, label, onClick, disabled = false, title, primary = false, active = false }: Props) {
+export function ToolbarButton({ icon: Icon, label, onClick, disabled = false, title, primary = false, active = false, testId }: Props) {
   return (
     <button
+      data-testid={testId}
       type="button"
       onClick={onClick}
       disabled={disabled}
