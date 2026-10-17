@@ -68,7 +68,7 @@
 - [ADR-0009](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0009-adaptive-render-settings.md)（手動設定を常に自動より優先）、
   [ADR-0017](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0017-ui-shell-ribbon.md)（設定を「アイコンの一覧＋1項目1ダイアログ」にした）、
   [R2-ui-components.md](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R2-ui-components.md)。
-- 新しい設定を足す手順: ① `useDisplaySettings` に state と setter（renderer を呼ぶ）② `viewer-types.ts` の `CopcViewerState` と `useCopcViewer` の `state` に追加
+- 新しい設定を足す手順: ① `useDisplaySettings` に state と setter（renderer を呼ぶ）② 型と説明は `useDisplaySettings` の `DisplaySettings` に書く ③ `viewer-types.ts` の `CopcViewerState` の `Pick<DisplaySettings, ...>` に名前を足し、`useCopcViewer` の `state` に追加
   ③ `settings/pages/` に 1 ファイル、`SettingsModal.tsx` の `PAGE_BUTTONS` と `settings-nav.ts` の `SettingsPageId`・`visibleSettingsPages` に追加。保存したいなら localStorage を `try/catch` で。
 - 点予算は、手で変えると自動調整が止まる。UI が 500ms 遅れて気づくと「勝手に切り替わった」ように見えるため、`setPointBudget` は UI 側でも自動調整のフラグを先に下ろす。
   自動調整が変えた値は `stats` 経由で UI に写る（`onStats`）。

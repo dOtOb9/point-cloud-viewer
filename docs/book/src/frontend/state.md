@@ -22,6 +22,19 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 - `pickPoint`・`getViewSnapshot` — renderer への 15 行ほどの素通し。
 - `CopcViewerState` に使う型の再エクスポート（`src/ui` が renderer／datasource の型に届くには state を通す、という規約のため）。
 
+### `viewer.xxx` から実装へ辿る
+
+`CopcViewerState`（[`viewer-types.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/viewer-types.ts)）は、フィールドを自分では宣言せず、
+各 hook の interface から `Pick<Layers, "layers" | ...> & Pick<DisplaySettings, ...> & ...` で選んで束ねています。
+**フィールドの型と説明文は、それを作る hook の interface に1回だけ**書かれています（`useFileOpen.ts` の `FileOpen`、`useLayers.ts` の `Layers` など）。
+`viewer-types.ts` に直接書いてあるのは、`useCopcViewer` 自身が作る `status`・`isBrowser`・`pickPoint`・`getViewSnapshot` だけです。
+
+たとえば `OpenFileButton.tsx` の `viewer.openFiles(picked)` で、`openFiles` の上で F12（定義へ移動）を押すと、
+`src/state/useFileOpen.ts` の `interface FileOpen` の `openFiles` に飛びます（ホバーすると、そこに書いた説明文が出ます）。
+実装は同じファイルの下の `useFileOpen()` の中にあります。
+
+フィールドを足す・消すときは、①その hook の interface ②`viewer-types.ts` の `Pick` の名前の並び ③`useCopcViewer.ts` の `state`（明示的な一覧。スプレッドにしないのは、hook の内部用の値を UI に見せないため）の3か所を揃えます。
+
 呼び出し順には意味が一箇所あります。`useRendererLifecycle` が effect の中で `sourceRef` を埋め、`useConversionSession` の effect がそれを読むので、
 **lifecycle を先に呼ぶ**（effect は呼んだ順に動く）。
 
@@ -30,7 +43,7 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 | ファイル | 持つもの | 入口 |
 |---|---|---|
 | `useCopcViewer.ts` | 組み立て。`status`・各 ref | `useCopcViewer()` |
-| `viewer-types.ts` | `CopcViewerState` とその小さな型（`ToolProgressState`・`OpfsStorageInfo`）。型だけ | （型） |
+| `viewer-types.ts` | `CopcViewerState`（各 hook の interface から `Pick` で組み立てる）とその小さな型（`ToolProgressState`・`OpfsStorageInfo`）。型だけ | （型） |
 | `viewer-status.ts` | `ViewerStatus`（開く・変換する状態の判別共用体）と、それを読むヘルパー。純粋関数 | `isFileOpenBusy` ほか |
 | `useRendererLifecycle.ts` | `PointCloudRenderer` と `TauriSource`／`WebSource` の生成・コールバック接続・リサイズ・破棄 | `useRendererLifecycle(refs, callbacks)` |
 | `useErrorLog.ts` | `gpuErrors`・`errorHistory`・`reportError`・`dismissGpuError`（`GpuErrorLog` を包む） | `useErrorLog()` |
