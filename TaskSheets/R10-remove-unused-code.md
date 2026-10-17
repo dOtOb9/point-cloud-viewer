@@ -118,5 +118,5 @@ phone crashes in M4-11 (`TaskSheets/M4-import-and-conversion.md`, "M4-6 追記4"
   it. So the field and `getPointShape` (bench) stay, only the setter and the hook state went, and the field is now `readonly`.
   `useFileOpen` reads `deviceProfileDefaults.pointShape`, not the removed hook state, so the shape of newly opened layers is unchanged.
 - Commands run and their results (tsc, lint, vitest counts, E2E, CI run id): `npx tsc --noEmit` clean, `npm run lint` clean,
-  `npx vitest run` 575 passed (575). E2E (Playwright, PCV_E2E_PORT=4391): 4 passed (25.4s). CI: see below.
+  `npx vitest run` 575 passed (575). E2E (Playwright, PCV_E2E_PORT=4391): 4 passed (25.4s). CI: run 39053104805 on 34d714b, `success` on the first attempt (checked by the coordinator with `gh run view`).
 - Not checked: the screen (nothing was opened in a browser or the desktop app by the implementer); the owner checks above are still to do.
