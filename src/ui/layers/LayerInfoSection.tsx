@@ -3,6 +3,7 @@ import { MEASURE_KIND_NAME, measurementLabelLines } from "../../state/measure";
 import { coordinateUnitLabel, formatCoordinate, lengthUnitsFor } from "../../state/units";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { formatCrsLong } from "../common/crs-format";
+import { statusErrorMessage } from "../../state/viewer-status";
 import { ConversionBreakdownPanel } from "./ConversionBreakdownPanel";
 
 // 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
@@ -21,6 +22,7 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
   // L1-D: 選択中のレイヤーの情報を出す。変換の内訳・ダウンロードは、それを作ったレイヤーを
   // 選んでいるときだけ出る（変換直後はそのレイヤーが選択になる）。
   const layer = viewer.selectedLayer;
+  const errorMessage = statusErrorMessage(viewer.status);
   const cloudInfo = layer?.info ?? null;
   // L2-D: the bounding box is shown in the chosen display unit (converted from the file unit).
   const [displayUnit] = useDisplayUnit();
@@ -70,11 +72,11 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
         </div>
       )}
 
-      {viewer.error && (
+      {errorMessage && (
         // E2E(`e2e/web-conversion.spec.ts`)がこのdata-testidでエラー表示の
         // 有無を確かめる。削除・リネームするときはそちらも直すこと(CLAUDE.md参照)。
         <p data-testid="viewer-error" className="text-xs text-error">
-          {viewer.error}
+          {errorMessage}
         </p>
       )}
 

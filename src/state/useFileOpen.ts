@@ -3,7 +3,7 @@
 // Flow: a COPC is opened at once. A raw LAS/LAZ/PCD first goes to conversion (useConversionSession.ts owns the
 // progress and the "done" event); when the conversion finishes, the event calls `openFile(output, true)` again.
 // Used by: useCopcViewer.ts (exposes openFile/openFiles); usePointCloudTools.ts uses `addOpenedLayer` for tool results.
-// Entry: `useFileOpen(deps)`. Errors are put in `setStatus("error")` + `setError` (and the banner when long).
+// Entry: `useFileOpen(deps)`. Errors are put in `setStatus({ kind: "error", message })` (and the banner when long).
 import { useCallback, useEffect, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { TauriSource, reportToBackendConsole, startLasConversion, startMultiLasConversion } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
@@ -18,13 +18,12 @@ import { addLayerToState, initialColorModeFor, type LayersState } from "./layers
 import { basenameOfPath, describeInsufficientSpaceDesktop } from "./open-file-text";
 import type { ConversionSession } from "./useConversionSession";
 import type { DisplaySettings } from "./useDisplaySettings";
-import type { ViewerStatus } from "./viewer-types";
+import type { ViewerStatus } from "./viewer-status";
 
 export interface FileOpenDeps {
   rendererRef: RefObject<PointCloudRenderer | null>;
   sourceRef: RefObject<DataSource | null>;
   setStatus: Dispatch<SetStateAction<ViewerStatus>>;
-  setError: Dispatch<SetStateAction<string | null>>;
   reportError: (message: string, source?: GpuErrorSource) => void;
   conversion: ConversionSession;
   /** Only `deviceProfileDefaults` is used (isMobile and the point shape of a new layer). */
@@ -50,7 +49,6 @@ export function useFileOpen({
   rendererRef,
   sourceRef,
   setStatus,
-  setError,
   reportError,
   conversion,
   display,
@@ -124,8 +122,7 @@ export function useFileOpen({
       const source = sourceRef.current;
       if (!renderer || !source) return;
 
-      setStatus("opening");
-      setError(null);
+      setStatus({ kind: "opening" });
       clearConversionProgress();
       try {
         // On the Web, a local file arrives as a `File`. `DataSource.open()` takes only strings, so it is
@@ -146,10 +143,11 @@ export function useFileOpen({
             // instead of running a misleading space check.
             const format = detectSourceFormatByName(pathOrFile.name);
             if (format === "ply" || format === "e57") {
-              setStatus("error");
-              setError(
-                `このファイル形式(${format.toUpperCase()})はWeb版ではまだ変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。`,
-              );
+              setStatus({
+                kind: "error",
+                message:
+                  `このファイル形式(${format.toUpperCase()})はWeb版ではまだ変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。`,
+              });
               return;
             }
             // M4-12: remember the source file name; the done handler registered once at mount reads it.
@@ -167,17 +165,17 @@ export function useFileOpen({
                 path = outcome.outputPath;
                 break;
               case "opfsUnavailable":
-                setStatus("error");
-                setError(
-                  "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
-                );
+                setStatus({
+                  kind: "error",
+                  message:
+                    "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。",
+                });
                 return;
               case "insufficientSpace":
                 // `ConversionOutcome` is shared with the desktop build, but WebSource always returns
                 // "insufficientSpaceWeb" below (see `checkInsufficientSpace` in web.ts). This branch exists
                 // for exhaustiveness and should not be reached.
-                setStatus("error");
-                setError("空き容量が足りません");
+                setStatus({ kind: "error", message: "空き容量が足りません" });
                 return;
               // M4-6: the Web build returns "insufficientSpaceWeb" (different contents from the desktop one).
               case "insufficientSpaceWeb": {
@@ -191,15 +189,14 @@ export function useFileOpen({
                   }),
                   "conversion",
                 );
-                setStatus("error");
-                setError("空き容量が足りません");
+                setStatus({ kind: "error", message: "空き容量が足りません" });
                 // Reflect the current usage before the settings page (delete / allow persistence) is shown.
                 void refreshOpfsStorageInfo();
                 return;
               }
               case "converting":
                 // The "done" event handler (useConversionSession.ts) continues and opens the result.
-                setStatus("converting");
+                setStatus({ kind: "converting" });
                 return;
             }
           }
@@ -224,12 +221,11 @@ export function useFileOpen({
               break;
             case "insufficientSpace":
               reportError(describeInsufficientSpaceDesktop(outcome.requiredBytes, outcome.availableBytes), "conversion");
-              setStatus("error");
-              setError("空き容量が足りません");
+              setStatus({ kind: "error", message: "空き容量が足りません" });
               return;
             case "converting":
               // The onConversionDone handler continues.
-              setStatus("converting");
+              setStatus({ kind: "converting" });
               return;
           }
         }
@@ -241,22 +237,20 @@ export function useFileOpen({
           typeof pathOrFile === "string" ? basenameOfPath(pathOrFile) : pathOrFile.name,
           isConversionContinuation,
         );
-        setStatus("ready");
+        setStatus({ kind: "ready" });
 
         const label = typeof pathOrFile === "string" ? pathOrFile : pathOrFile.name;
         const summary = `[M1] opened ${label}: points=${opened.pointCount} nodes=${opened.nodeCount}`;
         console.log(summary);
         await reportToBackendConsole(summary);
       } catch (e) {
-        setStatus("error");
-        setError(String(e));
+        setStatus({ kind: "error", message: String(e) });
       }
     },
     [
       rendererRef,
       sourceRef,
       setStatus,
-      setError,
       clearConversionProgress,
       rememberConvertingSource,
       reportError,
@@ -284,8 +278,7 @@ export function useFileOpen({
       const source = sourceRef.current;
       if (!renderer || !source) return;
 
-      setStatus("opening");
-      setError(null);
+      setStatus({ kind: "opening" });
       clearConversionProgress();
 
       const isFileArray = typeof pathsOrFiles[0] !== "string";
@@ -297,8 +290,11 @@ export function useFileOpen({
       // (naming the files).
       const nonLasNames = names.filter((n) => detectSourceFormatByName(n) !== "lasLaz");
       if (nonLasNames.length > 0) {
-        setStatus("error");
-        setError(`複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`);
+        setStatus({
+          kind: "error",
+          message:
+            `複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`,
+        });
         return;
       }
 
@@ -322,18 +318,18 @@ export function useFileOpen({
             void openFileRef.current(outcome.outputPath, true);
             return;
           case "converting":
-            setStatus("converting");
+            setStatus({ kind: "converting" });
             return;
           case "opfsUnavailable":
-            setStatus("error");
-            setError(
-              "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。",
-            );
+            setStatus({
+              kind: "error",
+              message:
+                "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。",
+            });
             return;
           case "insufficientSpace":
             reportError(describeInsufficientSpaceDesktop(outcome.requiredBytes, outcome.availableBytes), "conversion");
-            setStatus("error");
-            setError("空き容量が足りません");
+            setStatus({ kind: "error", message: "空き容量が足りません" });
             return;
           case "insufficientSpaceWeb":
             reportError(
@@ -346,8 +342,7 @@ export function useFileOpen({
               }),
               "conversion",
             );
-            setStatus("error");
-            setError("空き容量が足りません");
+            setStatus({ kind: "error", message: "空き容量が足りません" });
             void refreshOpfsStorageInfo();
             return;
           case "alreadyCopc":
@@ -356,8 +351,7 @@ export function useFileOpen({
             return;
         }
       } catch (e) {
-        setStatus("error");
-        setError(String(e));
+        setStatus({ kind: "error", message: String(e) });
       }
     },
     [
@@ -365,7 +359,6 @@ export function useFileOpen({
       sourceRef,
       openFileRef,
       setStatus,
-      setError,
       clearConversionProgress,
       rememberConvertingSource,
       reportError,

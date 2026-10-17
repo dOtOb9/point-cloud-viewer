@@ -12,7 +12,7 @@
 //   useOpfsStorage.ts        Web storage usage and cleanup (settings page)
 //   useTempDir.ts            desktop temp folder setting
 //
-// `status` and `error` stay here because almost every hook above writes them.
+// `status` (the ViewerStatus union, which holds the error message) stays here because almost every hook above writes it.
 // The mouse tools on the 3D view (useLayerTool.ts, useMeasureTool.ts) and the unit setting (useDisplayUnit.ts)
 // are separate hooks that take this state as input; they are not part of it.
 // The type re-exports below exist because src/ui must reach the renderer / datasource types through state (ARCHITECTURE.md rule 3).
@@ -29,7 +29,8 @@ import { useOpfsStorage } from "./useOpfsStorage";
 import { usePointCloudTools } from "./usePointCloudTools";
 import { useRendererLifecycle } from "./useRendererLifecycle";
 import { useTempDir } from "./useTempDir";
-import type { CopcViewerState, ViewerStatus } from "./viewer-types";
+import type { CopcViewerState } from "./viewer-types";
+import type { ViewerStatus } from "./viewer-status";
 
 export type {
   BackgroundMode,
@@ -41,7 +42,6 @@ export type {
   PointShape,
   ToolProgressState,
   ViewerLayer,
-  ViewerStatus,
 } from "./viewer-types";
 
 /**
@@ -53,8 +53,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<PointCloudRenderer | null>(null);
   const sourceRef = useRef<DataSource | null>(null);
-  const [status, setStatus] = useState<ViewerStatus>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<ViewerStatus>({ kind: "idle" });
+  // A renderer init failure is shown like an open failure (R5). Stable, because an effect depends on it.
+  const setInitError = useCallback((message: string) => setStatus({ kind: "error", message }), []);
   // Shared by useConversionSession (to ignore tool progress) and usePointCloudTools (sets it).
   const toolRunningRef = useRef(false);
 
@@ -64,7 +65,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const display = useDisplaySettings(rendererRef);
   useRendererLifecycle(
     { canvasRef, rendererRef, sourceRef },
-    { onStats: display.onStats, reportError: errorLog.reportError, setError },
+    { onStats: display.onStats, reportError: errorLog.reportError, setError: setInitError },
   );
   const layers = useLayers({ rendererRef, sourceRef, setStatus, reportError: errorLog.reportError });
   const opfs = useOpfsStorage();
@@ -74,7 +75,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     sourceRef,
     toolRunningRef,
     setStatus,
-    setError,
     reportError: errorLog.reportError,
     selectedBreakdownText,
   });
@@ -82,7 +82,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     rendererRef,
     sourceRef,
     setStatus,
-    setError,
     reportError: errorLog.reportError,
     conversion,
     display,
@@ -126,7 +125,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
 
   const state: CopcViewerState = {
     status,
-    error,
     layers: layers.layers,
     selectedLayerId: layers.selectedLayerId,
     selectedLayer: layers.selectedLayer,

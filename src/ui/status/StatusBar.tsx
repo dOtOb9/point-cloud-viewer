@@ -30,10 +30,10 @@ export function StatusBar({
   // ロード中/キュー待ちノード数を出す(「進捗」の意味がこの2つに分かれる
   // ため、状態に応じて出し分ける)。
   let loadProgressLabel: string;
-  if (viewer.status === "converting" && viewer.conversionProgress?.phase === "reading") {
+  if (viewer.status.kind === "converting" && viewer.conversionProgress?.phase === "reading") {
     const pct = (viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100;
     loadProgressLabel = `変換中 ${pct.toFixed(0)}%`;
-  } else if (viewer.status === "converting") {
+  } else if (viewer.status.kind === "converting") {
     loadProgressLabel = "変換中…";
   } else if (stats && (stats.loadingNodes > 0 || stats.queuedNodes > 0)) {
     loadProgressLabel = `読込中 ${stats.loadingNodes} / 待機 ${stats.queuedNodes}`;
@@ -61,7 +61,7 @@ export function StatusBar({
       <span className="whitespace-nowrap">fps:{stats ? stats.fps.toFixed(0) : "―"}</span>
       {/* CRS: 短い形(EPSGコード)。狭幅では省く(詳細は左パネルで見られる)。 */}
       <span className="hidden whitespace-nowrap md:inline">CRS: {viewer.selectedLayer ? formatCrsShort(viewer.selectedLayer.info.crs) : "―"}</span>
-      {viewer.status === "converting" ? (
+      {viewer.status.kind === "converting" ? (
         // 変換中はクリックで変換ダイアログを開き直せる(外側クリック・Escで閉じても変換は続くため)。
         <button type="button" onClick={onOpenConversion} className="min-h-8 min-w-0 truncate rounded bg-secondary px-2 text-on-secondary">
           {loadProgressLabel}

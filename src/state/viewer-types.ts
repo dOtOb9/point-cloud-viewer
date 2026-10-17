@@ -3,6 +3,7 @@
 // Used by: src/ui (through the re-exports in useCopcViewer.ts), useLayerTool.ts, useMeasureTool.ts.
 // The hooks that fill each group of fields are listed in useCopcViewer.ts.
 import type { ConversionProgress } from "../datasource/conversion-dto";
+import type { ViewerStatus } from "./viewer-status";
 import type { CachedConversionEntry, OpfsUsageBreakdown } from "../datasource/opfs";
 import type { ExtractFilter } from "../datasource/tools";
 import type { RenderStats } from "../renderer/point-cloud-renderer";
@@ -60,18 +61,14 @@ export interface OpfsStorageInfo {
 }
 
 
-// M4-3: "converting"は生LAS/LAZの変換中(進捗・キャンセルUIを出す状態)。
-// 変換を挟まない通常のCOPCを開く処理は従来どおり"opening"のまま
-// (一瞬で終わるため専用の状態を設けない)。
-export type ViewerStatus = "idle" | "opening" | "converting" | "ready" | "error";
 
 // canvasRefは意図的にCopcViewerStateに含めない。ref(canvasRef)とstate(下記)を
 // 同じオブジェクトに混ぜると、eslint-plugin-react-hooksの`react-hooks/refs`が
 // 「このオブジェクトのプロパティはrefかもしれない」と見なし、stateの参照にまで
 // render中アクセス禁止の誤検知を起こすため、呼び出し側には別々の値として返す。
 export interface CopcViewerState {
+  /** Open / convert status, including the error message (`viewer-status.ts`). Read it through its helpers. */
   status: ViewerStatus;
-  error: string | null;
   /**
    * L1-D: 開いているレイヤーの一覧（足した順）。「開く」は常に末尾へ足す（置き換えない）。
    * 名前・点群情報・点数・着色・表示/非表示・変換の内訳・ダウンロードはレイヤーごとに持つ。
@@ -162,7 +159,11 @@ export interface CopcViewerState {
    * （`recordErrorHistory`参照）。
    */
   errorHistory: GpuErrorEntry[];
-  /** 変換ダイアログ(ConversionDialog.tsx)に出す、変換中の元ファイル名。まだ変換していなければnull。 */
+  /**
+   * Name of the file converted last, for the conversion dialog (ConversionDialog.tsx); null before any conversion.
+   * Not in the `converting` status: the dialog still shows it after the conversion finished (status "ready"),
+   * and it is set while the status is still "opening" (R5).
+   */
   convertingFileName: string | null;
   /** Tauri版はパス文字列、Web版はURL文字列か、ドラッグ&ドロップ/選択した`File`を渡す。 */
   openFile: (pathOrFile: string | File) => Promise<void>;
@@ -180,7 +181,9 @@ export interface CopcViewerState {
   /** Sends a message to the existing error banner and log (ADR-0011). `source` defaults to "gpu". */
   reportError: (message: string, source?: GpuErrorSource) => void;
   /**
-   * M4-3: 生LAS/LAZの変換中(`status === "converting"`)の進捗。読み込み段階は
+   * Not in the `converting` status: Web progress events ("preparing") may arrive before the status turns
+   * "converting", and they must not be lost (R5).
+   * M4-3: 生LAS/LAZの変換中(`status.kind === "converting"`)の進捗。読み込み段階は
    * `{phase: "reading", pointsRead, totalPoints, elapsedSecs}`で正確な割合が
    * 分かり、その後(octree構築・書き出し)は`{phase: "postProcessing",
    * elapsedSecs}`に切り替わる(割合は出せない。理由は

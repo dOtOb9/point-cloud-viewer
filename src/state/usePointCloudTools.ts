@@ -16,7 +16,8 @@ import { horizontalBasis } from "../renderer/up-axis";
 import { findLayer, isMeasureLayer, type LayersState } from "./layers";
 import { effectiveSelectedIds, toolSourceLayers } from "./layer-selection";
 import { sectionYaw } from "./tool-math";
-import type { ToolProgressState, ViewerStatus } from "./viewer-types";
+import type { ToolProgressState } from "./viewer-types";
+import type { ViewerStatus } from "./viewer-status";
 
 export interface PointCloudToolsDeps {
   rendererRef: RefObject<PointCloudRenderer | null>;
@@ -96,7 +97,9 @@ export function usePointCloudTools({
         });
         for (const warning of result.warnings) reportToolMessage(warning);
         const { layerId } = await addOpenedLayer(result.outputPath, resultName, false);
-        setStatus("ready");
+        // A finished tool must not wipe the text of an earlier open failure from the panel (the error and
+        // the status used to be separate fields, so the text stayed). Keep "error" as it is.
+        setStatus((prev) => (prev.kind === "error" ? prev : { kind: "ready" }));
         if (viewNormal) {
           const up = rendererRef.current?.getViewSnapshot()?.up ?? [0, 0, 1];
           const { right, forward } = horizontalBasis(up);

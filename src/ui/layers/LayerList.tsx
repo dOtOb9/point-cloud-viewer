@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CopcViewerState } from "../../state/useCopcViewer";
+import { isFileOpenBusy } from "../../state/viewer-status";
 import { LayerContextMenu, type MenuState } from "./LayerContextMenu";
 
 // L1-D: レイヤー欄の一覧。各行は「表示チェック + 名前」。
@@ -27,7 +28,7 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
   // アンマウント時にタイマーが残らないようにする。
   useEffect(() => cancelPress, []);
 
-  const loading = viewer.status === "opening" || viewer.status === "converting";
+  const loading = isFileOpenBusy(viewer.status);
 
   if (viewer.layers.length === 0 && !loading) {
     return <p className="px-2 py-1.5 text-xs opacity-60">開いているファイルはありません</p>;

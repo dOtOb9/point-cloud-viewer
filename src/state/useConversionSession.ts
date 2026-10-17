@@ -22,7 +22,7 @@ import { formatConversionBreakdown, type ConversionBreakdownMeta } from "../data
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import type { LayerDownload } from "./layers";
 import { basenameOfPath, extensionOfFileName } from "./open-file-text";
-import type { ViewerStatus } from "./viewer-types";
+import type { ViewerStatus } from "./viewer-status";
 
 /**
  * The result of a finished conversion, kept only until it is opened as a layer.
@@ -58,7 +58,6 @@ export interface ConversionSessionDeps {
    */
   toolRunningRef: RefObject<boolean>;
   setStatus: Dispatch<SetStateAction<ViewerStatus>>;
-  setError: Dispatch<SetStateAction<string | null>>;
   reportError: (message: string, source?: GpuErrorSource) => void;
   /** Breakdown text of the selected layer (null if it has none), for the copy button. */
   selectedBreakdownText: string | null;
@@ -83,7 +82,6 @@ export function useConversionSession({
   sourceRef,
   toolRunningRef,
   setStatus,
-  setError,
   reportError,
   selectedBreakdownText,
 }: ConversionSessionDeps): ConversionSession {
@@ -131,8 +129,7 @@ export function useConversionSession({
 
     const reportConversionFailure = (message: string, cancelled: boolean) => {
       setConversionProgress(null);
-      setStatus(cancelled ? "idle" : "error");
-      setError(cancelled ? null : message);
+      setStatus(cancelled ? { kind: "idle" } : { kind: "error", message });
       // Failures and cancels are shown in the error banner (ADR-0011/0013). Cancel too: without the
       // banner the progress just disappears and it looks as if nothing happened.
       reportError(cancelled ? "変換をキャンセルしました" : `変換に失敗しました: ${message}`, "conversion");
@@ -159,8 +156,7 @@ export function useConversionSession({
           // fetched from outside the app).
           const file = await getConvertedFile(outputName);
           if (!file) {
-            setStatus("error");
-            setError("変換結果をOPFSから読み出せませんでした");
+            setStatus({ kind: "error", message: "変換結果をOPFSから読み出せませんでした" });
             return;
           }
           // L1-D: keep the breakdown and the download pending; the layer opened next receives them.
@@ -211,7 +207,7 @@ export function useConversionSession({
       unlistenDone();
       unlistenFailed();
     };
-  }, [sourceRef, toolRunningRef, setStatus, setError, reportError, setPendingConversion]);
+  }, [sourceRef, toolRunningRef, setStatus, reportError, setPendingConversion]);
 
   const cancelConversion = useCallback(() => {
     const source = sourceRef.current;

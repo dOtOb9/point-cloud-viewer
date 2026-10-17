@@ -4,6 +4,7 @@ import type { CopcViewerState } from "../../../state/useCopcViewer";
 // Rule 2: do not import the Tauri dialog package directly. Go through the DataSource function
 // (`pickLocalFiles`, multi-select since M4-14); see `src/datasource/tauri.ts`.
 import { pickLocalFiles } from "../../../datasource/tauri";
+import { isFileOpenBusy, openButtonLabel } from "../../../state/viewer-status";
 import { ToolbarButton } from "../ToolbarButton";
 
 interface Props {
@@ -26,7 +27,7 @@ interface Props {
  */
 export function OpenFileButton({ viewer }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const busy = viewer.status === "opening" || viewer.status === "converting";
+  const busy = isFileOpenBusy(viewer.status);
 
   async function pickAndOpen() {
     if (viewer.isBrowser) {
@@ -50,7 +51,7 @@ export function OpenFileButton({ viewer }: Props) {
     <>
       <ToolbarButton
         icon={FolderOpen}
-        label={viewer.status === "opening" ? "開いています…" : viewer.status === "converting" ? "変換中…" : "開く"}
+        label={openButtonLabel(viewer.status)}
         title="ファイルを開く"
         primary
         disabled={busy}

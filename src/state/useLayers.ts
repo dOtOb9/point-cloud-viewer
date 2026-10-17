@@ -30,7 +30,7 @@ import {
 } from "./layers";
 import { MEASURE_KIND_NAME, type Measurement } from "./measure";
 import { effectiveSelectedIds, rangeSelectedIds, toggleSelectedId } from "./layer-selection";
-import type { ViewerStatus } from "./viewer-types";
+import type { ViewerStatus } from "./viewer-status";
 
 export interface LayersDeps {
   rendererRef: RefObject<PointCloudRenderer | null>;
@@ -181,7 +181,7 @@ export function useLayers({ rendererRef, sourceRef, setStatus, reportError }: La
       const next = removeLayerFromState(current, id);
       commitLayers(next);
       if (next.layers.length === 0) {
-        setStatus((prev) => (prev === "ready" ? "idle" : prev));
+        setStatus((prev) => (prev.kind === "ready" ? { kind: "idle" } : prev));
       }
       // Measurement layers have no DataSource file.
       if (isMeasureLayer(layer)) return;

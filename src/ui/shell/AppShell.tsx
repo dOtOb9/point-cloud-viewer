@@ -19,6 +19,7 @@ import { glassSurfaceClass } from "../common/glass";
 import { LayerPanel } from "../layers/LayerPanel";
 import { Toolbar } from "../toolbar/Toolbar";
 import { SettingsModal } from "../settings/SettingsModal";
+import { isOpenRunningOrDone, statusErrorMessage } from "../../state/viewer-status";
 import { StatusBar } from "../status/StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 import { UpdateNotice } from "../status/UpdateNotice";
@@ -61,11 +62,12 @@ export function AppShell() {
   // useEffectでsetStateする代わりに、前回の値をstateに持って描画中に比較する
   // (Reactが推奨する「propsの変化に応じてstateを調整する」書き方。lintの
   // react-hooks/set-state-in-effectも避けられる)。
-  const [prev, setPrev] = useState({ status: viewer.status, errorCount: viewer.gpuErrors.length, error: viewer.error });
-  if (prev.status !== viewer.status || prev.errorCount !== viewer.gpuErrors.length || prev.error !== viewer.error) {
-    setPrev({ status: viewer.status, errorCount: viewer.gpuErrors.length, error: viewer.error });
-    if (viewer.status === "converting" && prev.status !== "converting") setConversionDialogOpen(true);
-    if (viewer.gpuErrors.length > prev.errorCount || (viewer.error !== null && viewer.error !== prev.error)) {
+  const viewerError = statusErrorMessage(viewer.status);
+  const [prev, setPrev] = useState({ statusKind: viewer.status.kind, errorCount: viewer.gpuErrors.length, error: viewerError });
+  if (prev.statusKind !== viewer.status.kind || prev.errorCount !== viewer.gpuErrors.length || prev.error !== viewerError) {
+    setPrev({ statusKind: viewer.status.kind, errorCount: viewer.gpuErrors.length, error: viewerError });
+    if (viewer.status.kind === "converting" && prev.statusKind !== "converting") setConversionDialogOpen(true);
+    if (viewer.gpuErrors.length > prev.errorCount || (viewerError !== null && viewerError !== prev.error)) {
       setErrorDialogMode("current");
     }
   }
@@ -83,9 +85,9 @@ export function AppShell() {
   }
 
   // 変換ダイアログを出す条件: 変換中、または変換が終わって結果を出している間。
-  // 失敗・キャンセル(status="error"/"idle")のときは出さない(エラーダイアログが出る)。
-  const conversionFinished = viewer.selectedLayer?.conversionBreakdownText != null && viewer.status !== "error" && viewer.status !== "idle";
-  const conversionDialogVisible = conversionDialogOpen && (viewer.status === "converting" || conversionFinished);
+  // 失敗・キャンセル(status.kind が "error"/"idle")のときは出さない(エラーダイアログが出る)。
+  const conversionFinished = viewer.selectedLayer?.conversionBreakdownText != null && isOpenRunningOrDone(viewer.status);
+  const conversionDialogVisible = conversionDialogOpen && (viewer.status.kind === "converting" || conversionFinished);
 
   const closeErrorDialog = () => {
     // 「現在のエラー」を閉じるときは、それらを一覧から消す(履歴には残る)。
@@ -153,7 +155,7 @@ export function AppShell() {
         onShowHistory={() => setErrorDialogMode("history")}
         current={viewer.gpuErrors}
         history={viewer.errorHistory}
-        viewerError={viewer.error}
+        viewerError={viewerError}
       />
     </div>
   );

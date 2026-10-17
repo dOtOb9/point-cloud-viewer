@@ -45,7 +45,7 @@ function formatElapsed(seconds: number): string {
  *   (`data-testid`を持つ要素はそちらに残してある)。
  */
 export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewerState; open: boolean; onClose: () => void }) {
-  const converting = viewer.status === "converting";
+  const converting = viewer.status.kind === "converting";
   const progress = viewer.conversionProgress;
   const name = viewer.convertingFileName ?? "(不明)";
 

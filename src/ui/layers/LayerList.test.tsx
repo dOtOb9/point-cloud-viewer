@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { CopcViewerState } from "../../state/useCopcViewer";
+import type { ViewerStatus } from "../../state/viewer-status";
 import { LayerList } from "./LayerList";
 
 declare global {
@@ -12,7 +13,7 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-function fakeViewer(status: string = "ready") {
+function fakeViewer(status: ViewerStatus = { kind: "ready" }) {
   const fns = {
     selectLayer: vi.fn(),
     toggleLayerSelection: vi.fn(),
@@ -140,7 +141,7 @@ describe("LayerList", () => {
   });
 
   it("読み込み中は「読み込み中…」の行が出る", () => {
-    const { viewer } = fakeViewer("opening");
+    const { viewer } = fakeViewer({ kind: "opening" });
     const cleanup = mount(<LayerList viewer={viewer} />);
     expect(document.body.textContent).toContain("読み込み中…");
     cleanup();
