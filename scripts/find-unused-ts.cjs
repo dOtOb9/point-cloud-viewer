@@ -10,9 +10,11 @@
 // so a member passed between hooks inside useCopcViewer.ts can show up as UNUSED: check those by hand.
 // Limits: a call made through a string (scripts/igpu-bench/bench.mjs calls renderer getters by name, e2e page.evaluate)
 // is invisible to it. grep e2e/, scripts/ and docs/ before deleting anything it lists.
+// It also misses a call through a structurally matching type: `NodeCache.get` is reported but `node-selection.ts` calls it
+// through the `NodeSelectionCache` interface (R10). Run `npx tsc --noEmit` after each deletion.
 const fs = require("fs");
 const path = require("path");
-const root = process.argv[2];
+const root = path.resolve(process.argv[2] || ".");
 const ts = require(path.join(root, "node_modules/typescript"));
 const norm = (p) => p.split(path.sep).join("/");
 
