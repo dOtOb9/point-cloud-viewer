@@ -34,7 +34,7 @@ export interface MeasureToolState {
   start: (kind: MeasureKind) => void;
   /** Stop (also discards points entered so far). */
   stop: () => void;
-  /** Stop if it is the same kind, otherwise start (for the ribbon buttons). */
+  /** Stop if it is the same kind, otherwise start (for the toolbar buttons). */
   toggle: (kind: MeasureKind) => void;
   /** Close and finish an area (same as Enter or double click). */
   finish: () => void;

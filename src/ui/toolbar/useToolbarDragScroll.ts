@@ -1,16 +1,16 @@
 import { useEffect, useRef } from "react";
-import { moveDrag, shouldSuppressClick, startDrag, type DragState } from "./ribbon-drag";
+import { moveDrag, shouldSuppressClick, startDrag, type DragState } from "./toolbar-drag";
 
 /**
- * L1-A: リボンの横スクロールに「マウス左ボタンのドラッグ」と「ホイール縦回転→横」を足す。
- * 判定そのものは ribbon-drag.ts(純粋関数)。ここはDOMイベントとの接続だけ。
+ * L1-A: ツールバーの横スクロールに「マウス左ボタンのドラッグ」と「ホイール縦回転→横」を足す。
+ * 判定そのものは toolbar-drag.ts(純粋関数)。ここはDOMイベントとの接続だけ。
  * タッチは素のoverflow-xで動くので扱わない(pointerType==="mouse"のときだけ働く)。
  *
  * ポインタキャプチャは使わず、押している間だけwindowにmove/upを付ける。
  * キャプチャするとclickの宛先が変わり、閾値未満のクリックまで壊れうるため。
  * ドラッグ後のclickは、返り値のonClickCaptureが握りつぶす。
  */
-export function useRibbonDragScroll() {
+export function useToolbarDragScroll() {
   const ref = useRef<HTMLDivElement>(null);
   const suppressClick = useRef(false);
 

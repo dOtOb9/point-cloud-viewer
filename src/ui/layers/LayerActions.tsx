@@ -4,13 +4,13 @@ import { createPortal } from "react-dom";
 import { isMeasureLayer } from "../../state/layers";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { shouldDeleteLayerOnKey } from "./layer-delete-key";
-import { RibbonButton } from "../ribbon/RibbonButton";
+import { ToolbarButton } from "../toolbar/ToolbarButton";
 import { AppearanceDialog } from "../dialogs/AppearanceDialog";
 import { ColorModeDialog } from "../dialogs/ColorModeDialog";
 
 /**
  * L2-A: レイヤー情報の下に置く「選択中のレイヤーへの操作」ボタン列(着色・見た目・削除)。
- * 見た目はリボンと同じ「アイコン+名前」(`RibbonButton`を再利用)。選択中のレイヤーが対象で、
+ * 見た目はツールバーと同じ「アイコン+名前」(`ToolbarButton`を再利用)。選択中のレイヤーが対象で、
  * レイヤーが無いときは全部グレーで押せない。削除が右クリックしないと見つからない、という
  * 所有者の指摘への答え(常に見えるボタンにする)。右クリック・長押しのメニュー(LayerList)も残す。
  *
@@ -45,16 +45,16 @@ export function LayerActions({ viewer }: { viewer: CopcViewerState }) {
   return (
     <>
       <div className="flex flex-nowrap items-center gap-1 pl-[11px]" data-testid="layer-actions">
-        <RibbonButton icon={Palette} label="着色" title="選んだレイヤーの色の付け方" disabled={!pointCloudSelected} onClick={() => setDialog("color")} />
-        <RibbonButton icon={Eye} label="見た目" title="選んだレイヤーの見た目" disabled={!pointCloudSelected} onClick={() => setDialog("appearance")} />
-        <RibbonButton
+        <ToolbarButton icon={Palette} label="着色" title="選んだレイヤーの色の付け方" disabled={!pointCloudSelected} onClick={() => setDialog("color")} />
+        <ToolbarButton icon={Eye} label="見た目" title="選んだレイヤーの見た目" disabled={!pointCloudSelected} onClick={() => setDialog("appearance")} />
+        <ToolbarButton
           icon={Crosshair}
           label="移動"
           title="選んだレイヤーへカメラを移す"
           disabled={!hasLayer}
           onClick={() => selectedId !== null && focusLayer(selectedId)}
         />
-        <RibbonButton
+        <ToolbarButton
           icon={Trash2}
           label="削除"
           title="選んだレイヤーを削除（Delete キー）"

@@ -27,7 +27,7 @@ export function LayerToolOverlay({
   viewer: CopcViewerState;
   tool: LayerToolState;
   canvasRef: RefObject<HTMLCanvasElement | null>;
-  /** Same device-profile flag as the ribbon: false falls back to an opaque tint. */
+  /** Same device-profile flag as the toolbar: false falls back to an opaque tint. */
   glassEnabled: boolean;
 }) {
   const [frame, setFrame] = useState<Frame | null>(null);

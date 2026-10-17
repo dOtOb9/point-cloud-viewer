@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { RIBBON_BUTTON_CLASS, RIBBON_BUTTON_PRIMARY_CLASS } from "./ribbon-styles";
+import { TOOLBAR_BUTTON_CLASS, TOOLBAR_BUTTON_PRIMARY_CLASS } from "./toolbar-styles";
 
 interface Props {
   icon: LucideIcon;
@@ -10,16 +10,16 @@ interface Props {
   /** ホバーで出す説明。未実装ツールは「未実装（予定）」を渡す。 */
   title?: string;
   primary?: boolean;
-  /** 選択中・ON状態のボタン。下端に3pxのprimary(緑)の線を引く(ADR-0017)。現状、リボンにトグル/タブ型のボタンは無く未使用(将来のため)。 */
+  /** 選択中・ON状態のボタン。下端に3pxのprimary(緑)の線を引く(ADR-0017)。現状、ツールバーにトグル/タブ型のボタンは無く未使用(将来のため)。 */
   active?: boolean;
 }
 
 /**
- * ADR-0017: リボンのボタン1つ。アイコンが上、文字ラベルが下(所有者の要件)。
+ * ADR-0017: ツールバーのボタン1つ。アイコンが上、文字ラベルが下(所有者の要件)。
  * アイコンは`lucide-react`(ADR-0017に選定理由とライセンスを記録)。アイコンは
  * 飾りなので`aria-hidden`にし、ボタンの名前は下の文字ラベルが担う。
  */
-export function RibbonButton({ icon: Icon, label, onClick, disabled = false, title, primary = false, active = false }: Props) {
+export function ToolbarButton({ icon: Icon, label, onClick, disabled = false, title, primary = false, active = false }: Props) {
   return (
     <button
       type="button"
@@ -27,7 +27,7 @@ export function RibbonButton({ icon: Icon, label, onClick, disabled = false, tit
       disabled={disabled}
       aria-disabled={disabled}
       title={title ?? label}
-      className={`${RIBBON_BUTTON_CLASS} ${primary ? RIBBON_BUTTON_PRIMARY_CLASS : ""}`}
+      className={`${TOOLBAR_BUTTON_CLASS} ${primary ? TOOLBAR_BUTTON_PRIMARY_CLASS : ""}`}
     >
       <Icon size={20} aria-hidden="true" />
       <span>{label}</span>

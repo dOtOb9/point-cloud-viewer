@@ -175,7 +175,7 @@ export interface CopcViewerState {
    * (受け入れ条件。LAS/LAZの混在はOK)。
    */
   openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
-  /** True in the browser build. The ribbon's open button (`RibbonFileGroup.tsx`) uses it to switch between the Tauri file dialog and the Web file input. */
+  /** True in the browser build. The toolbar's open button (`buttons/OpenFileButton.tsx`) uses it to switch between the Tauri file dialog and the Web file input. */
   isBrowser: boolean;
   /**
    * M4-3: 生LAS/LAZの変換中(`status === "converting"`)の進捗。読み込み段階は

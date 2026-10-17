@@ -17,7 +17,7 @@ import { ConversionDialog } from "../dialogs/ConversionDialog";
 import { ErrorDialog } from "../dialogs/ErrorDialog";
 import { glassSurfaceClass } from "../common/glass";
 import { LayerPanel } from "../layers/LayerPanel";
-import { Ribbon } from "../ribbon/Ribbon";
+import { Toolbar } from "../toolbar/Toolbar";
 import { SettingsModal } from "../settings/SettingsModal";
 import { StatusBar } from "../status/StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
@@ -26,7 +26,7 @@ import { UpdateNotice } from "../status/UpdateNotice";
 /**
  * ADR-0017 (UIシェル再構築): UIシェルの組み立て役。
  *
- * レイアウトは「上部リボン + 左レイヤーツリー + 下部ステータスバー」。
+ * レイアウトは「上部ツールバー + 左レイヤーツリー + 下部ステータスバー」。
  * 設定・変換の進捗・エラーは、共通の`Dialog`に載せた中央ダイアログで出す。
  * ADR-0005の決定(全面ビューア+浮かぶガラス面、設定は不透明)は変えていない
  * (ダイアログは3つとも不透明)。
@@ -73,7 +73,7 @@ export function AppShell() {
   // ガラス表現(backdrop-blur)は固定(ADR-0017: 所有者の決定でユーザー設定は廃止)。
   // ただしモバイル端末では`device-profile.ts`の端末プロファイル(M3-8: GPU負荷の
   // 軽減)が自動でぼかしを切り、不透明のtintにする。これは性能プロファイルであって
-  // ユーザーが切り替える設定ではない。子のRibbon/LayerPanel/StatusBar/UpdateNoticeへ
+  // ユーザーが切り替える設定ではない。子のToolbar/LayerPanel/StatusBar/UpdateNoticeへ
   // propsで配る(ダイアログ類は意図的にガラスを使わない)。
   const [glassEnabled] = useState(() => defaultRenderSettings(readDeviceProfileInput()).glassEnabled);
 
@@ -102,7 +102,7 @@ export function AppShell() {
       <MeasureHud measure={measure} glassEnabled={glassEnabled} />
       <LayerToolOverlay viewer={viewer} tool={layerTool} canvasRef={canvasRef} glassEnabled={glassEnabled} />
 
-      <Ribbon
+      <Toolbar
         viewer={viewer}
         glassEnabled={glassEnabled}
         onOpenSettings={() => setSettingsOpen(true)}

@@ -30,9 +30,9 @@ interface Props {
  *
  * 以前の`LayerPanel.tsx`(ファイルを開く操作+点予算+背景+グリッド+進捗+
  * エラー+ダウンロード+内訳)と`InfoPanel.tsx`(cloudInfoの先頭+統計+カメラ)を
- * 1つの左パネルへ統合した形になる。ファイルを開く操作自体はリボンの
- * 「ファイル」グループ(`RibbonFileGroup.tsx`)へ移した(タスクシートの
- * レイアウト指定: 開く操作はリボン、ファイル名等の情報は左パネル)。
+ * 1つの左パネルへ統合した形になる。ファイルを開く操作自体はツールバーの
+ * 「ファイル」グループ(`buttons/OpenFileButton.tsx`)へ移した(タスクシートの
+ * レイアウト指定: 開く操作はツールバー、ファイル名等の情報は左パネル)。
  *
  * 折りたたみ可能(`open`/`onToggleOpen`、以前と同じ)。768px未満
  * (`useNarrowViewport`)では、固定幅のパネルではなく画面を覆うドロワーに
@@ -104,7 +104,7 @@ export function LayerPanel({ viewer, open, onToggleOpen, glassEnabled }: Props) 
   }
 
   return (
-    // 上はリボン(top-3 + 高さ約4.5rem)、下はステータスバー(約2.75rem)に重ならない位置にする。
+    // 上はツールバー(top-3 + 高さ約4.5rem)、下はステータスバー(約2.75rem)に重ならない位置にする。
     // パネルと開閉ボタンは、どちらも絶対配置+transformで動かす(flexの並びだと、パネルが
     // DOMから消えた瞬間に開閉ボタンの位置が飛ぶため)。ボタンはパネル幅(w-72=18rem)+隙間ぶん右へずらす。
     <div className="pointer-events-none absolute bottom-14 left-3 top-28 z-10">

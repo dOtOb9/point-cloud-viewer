@@ -1,17 +1,17 @@
 import { FolderOpen } from "lucide-react";
-import type { CopcViewerState } from "../../state/useCopcViewer";
+import type { CopcViewerState } from "../../../state/useCopcViewer";
 // 規約2: Tauriのダイアログのパッケージを直接importしない。DataSource側の関数
 // (`pickLocalFiles`。M4-14で複数選択に対応)越しに呼ぶ(`src/datasource/tauri.ts`参照)。
-import { pickLocalFiles } from "../../datasource/tauri";
-import { RibbonButton } from "./RibbonButton";
-import { RIBBON_BUTTON_CLASS, RIBBON_BUTTON_PRIMARY_CLASS, RIBBON_GROUP_CLASS, RIBBON_GROUP_LABEL_CLASS } from "./ribbon-styles";
+import { pickLocalFiles } from "../../../datasource/tauri";
+import { ToolbarButton } from "../ToolbarButton";
+import { TOOLBAR_BUTTON_CLASS, TOOLBAR_BUTTON_PRIMARY_CLASS, TOOLBAR_GROUP_CLASS, TOOLBAR_GROUP_LABEL_CLASS } from "../toolbar-styles";
 
 interface Props {
   viewer: CopcViewerState;
 }
 
 /**
- * ADR-0017 (UIシェル再構築): トップリボンの「ファイル」グループ。
+ * ADR-0017 (UIシェル再構築): トップツールバーの「ファイル」グループ。
  *
  * **ファイルはOSのファイル選択ダイアログからだけ開く**(所有者の要件: パスを
  * 人に打たせない)。Web版は隠した`<input type="file">`、デスクトップ・Androidは
@@ -24,18 +24,18 @@ interface Props {
  * ここに増やさない)。`data-testid="file-input"`は`e2e/web-conversion.spec.ts`が
  * `setInputFiles`で駆動するために必須(CLAUDE.md参照)。
  */
-export function RibbonFileGroup({ viewer }: Props) {
+export function ToolbarFileGroup({ viewer }: Props) {
   const busy = viewer.status === "opening" || viewer.status === "converting";
 
   return (
-    <div className={RIBBON_GROUP_CLASS}>
-      <span className={RIBBON_GROUP_LABEL_CLASS}>ファイル</span>
+    <div className={TOOLBAR_GROUP_CLASS}>
+      <span className={TOOLBAR_GROUP_LABEL_CLASS}>ファイル</span>
       <div className="flex flex-nowrap items-center gap-1">
         {viewer.isBrowser ? (
           <>
-            {/* 隠した<input>をラベルで包み、見た目はリボンのボタン(アイコン+ラベル)にする。 */}
+            {/* 隠した<input>をラベルで包み、見た目はツールバーのボタン(アイコン+ラベル)にする。 */}
             <label
-              className={`${RIBBON_BUTTON_CLASS} ${RIBBON_BUTTON_PRIMARY_CLASS} cursor-pointer ${busy ? "pointer-events-none opacity-40" : ""}`}
+              className={`${TOOLBAR_BUTTON_CLASS} ${TOOLBAR_BUTTON_PRIMARY_CLASS} cursor-pointer ${busy ? "pointer-events-none opacity-40" : ""}`}
               title="ファイルを開く"
             >
               <FolderOpen size={20} aria-hidden="true" />
@@ -61,7 +61,7 @@ export function RibbonFileGroup({ viewer }: Props) {
             </label>
           </>
         ) : (
-          <RibbonButton
+          <ToolbarButton
             icon={FolderOpen}
             label={viewer.status === "opening" ? "開いています…" : viewer.status === "converting" ? "変換中…" : "開く"}
             primary

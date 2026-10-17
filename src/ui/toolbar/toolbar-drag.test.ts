@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DRAG_THRESHOLD_PX, moveDrag, shouldSuppressClick, startDrag } from "./ribbon-drag";
+import { DRAG_THRESHOLD_PX, moveDrag, shouldSuppressClick, startDrag } from "./toolbar-drag";
 
-describe("ribbon-drag", () => {
+describe("toolbar-drag", () => {
   it("閾値未満の動きはクリックのまま(スクロールもしない)", () => {
     const r = moveDrag(startDrag(100, 50), 100 + DRAG_THRESHOLD_PX - 1);
     expect(r.scrollLeft).toBeNull();

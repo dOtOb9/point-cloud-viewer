@@ -35,7 +35,7 @@ const FOCUSABLE =
  * 右上の✕ボタンは無い(所有者の判断で廃止。閉じる手段は下の3つ)。
  *
  * - **Glass (2026-10-15; reverses the earlier "opaque" rule, see the ADR-0017 addendum).** The panel uses the
- *   same `glassSurfaceClass` as the ribbon. When the device profile has `glassEnabled=false` it falls back to an opaque tint.
+ *   same `glassSurfaceClass` as the toolbar. When the device profile has `glassEnabled=false` it falls back to an opaque tint.
  * - **閉じ方は3つ:** フッターのボタン(呼び出し側が`footer`に「閉じる」か「キャンセル」を必ず置く)、
  *   外側の暗幕クリック、Esc。
  * - **暗幕クリックで閉じる(所有者の判断。以前は誤操作を避けて閉じなかった)。**

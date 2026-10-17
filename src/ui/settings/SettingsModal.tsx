@@ -19,7 +19,7 @@ import type { ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
-import { RIBBON_BUTTON_CLASS } from "../ribbon/ribbon-styles";
+import { TOOLBAR_BUTTON_CLASS } from "../toolbar/toolbar-styles";
 import { settingsNavReducer, visibleSettingsPages, type SettingsPageId } from "./settings-nav";
 import { AnimationDialog } from "./pages/AnimationDialog";
 import { BackgroundDialog } from "./pages/BackgroundDialog";
@@ -104,7 +104,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
                 type="button"
                 data-testid={`settings-${id}`}
                 onClick={() => dispatch({ type: "open", page: id })}
-                className={`${RIBBON_BUTTON_CLASS} min-h-16`}
+                className={`${TOOLBAR_BUTTON_CLASS} min-h-16`}
               >
                 <Icon size={20} aria-hidden="true" />
                 <span>{label}</span>

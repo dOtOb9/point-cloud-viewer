@@ -5,9 +5,9 @@ import { useEffect, useState } from "react";
  *
  * 768pxはタスクシートの指定値（スマホ〜小さめタブレットの境界として一般的な
  * 値だが、このプロジェクト自身で実測して決めたものではない。未検証の初期値）。
- * この値を境に、リボンは端まで広げて角丸をやめ(常に1列の横スクロール)、
+ * この値を境に、ツールバーは端まで広げて角丸をやめ(常に1列の横スクロール)、
  * 左パネルはドロワー（開くとオーバーレイで出て、閉じると完全に隠れる）になる
- * （`src/ui/ribbon/Ribbon.tsx`/`src/ui/layers/LayerPanel.tsx`参照）。
+ * （`src/ui/toolbar/Toolbar.tsx`/`src/ui/layers/LayerPanel.tsx`参照）。
  *
  * `matchMedia`の`change`イベントで追従する。`useTheme.ts`の
  * `prefersDark`と同じ形（DOM操作はuseEffect内に閉じ、フック自体は

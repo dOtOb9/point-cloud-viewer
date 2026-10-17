@@ -1,4 +1,4 @@
-// ADR-0017: ダイアログのフッターで使うボタンの共通クラス(`ribbon-styles.ts`と同じ考え方)。
+// ADR-0017: ダイアログのフッターで使うボタンの共通クラス(`toolbar-styles.ts`と同じ考え方)。
 // min-h-11 = 44px(タッチ操作の最小サイズ)。色は役割トークン(index.cssのprimary/tertiaryなど)。
 // tertiary=灰(閉じる・キャンセル・コピー)、primary=緑(開く・開始など主操作)。
 
