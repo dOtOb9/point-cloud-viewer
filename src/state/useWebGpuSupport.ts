@@ -6,11 +6,10 @@ export type WebGpuSupportState =
   | { status: "done"; result: WebGpuProbeResult };
 
 /**
- * M3-5: WebGPUが使えるかどうかだけを確認する軽量版。
+ * M3-5: checks only whether WebGPU is usable.
  *
- * `useWebGpuProbe`(M0、設定画面の診断パネル用)は三角形の描画テストまで行うが、
- * こちらはAppShellが「そもそもアプリ本体を出してよいか」を判断するためのゲートとして
- * 使うだけなので、描画は行わずnavigator.gpu / requestAdapter()の確認だけを行う。
+ * AppShell uses it as a gate: "may the app itself be shown at all". It draws nothing; it only checks
+ * navigator.gpu and requestAdapter().
  */
 export function useWebGpuSupport(): WebGpuSupportState {
   const [state, setState] = useState<WebGpuSupportState>({ status: "checking" });

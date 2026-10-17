@@ -72,9 +72,6 @@ hook は **依存を引数で受け取り**、お互いを import しません�
 - `useWebGpuSupport.ts` — `probeWebGpu()` で非対応端末を見分け、`AppShell` が専用画面に差し替える（[起動](../flows/startup.md)）。
 - `useUpdateCheck.ts` — 起動時の更新チェック（`tauri dev` 中は走らせない）。
 - `useNarrowViewport.ts` — 幅 768px 未満かどうか（リボンの畳み・レイヤーパネルのドロワー化）。
-- `useIpcBench.ts`・`useNodeConcurrencyBench.ts`・`useWebGpuProbe.ts` — M0〜M2 で ADR の実測に使った計測ハーネス。設定の診断パネルに残っている。
-  かつてはマウント時に自動実行していましたが、`<details>` で畳んでいても React はマウントを止めないため、起動のたびに重い計測（IPC ベンチで最大20〜30秒）が走ってフリーズしました。
-  今はボタンを押すまで実行されません（[落とし穴と教訓](../pitfalls.md)）。
 
 ## 状態を持つ場所の見分け方
 
