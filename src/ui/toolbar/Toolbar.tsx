@@ -1,67 +1,70 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { useNarrowViewport } from "../../state/useNarrowViewport";
-import { glassSurfaceClass } from "../common/glass";
-import { ToolbarFileGroup } from "./buttons/OpenFileButton";
-import { ToolbarSettingsGroup } from "./buttons/SettingsButton";
-import { ToolbarToolsGroup } from "./buttons/MeasureButton";
 import type { MeasureToolState } from "../../state/useMeasureTool";
 import type { LayerToolState } from "../../state/useLayerTool";
-import { toolSourceLayers } from "../../state/layer-selection";
-import { isMeasureLayer } from "../../state/layers";
+import { useNarrowViewport } from "../../state/useNarrowViewport";
+import { glassSurfaceClass } from "../common/glass";
+import { MeasureButton } from "./buttons/MeasureButton";
+import { MergeLayersButton } from "./buttons/MergeLayersButton";
+import { OpenFileButton } from "./buttons/OpenFileButton";
+import { SectionButton } from "./buttons/SectionButton";
+import { SelectPointsButton } from "./buttons/SelectPointsButton";
+import { SettingsButton } from "./buttons/SettingsButton";
+import { ToolbarSeparator } from "./ToolbarSeparator";
 import { useToolbarDragScroll } from "./useToolbarDragScroll";
 
 interface Props {
   viewer: CopcViewerState;
   glassEnabled: boolean;
   onOpenSettings: () => void;
-  /** L2-D: state of the measurement tool (used by the buttons of the tools group). */
+  /** L2-D: state of the measurement tool (used by the measure buttons). */
   measure: MeasureToolState;
   /** L2-F: state of the point selection / cross section tools. */
   layerTool: LayerToolState;
 }
 
 /**
- * ADR-0017 (UIシェル再構築): 画面上部の「ツールバー」。デスクトップの点群/GIS系
- * ソフトに多い構成(上部ツールバー+左レイヤーツリー+下部ステータスバー)の一角。
+ * ADR-0017 (UI shell rebuild): the toolbar at the top of the screen (one corner of the usual
+ * desktop point-cloud/GIS layout: top toolbar + left layer tree + bottom status bar).
  *
- * 「ファイル/ツール/設定」の3グループを横に並べる。各グループの中身は
- * `ToolbarFileGroup`/`ToolbarToolsGroup`/`ToolbarSettingsGroup`
- * にそれぞれ分けてある(1ファイル1関心事)。ボタンはアイコンが上・ラベルが下
- * (`ToolbarButton.tsx`)。
+ * R3: one flat row with no group headings. This file only lists the buttons in order; each
+ * button is its own component under `buttons/` and decides by itself when it is enabled.
+ * Separators sit where the old group borders were:
+ *   open | distance, height, area, select points, section, merge layers | settings
+ * A button is icon on top, label below (`ToolbarButton.tsx`).
  *
- * L2-A (2026-10-14): 「表示」グループは撤去（着色・見た目はレイヤー欄の操作ボタンへ、読み込み優先は設定へ）。
+ * L2-A (2026-10-14): the "view" group was removed (coloring and appearance moved to the layer
+ * list's action buttons, load priority to the settings).
  *
- * L1-A (2026-10-14): 画面幅によらず常に1列。幅が足りなければ横スクロールする
- * (スクロールバーは隠す)。マウスは左ボタンで押したまま横に引く／ホイールの縦回転で動かせ
- * (`useToolbarDragScroll.ts`)、タッチは素の横スクロール。以前の「768px未満は
- * 『メニュー』ボタンで縦に開く」形はやめた。768px未満(`useNarrowViewport`)では
- * 端まで広げて角丸をやめるだけ。タッチ領域は44px以上(ボタンは`min-h-14`=56px)。
+ * L1-A (2026-10-14): always one row regardless of the screen width. If it does not fit, it
+ * scrolls horizontally (scrollbar hidden). The mouse drags with the left button held or scrolls
+ * with the vertical wheel (`useToolbarDragScroll.ts`); touch uses plain horizontal scrolling.
+ * Below 768px (`useNarrowViewport`) it only stretches to the edges and drops the rounded
+ * corners. Touch targets are 44px or more (buttons are `min-h-14` = 56px).
  */
 export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool }: Props) {
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useToolbarDragScroll();
-  // 狭い画面は端まで広げて角丸なし、広い画面は少し浮かせて角丸。違いは位置と角丸だけ。
+  // Narrow screens: stretched to the edges, no rounded corners. Wide: floats a little, rounded.
+  // The difference is only the position and the corners.
   const placement = narrow ? "inset-x-0 top-0" : "inset-x-3 top-3 rounded-2xl";
 
   return (
-    <>
-      <div
-        ref={ref}
-        onClickCapture={onClickCapture}
-        data-testid="ribbon"
-        className={`pointer-events-auto absolute ${placement} z-20 flex flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden overscroll-x-contain border-t-[3px] border-t-primary px-3 py-2 shadow-lg select-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${glassSurfaceClass(glassEnabled)}`}
-      >
-        <ToolbarFileGroup viewer={viewer} />
-        <ToolbarToolsGroup
-          measure={measure}
-          layerTool={layerTool}
-          hasPointCloud={viewer.layers.some((l) => !isMeasureLayer(l))}
-          selectedPointCloudCount={toolSourceLayers(viewer.layers, viewer.selectedLayerIds).length}
-          onMerge={() => void viewer.mergeSelectedLayers()}
-          toolRunning={viewer.toolProgress !== null}
-        />
-        <ToolbarSettingsGroup onOpenSettings={onOpenSettings} />
-      </div>
-    </>
+    <div
+      ref={ref}
+      onClickCapture={onClickCapture}
+      data-testid="ribbon"
+      className={`pointer-events-auto absolute ${placement} z-20 flex flex-nowrap items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain border-t-[3px] border-t-primary px-3 py-2 shadow-lg select-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${glassSurfaceClass(glassEnabled)}`}
+    >
+      <OpenFileButton viewer={viewer} />
+      <ToolbarSeparator />
+      <MeasureButton kind="distance" viewer={viewer} measure={measure} />
+      <MeasureButton kind="height" viewer={viewer} measure={measure} />
+      <MeasureButton kind="area" viewer={viewer} measure={measure} />
+      <SelectPointsButton viewer={viewer} layerTool={layerTool} />
+      <SectionButton viewer={viewer} layerTool={layerTool} />
+      <MergeLayersButton viewer={viewer} />
+      <ToolbarSeparator />
+      <SettingsButton onOpenSettings={onOpenSettings} />
+    </div>
   );
 }

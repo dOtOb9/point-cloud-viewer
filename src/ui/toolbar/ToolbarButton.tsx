@@ -3,14 +3,14 @@ import { TOOLBAR_BUTTON_CLASS, TOOLBAR_BUTTON_PRIMARY_CLASS } from "./toolbar-st
 
 interface Props {
   icon: LucideIcon;
-  /** 短い文字ラベル(アイコンの下に出す)。 */
+  /** Short text label (shown under the icon). */
   label: string;
   onClick?: () => void;
   disabled?: boolean;
-  /** ホバーで出す説明。未実装ツールは「未実装（予定）」を渡す。 */
+  /** Tooltip shown on hover (defaults to the label). */
   title?: string;
   primary?: boolean;
-  /** 選択中・ON状態のボタン。下端に3pxのprimary(緑)の線を引く(ADR-0017)。現状、ツールバーにトグル/タブ型のボタンは無く未使用(将来のため)。 */
+  /** Selected / ON button: draws a 3px primary (green) line along the bottom edge (ADR-0017). Used by the running tool buttons. */
   active?: boolean;
 }
 

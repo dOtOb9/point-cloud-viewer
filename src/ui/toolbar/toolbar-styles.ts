@@ -1,28 +1,20 @@
-// ADR-0017 (UIシェル再構築): ツールバーの各グループ・ボタンで共通して使うクラス文字列。
+// ADR-0017: class strings shared by the toolbar buttons.
 //
-// `glass.ts`と同じ考え方で、見た目の値を1箇所にまとめて複数ファイルから使う
-// (ツールバーは「ファイル/表示/ツール/設定」の4グループに分かれており、
-// ボタンやラベルの見た目をファイルごとに書き直すと少しのズレが蓄積するため)。
-
-/** グループの見出し（「ファイル」「表示」など）。小さく控えめに。 */
-export const TOOLBAR_GROUP_LABEL_CLASS = "text-[10px] font-semibold uppercase tracking-wide opacity-50";
+// Same idea as `glass.ts`: keep the look in one place so the buttons (and the layer-list
+// action buttons and the settings modal that reuse it) do not drift apart.
 
 /**
- * ツールバーのボタン。アイコンが上、短い文字ラベルが下の縦並び(所有者の要件)。
- * 無効化時は見た目でも明確にクリックできないと分かるようにする
- * (未実装ツールはアイコンとラベルを残したまま、この無効スタイルにする)。
- * min-h-14(56px)・min-w-14は44px以上のタッチ領域。
+ * A toolbar button: icon on top, short text label below (owner requirement).
+ * The disabled style makes it obvious that the button cannot be pressed.
+ * min-h-14 (56px) and min-w-14 keep the touch target above 44px.
  */
 export const TOOLBAR_BUTTON_CLASS =
   "relative flex min-h-14 min-w-14 flex-col items-center justify-center gap-0.5 rounded-md px-2 py-1 text-[11px] leading-tight whitespace-nowrap " +
-  // AN-3: ホバーで1px浮き、押すと0.97倍(transformだけ。時間・イージングはindex.cssの--motion-*)。
+  // AN-3: lifts 1px on hover and scales to 0.97 on press (transform only; timing and easing are the --motion-* values in index.css).
   "transition-transform duration-(--motion-press) ease-(--motion-ease-out) hover:-translate-y-px active:translate-y-0 active:scale-[0.97] " +
   "hover:bg-black/5 dark:hover:bg-white/10 " +
   "disabled:cursor-not-allowed disabled:bg-tertiary/20 disabled:opacity-50 disabled:pointer-events-none";
 
-/** 塗りつぶしの強調ボタン(「開く」など主要操作)。 */
+/** Filled emphasis button (the main action, "開く"). */
 export const TOOLBAR_BUTTON_PRIMARY_CLASS =
   "bg-primary text-on-primary hover:!bg-primary hover:opacity-90";
-
-/** グループ1つの外枠。縦に見出し+横並びの操作、を並べる。 */
-export const TOOLBAR_GROUP_CLASS = "flex shrink-0 flex-col gap-1 border-r border-black/10 pr-3 last:border-r-0 dark:border-white/10";
