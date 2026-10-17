@@ -89,22 +89,6 @@ export function mergeSceneBounds(list: readonly SceneBounds[]): SceneBounds | nu
 }
 
 /**
- * 複数レイヤー（L1-C）: 標高の色の範囲を、複数レイヤーの範囲の和集合にする。
- * 隣り合うタイルを別レイヤーで開いたとき、境目で色がずれないようにするため。
- * 空なら`{min:0,max:0}`（範囲なし。colormap.tsの`normalizeValue`が常にt=0にする）。
- */
-export function mergeValueRanges(ranges: readonly ValueRange[]): ValueRange {
-  if (ranges.length === 0) return { min: 0, max: 0 };
-  let min = Infinity;
-  let max = -Infinity;
-  for (const r of ranges) {
-    min = Math.min(min, r.min);
-    max = Math.max(max, r.max);
-  }
-  return { min, max };
-}
-
-/**
  * 標高カラーマップ(M2-2)の正規化に使うレンジを、LASヘッダーの実データ範囲
  * (`CloudInfo.min`/`max`のZ成分)から作る。
  *

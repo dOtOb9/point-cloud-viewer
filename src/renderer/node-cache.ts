@@ -76,10 +76,6 @@ export class NodeCache {
     }
   }
 
-  values(): IterableIterator<CachedNode> {
-    return this.entries.values();
-  }
-
   get size(): number {
     return this.entries.size;
   }

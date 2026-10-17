@@ -29,14 +29,6 @@
 /** 着色モード。少なくともこの4つを左パネルから切り替えられることが受け入れ条件。 */
 export type ColorMode = "rgb" | "elevation" | "intensity" | "classification";
 
-export const COLOR_MODES: readonly ColorMode[] = ["rgb", "elevation", "intensity", "classification"];
-
-/**
- * 既定の着色モードはRGB。ファイルが実際にRGBを持つ場合、それが最も素直な見た目
- * になるため。
- */
-export const DEFAULT_COLOR_MODE: ColorMode = "rgb";
-
 /**
  * RGBを持たない点群（`sofi.copc.laz`など）を開いたときのフォールバック先。
  *

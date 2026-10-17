@@ -69,8 +69,6 @@
 // 検算: ndcDepth=0(近クリップ)でlinearDepth=near、ndcDepth=1(遠クリップ)で
 // linearDepth=farになる。下のテストで確認している。
 
-export type Vec3 = readonly [number, number, number];
-
 /** EDLの既定のオン/オフ。既定はオン（タスクシートの指示通り）。 */
 export const DEFAULT_EDL_ENABLED = true;
 
