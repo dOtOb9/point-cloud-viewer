@@ -5128,3 +5128,9 @@ wasmが "unreachable" になり、変換が失敗した(M4-14の「未解決」)
 1. Webビルドを開き、通常ウィンドウで`09LD2626〜2629.las`を4つ一緒に選ぶ。成功すれば内訳が出る。
 2. シークレットウィンドウで同じことをする。エラーダイアログに「異常な値 4294967288」の文が出て、
    画面が固まらず、もう一度ファイルを選べることを確かめる。
+
+## R7: PLY and E57 conversion on the Web (2026-10-17)
+
+The Web build now converts PLY and E57 to COPC, like PCD (see `TaskSheets/R7-web-ply-e57.md` for the design and the record).
+The readers are copies of `crates/pcv-convert/src/import/{ply,e57}.rs` in `crates/pcv-wasm/src/` (same reason as PCD). The Worker has one
+path for PCD, PLY and E57 (`pointFileConvertStart`). The "Web cannot convert PLY/E57 yet" message and the Web-only format list were removed.
