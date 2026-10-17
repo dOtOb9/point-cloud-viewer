@@ -350,6 +350,44 @@ mod tests {
         drop(partial);
     }
 
+    /// Not a test: the Web E2E (`e2e/web-point-file-conversion.spec.ts`) runs this with
+    /// `--ignored` and `PCV_E57_FIXTURE=<path>` to get a small synthetic E57 (2000 points with
+    /// colour and intensity). No point-cloud data is committed.
+    #[test]
+    #[ignore = "writes the E57 fixture for the Web E2E; run with PCV_E57_FIXTURE set"]
+    fn write_e57_fixture_for_e2e() {
+        let Ok(path) = std::env::var("PCV_E57_FIXTURE") else {
+            panic!("set PCV_E57_FIXTURE to the output path");
+        };
+        let mut writer = E57Writer::from_file(&path, "guid-root").expect("writer");
+        let mut pc = writer
+            .add_pointcloud(
+                "guid-scan",
+                vec![
+                    Record::CARTESIAN_X_F64,
+                    Record::CARTESIAN_Y_F64,
+                    Record::CARTESIAN_Z_F64,
+                    Record::COLOR_RED_U8,
+                    Record::COLOR_GREEN_U8,
+                    Record::COLOR_BLUE_U8,
+                ],
+            )
+            .expect("scan");
+        for i in 0..2000i64 {
+            pc.add_point(vec![
+                RecordValue::Double(((i * 37) % 500) as f64 * 0.1),
+                RecordValue::Double(((i * 53) % 500) as f64 * 0.1),
+                RecordValue::Double(((i * 13) % 200) as f64 * 0.1),
+                RecordValue::Integer(i % 256),
+                RecordValue::Integer((i * 3) % 256),
+                RecordValue::Integer((i * 7) % 256),
+            ])
+            .expect("add point");
+        }
+        pc.finalize().expect("finalize scan");
+        writer.finalize().expect("finalize e57");
+    }
+
     #[test]
     fn garbage_is_an_error_not_a_panic() {
         assert!(E57Stream::open(Cursor::new(b"not an e57 file at all".to_vec())).is_err());
