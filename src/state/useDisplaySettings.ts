@@ -28,14 +28,30 @@ export interface DisplaySettings {
   /** Pass to `renderer.onStatsUpdate`: stores the stats and copies the renderer-side point budget back. */
   onStats: (stats: RenderStats) => void;
   pointBudget: number;
+  /** On/off of the automatic point budget adjustment (ADR-0009). The default matches the renderer's (on). */
   autoPointBudgetEnabled: boolean;
   backgroundMode: BackgroundMode;
   gridEnabled: boolean;
+  /**
+   * On/off of EDL (Eye-Dome Lighting). The default matches the renderer's (on). It is not off by default because it
+   * lets a cloud without RGB (sofi.copc.laz) show its shape. The strength has no UI; it is fixed by
+   * `DEFAULT_EDL_STRENGTH` in `src/renderer/edl.ts`.
+   */
   edlEnabled: boolean;
+  /** On/off of animation (fade-in, inertia, camera moves). */
   animationEnabled: boolean;
   renderScale: number;
   pointShape: PointShape;
+  /**
+   * ADR-0010 addendum: how strongly the LOD priority is weighted by the distance from the screen center.
+   * 0 means screen-space error only. Default `DEFAULT_CENTER_PRIORITY_STRENGTH` (an unverified initial value).
+   * Changeable in the settings, applied to the renderer without a restart.
+   */
   centerPriorityStrength: number;
+  /**
+   * Lower bound (0 to 1) of the center priority weight. Default `DEFAULT_MIN_CENTER_PRIORITY_WEIGHT` (0.2).
+   * The closer to 0, the more nodes at the screen edge may be put off (`PointCloudRenderer.setMinCenterPriorityWeight()`).
+   */
   minCenterPriorityWeight: number;
   setPointBudget: (budget: number) => void;
   setAutoPointBudgetEnabled: (enabled: boolean) => void;

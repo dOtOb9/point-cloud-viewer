@@ -64,9 +64,21 @@ export interface ConversionSessionDeps {
 }
 
 export interface ConversionSession {
+  /**
+   * Progress of a running conversion of raw LAS/LAZ, or null. Reading reports `{phase: "reading", pointsRead,
+   * totalPoints, elapsedSecs}` (an exact ratio); after that (octree build, writing) it switches to
+   * `{phase: "postProcessing", elapsedSecs}` (no ratio; see the doc of `src-tauri/src/conversion.rs`).
+   * Not part of the `converting` status: Web progress events ("preparing") may arrive before the status turns
+   * "converting", and they must not be lost (R5).
+   */
   conversionProgress: ConversionProgress | null;
   /** Clear the progress (done when starting to open something). */
   clearConversionProgress: () => void;
+  /**
+   * Name of the file converted last, for the conversion dialog; null before any conversion.
+   * Not in the `converting` status: the dialog still shows it after the conversion finished (status "ready"),
+   * and it is set while the status is still "opening" (R5).
+   */
   convertingFileName: string | null;
   /** Remember the name of the file being converted, for the dialog and the breakdown text ("file" row). */
   rememberConvertingSource: (name: string) => void;
@@ -74,7 +86,9 @@ export interface ConversionSession {
   openFileRef: RefObject<(pathOrFile: string | File, isConversionContinuation?: boolean) => Promise<void>>;
   /** Take (and clear) the pending conversion result. Called when a layer is added as the continuation of a conversion. */
   takePendingConversion: () => PendingConversionResult | null;
+  /** Called from the cancel button while converting. */
   cancelConversion: () => void;
+  /** Copy the breakdown text of the selected layer to the clipboard. True if it succeeded (a failure is only logged). */
   copyConversionBreakdownText: () => Promise<boolean>;
 }
 

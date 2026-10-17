@@ -19,12 +19,19 @@ import { isTauriEnvironment } from "../datasource/environment";
 import type { OpfsStorageInfo } from "./viewer-types";
 
 export interface OpfsStorage {
+  /** Web OPFS usage (cache and scratch breakdown) and persistence state. null before it is fetched and on desktop (check `isBrowser` first; see `SettingsModal`). */
   opfsStorageInfo: OpfsStorageInfo | null;
+  /** Fetch / recompute `opfsStorageInfo` (when the settings open, after a delete). */
   refreshOpfsStorageInfo: () => Promise<void>;
+  /** Ask for `persist()` if not yet persisted, then refresh `opfsStorageInfo` whatever the answer was. */
   requestOpfsPersistentStorage: () => Promise<void>;
+  /** Delete one converted cache entry, then refresh `opfsStorageInfo`. */
   removeOpfsCachedConversion: (entry: CachedConversionEntry) => Promise<void>;
+  /** Delete all converted caches, then refresh `opfsStorageInfo`. */
   clearOpfsCachedConversions: () => Promise<void>;
+  /** Delete one leftover scratch directory, then refresh `opfsStorageInfo`. */
   removeOpfsScratchDir: (name: string) => Promise<void>;
+  /** Delete all leftover scratch directories, then refresh `opfsStorageInfo`. */
   clearOpfsScratchDirs: () => Promise<void>;
 }
 

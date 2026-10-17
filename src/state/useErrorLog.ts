@@ -8,7 +8,11 @@ import { GpuErrorLog, type GpuErrorEntry, type GpuErrorSource } from "../rendere
 import { mergeErrorHistory } from "./error-history";
 
 export interface ErrorLog {
-  /** Errors the banner shows now. A dismissed one leaves this list. */
+  /**
+   * Errors the banner shows now. A dismissed one leaves this list. WebGPU errors (ADR-0011: uncaptured errors,
+   * device loss, validation errors at init) and, since M3 (ADR-0013), failed `pcv://` node reads (including ones
+   * recovered from a Rust panic) are collected here; `GpuErrorEntry.source` tells them apart. Shown by `ErrorDialog.tsx`.
+   */
   gpuErrors: GpuErrorEntry[];
   /** Every error of this session, including dismissed ones (ADR-0017). Only grows. */
   errorHistory: GpuErrorEntry[];

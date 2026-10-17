@@ -18,8 +18,9 @@ function readStoredTempDir(): string | null {
 }
 
 export interface TempDirSetting {
+  /** Setting of the scratch file location; null means the platform default. Only meaningful on desktop (the Web build does not convert). */
   tempDir: string | null;
-  /** True on desktop only. The Web build always shows false (see isBrowser in the UI). */
+  /** True on desktop only (Android is led to the app cache automatically, so no manual picker is shown; see `supports_custom_temp_dir` in `src-tauri/src/conversion.rs`). The Web build always shows false. */
   supportsCustomTempDir: boolean;
   /** Open the OS folder dialog and set the chosen folder. */
   pickAndSetTempDir: () => Promise<void>;

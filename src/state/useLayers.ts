@@ -40,10 +40,16 @@ export interface LayersDeps {
 }
 
 export interface Layers {
+  /**
+   * Open layers, in the order they were added. Opening always appends (never replaces).
+   * Name, point-cloud info, point count, coloring, visibility, conversion breakdown and download link are per layer.
+   */
   layers: ViewerLayer[];
+  /** Id of the selected layer, or null if there is none. A newly added layer becomes the selection. */
   selectedLayerId: string | null;
+  /** The selected entry of `layers` (null if none). Layer info, the coloring dialog and the CRS display read it. */
   selectedLayer: ViewerLayer | null;
-  /** Ids selected together, including the primary one. */
+  /** Ids selected together (Ctrl/Shift click), including the primary one. The action buttons act on `selectedLayerId`, the last chosen. */
   selectedLayerIds: string[];
   /** Ids selected by Ctrl/Shift click besides the primary (usePointCloudTools reads this for "merge"). */
   extraSelectedIds: string[];
@@ -53,15 +59,24 @@ export interface Layers {
   /** A new layer id ("layer-N"). N never repeats, even after a layer is removed (avoids key clashes in the renderer). */
   nextLayerId: () => string;
   selectLayer: (id: string) => void;
+  /** Ctrl/Cmd click: add the layer to the selection, or remove it. */
   toggleLayerSelection: (id: string) => void;
+  /** Shift click: select the rows between `selectedLayerId` and this one. */
   selectLayerRange: (id: string) => void;
   setLayerVisible: (id: string, visible: boolean) => void;
+  /** Change the coloring of the layer. Choosing "rgb" on a layer without RGB falls back to elevation. */
   setLayerColorMode: (id: string, mode: ColorMode) => void;
+  /** Point shape (round / square) of the layer. */
   setLayerPointShape: (id: string, shape: PointShape) => void;
+  /** Point size of the layer in px (diameter, rounded into 1 to 32). */
   setLayerPointSize: (id: string, px: number) => void;
+  /** Move the camera to the layer (immediately when animation is off). */
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
+  /** "Show all": return to the initial position and direction, animated. */
   resetView: () => void;
+  /** Remove the layer: take it out of the renderer and close its DataSource file. */
   removeLayer: (id: string) => void;
+  /** Add a finished measurement as a new "measurement" layer (it becomes the selection). */
   addMeasurement: (measurement: Measurement) => void;
 }
 

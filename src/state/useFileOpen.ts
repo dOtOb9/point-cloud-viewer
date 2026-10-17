@@ -36,7 +36,13 @@ export interface FileOpenDeps {
 }
 
 export interface FileOpen {
+  /** Desktop: a path string. Web: a URL string, or a `File` from a drop or the file picker. */
   openFile: (pathOrFile: string | File, isConversionContinuation?: boolean) => Promise<void>;
+  /**
+   * Called when two or more files are chosen: merge the LAS/LAZ into one COPC and open it (`start_multi_las_conversion`
+   * in `src-tauri`, `WebSource.startMultiConversion` on the Web). One file behaves like `openFile`. If PLY/PCD/E57
+   * are mixed in, a clear error is shown before any conversion is tried (a mix of LAS/LAZ only is fine).
+   */
   openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
   addOpenedLayer: (
     path: string,

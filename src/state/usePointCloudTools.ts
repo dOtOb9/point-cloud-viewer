@@ -42,14 +42,17 @@ export interface PointCloudToolsDeps {
 }
 
 export interface PointCloudTools {
+  /** Progress of the running point-cloud tool, or null. */
   toolProgress: ToolProgressState | null;
   cancelTool: () => void;
+  /** Make a new layer from the points of `layerId` that match `filter` (ADR-0018). Failures go to the error log. */
   extractFromLayer: (
     layerId: string,
     filter: ExtractFilter,
     label: "選択" | "断面",
     viewNormal?: readonly [number, number, number],
   ) => Promise<void>;
+  /** Merge the selected point-cloud layers into one new layer. */
   mergeSelectedLayers: () => Promise<void>;
 }
 
