@@ -98,7 +98,52 @@ Desktop and Web, each:
 - Choose several LAS/LAZ → merged into one layer. Choose LAS + PLY together → the error names the PLY file.
 - Web only: in a browser without OPFS (if available) → the same message as before.
 
+## Additions (2026-10-18)
+
+From the coordinator, on top of the sheet above:
+
+1. Owner check added (desktop and Web): **open by drag and drop** gives the same results as the open button.
+   `useFileDrop.ts` calls `viewer.openFiles`, so it goes through the new path without changes; keep it that way.
+2. `src/datasource/tauri.ts`: the comment on `onFilesDropped` said the Web drop event is handled by `useFileDrop.ts`; it is handled in
+   `src/datasource/file-picker.ts`. Fix the comment (done, English).
+3. `src/state/useFileOpen.ts`, `interface FileOpen`: the doc of `openFile` said "Web: a URL string", but opening from a URL was removed.
+   On the Web the string is an OPFS key from the conversion continuation. Make the `openFile` and `openFiles` docs match the new flow (done).
+
 ## Record (filled in by the implementer)
+
+- Files touched: `src/datasource/DataSource.ts` (`PrepareOutcome`, `prepareToOpen`), `src/datasource/prepare-outcome.ts` (new:
+  `toPrepareOutcome`, `describeInsufficientSpaceDesktop`, the two OPFS-unavailable texts) and its test, `src/datasource/web.ts`
+  (`WebSource.prepareToOpen`), `src/datasource/web-prepare.test.ts` (new), `src/datasource/tauri.ts` (`TauriSource.prepareToOpen`,
+  drop comment), `src/state/useFileOpen.ts`, `src/state/open-file-text.ts` and its test (function removed), `docs/book/src/flows/open-file.md`,
+  `flows/errors.md`, `flows/conversion.md`, `frontend/datasource.md`.
+- Where `describeInsufficientSpaceDesktop` went and why: `src/datasource/prepare-outcome.ts`, next to `toPrepareOutcome`, which is the only
+  caller besides tests. `opfs.ts` holds the Web text because it reads OPFS numbers; the desktop text has no such input, and `opfs.ts`
+  is Web-specific, so it got its own small file. The test moved to `prepare-outcome.test.ts`.
+- Design notes: one shared pure function `toPrepareOutcome(outcome, isMulti)` maps every `ConversionOutcome` kind (used by both sources,
+  so it is testable without the Tauri runtime). Because it maps all kinds, there is no "never returned" case anywhere. `openFile` and
+  `openFiles` both call one internal `openItems`. `failOpen(summary, details = summary)` replaced the three hand-written
+  `reportError` + `setStatus` pairs.
+- `useFileOpen.ts` line count before / after (`wc -l`): 381 / 234.
+- The `rememberConvertingSource` change on the Web: it is now called before `prepareToOpen` on every open, so a COPC opened on the Web also
+  sets the remembered name and `convertingFileName`. I could not see the screen. By reading the code: the only reader of `convertingFileName` is
+  `ConversionDialog.tsx` (file name line, `"(不明)"` when null), so the visible effect is limited to that dialog showing the name of
+  the last opened file (a COPC name) if it is opened after a COPC open instead of a stale or "(不明)" name. Whether the dialog can
+  be opened in that state was not checked; unverified on screen.
+  The continuation (`openFile(key, true)`) also calls it now, with the OPFS key; the breakdown text was already built before that, so
+  it is not affected (the desktop build already behaved this way).
+- Other small behaviour changes: a cached multi-file conversion now names the layer with the display name ("... ほかNファイル") instead of
+  the OPFS key (`file:N`); it also opens directly instead of calling `openFile` a second time. `refreshOpfsStorageInfo()` is now also
+  called after "OPFS unavailable" (before: only after insufficient space); it only re-reads the usage.
+- Commands run and their results:
+  - `npx tsc --noEmit`: no output (pass).
+  - `npm run lint`: no output (pass).
+  - `npx vitest run`: 575 tests passed.
+  - `PCV_E2E_PORT=4391 npx playwright test`: 4 passed (LAS conversion, multi-LAS merge, PLY, E57), about 29 s. No process left listening on 4391.
+  - `grep -n "instanceof\|not reached\|never returned" src/state/useFileOpen.ts`: empty.
+  - CI run id: see the end of this section (filled in after the push).
+- Not checked: everything on screen (desktop app, Web in a real browser by hand, Android); `TauriSource.prepareToOpen` itself (it needs the
+  Tauri runtime; only the mapping `toPrepareOutcome` it uses is unit-tested); "OPFS unavailable" in a browser without OPFS (tested only
+  with a mocked `isOpfsAvailable`); drag and drop (unchanged path, not run); opening a COPC on the Web (no E2E covers it).
 
 - Files touched:
 - Where `describeInsufficientSpaceDesktop` went and why:
