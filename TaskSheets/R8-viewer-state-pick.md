@@ -108,7 +108,8 @@ of a `Pick<...> & {...}` type goes to the field in the original interface, and t
   - `npx vitest run` -> 63 files passed, 561 tests passed
   - `git diff origin/main --stat` before push -> only the files listed above
   - CI run id and result: run 39050793165 on 2648a19, `success` (checked by the coordinator with `gh run view`).
-- Owner check (2026-10-18): F12 on `viewer.openFiles` in VS Code now goes to `useFileOpen.ts` (reported by the owner).
-- Not checked: the hover text in VS Code, the `invariants` CI job locally (only the diff was inspected: no new import of the Tauri packages, no React in
+- Owner check (2026-10-18): F12 on `viewer.openFiles` in VS Code now goes to `useFileOpen.ts`, and hovering it shows the
+  explanation from `useFileOpen.ts` (both reported by the owner).
+- Not checked: the `invariants` CI job locally (only the diff was inspected: no new import of the Tauri packages, no React in
   `src/renderer`), that the app still opens a file on screen (no behavior change is intended; only types and one unused field
   changed), the mdBook build (`mdbook` not run).
