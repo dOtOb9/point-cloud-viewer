@@ -137,3 +137,72 @@ export async function estimatePointCountForPlyFile(file: File): Promise<number |
   const text = await readHeaderText(file, TEXT_HEADER_PROBE_BYTES);
   return peekPlyPointCount(text);
 }
+
+// --- E57 (R7) ---
+//
+// An E57 file starts with a 48 byte header that says where the XML section is (at the end of
+// the file). The XML lists every scan with `<points ... recordCount="N">`, so the point count is the
+// sum of those. The XML lives in a "paged" section: every page (1024 bytes by default) ends with a
+// 4 byte CRC that is not part of the data, so the CRCs are removed before the text is read.
+// Only the header and the XML are read, never the point data.
+
+const E57_HEADER_BYTES = 48;
+const E57_SIGNATURE = "ASTM-E57";
+const E57_CRC_BYTES = 4;
+/** An XML section bigger than this is not read (a guard; real files have tens of KB). */
+const E57_MAX_XML_BYTES = 64 * 1024 * 1024;
+
+/** Where the XML section is, from the 48 byte header. `null` if this is not an E57 header. */
+export function parseE57Header(
+  bytes: Uint8Array,
+): { xmlOffset: number; xmlLength: number; pageSize: number } | null {
+  if (bytes.length < E57_HEADER_BYTES) return null;
+  if (new TextDecoder("ascii").decode(bytes.subarray(0, 8)) !== E57_SIGNATURE) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const xmlOffset = Number(view.getBigUint64(24, true));
+  const xmlLength = Number(view.getBigUint64(32, true));
+  const pageSize = Number(view.getBigUint64(40, true));
+  if (pageSize <= E57_CRC_BYTES) return null;
+  return { xmlOffset, xmlLength, pageSize };
+}
+
+/** Remove the 4 byte CRC at the end of every `pageSize` bytes. */
+export function stripE57PageCrcs(raw: Uint8Array, pageSize: number): Uint8Array {
+  const dataPerPage = pageSize - E57_CRC_BYTES;
+  const pageCount = Math.ceil(raw.length / pageSize);
+  const out = new Uint8Array(pageCount * dataPerPage);
+  let written = 0;
+  for (let page = 0; page < pageCount; page++) {
+    const chunk = raw.subarray(page * pageSize, page * pageSize + dataPerPage);
+    out.set(chunk, written);
+    written += chunk.length;
+  }
+  return out.subarray(0, written);
+}
+
+/** Sum of `recordCount` over the `<points>` elements of the E57 XML. `null` if there is none. */
+export function peekE57PointCount(xml: string): number | null {
+  let total = 0;
+  let found = false;
+  for (const match of xml.matchAll(/<points\b[^>]*\brecordCount="(\d+)"/g)) {
+    total += Number(match[1]);
+    found = true;
+  }
+  return found ? total : null;
+}
+
+/** Read the E57 header and XML section of `file` and sum the scans' point counts. */
+export async function estimatePointCountForE57File(file: File): Promise<number | null> {
+  const header = parseE57Header(new Uint8Array(await file.slice(0, E57_HEADER_BYTES).arrayBuffer()));
+  if (!header || header.xmlLength > E57_MAX_XML_BYTES) return null;
+
+  const { xmlOffset, xmlLength, pageSize } = header;
+  const firstPageStart = Math.floor(xmlOffset / pageSize) * pageSize;
+  const skip = xmlOffset - firstPageStart;
+  const pages = Math.ceil((skip + xmlLength) / (pageSize - E57_CRC_BYTES));
+  const raw = new Uint8Array(await file.slice(firstPageStart, firstPageStart + pages * pageSize).arrayBuffer());
+  const data = stripE57PageCrcs(raw, pageSize);
+  if (data.length < skip + xmlLength) return null;
+  const xml = new TextDecoder("utf-8").decode(data.subarray(skip, skip + xmlLength));
+  return peekE57PointCount(xml);
+}

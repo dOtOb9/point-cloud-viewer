@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { peekLasPointCount, peekPcdPointCount, peekPlyPointCount } from "./point-count-estimate";
+import {
+  estimatePointCountForE57File,
+  peekE57PointCount,
+  peekLasPointCount,
+  peekPcdPointCount,
+  peekPlyPointCount,
+} from "./point-count-estimate";
 
 /** 最小限のLASヘッダーバイト列を組み立てる(テスト専用。`copc-header.test.ts`
  *  が組み立てるヘッダーと同じ考え方で、見る場所(VLRではなく点数)が違う)。 */
@@ -121,5 +127,44 @@ describe("peekPlyPointCount", () => {
 
   it("element vertex行が無ければnullを返す", () => {
     expect(peekPlyPointCount("ply\nformat ascii 1.0\nend_header")).toBeNull();
+  });
+});
+
+describe("E57 point count", () => {
+  /** A paged E57-like file: 48 byte header, then the XML, every 1020 data bytes followed by 4 CRC bytes. */
+  function buildPagedE57(xml: string): File {
+    const xmlBytes = new TextEncoder().encode(xml);
+    const logical = new Uint8Array(48 + xmlBytes.length);
+    logical.set(xmlBytes, 48);
+    const pageCount = Math.ceil(logical.length / 1020);
+    const physical = new Uint8Array(pageCount * 1024).fill(0xff); // 0xff: the CRC bytes must be dropped
+    for (let page = 0; page < pageCount; page++) {
+      physical.set(logical.subarray(page * 1020, page * 1020 + 1020), page * 1024);
+    }
+    const header = new DataView(physical.buffer);
+    physical.set(new TextEncoder().encode("ASTM-E57"), 0);
+    header.setBigUint64(16, BigInt(physical.length), true);
+    header.setBigUint64(24, 48n, true); // XML starts at physical 48 (inside page 0)
+    header.setBigUint64(32, BigInt(xmlBytes.length), true);
+    header.setBigUint64(40, 1024n, true);
+    return new File([physical], "scan.e57");
+  }
+
+  it("sums recordCount over all scans, across page boundaries", async () => {
+    // Padding comments push the second scan into a later page, so the CRC removal matters.
+    const xml =
+      `<e57Root><data3D><vectorChild><points type="CompressedVector" fileOffset="1" recordCount="1200">` +
+      `</points><!--${"x".repeat(2500)}--><points type="CompressedVector" fileOffset="2" recordCount="34"></points>` +
+      `</vectorChild></data3D></e57Root>`;
+    expect(await estimatePointCountForE57File(buildPagedE57(xml))).toBe(1234);
+  });
+
+  it("returns null for a file that is not E57 or has no scans", async () => {
+    expect(await estimatePointCountForE57File(new File([new Uint8Array(100)], "x.e57"))).toBeNull();
+    expect(await estimatePointCountForE57File(buildPagedE57("<e57Root></e57Root>"))).toBeNull();
+  });
+
+  it("peekE57PointCount ignores attribute order", () => {
+    expect(peekE57PointCount(`<points recordCount="7" type="CompressedVector"/>`)).toBe(7);
   });
 });

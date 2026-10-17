@@ -24,7 +24,12 @@ import {
   type ConversionStageBreakdown,
 } from "./conversion-dto";
 import * as opfs from "./opfs";
-import { estimatePointCountForLasFile, estimatePointCountForPcdFile } from "./point-count-estimate";
+import {
+  estimatePointCountForE57File,
+  estimatePointCountForLasFile,
+  estimatePointCountForPcdFile,
+  estimatePointCountForPlyFile,
+} from "./point-count-estimate";
 import {
   buildCloseRequest,
   buildConvertCancelRequest,
@@ -34,15 +39,23 @@ import {
   buildToolMergeStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
-  buildPcdConvertStartRequest,
+  buildPointFileConvertStartRequest,
   buildReadNodeRequest,
   classifyOpenPath,
   makeFileKey,
+  type PointFileFormat,
   type WorkerRequest,
   type WorkerResponse,
 } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
 import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
+
+/** How the free-space check gets the point count of each raw point-file format (from its header). */
+const POINT_COUNT_ESTIMATORS: Record<PointFileFormat, (file: File) => Promise<number | null>> = {
+  pcd: estimatePointCountForPcdFile,
+  ply: estimatePointCountForPlyFile,
+  e57: estimatePointCountForE57File,
+};
 
 /**
  * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 容量の事前確認。
@@ -286,15 +299,17 @@ export class WebSource implements DataSource {
   }
 
   /**
-   * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 生PCD→COPCの変換を
-   * 始める。`startConversion`(LAS/LAZ)とほぼ同じ役割分担だが、容量の見積もりを
-   * PCDヘッダーの`POINTS`から求める点が違う(旧来のファイルサイズ×11という
-   * 見積もりはLAZ(圧縮)の実測から来ており、非圧縮・f64のPCDでは大きく外れ、
-   * 実機で「空き容量不足」と誤判定される不具合があった)。呼び出し側
-   * (`src/state/useCopcViewer.ts`)は、`source-format.ts`の
-   * `detectSourceFormatByName`でPCDと判定してからこれを呼ぶ。
+   * M4-9 / R7: start converting a raw PCD, PLY or E57 file to COPC. Same division of work as
+   * `startConversion` (LAS/LAZ), but the free-space check uses the point count from the file header
+   * (PCD `POINTS`, PLY `element vertex`, E57 `recordCount` in the XML) instead of the file size times 11,
+   * which comes from compressed LAZ and is far off for uncompressed formats (a real-device bug).
+   * The caller (`useFileOpen.ts`) decides the format with `detectSourceFormatByName` first.
    */
-  async startPcdConversion(file: File, isMobile: boolean): Promise<ConversionOutcome> {
+  async startPointFileConversion(
+    file: File,
+    format: PointFileFormat,
+    isMobile: boolean,
+  ): Promise<ConversionOutcome> {
     const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
 
     const cached = await opfs.findCachedOutput(fingerprint);
@@ -307,12 +322,12 @@ export class WebSource implements DataSource {
       return { kind: "opfsUnavailable" };
     }
 
-    const insufficient = await checkInsufficientSpace(file, estimatePointCountForPcdFile);
+    const insufficient = await checkInsufficientSpace(file, POINT_COUNT_ESTIMATORS[format]);
     if (insufficient) return insufficient;
 
     const id = this.nextRequestId++;
     this.activeConvertId = id;
-    this.worker.postMessage(buildPcdConvertStartRequest(id, file, isMobile));
+    this.worker.postMessage(buildPointFileConvertStartRequest(id, file, format, isMobile));
     return { kind: "converting" };
   }
 

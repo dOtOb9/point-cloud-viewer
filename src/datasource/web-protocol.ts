@@ -68,19 +68,22 @@ export interface ConvertMultiStartRequest {
   isMobile: boolean;
 }
 
+/** The raw point-file formats the Web converts with one streaming converter each (not LAS/LAZ). */
+export type PointFileFormat = "pcd" | "ply" | "e57";
+
 /**
- * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 生PCD→COPCの変換の開始。
- * `ConvertStartRequest`(LAS/LAZ)と同じ役割だが、Worker側
- * (`copc.worker.ts`)はPCD専用の`WasmPcdConverter`(`crates/pcv-wasm/src/
- * pcd_import.rs`)を使う別の経路(`handlePcdConvertStart`)で処理する
- * (PCDの読み込みはLAZのような並列展開の仕組み(M4-7)を持たないため、
- * LAS/LAZ版の複雑さを持ち込まずに済む)。応答(`convert-progress`/
- * `convert-done`/`convert-failed`)はLAS/LAZ版と共通の型を使う。
+ * M4-9 / R7 (`TaskSheets/M4-import-and-conversion.md`, `R7-web-ply-e57.md`): start converting a raw PCD, PLY
+ * or E57 file to COPC. Same role as `ConvertStartRequest` (LAS/LAZ), but the Worker handles it in
+ * `handlePointFileConvertStart`, which picks the Rust converter by `format` (`WasmPcdConverter` for PCD,
+ * `WasmPointFileConverter` for PLY / E57). None of them has the parallel decompression of LAZ (M4-7), so the
+ * path is a plain batch loop. The responses (`convert-progress` / `convert-done` / `convert-failed`) are
+ * the same types as for LAS/LAZ.
  */
-export interface PcdConvertStartRequest {
-  type: "pcdConvertStart";
+export interface PointFileConvertStartRequest {
+  type: "pointFileConvertStart";
   id: number;
   file: File;
+  format: PointFileFormat;
   maxPointsPerNode: number;
   isMobile: boolean;
 }
@@ -111,7 +114,7 @@ export type WorkerRequest =
   | CloseRequest
   | ConvertStartRequest
   | ConvertMultiStartRequest
-  | PcdConvertStartRequest
+  | PointFileConvertStartRequest
   | ConvertCancelRequest;
 
 export interface OpenResponse {
@@ -269,13 +272,14 @@ export function buildConvertMultiStartRequest(
   return { type: "convertMultiStart", id, files, maxPointsPerNode, isMobile };
 }
 
-export function buildPcdConvertStartRequest(
+export function buildPointFileConvertStartRequest(
   id: number,
   file: File,
+  format: PointFileFormat,
   isMobile: boolean,
   maxPointsPerNode: number = DEFAULT_MAX_POINTS_PER_NODE,
-): PcdConvertStartRequest {
-  return { type: "pcdConvertStart", id, file, maxPointsPerNode, isMobile };
+): PointFileConvertStartRequest {
+  return { type: "pointFileConvertStart", id, file, format, maxPointsPerNode, isMobile };
 }
 
 // --- L2-C: point-cloud tools (extraction, COPC merge) ---

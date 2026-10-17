@@ -1,6 +1,6 @@
 // Opening files: `openFile` (one path or File), `openFiles` (several LAS/LAZ merged into one COPC), and
 // `addOpenedLayer` (open a COPC with the DataSource and add it to the renderer and the layer list).
-// Flow: a COPC is opened at once. A raw LAS/LAZ/PCD first goes to conversion (useConversionSession.ts owns the
+// Flow: a COPC is opened at once. A raw LAS/LAZ/PCD/PLY/E57 first goes to conversion (useConversionSession.ts owns the
 // progress and the "done" event); when the conversion finishes, the event calls `openFile(output, true)` again.
 // Used by: useCopcViewer.ts (exposes openFile/openFiles); usePointCloudTools.ts uses `addOpenedLayer` for tool results.
 // Entry: `useFileOpen(deps)`. Errors are put in `setStatus({ kind: "error", message })` (and the banner when long).
@@ -9,7 +9,7 @@ import { TauriSource, reportToBackendConsole, startLasConversion, startMultiLasC
 import { WebSource } from "../datasource/web";
 import { isCopcFile } from "../datasource/copc-header";
 import { describeInsufficientSpaceWeb, multiDisplayNameFor } from "../datasource/opfs";
-import { NOT_YET_CONVERTIBLE_ON_WEB, detectSourceFormatByName } from "../datasource/source-format";
+import { detectSourceFormatByName } from "../datasource/source-format";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
@@ -139,22 +139,13 @@ export function useFileOpen({
           } else {
             // M4-9: decide the format first, then the conversion route. (A real-device bug: every non-COPC
             // file used to go to the LAS/LAZ route, so PCD was wrongly judged "not enough space".)
-            // PLY/E57 have no Web conversion yet (M4-import-and-conversion.md, M4-9/M4-6), so say so here
-            // instead of running a misleading space check.
+            // PCD, PLY and E57 share one route (R7); everything else goes to the LAS/LAZ route.
             const format = detectSourceFormatByName(pathOrFile.name);
-            if (NOT_YET_CONVERTIBLE_ON_WEB.includes(format)) {
-              setStatus({
-                kind: "error",
-                message:
-                  `このファイル形式(${format.toUpperCase()})はWeb版ではまだ変換できません。デスクトップ版でCOPC(.copc.laz)に変換してから開いてください。`,
-              });
-              return;
-            }
             // M4-12: remember the source file name; the done handler registered once at mount reads it.
             rememberConvertingSource(pathOrFile.name);
             const outcome =
-              format === "pcd"
-                ? await source.startPcdConversion(pathOrFile, deviceProfileDefaults.isMobile)
+              format === "pcd" || format === "ply" || format === "e57"
+                ? await source.startPointFileConversion(pathOrFile, format, deviceProfileDefaults.isMobile)
                 : await source.startConversion(pathOrFile, deviceProfileDefaults.isMobile);
             switch (outcome.kind) {
               case "alreadyCopc":

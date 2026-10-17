@@ -35,6 +35,7 @@ import init, {
   WasmExtractor,
   WasmCopcFile,
   WasmPcdConverter,
+  WasmPointFileConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionStageBreakdownDto, PreparingStepDto } from "./conversion-dto";
@@ -53,7 +54,8 @@ import type {
   ConvertMultiStartRequest,
   ExtractStartRequest,
   OpenSource,
-  PcdConvertStartRequest,
+  PointFileConvertStartRequest,
+  PointFileFormat,
   WorkerRequest,
   WorkerResponse,
 } from "./web-protocol";
@@ -222,8 +224,8 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       case "convertMultiStart":
         await handleConvertMultiStart(request);
         return;
-      case "pcdConvertStart":
-        await handlePcdConvertStart(request);
+      case "pointFileConvertStart":
+        await handlePointFileConvertStart(request);
         return;
       case "extractStart":
         await handleExtractStart(request);
@@ -559,7 +561,7 @@ async function runParallelReadPhase(
 /** 元のファイル名から、ダウンロード時に提案する分かりやすい名前を作る。
  *  M4-9追記: PCDの拡張子も対象に含めた(LAS/LAZ専用だった)。 */
 function suggestedFileNameFor(sourceFileName: string): string {
-  const withoutExtension = sourceFileName.replace(/\.(laz|las|pcd)$/i, "");
+  const withoutExtension = sourceFileName.replace(/\.(laz|las|pcd|ply|e57)$/i, "");
   return `${withoutExtension}.copc.laz`;
 }
 
@@ -1119,36 +1121,36 @@ async function runExtract(
   }
 }
 
-// --- M4-9追記: PCD→COPCの変換(TaskSheets/M4-import-and-conversion.md参照) ---
+// --- M4-9 / R7: PCD, PLY and E57 to COPC (TaskSheets/M4-import-and-conversion.md, R7-web-ply-e57.md) ---
 //
-// LAS/LAZ版(`runConversion`)とほぼ同じ構造だが、2点だけ単純になっている:
-// 1. PCDの読み込みはLAZのような並列展開の仕組み(M4-7)を持たない(`pcd-rs`は
-//    エントロピー復号を伴わない。`crates/pcv-wasm/src/pcd_import.rs`の
-//    モジュールドキュメント参照)ため、`feed`は常に逐次バッチループ
-// 2. キャンセルの制約・後処理段階(finish)が割り込めないことはLAS/LAZ版と同じ
-//    (`WasmPcdConverter`も`WasmConverter`と同じ`SpillWriter`→
-//    `write_copc_from_spill_with_fs`を使うため)
+// Same structure as the LAS/LAZ version (`runConversion`), simpler in two ways:
+// 1. None of these formats has the parallel decompression of LAZ (M4-7), so `feed` is always a plain
+//    sequential batch loop.
+// 2. Cancel is checked between `feed` calls, and the post-processing (`finish`) cannot be interrupted;
+//    both are the same as for LAS/LAZ (all converters use the same SpillWriter ->
+//    write_copc_from_spill_with_fs).
+// One function handles all three formats: the Rust class is chosen by `format` in `runPointFileConversion`.
 
-/** `WasmPcdConverter::feed`が返すDTO(`FeedResultDto`と同じ形)。 */
-interface PcdFeedResultDto {
+/** What `WasmPcdConverter::feed` and `WasmPointFileConverter::feed` return (same shape as `FeedResultDto`). */
+interface PointFileFeedResultDto {
   points_read: number;
   total_points: number;
   done: boolean;
 }
 
 /** `WasmPcdConverter::finish`が返すDTO(`FinishResultDto`と同じ形)。 */
-interface PcdFinishResultDto {
+interface PointFileFinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
   /** L2-C: warnings (e.g. files without a CRS were let through). */
   warnings?: string[];
 }
 
-async function handlePcdConvertStart(request: PcdConvertStartRequest): Promise<void> {
-  const { id, file, maxPointsPerNode } = request;
+async function handlePointFileConvertStart(request: PointFileConvertStartRequest): Promise<void> {
+  const { id, file, format, maxPointsPerNode } = request;
   reportPreparing(id, { step: "acquiring_lock" });
   const outcome = await opfs.withConversionLock(navigator.locks, () =>
-    runPcdConversion(id, file, maxPointsPerNode),
+    runPointFileConversion(id, file, format, maxPointsPerNode),
   );
   if (outcome.kind === "busy") {
     scope.postMessage({
@@ -1160,7 +1162,12 @@ async function handlePcdConvertStart(request: PcdConvertStartRequest): Promise<v
   }
 }
 
-async function runPcdConversion(id: number, file: File, maxPointsPerNode: number): Promise<void> {
+async function runPointFileConversion(
+  id: number,
+  file: File,
+  format: PointFileFormat,
+  maxPointsPerNode: number,
+): Promise<void> {
   activeConvertId = id;
   convertCancelRequested = false;
 
@@ -1172,7 +1179,7 @@ async function runPcdConversion(id: number, file: File, maxPointsPerNode: number
   let scratchDirName: string | null = null;
   let scratchHandles: FileSystemSyncAccessHandle[] = [];
   let outputHandle: FileSystemSyncAccessHandle | null = null;
-  let converter: WasmPcdConverter | null = null;
+  let converter: WasmPcdConverter | WasmPointFileConverter | null = null;
   let succeeded = false;
 
   try {
@@ -1193,7 +1200,11 @@ async function runPcdConversion(id: number, file: File, maxPointsPerNode: number
     outputHandle = await opfs.createOutputHandle(outputName);
 
     reportPreparing(id, { step: "reading_header" });
-    converter = new WasmPcdConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
+    // Both classes have the same methods (totalPoints / feed / finish); only the constructor differs.
+    converter =
+      format === "pcd"
+        ? new WasmPcdConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode)
+        : new WasmPointFileConverter(format, file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
 
     const totalPoints = converter.totalPoints();
     // PCDには並列展開が無いため、常に逐次バッチループ(LAS/LAZ版の
@@ -1203,7 +1214,7 @@ async function runPcdConversion(id: number, file: File, maxPointsPerNode: number
         scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
         return;
       }
-      const result = converter.feed(CONVERT_BATCH_SIZE) as PcdFeedResultDto;
+      const result = converter.feed(CONVERT_BATCH_SIZE) as PointFileFeedResultDto;
       scope.postMessage({
         type: "convert-progress",
         id,
@@ -1228,9 +1239,9 @@ async function runPcdConversion(id: number, file: File, maxPointsPerNode: number
       id,
       progress: { phase: "post_processing", elapsed_secs: elapsedSecs() },
     });
-    let finishResult: PcdFinishResultDto;
+    let finishResult: PointFileFinishResultDto;
     try {
-      finishResult = converter.finish() as PcdFinishResultDto;
+      finishResult = converter.finish() as PointFileFinishResultDto;
     } finally {
       converter = null;
     }
