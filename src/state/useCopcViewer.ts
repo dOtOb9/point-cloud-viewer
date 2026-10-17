@@ -182,7 +182,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setGridEnabled: display.setGridEnabled,
     setEdlEnabled: display.setEdlEnabled,
     setAnimationEnabled: display.setAnimationEnabled,
-    resetView: layers.resetView,
     setRenderScale: display.setRenderScale,
     setPointShape: display.setPointShape,
     setCenterPriorityStrength: display.setCenterPriorityStrength,

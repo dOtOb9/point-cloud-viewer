@@ -85,7 +85,6 @@ export type CopcViewerState = Pick<
   | "setLayerPointShape"
   | "setLayerPointSize"
   | "focusLayer"
-  | "resetView"
   | "removeLayer"
   | "addMeasurement"
 > &

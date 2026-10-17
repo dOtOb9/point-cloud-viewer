@@ -15,7 +15,7 @@
 import type { HierarchyNodeInfo } from "../datasource/DataSource";
 import { computeIntensityRange, type ParsedNode } from "../datasource/node-format";
 import { StaleNodeRequestError } from "../datasource/stale-node-error";
-import { attachOrbitControls, DEFAULT_PITCH, OrbitCamera } from "./orbit-camera";
+import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { flyToGoal, pickFlyToPoint } from "./fly-to";
 import { multiply, perspective, type Mat4 } from "./mat4";
 import { frustumPlanes } from "./frustum";
@@ -620,25 +620,6 @@ export class PointCloudRenderer {
     const bounds = layerFocusBounds(null, min, max);
     this.camera.setSceneScale(bounds.diagonal);
     this.camera.animateTo(focusGoalFor(bounds));
-  }
-
-  /**
-   * AN-2: 「視点のリセット」。向きも初期（yaw 0・仰角の既定）に戻したうえで、
-   * `layerId`のレイヤー（省くと最後に移動したレイヤー、それも無ければ見えている全レイヤーの合併）が収まる位置へ戻る。
-   *
-   * 以前は常に「見えている全レイヤーの合併」だったが、別々の場所のファイルでは合併が巨大になって
-   * どれも見えなくなる（`layer-focus.ts`冒頭）ので、1つのレイヤーを基準にした。
-   */
-  resetView(layerId?: string): void {
-    const layer = (layerId !== undefined ? this.layers.get(layerId) : undefined) ?? this.focusedLayer();
-    if (layer) {
-      this.moveCameraToLayer(layer, false, { yaw: 0, pitch: DEFAULT_PITCH });
-      return;
-    }
-    const bounds = this.visibleSceneBounds();
-    if (!bounds) return;
-    this.camera.setSceneScale(bounds.diagonal);
-    this.camera.animateTo(focusGoalFor(bounds, { yaw: 0, pitch: DEFAULT_PITCH }));
   }
 
   private focusedLayer(): Layer | undefined {

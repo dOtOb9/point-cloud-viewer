@@ -72,8 +72,6 @@ export interface Layers {
   setLayerPointSize: (id: string, px: number) => void;
   /** Move the camera to the layer (immediately when animation is off). */
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
-  /** "Show all": return to the initial position and direction, animated. */
-  resetView: () => void;
   /** Remove the layer: take it out of the renderer and close its DataSource file. */
   removeLayer: (id: string) => void;
   /** Add a finished measurement as a new "measurement" layer (it becomes the selection). */
@@ -180,11 +178,6 @@ export function useLayers({ rendererRef, sourceRef, setStatus, reportError }: La
     [rendererRef],
   );
 
-  // Back to the selected layer (the union of all layers means nothing when they sit in different places; see renderer resetView).
-  const resetView = useCallback(() => {
-    rendererRef.current?.resetView(layersStateRef.current.selectedLayerId ?? undefined);
-  }, [rendererRef]);
-
   const removeLayer = useCallback(
     (id: string) => {
       const current = layersStateRef.current;
@@ -239,7 +232,6 @@ export function useLayers({ rendererRef, sourceRef, setStatus, reportError }: La
     setLayerPointShape,
     setLayerPointSize,
     focusLayer,
-    resetView,
     removeLayer,
     addMeasurement,
   };
