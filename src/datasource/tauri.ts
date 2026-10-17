@@ -86,41 +86,6 @@ export async function getAppVersion(): Promise<string> {
 }
 
 /**
- * M3: OSのファイル選択ダイアログを出し、選ばれたファイルのパス（デスクトップ）
- * または`content://` URI（Android）を返す。キャンセルされたら`null`。
- *
- * デスクトップ・Android共通で同じ`tauri-plugin-dialog`の`open()`を呼ぶだけでよい
- * （プラットフォームごとの分岐はプラグイン側が吸収する）。返り値の文字列は
- * そのまま`DataSource.open(path)`に渡せる（Rust側の`open_copc`が
- * パスかURIかを判別する。`src-tauri/src/copc_state.rs`参照）。
- *
- * `multiple: false`を渡しているため、`OpenDialogReturn`の条件型により
- * 戻り値の型は`string | null`に確定する（配列にはならない）。
- */
-export async function pickLocalFile(): Promise<string | null> {
-  return await openFileDialog({
-    multiple: false,
-    directory: false,
-    // M4-3: 生のLAS/LAZも選べるようにする(受け入れ条件)。COPCかどうかは
-    // 拡張子ではなくヘッダーで判定する(`start_las_conversion`側、
-    // `pcv_convert::copc_detect`)ため、ここでは.las/.lazをまとめて許可するだけでよい。
-    // M4-9: E57/PLY/PCDも同じダイアログから選べるようにする(受け入れ条件)。
-    // どの形式かは拡張子で判定する(`pcv_convert::import::detect_format`、
-    // `start_las_conversion`側で分岐する)。
-    filters: openDialogFilters(),
-  });
-}
-
-/**
- * M4-14: 複数選択できるファイル選択ダイアログ。`pickLocalFile`と同じ対象
- * 拡張子だが`multiple: true`を渡すため、`OpenDialogReturn`の条件型により
- * 戻り値は`string[] | null`になる(1件だけ選んでも配列で返る)。
- * PLY/E57/PCDの複数選択はビューア側(`src/state/useCopcViewer.ts`)で
- * LAS/LAZ以外が混じっていないかを確認してから先に進む想定なので、ダイアログ
- * 自体はフィルタを変えていない(受け入れ条件「単一ファイルは今までと同じ
- * 挙動」「PLY/PCD/E57の複数選択は対象外、他と一緒に選ばれたら明確なエラー」)。
- */
-/**
  * ADR-0017: the event for files dragged from the OS onto the window (desktop Tauri build only). On the Web
  * the browser's own drop event is handled in `file-picker.ts`, not here.
  * 規約2のため、Tauriのイベント購読はこのファイルの中に閉じ込め、呼び出し側には
@@ -142,6 +107,12 @@ export async function onFilesDropped(
   });
 }
 
+/**
+ * Shows the OS file picker (desktop) or the content picker (Android) and returns the chosen paths or `content://`
+ * URIs, or `null` when cancelled. `multiple: true`, so one chosen file still comes back as an array.
+ * The viewer checks whether PLY/E57/PCD files are mixed in with others before it goes on; the dialog filter
+ * (`openDialogFilters()`) is the same for every format.
+ */
 export async function pickLocalFiles(): Promise<string[] | null> {
   return await openFileDialog({
     multiple: true,
@@ -373,7 +344,7 @@ async function withToolProgress<T>(
 /**
  * Creates a new COPC from only the points of an open COPC (`path` = the path passed to `open()`) that match `filter`.
  * Passing the returned `outputPath` to `open()` makes a new layer. The source file is not modified.
- * With zero points it throws (text is `EMPTY_SELECTION_MESSAGE`). Cancel with `cancelLasConversion()`
+ * With zero points it throws (the text is "選んだ範囲に点がありません", shown on screen as is). Cancel with `cancelLasConversion()`
  * (same as conversion; the error text is "キャンセルされた").
  */
 export async function extractToCopc(

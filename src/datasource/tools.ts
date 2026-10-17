@@ -43,9 +43,6 @@ export interface ToolProgress {
   totalPoints: number;
 }
 
-/** Error text for zero points (same wording as Rust). Shown on screen as is. */
-export const EMPTY_SELECTION_MESSAGE = "選んだ範囲に点がありません";
-
 export interface ToolOptions {
   onProgress?: (progress: ToolProgress) => void;
   /** Temp folder chosen in settings. Desktop only. */

@@ -14,12 +14,9 @@ export const NODE_HEADER_BYTES = 32;
 /** 1点あたりのバイト数。 */
 export const NODE_POINT_STRIDE = 20;
 
-/** 色属性が有効かどうかのフラグビット。 */
+/** Flag bit: the color attribute is present. Bit 1 (intensity) and bit 2 (classification) are set by the Rust side
+ *  (`node_format`) but this reader does not use them, so they have no constants here. */
 export const NODE_FLAG_COLOR = 1 << 0;
-/** 強度属性が有効かどうかのフラグビット。 */
-export const NODE_FLAG_INTENSITY = 1 << 1;
-/** 分類属性が有効かどうかのフラグビット。 */
-export const NODE_FLAG_CLASSIFICATION = 1 << 2;
 
 export interface ParsedNode {
   pointCount: number;

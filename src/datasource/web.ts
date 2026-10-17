@@ -457,7 +457,7 @@ export class WebSource implements DataSource {
   /**
    * Creates a new COPC (on OPFS) from only the points of an open COPC (`path` = the key passed to `open()`)
    * that match `filter`. Passing the returned `outputPath` (a registered key) to `open()` makes a new layer.
-   * With zero points it throws (text is `EMPTY_SELECTION_MESSAGE`). Cancel with `cancelConversion()`
+   * With zero points it throws (the text is "選んだ範囲に点がありません", shown on screen as is). Cancel with `cancelConversion()`
    * (the error text is "キャンセルされました").
    */
   async extractToCopc(
