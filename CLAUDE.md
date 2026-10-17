@@ -59,7 +59,7 @@ UIを作り直すときも、同じ役割の要素にこれらの`data-testid`�
 
 | `data-testid` | 場所（現在） | 役割 |
 |---|---|---|
-| `file-input` | `src/ui/toolbar/buttons/OpenFileButton.tsx` | ローカルファイル選択の`<input type="file">`。`setInputFiles`で駆動する |
+| `open-button` | `src/ui/toolbar/buttons/OpenFileButton.tsx` | 開くボタン。E2E はこれを押して `filechooser` でファイルを渡す |
 | `conversion-breakdown` | `src/ui/layers/ConversionBreakdownPanel.tsx` | 変換完了後の「変換の内訳」パネル。表示を待つ |
 | `download-link` | `src/ui/layers/LayerInfoSection.tsx` | 変換したCOPCのダウンロードリンク（`<a>`） |
 | `viewer-error` | `src/ui/layers/LayerInfoSection.tsx` | エラーメッセージの`<p>`。無いことを確かめる |

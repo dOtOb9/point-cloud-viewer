@@ -176,7 +176,7 @@ export interface CopcViewerState {
    * (受け入れ条件。LAS/LAZの混在はOK)。
    */
   openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
-  /** True in the browser build. The toolbar's open button (`buttons/OpenFileButton.tsx`) uses it to switch between the Tauri file dialog and the Web file input. */
+  /** True in the browser build. Used by the settings pages and the download link. (The open and drop paths no longer branch on it: see `src/datasource/file-picker.ts`.) */
   isBrowser: boolean;
   /** Sends a message to the existing error banner and log (ADR-0011). `source` defaults to "gpu". */
   reportError: (message: string, source?: GpuErrorSource) => void;

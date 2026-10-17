@@ -380,3 +380,10 @@ CI(`ci.yml`、`e2e`ジョブ、修正後): <!-- push後に実行結果のrun id�
   Playwrightの`webServer`が立てたものはテスト終了時にPlaywrightが止める。手で`vite preview`を立てた場合だけ自分で止める。
 - **確認(実行した出力):** 4173が使用中のとき上のエラーで失敗した。`PCV_E2E_PORT=4391 npx playwright test`は
   `2 passed (8.4s)`(web-conversion・web-multi-conversion)。
+
+## Note (2026-10-17, R6)
+
+The specs no longer use `setInputFiles` on a `file-input` element. The Web file input is now created inside
+`src/datasource/file-picker.ts` and is not part of the page, so the specs press `data-testid="open-button"`
+and hand files over with Playwright's `filechooser` event (`chooser.setFiles`).
+See `TaskSheets/R6-file-picker-in-datasource.md`.
