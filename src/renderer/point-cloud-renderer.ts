@@ -166,7 +166,7 @@ export interface LayerInput {
   boundsMax: readonly [number, number, number];
   colorMode: ColorMode;
   visible: boolean;
-  /** 点の形・大きさ（直径px）。省くと、形は`setPointShape`の既定値、大きさは`DEFAULT_POINT_SIZE_PX`。 */
+  /** 点の形・大きさ（直径px）。省くと、形は端末プロファイルの既定値、大きさは`DEFAULT_POINT_SIZE_PX`。 */
   pointShape?: PointShape;
   pointSizePx?: number;
 }
@@ -314,10 +314,11 @@ export class PointCloudRenderer {
    * `setRenderScale()`経由でのみ変更し、そのたびに`applyCanvasSize()`を呼ぶ。
    */
   private renderScale: number;
-  /** M3-8: 点の形（丸/四角）。gpu-resources.tsが起動時に両方のパイプラインを
-   *  作成済みなので、切り替えにリソースの作り直しは要らない
-   *  (`setPointShape()`参照)。 */
-  private pointShape: PointShape;
+  /** Default point shape (round or square) from the device profile, fixed in the constructor. It is the initial
+   *  shape of a layer added without `LayerInput.pointShape`, and it is shown in the stats. Existing layers keep
+   *  their own shape (`setLayerPointShape`). gpu-resources.ts builds both pipelines at startup, so a layer can
+   *  switch shape without rebuilding resources. */
+  private readonly pointShape: PointShape;
   /** M3-8: モバイル判定の結果。コンストラクタで一度だけ決め、以後は変えない
    *  (実行中に`navigator.deviceMemory`や入力デバイスが変わることは想定しない)。 */
   private readonly isMobileProfile: boolean;
@@ -866,17 +867,6 @@ export class PointCloudRenderer {
 
   getRenderScale(): number {
     return this.renderScale;
-  }
-
-  /**
-   * M3-8: 点の形（丸/四角）の既定値。L2-B以降は形がレイヤーごとなので、これは
-   * 「これから足すレイヤーの初期値」（`LayerInput.pointShape`を省いたとき）と統計表示にだけ効き、
-   * 既にあるレイヤーは変えない。既存レイヤーは`setLayerPointShape`で変える。
-   * gpu-resources.tsが起動時に丸・四角の両方のパイプラインを作成済みなので、
-   * リソースの作り直しは不要。
-   */
-  setPointShape(shape: PointShape): void {
-    this.pointShape = shape;
   }
 
   getPointShape(): PointShape {

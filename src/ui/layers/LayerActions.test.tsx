@@ -21,9 +21,7 @@ function fakeViewer(hasLayer: boolean) {
     focusLayer,
     setLayerColorMode: vi.fn(),
     edlEnabled: true,
-    pointShape: "round",
     setEdlEnabled: vi.fn(),
-    setPointShape: vi.fn(),
   } as unknown as CopcViewerState;
   return { viewer, removeLayer, focusLayer };
 }

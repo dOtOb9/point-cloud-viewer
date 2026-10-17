@@ -98,7 +98,6 @@ export type CopcViewerState = Pick<
     | "edlEnabled"
     | "animationEnabled"
     | "renderScale"
-    | "pointShape"
     | "centerPriorityStrength"
     | "minCenterPriorityWeight"
     | "setPointBudget"
@@ -108,7 +107,6 @@ export type CopcViewerState = Pick<
     | "setEdlEnabled"
     | "setAnimationEnabled"
     | "setRenderScale"
-    | "setPointShape"
     | "setCenterPriorityStrength"
     | "setMinCenterPriorityWeight"
   > &

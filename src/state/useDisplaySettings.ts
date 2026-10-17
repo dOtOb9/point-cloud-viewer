@@ -9,7 +9,7 @@ import type { PointCloudRenderer, RenderStats } from "../renderer/point-cloud-re
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
 import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "../renderer/center-priority";
-import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "../renderer/device-profile";
+import { defaultRenderSettings, readDeviceProfileInput } from "../renderer/device-profile";
 import { applyMotionAttribute, readStoredAnimationEnabled, storeAnimationEnabled } from "./motion-setting";
 
 /** localStorage, or undefined where it does not exist (vitest in node) or access throws. */
@@ -41,7 +41,6 @@ export interface DisplaySettings {
   /** On/off of animation (fade-in, inertia, camera moves). */
   animationEnabled: boolean;
   renderScale: number;
-  pointShape: PointShape;
   /**
    * ADR-0010 addendum: how strongly the LOD priority is weighted by the distance from the screen center.
    * 0 means screen-space error only. Default `DEFAULT_CENTER_PRIORITY_STRENGTH` (an unverified initial value).
@@ -60,7 +59,6 @@ export interface DisplaySettings {
   setEdlEnabled: (enabled: boolean) => void;
   setAnimationEnabled: (enabled: boolean) => void;
   setRenderScale: (scale: number) => void;
-  setPointShape: (shape: PointShape) => void;
   setCenterPriorityStrength: (strength: number) => void;
   setMinCenterPriorityWeight: (minWeight: number) => void;
 }
@@ -79,7 +77,6 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
   const [edlEnabled, setEdlEnabledState] = useState(deviceProfileDefaults.edlEnabled);
   const [animationEnabled, setAnimationEnabledState] = useState(() => readStoredAnimationEnabled(getLocalStorage()));
   const [renderScale, setRenderScaleState] = useState(deviceProfileDefaults.renderScale);
-  const [pointShape, setPointShapeState] = useState<PointShape>(deviceProfileDefaults.pointShape);
   const [centerPriorityStrength, setCenterPriorityStrengthState] = useState(DEFAULT_CENTER_PRIORITY_STRENGTH);
   const [minCenterPriorityWeight, setMinCenterPriorityWeightState] = useState(DEFAULT_MIN_CENTER_PRIORITY_WEIGHT);
 
@@ -156,14 +153,6 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
     [rendererRef],
   );
 
-  const setPointShape = useCallback(
-    (shape: PointShape) => {
-      setPointShapeState(shape);
-      rendererRef.current?.setPointShape(shape);
-    },
-    [rendererRef],
-  );
-
   const setCenterPriorityStrength = useCallback(
     (strength: number) => {
       setCenterPriorityStrengthState(strength);
@@ -191,7 +180,6 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
     edlEnabled,
     animationEnabled,
     renderScale,
-    pointShape,
     centerPriorityStrength,
     minCenterPriorityWeight,
     setPointBudget,
@@ -201,7 +189,6 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
     setEdlEnabled,
     setAnimationEnabled,
     setRenderScale,
-    setPointShape,
     setCenterPriorityStrength,
     setMinCenterPriorityWeight,
   };
