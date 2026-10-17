@@ -16,7 +16,7 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 
 ここに残してあるものは次のとおりです。
 
-- `status`・`error` — ほぼ全部の hook が書くため（hook に入れても同じ引数を持ち回るだけ）。
+- `status` — ほぼ全部の hook が書くため（hook に入れても同じ引数を持ち回るだけ）。型は `viewer-status.ts` の判別共用体 `ViewerStatus`（`idle`／`opening`／`converting`／`ready`／`error`。`error` だけが `message` を持つ）。読む側は `isFileOpenBusy`・`openButtonLabel`・`statusErrorMessage`・`isOpenRunningOrDone` を使う。変換中のファイル名と進捗は、`converting` になる前や `ready` になった後にも読まれるため、共用体に入れず `useConversionSession` が持つ。
 - `rendererRef`・`sourceRef`・`toolRunningRef` — `useDisplaySettings` が `rendererRef` を、`useRendererLifecycle` が `useDisplaySettings` の `onStats` を必要とする循環を、ref を組み立て側で作ることで避けている。
   `toolRunningRef` は `useConversionSession`（ツールの進捗イベントを変換と取り違えないため）と `usePointCloudTools`（立てる側）が共有する。
 - `pickPoint`・`getViewSnapshot` — renderer への 15 行ほどの素通し。
@@ -29,8 +29,9 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 
 | ファイル | 持つもの | 入口 |
 |---|---|---|
-| `useCopcViewer.ts` | 組み立て。`status`・`error`・各 ref | `useCopcViewer()` |
-| `viewer-types.ts` | `CopcViewerState` とその小さな型（`ViewerStatus`・`ToolProgressState`・`OpfsStorageInfo`）。型だけ | （型） |
+| `useCopcViewer.ts` | 組み立て。`status`・各 ref | `useCopcViewer()` |
+| `viewer-types.ts` | `CopcViewerState` とその小さな型（`ToolProgressState`・`OpfsStorageInfo`）。型だけ | （型） |
+| `viewer-status.ts` | `ViewerStatus`（開く・変換する状態の判別共用体）と、それを読むヘルパー。純粋関数 | `isFileOpenBusy` ほか |
 | `useRendererLifecycle.ts` | `PointCloudRenderer` と `TauriSource`／`WebSource` の生成・コールバック接続・リサイズ・破棄 | `useRendererLifecycle(refs, callbacks)` |
 | `useErrorLog.ts` | `gpuErrors`・`errorHistory`・`reportError`・`dismissGpuError`（`GpuErrorLog` を包む） | `useErrorLog()` |
 | `useDisplaySettings.ts` | 点予算・自動調整・背景・グリッド・EDL・アニメーション・レンダースケール・点の形・中央優先度・`stats`・端末の既定値 | `useDisplaySettings(rendererRef)` |

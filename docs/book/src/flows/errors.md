@@ -10,7 +10,7 @@
 
 - **`reportError(message, source)`** — 現在のエラー一覧（`gpuErrors`）と、セッション全体の履歴（`errorHistory`）に積む。
   積まれると `ErrorDialog` が自動で開く。ステータスバーの「ログ」ボタンで、閉じたあとも履歴を読み返せる。
-- **`setError(message)`**（`viewer.error`） — 画面内の短いエラー文。レイヤー情報の欄（`data-testid="viewer-error"`）に出て、`ErrorDialog` にも一件として並ぶ。
+- **`setStatus({ kind: "error", message })`**（`viewer.status`） — 画面内の短いエラー文。読む側は `statusErrorMessage(viewer.status)`。レイヤー情報の欄（`data-testid="viewer-error"`）に出て、`ErrorDialog` にも一件として並ぶ。
 
 ## 入口
 
@@ -38,8 +38,8 @@
 
 ### 3. 変換の失敗・キャンセル・容量不足
 
-1. 容量不足は `useFileOpen.ts` の `openFile`／`openFiles` が、`describeInsufficientSpaceWeb`（`src/datasource/opfs.ts`）または `describeInsufficientSpaceDesktop`（`src/state/open-file-text.ts`）の文を `reportError(..., "conversion")` に流し、`status = "error"`・`error = "空き容量が足りません"`。
-2. 変換中の失敗は `useConversionSession.ts` の `reportConversionFailure(message, cancelled)` — 進捗を消し、`status` を `"error"`（キャンセルなら `"idle"`）にし、
+1. 容量不足は `useFileOpen.ts` の `openFile`／`openFiles` が、`describeInsufficientSpaceWeb`（`src/datasource/opfs.ts`）または `describeInsufficientSpaceDesktop`（`src/state/open-file-text.ts`）の文を `reportError(..., "conversion")` に流し、`status = { kind: "error", message: "空き容量が足りません" }`。
+2. 変換中の失敗は `useConversionSession.ts` の `reportConversionFailure(message, cancelled)` — 進捗を消し、`status` を `{ kind: "error", message }`（キャンセルなら `{ kind: "idle" }`）にし、
    `reportError("変換に失敗しました: ..." または "変換をキャンセルしました", "conversion")`。
    - デスクトップ: Rust の `emit_failed`（`src-tauri/src/conversion.rs`）が `conversion-failed` イベントを送り、`onConversionFailed`（`src/datasource/tauri.ts`）が受ける。
    - Web: Worker が `convert-failed` を送り、`WebSource.onConvertFailed` が受ける。Worker の `describeConversionFailure`（`src/datasource/copc.worker.ts`）は、
@@ -61,7 +61,7 @@
 - ファイルを閉じる失敗: `useLayers.ts` の `removeLayer` が `reportError(..., "node-read")`。
 - 計測の深度読み戻しの失敗: `useCopcViewer.ts` の `pickPoint` が `reportError(...)`。
 - 点群ツールの警告（CRS なしを通したなど）と失敗: `usePointCloudTools.ts` の `reportToolMessage` → `source = "tool"`。
-- `renderer.init()` の失敗: `useRendererLifecycle.ts` が `setError(String(e))`（`viewer.error` の側）。
+- `renderer.init()` の失敗: `useRendererLifecycle.ts` が `status` を `{ kind: "error", message: String(e) }` にする（他の失敗と同じ画面内の表示）。
 - WebGPU 非対応: `UnsupportedDeviceScreen`（[起動](./startup.md)）。
 
 ## 表示まで
@@ -79,7 +79,7 @@
 | もの | 持ち主 |
 |---|---|
 | `gpuErrors`・`errorHistory`・`reportError`・`dismissGpuError` | `useErrorLog`（`GpuErrorLog` を ref に持ち、変わるたびに一覧のコピーを state に入れる） |
-| `status`・`error`（`viewer.error`） | `useCopcViewer` |
+| `status`（エラー文は `kind: "error"` の `message`） | `useCopcViewer` |
 | ダイアログの開閉・モード（`current`／`history`） | `AppShell` |
 | 連投の抑制・件数の集計 | `GpuErrorLog`（`src/renderer/gpu-error-log.ts`。WebGPU にも React にも依存しない純粋なクラス） |
 
