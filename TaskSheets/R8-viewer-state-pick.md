@@ -80,9 +80,35 @@ of a `Pick<...> & {...}` type goes to the field in the original interface, and t
 
 ## Record (filled in by the implementer)
 
-- Files touched:
-- Field names that differ between a hook and `CopcViewerState`:
-- Fields in `CopcViewerState` that `src/ui` never reads (not removed except `openFile`):
-- Doc comments moved / dropped:
-- Commands run and their results:
-- Not checked:
+- Files touched: `src/state/viewer-types.ts` (rewritten as `Pick<...> & {...}`), `src/state/useCopcViewer.ts` (removed
+  `openFile` from the assembly, header comment), the doc comments of the interfaces in `useLayers.ts`, `useDisplaySettings.ts`,
+  `useErrorLog.ts`, `useConversionSession.ts`, `useFileOpen.ts`, `usePointCloudTools.ts`, `useOpfsStorage.ts`, `useTempDir.ts`,
+  `docs/book/src/frontend/state.md`, `docs/book/src/flows/settings.md`, this sheet. No file under `src/ui/` or `e2e/`.
+- Field names that differ between a hook and `CopcViewerState`: none. Every field was a `Pick` of an identically named field
+  (type-checked by `tsc`). Fields declared in `viewer-types.ts` itself (not in any hook interface): `status`, `isBrowser`,
+  `pickPoint`, `getViewSnapshot` (made by `useCopcViewer`).
+- Fields in `CopcViewerState` that `src/ui` never reads (checked with `grep -rnE "\b<field>\b" src/ui e2e` for every field):
+  `openFile` (removed), `resetView` (not read anywhere in `src`; the book already says so in `flows/layers.md`), and three that
+  only `src/state` reads, through `viewerRef.current` in `useLayerTool.ts` / `useMeasureTool.ts`: `pickPoint`,
+  `addMeasurement`, `extractFromLayer`. Not removed (the owner decides). The grep is a word search, so a field used under another
+  name (a destructure rename) would be missed; `tsc` did not complain after the removal of `openFile`.
+- Doc comments moved / dropped: moved (shortened, English) into the hook interfaces: `layers`, `selectedLayerId`, `selectedLayer`,
+  `selectedLayerIds`, the selection and per-layer actions, `resetView`, `removeLayer`, `addMeasurement` (Layers); `autoPointBudgetEnabled`,
+  `edlEnabled`, `animationEnabled`, `centerPriorityStrength`, `minCenterPriorityWeight` (DisplaySettings); `gpuErrors` (ErrorLog);
+  `conversionProgress`, `convertingFileName`, `cancelConversion`, `copyConversionBreakdownText` (ConversionSession);
+  `openFile`, `openFiles` (FileOpen); `toolProgress`, `extractFromLayer`, `mergeSelectedLayers` (PointCloudTools); all OPFS fields;
+  `tempDir`, `supportsCustomTempDir`. Dropped as out of date or duplicated: `errorHistory` (the ErrorLog one already said it),
+  "UI toggle for animation not implemented" (stale), "the toggle after the UI rebuild" wording, the `pickAndSetTempDir` /
+  `clearTempDir` / `reportError` / `dismissGpuError` / `isBrowser` copies (the hook already had a comment, or `isBrowser` was kept
+  in `viewer-types.ts`). The `canvasRef` comment stays in `viewer-types.ts`, translated into English.
+  Where `viewer-types.ts` still has comments in Japanese (re-export notes, `OpfsStorageInfo`), they were not touched.
+- Commands run and their results (all in the worktree):
+  - `npx tsc --noEmit` -> exit 0
+  - `npm run lint` -> exit 0, no output from eslint
+  - `npx vitest run` -> 63 files passed, 561 tests passed
+  - `git diff origin/main --stat` before push -> only the files listed above
+  - CI run id and result: see the report of the implementer (filled in after the push; not known at the time of this commit).
+- Not checked: F12 / hover in VS Code (no editor available to the implementer; the coordinator checked the mechanism on a
+  scratch project), the `invariants` CI job locally (only the diff was inspected: no new import of the Tauri packages, no React in
+  `src/renderer`), that the app still opens a file on screen (no behavior change is intended; only types and one unused field
+  changed), the mdBook build (`mdbook` not run).
