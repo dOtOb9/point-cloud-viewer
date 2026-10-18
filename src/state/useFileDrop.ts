@@ -13,7 +13,7 @@ import { onFilesDroppedToOpen } from "../datasource/file-picker";
  */
 export function useFileDrop(openFiles: (items: string[] | File[]) => Promise<void>): boolean {
   const [dragging, setDragging] = useState(false);
-  // Ref to the latest openFiles, so it can be called without resubscribing (same reason as openFileRef in useCopcViewer.ts).
+  // Ref to the latest openFiles, so it can be called without resubscribing (the effect runs once, the call is always the latest).
   const openFilesRef = useRef(openFiles);
   useEffect(() => {
     openFilesRef.current = openFiles;

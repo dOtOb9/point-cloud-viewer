@@ -6,8 +6,8 @@
 //   useErrorLog.ts           gpuErrors, errorHistory, reportError, dismissGpuError
 //   useDisplaySettings.ts    point budget, background, grid, EDL, animation, render scale, shape, center priority, stats
 //   useLayers.ts             layer list, selection, per-layer actions, measurement layers
-//   useFileOpen.ts           openFile / openFiles / addOpenedLayer
-//   useConversionSession.ts  conversion progress, done/failed events, cancel, breakdown copy
+//   useFileOpen.ts           openFiles / addOpenedLayer (awaits source.prepareToOpen; a conversion happens inside it)
+//   useConversionSession.ts  conversion progress, source file name, cancel, breakdown copy
 //   usePointCloudTools.ts    extract / cross section / merge as new layers
 //   useOpfsStorage.ts        Web storage usage and cleanup (settings page)
 //   useTempDir.ts            desktop temp folder setting
@@ -59,8 +59,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   // Shared by useConversionSession (to ignore tool progress) and usePointCloudTools (sets it).
   const toolRunningRef = useRef(false);
 
-  // The order of the calls matters in one place: useRendererLifecycle fills `sourceRef` in its effect, and
-  // the effect of useConversionSession reads it, so lifecycle comes first (effects run in call order).
   const errorLog = useErrorLog();
   const display = useDisplaySettings(rendererRef);
   useRendererLifecycle(
@@ -74,8 +72,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const conversion = useConversionSession({
     sourceRef,
     toolRunningRef,
-    setStatus,
-    reportError: errorLog.reportError,
     selectedBreakdownText,
   });
   const fileOpen = useFileOpen({

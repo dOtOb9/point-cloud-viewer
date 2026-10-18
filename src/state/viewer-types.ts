@@ -70,7 +70,7 @@ export interface OpfsStorageInfo {
 // false positives on reads of the state during render. So the caller gets them as separate values.
 //
 // The field names and types come from the hooks' own interfaces (Pick). To read or change a field, go to its interface.
-// Fields left out on purpose are the hooks' internal ones (`layersStateRef`, `commitLayers`, `openFileRef`, ...).
+// Fields left out on purpose are the hooks' internal ones (`layersStateRef`, `commitLayers`, `reportConversionProgress`, ...).
 export type CopcViewerState = Pick<
   Layers,
   | "layers"

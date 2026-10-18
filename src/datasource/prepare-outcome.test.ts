@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeInsufficientSpaceDesktop, toPrepareOutcome } from "./prepare-outcome";
+import { describeInsufficientSpaceDesktop, toConversionFailureOutcome, toPrepareOutcome } from "./prepare-outcome";
 
 describe("describeInsufficientSpaceDesktop", () => {
   it("writes both sizes in GiB with one decimal", () => {
@@ -11,11 +11,26 @@ describe("describeInsufficientSpaceDesktop", () => {
 
 describe("toPrepareOutcome", () => {
   it("alreadyCopc and cached are ready", () => {
-    expect(toPrepareOutcome({ kind: "alreadyCopc", path: "a.copc.laz" }, false)).toEqual({ kind: "ready", path: "a.copc.laz" });
-    expect(toPrepareOutcome({ kind: "cached", outputPath: "out.copc.laz" }, true)).toEqual({ kind: "ready", path: "out.copc.laz" });
+    expect(toPrepareOutcome({ kind: "alreadyCopc", path: "a.copc.laz" }, false)).toEqual({
+      kind: "ready",
+      path: "a.copc.laz",
+      conversion: null,
+    });
+    expect(toPrepareOutcome({ kind: "cached", outputPath: "out.copc.laz" }, true)).toEqual({
+      kind: "ready",
+      path: "out.copc.laz",
+      conversion: null,
+    });
   });
-  it("converting stays converting", () => {
-    expect(toPrepareOutcome({ kind: "converting" }, false)).toEqual({ kind: "converting" });
+  it("a failed conversion: bare message in the summary, prefixed text in the details", () => {
+    expect(toConversionFailureOutcome("boom", false)).toEqual({
+      kind: "failed",
+      summary: "boom",
+      details: "変換に失敗しました: boom",
+    });
+  });
+  it("a cancelled conversion is `cancelled`, whatever the message", () => {
+    expect(toConversionFailureOutcome("キャンセルされました", true)).toEqual({ kind: "cancelled" });
   });
   it("desktop insufficient space: short summary, long text in details", () => {
     const outcome = toPrepareOutcome({ kind: "insufficientSpace", requiredBytes: 3 * 1024 ** 3, availableBytes: 1024 ** 3 }, false);

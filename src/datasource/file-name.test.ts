@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basenameOfPath, extensionOfFileName } from "./open-file-text";
+import { basenameOfPath, extensionOfFileName } from "./file-name";
 
 describe("basenameOfPath", () => {
   it("handles both separators", () => {

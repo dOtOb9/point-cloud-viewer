@@ -14,9 +14,10 @@
 //
 // 分類は`web-protocol.ts`の`classifyOpenPath`(純粋関数、テスト対象)が行う。
 
-import type { DataSource, OpenedCloud, PrepareOutcome } from "./DataSource";
+import type { DataSource, OpenedCloud, PrepareOptions, PrepareOutcome } from "./DataSource";
 import { isCopcFile } from "./copc-header";
-import { toPrepareOutcome } from "./prepare-outcome";
+import { extensionOfFileName } from "./file-name";
+import { toConversionFailureOutcome, toPrepareOutcome } from "./prepare-outcome";
 import { detectSourceFormatByName } from "./source-format";
 import { toCloudInfo, toHierarchyNodeInfo } from "./copc-dto";
 import {
@@ -53,6 +54,8 @@ import {
 import { StaleNodeRequestError } from "./stale-node-error";
 import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
 
+type InsufficientSpaceWeb = Extract<ConversionOutcome, { kind: "insufficientSpaceWeb" }>;
+
 /** How the free-space check gets the point count of each raw point-file format (from its header). */
 const POINT_COUNT_ESTIMATORS: Record<PointFileFormat, (file: File) => Promise<number | null>> = {
   pcd: estimatePointCountForPcdFile,
@@ -78,7 +81,7 @@ const POINT_COUNT_ESTIMATORS: Record<PointFileFormat, (file: File) => Promise<nu
 async function checkInsufficientSpace(
   file: File,
   pointCountEstimator: (file: File) => Promise<number | null>,
-): Promise<ConversionOutcome | null> {
+): Promise<InsufficientSpaceWeb | null> {
   await opfs.ensurePersistentStorage(navigator.storage);
 
   const pointCount = await pointCountEstimator(file);
@@ -110,7 +113,7 @@ async function checkInsufficientSpace(
  * 一部だけ点数で・残りをファイルサイズで見積もると係数の意味が食い違うため、
  * 「全部わかるか、全部わからないか」の二択にしている)。
  */
-async function checkInsufficientSpaceMulti(files: File[]): Promise<ConversionOutcome | null> {
+async function checkInsufficientSpaceMulti(files: File[]): Promise<InsufficientSpaceWeb | null> {
   await opfs.ensurePersistentStorage(navigator.storage);
 
   const pointCounts = await Promise.all(files.map(estimatePointCountForLasFile));
@@ -151,6 +154,24 @@ function createRealWorker(): WorkerLike {
   });
 }
 
+type ProgressCallback = (progress: ConversionProgress) => void;
+
+/** How a conversion ended, as the Worker says it (`convert-done` / `convert-failed`). */
+type ConvertEnd =
+  | {
+      kind: "done";
+      outputName: string;
+      suggestedFileName: string;
+      pointCount: number;
+      stageTimings: ConversionStageBreakdown;
+      warnings: string[];
+    }
+  | { kind: "failed"; message: string; cancelled: boolean };
+
+/** What a `start*` method returns: a ready/failed outcome at once, or a running conversion with its end promise. */
+type ConversionStarted = { kind: "converting"; end: Promise<ConvertEnd> };
+type WebStart = Exclude<ConversionOutcome, { kind: "converting" }> | ConversionStarted;
+
 interface PendingRequest {
   resolve: (response: WorkerResponse) => void;
   reject: (error: Error) => void;
@@ -164,24 +185,15 @@ export class WebSource implements DataSource {
   private nextFileSequence = 0;
   private lastBytesRead = 0;
 
-  // M4-6b: 変換(生LAS/LAZ→COPC)の進捗・完了・失敗を購読するリスナー。
-  // open/readNodeの「1リクエスト1応答」(`pending`マップ)とは違い、1回の
-  // 変換に対して複数の応答(進捗が何度も、最後に完了かfailedが1回)が来るため、
-  // 別の仕組みにしてある(`handleResponse`参照)。
-  private readonly convertProgressListeners = new Set<(progress: ConversionProgress) => void>();
-  private readonly convertDoneListeners = new Set<
-    (
-      outputName: string,
-      suggestedFileName: string,
-      pointCount: number,
-      stageTimings: ConversionStageBreakdown,
-      warnings: string[],
-    ) => void
+  // M4-6b: waiters of running conversions, by request id. Unlike open/readNode (one request, one answer, the
+  // `pending` map), one conversion gets several answers: `convert-progress` many times, then `convert-done` or
+  // `convert-failed` once (see `handleResponse`).
+  private readonly convertPending = new Map<
+    number,
+    { resolve: (end: ConvertEnd) => void; onProgress: ProgressCallback }
   >();
-  private readonly convertFailedListeners = new Set<(message: string, cancelled: boolean) => void>();
-  /** 進行中の変換のリクエストid(無ければnull)。`cancelConversion`が
-   *  どのidへキャンセルを送るかに使う。1本のWorkerでは同時に1件しか
-   *  変換しない前提(ADR-0012「Web版はまずWorker1本」)。 */
+  /** Request id of the running conversion or tool (null if none). `cancelConversion` sends the cancel to it.
+   *  One Worker runs one job at a time (ADR-0012: "one Worker first"). */
   private activeConvertId: number | null = null;
 
   /**
@@ -204,38 +216,63 @@ export class WebSource implements DataSource {
   }
 
   /**
-   * `DataSource.prepareToOpen` for the Web. One string is an OPFS key from the conversion continuation: it
-   * is ready as it is. One `File`: a COPC opens as it is, anything else goes to the conversion route of its
-   * format. Several `File`s: the merge route. `tempDir` is not used (OPFS has no temp directory setting).
+   * `DataSource.prepareToOpen` for the Web. One `File`: a COPC opens as it is, anything else goes to the
+   * conversion route of its format. Several `File`s: the merge route. When a conversion starts, this waits for
+   * the Worker's `convert-done` / `convert-failed`, reads the output back from OPFS and registers it.
+   * `tempDir` is not used (OPFS has no temp directory setting).
    */
-  async prepareToOpen(
-    items: string[] | File[],
-    options: { tempDir: string | null; isMobile: boolean },
-  ): Promise<PrepareOutcome> {
-    const first = items[0];
-    if (typeof first === "string") {
-      if (items.length !== 1) throw new Error("複数ファイルの選択はこの環境では対応していません");
-      return { kind: "ready", path: first };
+  async prepareToOpen(items: string[] | File[], options: PrepareOptions): Promise<PrepareOutcome> {
+    const files: File[] = [];
+    for (const item of items) {
+      if (typeof item === "string") throw new Error("Web版ではFileだけを開けます");
+      files.push(item);
     }
-    const files = items as File[];
-    if (files.length > 1) {
-      return toPrepareOutcome(await this.startMultiConversion(files, options.isMobile), true);
-    }
+    const first = files[0];
+    if (!first) throw new Error("開くファイルがありません");
+    const isMulti = files.length > 1;
+    const onProgress: ProgressCallback = (progress) => options.onProgress?.(progress);
 
     // M4-6b: decide by the header, not the extension (`copc-header.ts`, same idea as Rust
     // `copc_detect.rs`). A COPC opens as it is; raw LAS/LAZ is converted in OPFS on the Web too.
-    if (await isCopcFile(first)) {
-      return { kind: "ready", path: this.registerFile(first) };
+    if (!isMulti && (await isCopcFile(first))) {
+      return { kind: "ready", path: this.registerFile(first), conversion: null };
     }
     // M4-9: decide the format first, then the conversion route. (A real-device bug: every non-COPC
     // file used to go to the LAS/LAZ route, so PCD was wrongly judged "not enough space".)
     // PCD, PLY and E57 share one route (R7); everything else goes to the LAS/LAZ route.
     const format = detectSourceFormatByName(first.name);
-    const outcome =
-      format === "pcd" || format === "ply" || format === "e57"
-        ? await this.startPointFileConversion(first, format, options.isMobile)
-        : await this.startConversion(first, options.isMobile);
-    return toPrepareOutcome(outcome, false);
+    const started = isMulti
+      ? await this.startMultiConversion(files, options.isMobile, onProgress)
+      : format === "pcd" || format === "ply" || format === "e57"
+        ? await this.startPointFileConversion(first, format, options.isMobile, onProgress)
+        : await this.startConversion(first, options.isMobile, onProgress);
+    if (started.kind !== "converting") return toPrepareOutcome(started, isMulti);
+
+    options.onConverting?.();
+    const end = await started.end;
+    if (end.kind === "failed") return toConversionFailureOutcome(end.message, end.cancelled);
+
+    // Read the OPFS output back as a `File` and open it through the same route as a local file
+    // (`registerFile` -> `open`). The download URL is made here too (OPFS content cannot be fetched from outside
+    // the app); the caller revokes it if the layer cannot be opened.
+    const file = await opfs.getConvertedFile(end.outputName);
+    if (!file) {
+      const text = "変換結果をOPFSから読み出せませんでした";
+      return { kind: "failed", summary: text, details: text };
+    }
+    return {
+      kind: "ready",
+      path: this.registerFile(file),
+      conversion: {
+        outputName: end.suggestedFileName,
+        platform: "web",
+        // M4-14: several files have no single extension, so use the same wording as the desktop build.
+        sourceFormat: end.stageTimings.inputFileCount > 1 ? "las/laz(複数ファイル)" : extensionOfFileName(first.name),
+        stageTimings: end.stageTimings,
+        warnings: end.warnings,
+        download: { url: URL.createObjectURL(file), fileName: end.suggestedFileName },
+      },
+    };
   }
 
   async open(path: string): Promise<OpenedCloud> {
@@ -300,21 +337,18 @@ export class WebSource implements DataSource {
   }
 
   /**
-   * M4-6b: 生LAS/LAZ→COPCの変換を始める。呼び出し側
-   * (`src/state/useCopcViewer.ts`)は、先に`copc-header.ts`の`isCopcFile`で
-   * 「既にCOPCではない」ことを確かめてからこれを呼ぶ想定(デスクトップ版の
-   * `startLasConversion`と同じ役割分担: 既にCOPCの場合はこの関数を経由しない)。
+   * M4-6b: start converting a raw LAS/LAZ to COPC. `prepareToOpen` calls this only after `isCopcFile`
+   * (`copc-header.ts`) said the file is not a COPC yet (same division of work as the desktop
+   * `start_las_conversion`).
    *
-   * デスクトップ版(`src-tauri/src/conversion.rs`)と同じ4分岐
-   * (`alreadyCopc`はWeb側では呼び出し前に済んでいるため出さない)に加え、
-   * Web版だけの`opfsUnavailable`(OPFSが使えないブラウザ)を返しうる。
+   * Returns the same branches as the desktop build (`src-tauri/src/conversion.rs`; `alreadyCopc` is decided
+   * before this call), plus `opfsUnavailable` (a browser without OPFS), which only the Web build has.
+   * `converting` carries `end`, the promise of the Worker's final answer.
    *
-   * `isMobile`はM4-11(`TaskSheets/M4-import-and-conversion.md`)で追加した
-   * 引数。呼び出し側(`src/state/useCopcViewer.ts`、`defaultRenderSettings`
-   * から既に求めてある値)がメインスレッドで判定した結果をそのまま渡す
-   * (Worker内では`matchMedia`が使えずタッチUIの判定ができないため)。
+   * `isMobile` (M4-11) is decided on the main thread and passed in, because `matchMedia` is not available in
+   * the Worker.
    */
-  async startConversion(file: File, isMobile: boolean): Promise<ConversionOutcome> {
+  async startConversion(file: File, isMobile: boolean, onProgress: ProgressCallback): Promise<WebStart> {
     const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
 
     const cached = await opfs.findCachedOutput(fingerprint);
@@ -331,9 +365,7 @@ export class WebSource implements DataSource {
     if (insufficient) return insufficient;
 
     const id = this.nextRequestId++;
-    this.activeConvertId = id;
-    this.worker.postMessage(buildConvertStartRequest(id, file, isMobile));
-    return { kind: "converting" };
+    return this.beginConversion(id, buildConvertStartRequest(id, file, isMobile), onProgress);
   }
 
   /**
@@ -347,7 +379,8 @@ export class WebSource implements DataSource {
     file: File,
     format: PointFileFormat,
     isMobile: boolean,
-  ): Promise<ConversionOutcome> {
+    onProgress: ProgressCallback,
+  ): Promise<WebStart> {
     const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
 
     const cached = await opfs.findCachedOutput(fingerprint);
@@ -364,19 +397,15 @@ export class WebSource implements DataSource {
     if (insufficient) return insufficient;
 
     const id = this.nextRequestId++;
-    this.activeConvertId = id;
-    this.worker.postMessage(buildPointFileConvertStartRequest(id, file, format, isMobile));
-    return { kind: "converting" };
+    return this.beginConversion(id, buildPointFileConvertStartRequest(id, file, format, isMobile), onProgress);
   }
 
   /**
-   * M4-14: 複数のLAS/LAZを1つのCOPCへマージする変換を始める。
-   * `startConversion`(単一ファイル)と同じ役割分担だが、`alreadyCopc`判定が
-   * 無い(呼び出し側`src/state/useCopcViewer.ts`の`openFiles`が、1件だけの
-   * 選択は`openFile`(既存の単一ファイル経路)へ委譲するため、ここに来る時点で
-   * 必ず2件以上)。
+   * M4-14: start merging several LAS/LAZ files into one COPC. Same division of work as `startConversion`,
+   * but there is no `alreadyCopc` check: `prepareToOpen` sends one file to the single-file route, so there
+   * are always two or more files here.
    */
-  async startMultiConversion(files: File[], isMobile: boolean): Promise<ConversionOutcome> {
+  async startMultiConversion(files: File[], isMobile: boolean, onProgress: ProgressCallback): Promise<WebStart> {
     const fingerprints = files.map((f) => ({
       name: f.name,
       size: f.size,
@@ -397,16 +426,26 @@ export class WebSource implements DataSource {
     if (insufficient) return insufficient;
 
     const id = this.nextRequestId++;
-    this.activeConvertId = id;
-    this.worker.postMessage(buildConvertMultiStartRequest(id, files, isMobile));
-    return { kind: "converting" };
+    return this.beginConversion(id, buildConvertMultiStartRequest(id, files, isMobile), onProgress);
   }
 
+  /**
+   * Registers the waiter for `id` BEFORE the request is posted (so no answer can be missed), then posts it.
+   * `end` settles when the Worker answers `convert-done` or `convert-failed` for this id.
+   */
+  private beginConversion(id: number, request: WorkerRequest, onProgress: ProgressCallback): ConversionStarted {
+    const end = new Promise<ConvertEnd>((resolve) => {
+      this.convertPending.set(id, { resolve, onProgress });
+    });
+    this.activeConvertId = id;
+    this.worker.postMessage(request);
+    return { kind: "converting", end };
+  }
 
   // --- L2-C: point-cloud tools (extraction, merge) ---
 
-  /** Waiters per tool request id. Kept separate from conversion (`convert*Listeners`) so the result does not
-   *  flow into the app-wide "open the conversion result" handling (see `web-protocol.ts`). */
+  /** Waiters per tool request id. Kept separate from conversion (`convertPending`): a tool result is
+   *  not a conversion result (no breakdown, no download link; see `web-protocol.ts`). */
   private readonly toolPending = new Map<
     number,
     {
@@ -501,43 +540,15 @@ export class WebSource implements DataSource {
       options,
     );
   }
-  /** 進行中の変換をキャンセルする。進行中の変換が無ければ何もしない
-   *  (デスクトップ版`cancelLasConversion`は失敗するが、Web版はfire-and-forgetの
-   *  メッセージなので「送る意味が無い」だけで区別する理由が無い)。 */
+
+  /**
+   * Cancels the running conversion or tool. Does nothing if none is running. A fire-and-forget message: it
+   * takes effect between read batches (it cannot interrupt the post-processing stage; see
+   * crates/pcv-wasm/src/convert.rs). The answer comes as `convert-failed` with `cancelled: true`.
+   */
   cancelConversion(): void {
     if (this.activeConvertId === null) return;
     this.worker.postMessage(buildConvertCancelRequest(this.activeConvertId));
-  }
-
-  /** 読み込み段階の進捗を購読する。戻り値の関数を呼ぶと購読を解除する
-   *  (`src/datasource/tauri.ts`の`onConversionProgress`と同じ形にしてある)。 */
-  onConvertProgress(callback: (progress: ConversionProgress) => void): () => void {
-    this.convertProgressListeners.add(callback);
-    return () => this.convertProgressListeners.delete(callback);
-  }
-
-  /** 変換完了を購読する。`outputName`はOPFS内部の名前(`registerFile`済みの
-   *  Fileを取得するのに使う場合は呼び出し側が`opfs.getConvertedFile`で
-   *  取得すること)、`suggestedFileName`はダウンロード用の分かりやすい名前。
-   *  `stageTimings`はM4-12(`TaskSheets/M4-import-and-conversion.md`)で追加した、
-   *  段階ごとの所要時間(秒)。 */
-  onConvertDone(
-    callback: (
-      outputName: string,
-      suggestedFileName: string,
-      pointCount: number,
-      stageTimings: ConversionStageBreakdown,
-      warnings: string[],
-    ) => void,
-  ): () => void {
-    this.convertDoneListeners.add(callback);
-    return () => this.convertDoneListeners.delete(callback);
-  }
-
-  /** 変換の失敗・キャンセルを購読する。 */
-  onConvertFailed(callback: (message: string, cancelled: boolean) => void): () => void {
-    this.convertFailedListeners.add(callback);
-    return () => this.convertFailedListeners.delete(callback);
   }
 
   private send(request: WorkerRequest): Promise<WorkerResponse> {
@@ -549,22 +560,21 @@ export class WebSource implements DataSource {
 
   private handleResponse(response: WorkerResponse): void {
     if (response.type === "convert-progress") {
-      const progress = toConversionProgress(response.progress);
-      this.convertProgressListeners.forEach((listener) => listener(progress));
+      this.convertPending.get(response.id)?.onProgress(toConversionProgress(response.progress));
       return;
     }
     if (response.type === "convert-done") {
-      this.activeConvertId = null;
-      const stageTimings = toConversionStageBreakdown(response.stageTimings);
-      this.convertDoneListeners.forEach((listener) =>
-        listener(
-          response.outputName,
-          response.suggestedFileName,
-          response.pointCount,
-          stageTimings,
-          response.warnings ?? [],
-        ),
-      );
+      if (this.activeConvertId === response.id) this.activeConvertId = null;
+      const waiting = this.convertPending.get(response.id);
+      this.convertPending.delete(response.id);
+      waiting?.resolve({
+        kind: "done",
+        outputName: response.outputName,
+        suggestedFileName: response.suggestedFileName,
+        pointCount: response.pointCount,
+        stageTimings: toConversionStageBreakdown(response.stageTimings),
+        warnings: response.warnings ?? [],
+      });
       return;
     }
     if (response.type === "tool-progress") {
@@ -591,8 +601,10 @@ export class WebSource implements DataSource {
       return;
     }
     if (response.type === "convert-failed") {
-      this.activeConvertId = null;
-      this.convertFailedListeners.forEach((listener) => listener(response.message, response.cancelled));
+      if (this.activeConvertId === response.id) this.activeConvertId = null;
+      const waiting = this.convertPending.get(response.id);
+      this.convertPending.delete(response.id);
+      waiting?.resolve({ kind: "failed", message: response.message, cancelled: response.cancelled });
       return;
     }
 

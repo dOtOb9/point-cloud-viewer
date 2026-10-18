@@ -13,15 +13,19 @@ const OPFS_UNAVAILABLE_SINGLE =
 const OPFS_UNAVAILABLE_MULTI =
   "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。";
 
-/** `isMulti`: the texts of "OPFS unavailable" differ between the single-file and the multi-file route. */
-export function toPrepareOutcome(outcome: ConversionOutcome, isMulti: boolean): PrepareOutcome {
+/**
+ * `isMulti`: the texts of "OPFS unavailable" differ between the single-file and the multi-file route.
+ * A conversion that really started (`kind: "converting"`) is not handled here: the source waits for it.
+ */
+export function toPrepareOutcome(
+  outcome: Exclude<ConversionOutcome, { kind: "converting" }>,
+  isMulti: boolean,
+): PrepareOutcome {
   switch (outcome.kind) {
     case "alreadyCopc":
-      return { kind: "ready", path: outcome.path };
+      return { kind: "ready", path: outcome.path, conversion: null };
     case "cached":
-      return { kind: "ready", path: outcome.outputPath };
-    case "converting":
-      return { kind: "converting" };
+      return { kind: "ready", path: outcome.outputPath, conversion: null };
     case "opfsUnavailable": {
       const text = isMulti ? OPFS_UNAVAILABLE_MULTI : OPFS_UNAVAILABLE_SINGLE;
       return { kind: "failed", summary: text, details: text };
@@ -45,6 +49,15 @@ export function toPrepareOutcome(outcome: ConversionOutcome, isMulti: boolean): 
         }),
       };
   }
+}
+
+/**
+ * A conversion that ended without a result (the "failed" / "cancelled" event of either build). The status line
+ * gets the bare message; the error log gets the message with a prefix, so it reads on its own in the banner.
+ */
+export function toConversionFailureOutcome(message: string, cancelled: boolean): PrepareOutcome {
+  if (cancelled) return { kind: "cancelled" };
+  return { kind: "failed", summary: message, details: `変換に失敗しました: ${message}` };
 }
 
 /** Error text for the desktop "not enough disk space" outcome (sizes in GiB, one decimal). */

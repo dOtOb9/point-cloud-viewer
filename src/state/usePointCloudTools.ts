@@ -33,8 +33,8 @@ export interface PointCloudToolsDeps {
   isMobile: boolean;
   addOpenedLayer: (
     path: string,
-    fallbackName: string,
-    isConversionContinuation: boolean,
+    name: string,
+    conversion: null,
   ) => Promise<{ layerId: string }>;
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
   setStatus: Dispatch<SetStateAction<ViewerStatus>>;
@@ -99,7 +99,7 @@ export function usePointCloudTools({
           onProgress: (p) => setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints }),
         });
         for (const warning of result.warnings) reportToolMessage(warning);
-        const { layerId } = await addOpenedLayer(result.outputPath, resultName, false);
+        const { layerId } = await addOpenedLayer(result.outputPath, resultName, null);
         // A tool that worked means the viewer is fine now, so the panel's old open error goes away.
         // Nothing is lost: an open failure is also in the error log / banner history (`failOpen` in useFileOpen.ts).
         setStatus({ kind: "ready" });

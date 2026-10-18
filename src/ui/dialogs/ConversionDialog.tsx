@@ -38,8 +38,8 @@ function formatElapsed(seconds: number): string {
  *
  * - 変換中: ファイル名、進捗バー、いまの段階、経過時間。フッターは「キャンセル」。
  * - 変換が終わったら、同じダイアログが結果表示に変わる(フッターは「閉じる」)。
- *   変換結果は完了時に自動で開かれる(`useCopcViewer.ts`の`onConversionDone`/
- *   `onConvertDone`が`openFile`を続けて呼ぶ)ため、「開く」ボタンは置かない
+ *   変換結果は完了時に自動で開かれる(`useFileOpen.ts`の`openFiles`が
+ *   `prepareToOpen`の完了を待ってそのままレイヤーを足す)ため、「開く」ボタンは置かない
  *   (押すまでもなく開いている。押せるボタンが何もしないのは紛らわしい)。
  *   変換の内訳(コピー可)・ダウンロードリンクは左パネルの「レイヤー情報」にある
  *   (`data-testid`を持つ要素はそちらに残してある)。

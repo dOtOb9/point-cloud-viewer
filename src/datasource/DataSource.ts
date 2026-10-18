@@ -1,6 +1,7 @@
 // ADR-0001 で決めた抽象。Tauri の API を直接見てよいのは tauri.ts の実装だけで、
 // レンダラ・state・UI はこのインターフェースだけを見る。Web版はこれを実装する
 // HttpSource を差し替えるだけで動く想定（M0時点ではまだ存在しない）。
+import type { ConversionProgress, ConversionStageBreakdown } from "./conversion-dto";
 
 /**
  * ファイルのCRS（`pcv_core::crs::CrsInfo`に対応）。デスクトップ・Webで同じ形。
@@ -56,16 +57,42 @@ export interface NodeReader {
   readNode(key: string): Promise<ArrayBuffer>;
 }
 
+/** Options of `prepareToOpen`. `tempDir` is used by the desktop, `isMobile` by the Web. */
+export interface PrepareOptions {
+  tempDir: string | null;
+  isMobile: boolean;
+  /** Called once when a conversion really starts (not for an already-COPC file or a cached result). */
+  onConverting?: () => void;
+  onProgress?: (progress: ConversionProgress) => void;
+}
+
+/** What a finished conversion reports (only the source knows these). */
+export interface ConversionResult {
+  /** Name for the layer list (the converted `.copc.laz`). */
+  outputName: string;
+  /** Inputs of `formatConversionBreakdown` that only the source knows. */
+  platform: "web" | "desktop";
+  sourceFormat: string;
+  stageTimings: ConversionStageBreakdown;
+  /** Backend warnings (e.g. a file without a CRS). Empty if none. */
+  warnings: string[];
+  /** Web only: the converted file for the download link. Desktop: null. */
+  download: { url: string; fileName: string } | null;
+}
+
 /**
- * What `prepareToOpen` reports. Every kind really happens on the platform that returns it.
- * - `ready`: `path` is a COPC path/key that `open()` accepts (already COPC, or a cached conversion).
- * - `converting`: a conversion started; the "done" event continues (useConversionSession.ts opens the result).
+ * What `prepareToOpen` resolves to, once the item(s) can be opened or definitely cannot. Every kind really
+ * happens on the platform that returns it.
+ * - `ready`: `path` is a COPC path/key that `open()` accepts. `conversion` is null when nothing was converted
+ *   (already COPC, or a cached conversion).
  * - `failed`: `summary` is the short text for the panel status, `details` the long text for the error log.
+ *   A failed conversion is reported here too.
+ * - `cancelled`: the user cancelled the conversion.
  */
 export type PrepareOutcome =
-  | { kind: "ready"; path: string }
-  | { kind: "converting" }
-  | { kind: "failed"; summary: string; details: string };
+  | { kind: "ready"; path: string; conversion: ConversionResult | null }
+  | { kind: "failed"; summary: string; details: string }
+  | { kind: "cancelled" };
 
 export interface DataSource {
   /**
@@ -76,14 +103,14 @@ export interface DataSource {
 
   /**
    * Makes the chosen file(s) ready to open: one COPC opens as it is; anything else is converted (several
-   * LAS/LAZ are merged into one COPC). Desktop: items are paths (`start_las_conversion` /
-   * `start_multi_las_conversion`). Web: items are `File`s, or one string (an OPFS key from the conversion
-   * continuation, which is already ready). `tempDir` is used by the desktop, `isMobile` by the Web.
+   * LAS/LAZ are merged into one COPC). The promise resolves only when the conversion (if any) has finished;
+   * progress comes through `options`. Desktop: items are paths. Web: items are `File`s. It throws only for
+   * unexpected errors (a failed command, a bad item).
    */
-  prepareToOpen(
-    items: string[] | File[],
-    options: { tempDir: string | null; isMobile: boolean },
-  ): Promise<PrepareOutcome>;
+  prepareToOpen(items: string[] | File[], options: PrepareOptions): Promise<PrepareOutcome>;
+
+  /** Cancels the running conversion. Does nothing if none is running (no throw). */
+  cancelConversion(): void;
 
   /**
    * 指定したノードキーの点データを取得する。返るバイト列はM1-2で決めた

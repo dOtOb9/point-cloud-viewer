@@ -1,6 +1,6 @@
-// Pure helpers for the "open / convert a file" flow: file-name handling and error texts.
-// No React, no I/O, so each one is unit-tested (open-file-text.test.ts).
-// Used by: useFileOpen.ts, useConversionSession.ts.
+// Pure helpers for file names (no React, no I/O), unit-tested in file-name.test.ts.
+// Used by: tauri.ts, web.ts (the name of a conversion result, the "format" row of the breakdown),
+// and state/useFileOpen.ts (the name shown while opening).
 
 /**
  * M4-12 (`TaskSheets/M4-import-and-conversion.md`): the part of `path` after the last separator

@@ -6,8 +6,9 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import type { DataSource, OpenedCloud, PrepareOutcome } from "./DataSource";
-import { toPrepareOutcome } from "./prepare-outcome";
+import type { DataSource, OpenedCloud, PrepareOptions, PrepareOutcome } from "./DataSource";
+import { basenameOfPath } from "./file-name";
+import { toConversionFailureOutcome, toPrepareOutcome } from "./prepare-outcome";
 import {
   toCloudInfo,
   toHierarchyNodeInfo,
@@ -238,6 +239,49 @@ export async function onConversionFailed(
   });
 }
 
+/** How a conversion ended, as the events say it. */
+type ConversionEnd =
+  | {
+      kind: "done";
+      outputPath: string;
+      sourceFormat: string;
+      stageTimings: ConversionStageBreakdown;
+      warnings: string[];
+    }
+  | { kind: "failed"; message: string; cancelled: boolean };
+
+/**
+ * Subscribes to the progress / done / failed events and returns a promise for the first end event.
+ * Call it BEFORE the command that starts the conversion; call `stop` in a `finally`.
+ * Progress goes to `onProgress` as it comes.
+ */
+async function watchConversionEnd(
+  onProgress: ((progress: ConversionProgress) => void) | undefined,
+): Promise<{ end: Promise<ConversionEnd>; stop: () => void }> {
+  let finish: (end: ConversionEnd) => void = () => {};
+  const end = new Promise<ConversionEnd>((resolve) => {
+    finish = resolve;
+  });
+  const unlistenAll: UnlistenFn[] = [];
+  const stop = () => unlistenAll.forEach((unlisten) => unlisten());
+  try {
+    if (onProgress) unlistenAll.push(await onConversionProgress(onProgress));
+    unlistenAll.push(
+      await onConversionDone((outputPath, sourceFormat, stageTimings, warnings) =>
+        finish({ kind: "done", outputPath, sourceFormat, stageTimings, warnings }),
+      ),
+    );
+    unlistenAll.push(
+      await onConversionFailed((message, cancelled) => finish({ kind: "failed", message, cancelled })),
+    );
+  } catch (e) {
+    // A subscription failed: let go of the ones that worked, then report the failure.
+    stop();
+    throw e;
+  }
+  return { end, stop };
+}
+
 /**
  * The Tauri implementation of DataSource. Node data is fetched over the `pcv://` custom protocol (ADR-0001).
  */
@@ -246,20 +290,49 @@ export class TauriSource implements DataSource {
    * `DataSource.prepareToOpen` for the desktop. Items are paths. One path: `start_las_conversion` (a COPC
    * comes back as `alreadyCopc` after a header read; a raw file checks the cache, then the free space, then
    * starts converting). Several paths: `start_multi_las_conversion`. `isMobile` is not used.
+   * When the command says `converting`, this waits for the `conversion-done` / `conversion-failed` event.
+   * The events are subscribed to BEFORE the command is invoked, so a fast "done" cannot be missed.
    */
-  async prepareToOpen(
-    items: string[] | File[],
-    options: { tempDir: string | null; isMobile: boolean },
-  ): Promise<PrepareOutcome> {
+  async prepareToOpen(items: string[] | File[], options: PrepareOptions): Promise<PrepareOutcome> {
     const paths: string[] = [];
     for (const item of items) {
       if (typeof item !== "string") throw new Error("ローカルファイルの選択はWeb版でのみサポートしています");
       paths.push(item);
     }
-    if (paths.length === 1) {
-      return toPrepareOutcome(await startLasConversion(paths[0], options.tempDir), false);
+    const watch = await watchConversionEnd(options.onProgress);
+    try {
+      const isMulti = paths.length !== 1;
+      const started = isMulti
+        ? await startMultiLasConversion(paths, options.tempDir)
+        : await startLasConversion(paths[0], options.tempDir);
+      if (started.kind !== "converting") return toPrepareOutcome(started, isMulti);
+
+      options.onConverting?.();
+      const end = await watch.end;
+      if (end.kind !== "done") return toConversionFailureOutcome(end.message, end.cancelled);
+      return {
+        kind: "ready",
+        // The converted file is already COPC, so this is the path to open (no second start_las_conversion).
+        path: end.outputPath,
+        conversion: {
+          outputName: basenameOfPath(end.outputPath),
+          platform: "desktop",
+          sourceFormat: end.sourceFormat,
+          stageTimings: end.stageTimings,
+          warnings: end.warnings,
+          download: null,
+        },
+      };
+    } finally {
+      watch.stop();
     }
-    return toPrepareOutcome(await startMultiLasConversion(paths, options.tempDir), true);
+  }
+
+  /** Asks the backend to cancel. The conversion may have finished already, so a failure is only logged. */
+  cancelConversion(): void {
+    cancelLasConversion().catch((e: unknown) => {
+      console.error("cancelLasConversion failed", e);
+    });
   }
 
   async open(path: string): Promise<OpenedCloud> {
