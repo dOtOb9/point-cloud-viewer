@@ -33,11 +33,13 @@
 
 ## React は表示だけ（`TaskSheets/ADR-0021-thin-react.md`、所有者の決定 2026-10-18）
 
-- React（`src/ui/` の部品）は、状態を表示し、操作されたらメソッドを呼ぶだけにする
-- 手順のある処理・時間をまたいで状態を持つ処理（ファイルを開く・変換・レイヤー・ツール・計測・表示の設定）は、
-  `src/app/` の普通の TypeScript のクラス・関数に書く。`useCallback`・依存配列・ref を使わず、上から順に読める形にする
-- React とのつなぎは、`subscribe`/`getSnapshot` と `src/state/` の小さなフック（`useSyncExternalStore`）だけにする
-- **新しいロジックをフックに足さない。** 既存のフックは、1関心ごとずつ `src/app/` へ移す（R12 から）
+- React（`src/ui/` の部品）は、状態を表示し、操作されたら `src/app/` の関数を呼ぶだけにする
+- 手順のある処理（ファイルを開く・変換・レイヤー・ツール・計測・表示の設定）は、`src/app/` の**普通の関数**に書く。
+  `useCallback`・依存配列・ref・`this` を使わず、上から順に読める形にする。読む物・変える物は全部引数（コンテキスト）で受け取る
+- **状態は React に置く**（`src/state/` の小さなフックの `useState`）。関数はコンテキストで渡された setter でだけ状態を変える。関数の中に状態を隠し持たない
+- **クラスは、長く生きる資源を持つものだけ**（WebGPU の `PointCloudRenderer`、Worker の `WebSource`）。手順や画面の状態をクラスにしない（所有者の決定 2026-10-18。副作用を見えるようにするため）
+- `src/ui/` は `src/app/` の関数を直接呼ぶ（`openFiles(viewer.fileOpenContext, items)`）。F12 で本体に飛べるようにするため
+- **新しいロジックをフックに足さない。** 既存のフックは、1関心ごとずつ `src/app/` へ移す（R12・R13 から）
 
 ## エラー処理（`TaskSheets/ADR-0015-error-handling-incremental.md`）
 
