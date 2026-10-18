@@ -32,7 +32,7 @@
 | 単位 | `UnitDialog` | `useDisplayUnit()` の `setDisplayUnit`（`useDisplayUnit.ts`） | 計測ラベル・レイヤー情報（購読している側が再描画） | localStorage `pcv-display-unit` |
 | 解像度 | `RenderScaleDialog` | `setRenderScale` | `renderer.setRenderScale` → `applyCanvasSize`（描画バッファを作り直す） | なし |
 | 更新の確認 | `UpdateDialog` | `update.setEnabled`（`useUpdateCheck.ts`） | 起動時の更新チェック（開発中は走らない） | localStorage `pcv-update-check-enabled` |
-| 一時ファイル（デスクトップのみ） | `TempDirDialog` | `viewer.pickAndSetTempDir`／`clearTempDir`（`useTempDir.ts`。フォルダ選択は `pickTempDirectory`、`src/datasource/tauri.ts`） | `FileOpener`（`getTempDir`）／`usePointCloudTools` が Rust に `tempDir` として渡す | localStorage `pcv-conversion-temp-dir` |
+| 一時ファイル（デスクトップのみ） | `TempDirDialog` | `viewer.pickAndSetTempDir`／`clearTempDir`（`useTempDir.ts`。フォルダ選択は `pickTempDirectory`、`src/datasource/tauri.ts`） | `openFiles`（`ctx.tempDir`）／`usePointCloudTools` が Rust に `tempDir` として渡す | localStorage `pcv-conversion-temp-dir` |
 | 保存領域（Web のみ） | `StorageDialog` | `viewer.refreshOpfsStorageInfo`／`removeOpfsCachedConversion` など（`useOpfsStorage.ts`） | OPFS の変換キャッシュ・作業フォルダ | OPFS 自体 |
 
 点の形・大きさ・着色は設定画面ではなく**レイヤーごと**（[レイヤー操作](./layers.md)）。全体の点の形を変える設定は無い（形を省いて足したレイヤーの初期値は、端末プロファイルの既定値）。

@@ -23,10 +23,11 @@
 | Web の複数ファイル | `WebSource.startMultiConversion` → `copc.worker.ts` の `handleConvertMultiStart` |
 | Web の PCD・PLY・E57 | `WebSource.startPointFileConversion` → `copc.worker.ts` の `handlePointFileConvertStart` |
 
-画面側の呼び出し元は `src/app/file-opener.ts` の `FileOpener.openFiles` です(`source.prepareToOpen` を呼び、それが中で `startLasConversion`・`startMultiLasConversion`・`startConversion` などを呼ぶ)。
+画面側の呼び出し元は `src/app/open-files.ts` の `openFiles` 関数です(`source.prepareToOpen` を呼び、それが中で `startLasConversion`・`startMultiLasConversion`・`startConversion` などを呼ぶ)。
 `prepareToOpen` は**変換が終わってから**結果を返します。進捗・完了・失敗のイベントはその中(`tauri.ts` の `watchConversionEnd`、`web.ts` の `convertPending`)で受け、
-進捗だけが `onProgress` コールバックで `FileOpener` に届き、`FileOpener` のスナップショット(`conversionProgress`)になります。
-`FileOpener` が持つのは進捗の表示用の値・元ファイル名・キャンセル(`cancelConversion` → `DataSource.cancelConversion`)だけです(内訳のコピーは `useCopcViewer.ts`)。
+進捗だけが `onProgress` コールバックで `openFiles` に届き、`ctx.setConversionProgress` で `useFileOpen` の state(`conversionProgress`)になります。
+`open-files.ts` が扱うのは進捗の表示用の値・元ファイル名・キャンセル(`cancelConversion(ctx)` → `DataSource.cancelConversion`)だけです(内訳のコピーは `useCopcViewer.ts`)。
+開く処理が走っている間は、2つ目の `openFiles` を断ります(`ctx.openLock`。デスクトップでは2つ目がキャンセルのフラグを上書きするため)。
 
 ## 3. 流れ
 
