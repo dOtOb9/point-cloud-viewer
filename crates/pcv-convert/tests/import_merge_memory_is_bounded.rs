@@ -2,14 +2,18 @@
 //!
 //! Method: a counting global allocator records the peak number of live heap bytes during a
 //! merge, and compares it with the existing single-file import of the same number of points.
-//! merge, and compares it with the existing single-file import of the same number of points.
 //! The merge must add no per-point memory on top of the single-file import.
-//! This file has exactly one test, because the allocator is process-wide and a second test
-//! running in parallel would disturb the numbers.
+//!
+//! Only allocations made by the thread that runs the conversion are counted (see
+//! `ThreadCounter`). The merge reads and visits points on that thread; the COPC writer's
+//! worker threads also allocate, and how much of that is live at the same moment depends on
+//! thread scheduling (see the comment on the test for the measured noise). Counting
+//! process-wide made this test flaky in CI.
+//! This file has exactly one test, so that nothing else allocates on the measured thread.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use copc_core::NeverCancel;
 use copc_writer::CopcWriterParams;
@@ -19,31 +23,40 @@ use pcv_convert::stage_timings::ConversionStageTimings;
 
 struct CountingAlloc;
 
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    // Bytes allocated minus bytes freed by this thread. Signed, because this thread may free
+    // a block that another thread allocated. `const` init: no allocation inside the allocator.
+    static LIVE: Cell<isize> = const { Cell::new(0) };
+    static PEAK: Cell<isize> = const { Cell::new(0) };
+}
+
+fn add_live(delta: isize) {
+    LIVE.with(|live| {
+        let now = live.get() + delta;
+        live.set(now);
+        PEAK.with(|peak| peak.set(peak.get().max(now)));
+    });
+}
 
 // SAFETY: every call is forwarded unchanged to the system allocator; we only count sizes.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
-            let live = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            PEAK.fetch_max(live, Ordering::Relaxed);
+            add_live(layout.size() as isize);
         }
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) };
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        add_live(-(layout.size() as isize));
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new_ptr = unsafe { System.realloc(ptr, layout, new_size) };
         if !new_ptr.is_null() {
-            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
-            let live = LIVE.fetch_add(new_size, Ordering::Relaxed) + new_size;
-            PEAK.fetch_max(live, Ordering::Relaxed);
+            add_live(new_size as isize - layout.size() as isize);
         }
         new_ptr
     }
@@ -86,13 +99,13 @@ fn write_inputs(dir: &Path, count: usize) -> Vec<std::path::PathBuf> {
     paths
 }
 
-/// Peak live heap bytes of `run`, minus what was already live before it started.
+/// Peak live heap bytes of `run` on the calling thread, minus what was live before it started.
 /// The input files are written (and their text freed) before the measurement starts.
 fn peak_of(run: impl FnOnce()) -> usize {
-    let baseline = LIVE.load(Ordering::Relaxed);
-    PEAK.store(baseline, Ordering::Relaxed);
+    let baseline = LIVE.with(Cell::get);
+    PEAK.with(|peak| peak.set(baseline));
     run();
-    PEAK.load(Ordering::Relaxed) - baseline
+    (PEAK.with(Cell::get) - baseline).max(0) as usize
 }
 
 fn params() -> CopcWriterParams {
@@ -139,18 +152,27 @@ fn single_file_peak(per_file: usize) -> usize {
     })
 }
 
-/// The single-file import has some memory that grows with the point count inside the writer
-/// (not in this crate). The merge must not add to it: for the same total number of points,
-/// it must stay close to the single-file import. A merge that collected the points in a `Vec`
-/// would add tens of bytes per point on top (400k points: > 15 MB).
+/// For the same total number of points, the merge must stay close to the single-file import.
+///
+/// Measured (debug build, Windows, 20 runs of the old process-wide version at 400k points):
+/// merge peak 35.9 to 44.3 MB, single-file peak 37.6 to 48.5 MB, so the difference between
+/// the two ranged from -12.5 to +6.6 MB from run to run, and CI saw +5.15 MB. That noise comes
+/// from the writer's threads. Counting only the calling thread gave 1059680 bytes (merge) and
+/// 1057466 bytes (single file) in every one of 10 runs at 100k and at 400k points, so the
+/// number no longer depends on the point count or on scheduling.
+///
+/// Margin: 1 MB, against a difference of about 2 KB. A merge that kept the points in a `Vec`
+/// would add far more: with a deliberately added `Vec<RawPoint>` per file the merge peak rose
+/// by 2.1 MB at 100k, 4.2 MB at 200k and 8.4 MB at 400k points (about 21 B per point).
+// At the 200k points used here that is 4.2 MB, four times the margin (verified: the test fails).
 #[test]
 fn point_merge_does_not_use_more_memory_than_a_single_file_import() {
-    let total = 400_000;
+    let total = 200_000;
     let merged = merge_peak(total / 2);
     let single = single_file_peak(total / 2);
     eprintln!("peak heap bytes for {total} points: merge={merged} single_file={single}");
     assert!(
-        merged < single + 5_000_000,
+        merged < single + 1_000_000,
         "the merge used much more memory than a single-file import \
          (merge={merged}, single={single}); does it keep points in memory?"
     );

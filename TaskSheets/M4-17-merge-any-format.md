@@ -203,6 +203,31 @@ would add about 19 MB or more).
 - Progress for a selection that includes E57 can end below 100% (E57 declared counts can exceed
   the visited points; existing behavior of the single-file import).
 - `cargo test` was not run with the Android target or in a CI environment.
+### Follow-up: flaky memory test
+
+`tests/import_merge_memory_is_bounded.rs` failed once in CI (run 39108093025: merge=24267458,
+single=19113844, +5.15 MB against an allowed +5 MB) and passed on the next run.
+
+- Cause: the test counted live heap bytes process-wide, so it included the COPC writer's worker
+  threads, whose live memory at any instant depends on scheduling. Measured locally (debug,
+  Windows, 20 runs, 400k points): merge peak 35.9 to 44.3 MB, single-file peak 37.6 to 48.5 MB;
+  the difference ranged from -12.5 to +6.6 MB (a local run also exceeded +5 MB). Noise grows with
+  the point count; at 200k points the min of 3 runs still varied by about -2.3 to +3.3 MB.
+  No production memory growth bug was found.
+- Fix (test only): the allocator now counts per thread (thread-local signed live/peak), so only
+  the thread running the conversion is measured. The merge reads and visits points on that thread,
+  so a point buffer in the merge would show up; the writer's threads are excluded. Result: merge
+  1059682 B and single file 1057466 B in every run, at 100k, 200k and 400k points (10+ runs each),
+  independent of point count. Total is now 200k points, margin 1 MB (the old 5 MB margin is gone).
+- Not weakened: with a deliberately added `Vec<RawPoint>` in `MergedSource::for_each_point`
+  (reverted), the merge peak rose by 2.1 MB (100k), 4.2 MB (200k, the test size; the test fails)
+  and 8.4 MB (400k).
+- Rejected: comparing merges of N and k*N points (the writer itself grows with N, so the noise
+  would need a margin close to the signal); min-of-3 repeats (still +-3 MB, 3x slower).
+- Limit: a merge that moved reading to another thread would not be seen by this test.
+- Commands: `cargo test -p pcv-convert --test import_merge_memory_is_bounded` x20 -> 20/20 passed
+  (about 4 s each, was about 15 s); `cargo clippy --workspace --all-targets -- -D warnings`;
+  `cargo fmt --all -- --check`.
 
 ## Result (Track W)
 
