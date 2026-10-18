@@ -1,12 +1,12 @@
-# 規約1〜4
+# 規約1〜5
 
 [`TaskSheets/ARCHITECTURE.md`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ARCHITECTURE.md)
 はこう書いています。
 
 > この4つが崩れると Web 版が出せなくなるか、実装が追えなくなる。
 
-4つとも「崩れても普通のビルドは通ってしまう」種類の約束です。だからこそ明文化され、
-うち2つは CI の `invariants` ジョブ（[`.github/workflows/ci.yml`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/.github/workflows/ci.yml)）で機械的に検査されています。
+2026-10-18 に5つ目（React は表示だけ）が加わりました。5つとも「崩れても普通のビルドは通ってしまう」種類の約束です。
+だからこそ明文化され、うち4つ（1・2・3・5）は CI の `invariants` ジョブ（[`.github/workflows/ci.yml`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/.github/workflows/ci.yml)）で機械的に検査されています。
 
 ## 規約1: `pcv-core` は Tauri を知らない
 
@@ -67,8 +67,9 @@ Web 版が成立します（[ADR-0001](https://github.com/dOtOb9/point-cloud-vie
 - `gpu-resources.ts` — WebGPU の API を直接叩くのはここだけ
 - `point-cloud-renderer.ts` — フレームループ・カメラ・統計のオーケストレーション
 
-**CI での検査**: 自動検査はありません。`src/renderer/*.ts` に `import "react"` や
-`.tsx` ファイルが増えていないかは、レビューで保つ約束です。
+**CI での検査**: `invariants` ジョブの「規約3・5」ステップ（2026-10-18 から）。`src/renderer/` に
+`react` の import や `.tsx` ファイルがあると落ちます。規約2と同じ文字列検索なので、コメントに
+`from "react"` と書いただけでも落ちます。
 
 ## 規約4: 大きいデータは `pcv://` カスタムプロトコルで運ぶ
 
@@ -85,6 +86,25 @@ Web 版では `invoke` 自体が存在しないため、この規約は「大き
 
 **CI での検査**: 自動検査はありません。新しい重いデータ経路を `invoke` で足していないかは
 レビューで保つ約束です。
+
+## 規約5: React は表示だけ。`src/app/` は React を知らない
+
+React の部品（`src/ui/`）は、状態を表示し、操作されたらメソッドを呼ぶだけにします。
+ファイルを開く・変換を待つ・レイヤーを管理する、といった**手順のある処理や、時間をまたいで状態を持つ処理**は、
+`src/app/` の普通の TypeScript のクラスに書きます。`src/app/` は `react` も `src/state/use*` のフックも import しません。
+React とのつなぎは、クラスの `subscribe`/`getSnapshot` と、それを `useSyncExternalStore` で読む `src/state/` の小さなフックだけです。
+
+**なぜ**: フックで手順を書くと、React の手続きがロジックに混ざって、処理を上から順に追えなくなるからです。
+描画のたびに関数が呼び直される、`useCallback` の依存配列、古い値を避けるための ref、`useEffect` の呼び出し順、などです
+（R11 のあとの `useFileOpen.ts` がそうでした）。Unreal Engine の UMG（見た目）と C++（ロジック）の分け方に近い形です。
+`PointCloudRenderer`（規約3）は、もともとこの形です。
+
+**移し方**: 1つの関心ごとずつ移します。最初はファイルを開く処理です（R12、`src/app/file-opener.ts`）。
+移している途中は、レイヤーの一覧や状態の表示はまだ React の state にあります。`src/app/` からは、渡されたコールバックで触ります。
+
+**CI での検査**: `invariants` ジョブの「規約3・5」ステップ。`src/app/` に `react` の import、`.tsx` ファイル、
+`src/state/use*` の import があると落ちます。決定の記録は
+[ADR-0021](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0021-thin-react.md) です。
 
 ## まず読むファイル
 
