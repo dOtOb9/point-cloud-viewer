@@ -84,6 +84,10 @@ point-cloud-viewer/
    逆に `src/ui/` はレンダラを直接触らず、`src/state/` を経由する。
 4. **大きいデータは `pcv://` カスタムプロトコルで運ぶ。`invoke` は制御メッセージ専用。**
    理由と実測値は ADR-0001 を参照。
+5. **React only displays; `src/app/` does not know React** (ADR-0021, owner 2026-10-18). Workflows and long-lived state
+   (open/convert, layers, tools, measuring, display settings) are plain TypeScript classes in `src/app/`. `src/app/` imports
+   neither `react` nor `src/state/use*`. The UI reaches it through `subscribe`/`getSnapshot` and one small
+   `useSyncExternalStore` hook in `src/state/`. Rules 3 and 5 are checked by the CI `invariants` job.
 
 ### `src/renderer/` の内部構成（規約3の補足）
 

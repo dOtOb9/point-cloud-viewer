@@ -29,6 +29,15 @@
 2. Tauri の API パッケージ（`@tauri-apps/` で始まる npm パッケージ）を import してよいのは `src/datasource/tauri.ts` だけ。
    **検査は `src/` 配下の文字列検索なので、コメントにそのパッケージ名を書いただけでも落ちる**（過去に2回落ちた）
 3. `src/renderer/` は React を import しない
+5. `src/app/` は React も `src/state/use*` も import しない（番号は `ARCHITECTURE.md` に合わせている。4 は CI の検査対象外）
+
+## React は表示だけ（`TaskSheets/ADR-0021-thin-react.md`、所有者の決定 2026-10-18）
+
+- React（`src/ui/` の部品）は、状態を表示し、操作されたらメソッドを呼ぶだけにする
+- 手順のある処理・時間をまたいで状態を持つ処理（ファイルを開く・変換・レイヤー・ツール・計測・表示の設定）は、
+  `src/app/` の普通の TypeScript のクラス・関数に書く。`useCallback`・依存配列・ref を使わず、上から順に読める形にする
+- React とのつなぎは、`subscribe`/`getSnapshot` と `src/state/` の小さなフック（`useSyncExternalStore`）だけにする
+- **新しいロジックをフックに足さない。** 既存のフックは、1関心ごとずつ `src/app/` へ移す（R12 から）
 
 ## エラー処理（`TaskSheets/ADR-0015-error-handling-incremental.md`）
 
