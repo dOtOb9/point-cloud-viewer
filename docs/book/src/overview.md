@@ -142,8 +142,8 @@ Web Worker の中で動かします。
 | 層 | 役割 | 章 |
 |---|---|---|
 | `src/datasource/` | Tauri と Web の違いを閉じ込める（`DataSource`） | [datasource](./frontend/datasource.md) |
-| `src/app/` | 開く・変換などの手順のある処理。普通のクラスで、React を知らない（規約5。移している途中） | [規約5](./conventions.md) |
-| `src/state/` | 関心ごとごとの hook。`useCopcViewer` が組み立てる。`src/app/` へ移していき、最後は React とのつなぎだけになる | [state](./frontend/state.md) |
+| `src/app/` | 開く・変換などの手順のある処理。普通の関数で、React を知らない（規約5。移している途中） | [規約5](./conventions.md) |
+| `src/state/` | 状態（`useState`）と、`src/app/` の関数に渡すコンテキストを作る hook。`useCopcViewer` が組み立てる | [state](./frontend/state.md) |
 | `src/renderer/` | WebGPU 描画。React を知らない | [renderer](./frontend/renderer.md) |
 | `src/ui/` | 役割ごとのフォルダに分かれた画面の部品 | [ui](./frontend/ui-shell.md) |
 

@@ -89,18 +89,27 @@ Web 版では `invoke` 自体が存在しないため、この規約は「大き
 
 ## 規約5: React は表示だけ。`src/app/` は React を知らない
 
-React の部品（`src/ui/`）は、状態を表示し、操作されたらメソッドを呼ぶだけにします。
-ファイルを開く・変換を待つ・レイヤーを管理する、といった**手順のある処理や、時間をまたいで状態を持つ処理**は、
-`src/app/` の普通の TypeScript のクラスに書きます。`src/app/` は `react` も `src/state/use*` のフックも import しません。
-React とのつなぎは、クラスの `subscribe`/`getSnapshot` と、それを `useSyncExternalStore` で読む `src/state/` の小さなフックだけです。
+React の部品（`src/ui/`）は、状態を表示し、操作されたら `src/app/` の関数を呼ぶだけにします。
+ファイルを開く・変換を待つ・レイヤーを管理する、といった**手順のある処理**は、`src/app/` の**普通の関数**に書きます。
+関数は、読む物・変える物を全部、引数のコンテキスト（例: `viewer.fileOpenContext`）で受け取ります。
+`src/app/` は `react` も `src/state/use*` のフックも import しません。
+
+**状態は React に置きます**（`src/state/` の小さなフックの `useState`）。`src/app/` の関数は、コンテキストで渡された setter でだけ状態を変え、
+自分の中に状態を隠し持ちません。何に副作用を起こすかは、引数を見れば全部分かります。
+
+**クラスは、長く生きる資源を持つものだけ**にします（WebGPU の資源を持つ `PointCloudRenderer`、Worker を持つ `WebSource`）。
+最初の版（R12）では開く処理を `FileOpener` クラスにしましたが、状態を隠し持ち、React とのつなぎにも工夫が要ったため、
+所有者の判断で関数に改めました（R13）。Unreal Engine でむやみにクラスを作らないのと同じ考え方です。
+
+`src/ui/` は `src/app/` の関数を直接呼びます（`openFiles(viewer.fileOpenContext, items)`）。
+こうすると、呼んでいるところで F12 を押せば、関数の本体に飛べます。
 
 **なぜ**: フックで手順を書くと、React の手続きがロジックに混ざって、処理を上から順に追えなくなるからです。
 描画のたびに関数が呼び直される、`useCallback` の依存配列、古い値を避けるための ref、`useEffect` の呼び出し順、などです
 （R11 のあとの `useFileOpen.ts` がそうでした）。Unreal Engine の UMG（見た目）と C++（ロジック）の分け方に近い形です。
 `PointCloudRenderer`（規約3）は、もともとこの形です。
 
-**移し方**: 1つの関心ごとずつ移します。最初はファイルを開く処理です（R12、`src/app/file-opener.ts`）。
-移している途中は、レイヤーの一覧や状態の表示はまだ React の state にあります。`src/app/` からは、渡されたコールバックで触ります。
+**移し方**: 1つの関心ごとずつ移します。最初はファイルを開く処理です（R13、`src/app/open-files.ts`）。
 
 **CI での検査**: `invariants` ジョブの「規約3・5」ステップ。`src/app/` に `react` の import、`.tsx` ファイル、
 `src/state/use*` の import があると落ちます。決定の記録は
