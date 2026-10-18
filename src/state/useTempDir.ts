@@ -1,7 +1,7 @@
 // Where conversion writes its temporary files (desktop only; the Web build converts inside OPFS).
 // `tempDir` is saved in localStorage; null means the platform default.
 // Also asks the Rust side once at startup whether choosing the folder makes sense (Android does not).
-// Used by: useCopcViewer.ts (settings page); FileOpener (through useFileOpen.ts) and usePointCloudTools.ts pass `tempDir` to Rust.
+// Used by: useCopcViewer.ts (settings page); `openFiles` (through useFileOpen.ts) and usePointCloudTools.ts pass `tempDir` to Rust.
 // Entry: `useTempDir()`.
 import { useCallback, useEffect, useState } from "react";
 import { pickTempDirectory, supportsCustomTempDir as fetchSupportsCustomTempDir } from "../datasource/tauri";

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { openFiles } from "../../app/open-files";
 import { useCopcViewer } from "../../state/useCopcViewer";
 import { useTheme } from "../../state/useTheme";
 import { useFileDrop } from "../../state/useFileDrop";
@@ -52,7 +53,7 @@ export function AppShell() {
   const [layerOpen, setLayerOpen] = useState(() => !(typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches));
   const [settingsOpen, setSettingsOpen] = useState(false);
   // ファイルのドラッグ&ドロップで開く(ADR-0017)。ドラッグ中は案内を重ねて出す。
-  const dragging = useFileDrop(viewer.openFiles);
+  const dragging = useFileDrop((items) => openFiles(viewer.fileOpenContext, items));
   const [conversionDialogOpen, setConversionDialogOpen] = useState(false);
   // エラーダイアログ: null=閉じている / "current"=いま出ているエラー / "history"=全履歴。
   const [errorDialogMode, setErrorDialogMode] = useState<"current" | "history" | null>(null);

@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ConversionProgress } from "../datasource/conversion-dto";
 import type { CloudInfo, ConversionResult, DataSource, PrepareOutcome } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { ViewerLayer } from "../state/layers";
 import type { ViewerStatus } from "../state/viewer-status";
-import { FileOpener, type FileOpenerDeps } from "./file-opener";
+import { addOpenedLayer, cancelConversion, openFiles, type OpenFilesContext } from "./open-files";
 
 // The Tauri bridge is not needed here, and the breakdown text is tested on its own (conversion-breakdown.test.ts).
 vi.mock("../datasource/tauri", () => ({ reportToBackendConsole: vi.fn(async () => {}) }));
@@ -29,23 +30,29 @@ const CONVERSION: ConversionResult = {
   download: { url: "blob:fake", fileName: "out.copc.laz" },
 };
 
+const BUSY_MESSAGE = "ファイルを開いている途中・変換中は、新しいファイルを開けません。終わってからもう一度開いてください";
+
 interface Harness {
-  opener: FileOpener;
+  ctx: OpenFilesContext;
   statuses: ViewerStatus[];
   errors: Array<[string, string | undefined]>;
   layers: ViewerLayer[];
+  progresses: Array<ConversionProgress | null>;
+  fileNames: string[];
   prepareToOpen: ReturnType<typeof vi.fn>;
   open: ReturnType<typeof vi.fn>;
   addLayer: ReturnType<typeof vi.fn>;
+  cancel: ReturnType<typeof vi.fn>;
   state: { toolRunning: boolean };
-  deps: FileOpenerDeps;
 }
 
-/** A FileOpener over a fake DataSource (`prepareToOpen` answers `outcome`) and a fake renderer. No React. */
-function makeOpener(outcome: PrepareOutcome | (() => Promise<PrepareOutcome>)): Harness {
+/** A context over a fake DataSource (`prepareToOpen` answers `outcome`) and a fake renderer. No React. */
+function makeHarness(outcome: PrepareOutcome | (() => Promise<PrepareOutcome>)): Harness {
   const statuses: ViewerStatus[] = [];
   const errors: Array<[string, string | undefined]> = [];
   const layers: ViewerLayer[] = [];
+  const progresses: Array<ConversionProgress | null> = [];
+  const fileNames: string[] = [];
   const state = { toolRunning: false };
   const prepareToOpen = vi.fn(async () => (typeof outcome === "function" ? outcome() : outcome));
   const open = vi.fn(async () => ({
@@ -54,37 +61,41 @@ function makeOpener(outcome: PrepareOutcome | (() => Promise<PrepareOutcome>)): 
     nodes: [{ key: "0-0-0-0", pointCount: 1000, boundsMin: [0, 0, 0], boundsMax: [1, 1, 1] }],
   }));
   const addLayer = vi.fn();
-  const source = { prepareToOpen, open, readNode: vi.fn(), cancelConversion: vi.fn() } as unknown as DataSource;
+  const cancel = vi.fn();
+  const source = { prepareToOpen, open, readNode: vi.fn(), cancelConversion: cancel } as unknown as DataSource;
   const renderer = { addLayer } as unknown as PointCloudRenderer;
   let nextId = 1;
-  const deps: FileOpenerDeps = {
+  const ctx: OpenFilesContext = {
     getSource: () => source,
     getRenderer: () => renderer,
     setStatus: (s) => statuses.push(s),
     reportError: (message, src) => errors.push([message, src]),
+    setConversionProgress: (p) => progresses.push(p),
+    setConvertingFileName: (n) => fileNames.push(n),
     addLayerToList: (layer) => layers.push(layer),
     nextLayerId: () => `layer-${nextId++}`,
-    getTempDir: () => null,
+    tempDir: null,
     isMobile: false,
     pointShape: "square",
     isToolRunning: () => state.toolRunning,
     refreshOpfsStorageInfo: async () => {},
+    openLock: { busy: false },
   };
-  return { opener: new FileOpener(deps), statuses, errors, layers, prepareToOpen, open, addLayer, state, deps };
+  return { ctx, statuses, errors, layers, progresses, fileNames, prepareToOpen, open, addLayer, cancel, state };
 }
 
 function fakeFile(name: string): File {
   return new File([""], name);
 }
 
-describe("FileOpener.openFiles", () => {
+describe("openFiles", () => {
   beforeEach(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
   it("opens a COPC with no conversion: no breakdown, no download", async () => {
-    const h = makeOpener({ kind: "ready", path: "a.copc.laz", conversion: null });
-    await h.opener.openFiles(["C:/data/a.copc.laz"]);
+    const h = makeHarness({ kind: "ready", path: "a.copc.laz", conversion: null });
+    await openFiles(h.ctx, ["C:/data/a.copc.laz"]);
     expect(h.statuses).toEqual([{ kind: "opening" }, { kind: "ready" }]);
     expect(h.layers).toHaveLength(1);
     expect(h.layers[0]).toMatchObject({
@@ -98,12 +109,12 @@ describe("FileOpener.openFiles", () => {
   });
 
   it("attaches the breakdown and the download of a conversion, and reports each warning", async () => {
-    const h = makeOpener({
+    const h = makeHarness({
       kind: "ready",
       path: "out.copc.laz",
       conversion: { ...CONVERSION, warnings: ["no CRS in a.las", "no CRS in b.las"] },
     });
-    await h.opener.openFiles([fakeFile("a.las")]);
+    await openFiles(h.ctx, [fakeFile("a.las")]);
     expect(h.layers[0]).toMatchObject({
       name: "out.copc.laz",
       conversionBreakdownText: "BREAKDOWN",
@@ -116,23 +127,23 @@ describe("FileOpener.openFiles", () => {
   });
 
   it("failed: summary in the status, details in the error log", async () => {
-    const h = makeOpener({ kind: "failed", summary: "short", details: "long details" });
-    await h.opener.openFiles([fakeFile("a.las")]);
+    const h = makeHarness({ kind: "failed", summary: "short", details: "long details" });
+    await openFiles(h.ctx, [fakeFile("a.las")]);
     expect(h.statuses[h.statuses.length - 1]).toEqual({ kind: "error", message: "short" });
     expect(h.errors).toEqual([["long details", "conversion"]]);
     expect(h.layers).toEqual([]);
   });
 
   it("cancelled: status goes back to idle and the banner says so", async () => {
-    const h = makeOpener({ kind: "cancelled" });
-    await h.opener.openFiles([fakeFile("a.las")]);
+    const h = makeHarness({ kind: "cancelled" });
+    await openFiles(h.ctx, [fakeFile("a.las")]);
     expect(h.statuses[h.statuses.length - 1]).toEqual({ kind: "idle" });
     expect(h.errors).toEqual([["変換をキャンセルしました", "conversion"]]);
   });
 
   it("refuses several files with a non-LAS one before prepareToOpen", async () => {
-    const h = makeOpener({ kind: "cancelled" });
-    await h.opener.openFiles([fakeFile("a.las"), fakeFile("b.ply"), fakeFile("c.pcd")]);
+    const h = makeHarness({ kind: "cancelled" });
+    await openFiles(h.ctx, [fakeFile("a.las"), fakeFile("b.ply"), fakeFile("c.pcd")]);
     expect(h.prepareToOpen).not.toHaveBeenCalled();
     expect(h.statuses[h.statuses.length - 1]).toMatchObject({ kind: "error" });
     expect(h.errors).toHaveLength(1);
@@ -140,12 +151,12 @@ describe("FileOpener.openFiles", () => {
   });
 
   it("revokes the download URL when adding the layer throws", async () => {
-    const h = makeOpener({ kind: "ready", path: "out.copc.laz", conversion: CONVERSION });
+    const h = makeHarness({ kind: "ready", path: "out.copc.laz", conversion: CONVERSION });
     h.open.mockRejectedValueOnce(new Error("open failed"));
     const revoke = vi.fn();
     vi.stubGlobal("URL", { revokeObjectURL: revoke });
     try {
-      await h.opener.openFiles([fakeFile("a.las")]);
+      await openFiles(h.ctx, [fakeFile("a.las")]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -154,82 +165,128 @@ describe("FileOpener.openFiles", () => {
   });
 
   it("does nothing for an empty selection", async () => {
-    const h = makeOpener({ kind: "cancelled" });
-    await h.opener.openFiles([]);
+    const h = makeHarness({ kind: "cancelled" });
+    await openFiles(h.ctx, []);
     expect(h.statuses).toEqual([]);
     expect(h.prepareToOpen).not.toHaveBeenCalled();
   });
 });
 
-describe("FileOpener progress and snapshot", () => {
+describe("openFiles progress and file name", () => {
   beforeEach(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
-  /** A prepareToOpen that reports two progress values (one while a tool runs) and records what the snapshot held. */
+  /** A prepareToOpen that reports two progress values (the second while a tool runs, if asked). */
   function runWithProgress(toolRunningAtSecond: boolean) {
-    const seen: Array<unknown> = [];
     const progressA = { phase: "reading", pointsRead: 1, totalPoints: 10, elapsedSecs: 0.1 } as const;
     const progressB = { phase: "postProcessing", elapsedSecs: 0.5 } as const;
-    const h: Harness = makeOpener(async () => {
+    const h: Harness = makeHarness(async () => {
       const options = h.prepareToOpen.mock.calls[0][1] as { onProgress: (p: unknown) => void };
       options.onProgress(progressA);
-      seen.push(h.opener.getSnapshot().conversionProgress);
       h.state.toolRunning = toolRunningAtSecond;
       options.onProgress(progressB);
-      seen.push(h.opener.getSnapshot().conversionProgress);
       return { kind: "ready", path: "x.copc.laz", conversion: null };
     });
-    return { h, seen, progressA, progressB };
+    return { h, progressA, progressB };
   }
 
-  it("keeps progress while converting and clears it afterwards", async () => {
-    const { h, seen, progressA, progressB } = runWithProgress(false);
-    await h.opener.openFiles([fakeFile("a.las")]);
-    expect(seen).toEqual([progressA, progressB]);
-    expect(h.opener.getSnapshot().conversionProgress).toBeNull();
-    expect(h.opener.getSnapshot().convertingFileName).toBe("a.las");
+  it("sends progress while converting and clears it afterwards", async () => {
+    const { h, progressA, progressB } = runWithProgress(false);
+    await openFiles(h.ctx, [fakeFile("a.las")]);
+    // null at the start, the two values, null when the conversion is over.
+    expect(h.progresses).toEqual([null, progressA, progressB, null]);
+    expect(h.fileNames).toEqual(["a.las"]);
   });
 
   it("ignores progress while a point-cloud tool runs", async () => {
-    const { h, seen, progressA } = runWithProgress(true);
-    await h.opener.openFiles([fakeFile("a.las")]);
-    expect(seen).toEqual([progressA, progressA]);
-  });
-
-  it("returns a new snapshot object after a change and the same object otherwise", async () => {
-    const h = makeOpener({ kind: "cancelled" });
-    const before = h.opener.getSnapshot();
-    expect(h.opener.getSnapshot()).toBe(before);
-    const listener = vi.fn();
-    const unsubscribe = h.opener.subscribe(listener);
-    await h.opener.openFiles([fakeFile("a.las")]);
-    const after = h.opener.getSnapshot();
-    expect(after).not.toBe(before);
-    expect(before.convertingFileName).toBeNull();
-    expect(after.convertingFileName).toBe("a.las");
-    expect(listener).toHaveBeenCalled();
-    // Opening the same file again changes nothing in the snapshot, so the object stays the same.
-    const calls = listener.mock.calls.length;
-    await h.opener.openFiles([fakeFile("a.las")]);
-    expect(h.opener.getSnapshot()).toBe(after);
-    expect(listener.mock.calls.length).toBe(calls);
-    unsubscribe();
+    const { h, progressA } = runWithProgress(true);
+    await openFiles(h.ctx, [fakeFile("a.las")]);
+    expect(h.progresses).toEqual([null, progressA, null]);
   });
 });
 
-describe("FileOpener.addOpenedLayer", () => {
+describe("openFiles lock", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  /** A prepareToOpen that stays pending until `finish` is called. */
+  function pendingOpen() {
+    let finish: (outcome: PrepareOutcome | Error) => void = () => {};
+    const h = makeHarness(
+      () =>
+        new Promise<PrepareOutcome>((resolve, reject) => {
+          finish = (outcome) => (outcome instanceof Error ? reject(outcome) : resolve(outcome));
+        }),
+    );
+    return { h, finish: (outcome: PrepareOutcome | Error) => finish(outcome) };
+  }
+
+  it("refuses a second open while the first awaits prepareToOpen, and leaves the status alone", async () => {
+    const { h, finish } = pendingOpen();
+    const first = openFiles(h.ctx, [fakeFile("a.las")]);
+    const statusesBefore = [...h.statuses];
+    await openFiles(h.ctx, [fakeFile("b.las")]);
+    expect(h.prepareToOpen).toHaveBeenCalledTimes(1);
+    expect(h.statuses).toEqual(statusesBefore);
+    expect(h.errors).toEqual([[BUSY_MESSAGE, "conversion"]]);
+    finish({ kind: "cancelled" });
+    await first;
+  });
+
+  it("releases the lock after a success", async () => {
+    const h = makeHarness({ kind: "ready", path: "a.copc.laz", conversion: null });
+    await openFiles(h.ctx, ["a.copc.laz"]);
+    expect(h.ctx.openLock.busy).toBe(false);
+    await openFiles(h.ctx, ["a.copc.laz"]);
+    expect(h.prepareToOpen).toHaveBeenCalledTimes(2);
+    expect(h.errors).toEqual([]);
+  });
+
+  it("releases the lock after a failure", async () => {
+    const h = makeHarness({ kind: "failed", summary: "short", details: "long" });
+    await openFiles(h.ctx, [fakeFile("a.las")]);
+    expect(h.ctx.openLock.busy).toBe(false);
+    await openFiles(h.ctx, [fakeFile("a.las")]);
+    expect(h.prepareToOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases the lock after prepareToOpen throws", async () => {
+    const { h, finish } = pendingOpen();
+    const first = openFiles(h.ctx, [fakeFile("a.las")]);
+    finish(new Error("boom"));
+    await first;
+    expect(h.statuses[h.statuses.length - 1]).toEqual({ kind: "error", message: "Error: boom" });
+    expect(h.ctx.openLock.busy).toBe(false);
+    const second = openFiles(h.ctx, [fakeFile("b.las")]);
+    expect(h.prepareToOpen).toHaveBeenCalledTimes(2);
+    finish({ kind: "cancelled" });
+    await second;
+  });
+});
+
+describe("addOpenedLayer", () => {
   it("throws when the viewer is not initialised", async () => {
-    const h = makeOpener({ kind: "cancelled" });
-    const opener = new FileOpener({ ...h.deps, getSource: () => null });
-    await expect(opener.addOpenedLayer("a.copc.laz", "a", null)).rejects.toThrow("ビューアが初期化されていません");
+    const h = makeHarness({ kind: "cancelled" });
+    await expect(addOpenedLayer({ ...h.ctx, getSource: () => null }, "a.copc.laz", "a", null)).rejects.toThrow(
+      "ビューアが初期化されていません",
+    );
   });
 
   it("reports a CRS read error but still adds the layer", async () => {
-    const h = makeOpener({ kind: "cancelled" });
+    const h = makeHarness({ kind: "cancelled" });
     h.open.mockResolvedValueOnce({ cloudId: 1, info: { ...INFO, crs: { name: "", kind: "none", error: "bad vlr" } }, nodes: [] });
-    await h.opener.addOpenedLayer("a.copc.laz", "a", null);
+    await addOpenedLayer(h.ctx, "a.copc.laz", "a", null);
     expect(h.layers).toHaveLength(1);
     expect(h.errors).toEqual([["座標系(CRS)を読み取れませんでした: bad vlr", "crs"]]);
+  });
+});
+
+describe("cancelConversion", () => {
+  it("asks the data source to cancel", () => {
+    const h = makeHarness({ kind: "cancelled" });
+    cancelConversion(h.ctx);
+    expect(h.cancel).toHaveBeenCalledTimes(1);
   });
 });

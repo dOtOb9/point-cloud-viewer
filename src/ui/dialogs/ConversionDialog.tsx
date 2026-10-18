@@ -1,3 +1,4 @@
+import { cancelConversion } from "../../app/open-files";
 import type { PreparingStep } from "../../datasource/conversion-dto";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "./Dialog";
@@ -38,7 +39,7 @@ function formatElapsed(seconds: number): string {
  *
  * - 変換中: ファイル名、進捗バー、いまの段階、経過時間。フッターは「キャンセル」。
  * - 変換が終わったら、同じダイアログが結果表示に変わる(フッターは「閉じる」)。
- *   変換結果は完了時に自動で開かれる(`src/app/file-opener.ts`の`openFiles`が
+ *   変換結果は完了時に自動で開かれる(`src/app/open-files.ts`の`openFiles`が
  *   `prepareToOpen`の完了を待ってそのままレイヤーを足す)ため、「開く」ボタンは置かない
  *   (押すまでもなく開いている。押せるボタンが何もしないのは紛らわしい)。
  *   変換の内訳(コピー可)・ダウンロードリンクは左パネルの「レイヤー情報」にある
@@ -58,7 +59,7 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
       footer={
         converting ? (
           <>
-            <button type="button" onClick={viewer.cancelConversion} className={DIALOG_TERTIARY_BUTTON_CLASS}>
+            <button type="button" onClick={() => cancelConversion(viewer.fileOpenContext)} className={DIALOG_TERTIARY_BUTTON_CLASS}>
               キャンセル
             </button>
           </>

@@ -13,7 +13,7 @@ export type ViewerStatus =
   | { kind: "idle" }
   | { kind: "opening" }
   // Converting a raw LAS/LAZ (progress and cancel UI). A normal COPC open stays "opening" (it ends at once).
-  // The file name and the progress are NOT in this variant, see `FileOpenerSnapshot` in src/app/file-opener.ts.
+  // The file name and the progress are NOT in this variant, see `OpenFilesContext` in src/app/open-files.ts.
   | { kind: "converting" }
   | { kind: "ready" }
   | { kind: "error"; message: string };

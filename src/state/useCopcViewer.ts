@@ -6,7 +6,7 @@
 //   useErrorLog.ts           gpuErrors, errorHistory, reportError, dismissGpuError
 //   useDisplaySettings.ts    point budget, background, grid, EDL, animation, render scale, shape, center priority, stats
 //   useLayers.ts             layer list, selection, per-layer actions, measurement layers
-//   useFileOpen.ts           creates the FileOpener (src/app/file-opener.ts: openFiles, addOpenedLayer, cancel, progress)
+//   useFileOpen.ts           conversion progress / file name state + the OpenFilesContext for src/app/open-files.ts
 //   usePointCloudTools.ts    extract / cross section / merge as new layers
 //   useOpfsStorage.ts        Web storage usage and cleanup (settings page)
 //   useTempDir.ts            desktop temp folder setting
@@ -16,6 +16,7 @@
 // are separate hooks that take this state as input; they are not part of it.
 // The type re-exports below exist because src/ui must reach the renderer / datasource types through state (ARCHITECTURE.md rule 3).
 import { useCallback, useRef, useState, type RefObject } from "react";
+import { addOpenedLayer } from "../app/open-files";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
@@ -55,7 +56,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [status, setStatus] = useState<ViewerStatus>({ kind: "idle" });
   // A renderer init failure is shown like an open failure (R5). Stable, because an effect depends on it.
   const setInitError = useCallback((message: string) => setStatus({ kind: "error", message }), []);
-  // Shared by FileOpener (to ignore tool progress) and usePointCloudTools (sets it).
+  // Shared by openFiles (to ignore tool progress) and usePointCloudTools (sets it).
   const toolRunningRef = useRef(false);
 
   const errorLog = useErrorLog();
@@ -80,9 +81,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     pointShape: display.deviceProfileDefaults.pointShape,
     refreshOpfsStorageInfo: opfs.refreshOpfsStorageInfo,
   });
-  const { opener } = fileOpen;
-  const openFiles = useCallback((items: string[] | File[]) => opener.openFiles(items), [opener]);
-  const cancelConversion = useCallback(() => opener.cancelConversion(), [opener]);
   // M4-12: copy the breakdown text of the selected layer. Where `navigator.clipboard` is missing
   // (non-HTTPS etc.) the screen must not break, so a failure is only logged.
   const selectedBreakdownText = layers.selectedLayer?.conversionBreakdownText ?? null;
@@ -104,7 +102,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     extraSelectedIds: layers.extraSelectedIds,
     tempDir: tempDirSetting.tempDir,
     isMobile: display.deviceProfileDefaults.isMobile,
-    addOpenedLayer: (path, name, attachment) => opener.addOpenedLayer(path, name, attachment),
+    addOpenedLayer: (path, name, attachment) => addOpenedLayer(fileOpen.fileOpenContext, path, name, attachment),
     focusLayer: layers.focusLayer,
     setStatus,
     reportError: errorLog.reportError,
@@ -163,11 +161,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     gpuErrors: errorLog.gpuErrors,
     errorHistory: errorLog.errorHistory,
     convertingFileName: fileOpen.convertingFileName,
-    openFiles,
     isBrowser: !isTauriEnvironment(),
     reportError: errorLog.reportError,
+    fileOpenContext: fileOpen.fileOpenContext,
     conversionProgress: fileOpen.conversionProgress,
-    cancelConversion,
     copyConversionBreakdownText,
     opfsStorageInfo: opfs.opfsStorageInfo,
     refreshOpfsStorageInfo: opfs.refreshOpfsStorageInfo,

@@ -3,6 +3,7 @@
 // Used by: src/ui (through the re-exports in useCopcViewer.ts), useLayerTool.ts, useMeasureTool.ts.
 // Each field is declared (and documented) once, in the interface of the hook that makes it; F12 on `viewer.xxx` goes there.
 // The hooks that fill each group of fields are listed in useCopcViewer.ts.
+import type { OpenFilesContext } from "../app/open-files";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import type { ViewerStatus } from "./viewer-status";
 import type { OpfsUsageBreakdown } from "../datasource/opfs";
@@ -125,16 +126,14 @@ export type CopcViewerState = Pick<
     /** Open / convert status, including the error message (`viewer-status.ts`). Read it through its helpers. */
     status: ViewerStatus;
     /**
-     * Open the chosen files (desktop: path strings; Web: `File`s from a drop or the file picker). Resolves when the
-     * conversion (if any) and the open have finished. See `FileOpener.openFiles` in src/app/file-opener.ts.
+     * What the open functions in src/app/open-files.ts (`openFiles`, `cancelConversion`) are called with.
+     * The UI imports those functions and passes this in, so F12 on `openFiles` lands on the implementation.
      */
-    openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
-    /** Progress of a running conversion, or null (`FileOpenerSnapshot` in src/app/file-opener.ts). */
+    fileOpenContext: OpenFilesContext;
+    /** Progress of a running conversion, or null (`setConversionProgress` in `OpenFilesContext`, src/app/open-files.ts). */
     conversionProgress: ConversionProgress | null;
     /** Name of the file converted last, for the conversion dialog; null before any conversion. */
     convertingFileName: string | null;
-    /** Called from the cancel button while converting. */
-    cancelConversion: () => void;
     /** Copy the breakdown text of the selected layer to the clipboard. True if it succeeded (a failure is only logged). */
     copyConversionBreakdownText: () => Promise<boolean>;
     /** True in the browser build. Used by the settings pages and the download link. */

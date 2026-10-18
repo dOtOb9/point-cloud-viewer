@@ -2,7 +2,7 @@
 // center priority. Each setter updates the React state and tells the renderer.
 // Also holds `stats` (the renderer's per-interval numbers) because the auto point budget changes
 // `pointBudget` inside the renderer and the UI copies it back from the stats.
-// Used by: useCopcViewer.ts. `deviceProfileDefaults` is also used by useCopcViewer.ts for FileOpener (new layers' point shape).
+// Used by: useCopcViewer.ts. `deviceProfileDefaults` is also used by useCopcViewer.ts for openFiles (new layers' point shape).
 // Entry: `useDisplaySettings(rendererRef)`.
 import { useCallback, useEffect, useState, type RefObject } from "react";
 import type { PointCloudRenderer, RenderStats } from "../renderer/point-cloud-renderer";

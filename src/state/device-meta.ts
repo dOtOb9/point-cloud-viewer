@@ -1,5 +1,5 @@
 // M4-12: device info for the breakdown text of a conversion.
-// Used by: src/app/file-opener.ts.
+// Used by: src/app/open-files.ts.
 import type { ConversionBreakdownMeta } from "../datasource/conversion-breakdown";
 
 /** `navigator.deviceMemory` is Chrome-only; it is left undefined when missing. */
