@@ -131,7 +131,24 @@ jobs:
       # `playwright.config.ts`のwebServerが`npm run build && npm run preview`
       # (本番=GitHub Pagesと同じサブパスでビルドしたもの)を自動で起動するので、
       # ここでは`playwright test`を呼ぶだけでよい。
+      #
+      # Diagnostics for the intermittent "Target crashed" (2026-10-18): the tab dies 1.5-3 s after a
+      # conversion starts, right after "WebGPU device lost", and it happens to whole CI runs at once.
+      # These logs let us compare failing and passing runs: which machine (CPU / memory) the run got,
+      # Chromium's own stderr (GPU process exit messages; `DEBUG=pw:browser` makes Playwright print it),
+      # and whether the kernel's OOM killer stopped a process.
+      - name: Machine info (for crash diagnosis)
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)|Flags' | cut -c1-300
+          free -m
       - run: npm run e2e
+        env:
+          DEBUG: pw:browser
+      - name: Memory and OOM killer after E2E (for crash diagnosis)
+        if: always()
+        run: |
+          free -m
+          sudo dmesg | grep -iE 'oom|killed process|out of memory' || echo "no OOM killer messages"
 
       # 失敗したときに原因を追えるように、トレース・スクリーンショットを
       # 保存する(CI実行のartifactとしてのみ残る。`test-results/`は
