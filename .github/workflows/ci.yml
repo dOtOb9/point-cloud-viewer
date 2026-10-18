@@ -52,6 +52,23 @@ jobs:
           fi
           echo "OK: $allowed のみ"
 
+      # Rule 3: src/renderer/ does not know React. Rule 5: src/app/ does not know React or the src/state hooks (ADR-0021).
+      # A plain text search, like rule 2: writing `from "react"` in a comment there also fails.
+      - name: "規約3・5: renderer と app が React を import しない"
+        run: |
+          react=$(grep -rlE "from ['\"]react(-dom)?(/[^'\"]*)?['\"]" src/renderer src/app 2>/dev/null || true)
+          tsx=$(find src/renderer src/app -name "*.tsx" 2>/dev/null || true)
+          hooks=$(grep -rlE "from ['\"][^'\"]*state/use[A-Z][^'\"]*['\"]" src/app 2>/dev/null || true)
+          if [ -n "$react$tsx$hooks" ]; then
+            echo "::error::src/renderer/ と src/app/ は React を、src/app/ は src/state/use* を import できません。"
+            [ -n "$react" ] && echo "React を import しているファイル:" && echo "$react" | sed 's/^/  /'
+            [ -n "$tsx" ] && echo ".tsx ファイル:" && echo "$tsx" | sed 's/^/  /'
+            [ -n "$hooks" ] && echo "src/state のフックを import しているファイル:" && echo "$hooks" | sed 's/^/  /'
+            echo "理由は TaskSheets/ADR-0021-thin-react.md を参照。"
+            exit 1
+          fi
+          echo "OK: src/renderer/ と src/app/ に React の import なし"
+
   rust:
     runs-on: windows-latest
     steps:
