@@ -61,7 +61,7 @@ Tauri + React を選びました。
       │ 進捗イベント(読み込み点数)
       ▼
   src-tauriがeventで通知 → 変換の進捗ダイアログ・レイヤー情報が表示 → 完了後そのままCOPCとして開く
-  （src/app/file-opener.ts の FileOpener.openFiles が変換の完了を await して開く。詳しくは「処理の流れ」章の「ファイルを開く」）
+  （src/app/open-files.ts の openFiles が変換の完了を await して開く。詳しくは「処理の流れ」章の「ファイルを開く」）
 ```
 
 Android 特有の点は、ファイルの入手経路だけです。デスクトップは `std::fs::File::open`
