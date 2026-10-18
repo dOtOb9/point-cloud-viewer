@@ -6,8 +6,7 @@
 //   useErrorLog.ts           gpuErrors, errorHistory, reportError, dismissGpuError
 //   useDisplaySettings.ts    point budget, background, grid, EDL, animation, render scale, shape, center priority, stats
 //   useLayers.ts             layer list, selection, per-layer actions, measurement layers
-//   useFileOpen.ts           openFiles / addOpenedLayer (awaits source.prepareToOpen; a conversion happens inside it)
-//   useConversionSession.ts  conversion progress, source file name, cancel, breakdown copy
+//   useFileOpen.ts           creates the FileOpener (src/app/file-opener.ts: openFiles, addOpenedLayer, cancel, progress)
 //   usePointCloudTools.ts    extract / cross section / merge as new layers
 //   useOpfsStorage.ts        Web storage usage and cleanup (settings page)
 //   useTempDir.ts            desktop temp folder setting
@@ -20,8 +19,8 @@ import { useCallback, useRef, useState, type RefObject } from "react";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
-import { useConversionSession } from "./useConversionSession";
 import { useDisplaySettings } from "./useDisplaySettings";
+import { addLayerToState } from "./layers";
 import { useErrorLog } from "./useErrorLog";
 import { useFileOpen } from "./useFileOpen";
 import { useLayers } from "./useLayers";
@@ -56,7 +55,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [status, setStatus] = useState<ViewerStatus>({ kind: "idle" });
   // A renderer init failure is shown like an open failure (R5). Stable, because an effect depends on it.
   const setInitError = useCallback((message: string) => setStatus({ kind: "error", message }), []);
-  // Shared by useConversionSession (to ignore tool progress) and usePointCloudTools (sets it).
+  // Shared by FileOpener (to ignore tool progress) and usePointCloudTools (sets it).
   const toolRunningRef = useRef(false);
 
   const errorLog = useErrorLog();
@@ -68,25 +67,35 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const layers = useLayers({ rendererRef, sourceRef, setStatus, reportError: errorLog.reportError });
   const opfs = useOpfsStorage();
   const tempDirSetting = useTempDir();
-  const selectedBreakdownText = layers.selectedLayer?.conversionBreakdownText ?? null;
-  const conversion = useConversionSession({
-    sourceRef,
-    toolRunningRef,
-    selectedBreakdownText,
-  });
   const fileOpen = useFileOpen({
     rendererRef,
     sourceRef,
+    toolRunningRef,
     setStatus,
     reportError: errorLog.reportError,
-    conversion,
-    display,
-    layersStateRef: layers.layersStateRef,
-    commitLayers: layers.commitLayers,
+    addLayerToList: (layer) => layers.commitLayers(addLayerToState(layers.layersStateRef.current, layer)),
     nextLayerId: layers.nextLayerId,
     tempDir: tempDirSetting.tempDir,
+    isMobile: display.deviceProfileDefaults.isMobile,
+    pointShape: display.deviceProfileDefaults.pointShape,
     refreshOpfsStorageInfo: opfs.refreshOpfsStorageInfo,
   });
+  const { opener } = fileOpen;
+  const openFiles = useCallback((items: string[] | File[]) => opener.openFiles(items), [opener]);
+  const cancelConversion = useCallback(() => opener.cancelConversion(), [opener]);
+  // M4-12: copy the breakdown text of the selected layer. Where `navigator.clipboard` is missing
+  // (non-HTTPS etc.) the screen must not break, so a failure is only logged.
+  const selectedBreakdownText = layers.selectedLayer?.conversionBreakdownText ?? null;
+  const copyConversionBreakdownText = useCallback(async (): Promise<boolean> => {
+    if (selectedBreakdownText === null) return false;
+    try {
+      await navigator.clipboard.writeText(selectedBreakdownText);
+      return true;
+    } catch (e: unknown) {
+      console.error("copyConversionBreakdownText failed", e);
+      return false;
+    }
+  }, [selectedBreakdownText]);
   const tools = usePointCloudTools({
     rendererRef,
     sourceRef,
@@ -95,7 +104,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     extraSelectedIds: layers.extraSelectedIds,
     tempDir: tempDirSetting.tempDir,
     isMobile: display.deviceProfileDefaults.isMobile,
-    addOpenedLayer: fileOpen.addOpenedLayer,
+    addOpenedLayer: (path, name, attachment) => opener.addOpenedLayer(path, name, attachment),
     focusLayer: layers.focusLayer,
     setStatus,
     reportError: errorLog.reportError,
@@ -153,13 +162,13 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     minCenterPriorityWeight: display.minCenterPriorityWeight,
     gpuErrors: errorLog.gpuErrors,
     errorHistory: errorLog.errorHistory,
-    convertingFileName: conversion.convertingFileName,
-    openFiles: fileOpen.openFiles,
+    convertingFileName: fileOpen.convertingFileName,
+    openFiles,
     isBrowser: !isTauriEnvironment(),
     reportError: errorLog.reportError,
-    conversionProgress: conversion.conversionProgress,
-    cancelConversion: conversion.cancelConversion,
-    copyConversionBreakdownText: conversion.copyConversionBreakdownText,
+    conversionProgress: fileOpen.conversionProgress,
+    cancelConversion,
+    copyConversionBreakdownText,
     opfsStorageInfo: opfs.opfsStorageInfo,
     refreshOpfsStorageInfo: opfs.refreshOpfsStorageInfo,
     requestOpfsPersistentStorage: opfs.requestOpfsPersistentStorage,

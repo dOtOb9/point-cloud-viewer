@@ -23,7 +23,7 @@ export interface PointCloudToolsDeps {
   rendererRef: RefObject<PointCloudRenderer | null>;
   sourceRef: RefObject<DataSource | null>;
   /**
-   * True while a tool runs. Created in useCopcViewer.ts and shared with useConversionSession.ts, because
+   * True while a tool runs. Created in useCopcViewer.ts and shared with FileOpener (src/app/file-opener.ts), because
    * the desktop tools reuse the `conversion-progress` event and the conversion listener must ignore it.
    */
   toolRunningRef: RefObject<boolean>;
@@ -101,7 +101,7 @@ export function usePointCloudTools({
         for (const warning of result.warnings) reportToolMessage(warning);
         const { layerId } = await addOpenedLayer(result.outputPath, resultName, null);
         // A tool that worked means the viewer is fine now, so the panel's old open error goes away.
-        // Nothing is lost: an open failure is also in the error log / banner history (`failOpen` in useFileOpen.ts).
+        // Nothing is lost: an open failure is also in the error log / banner history (`failOpen` in src/app/file-opener.ts).
         setStatus({ kind: "ready" });
         if (viewNormal) {
           const up = rendererRef.current?.getViewSnapshot()?.up ?? [0, 0, 1];

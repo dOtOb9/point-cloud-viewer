@@ -1,7 +1,7 @@
 // Browser storage (OPFS) usage for the Web build: quota, usage, persistence, and the cache / scratch
 // entries that the settings page ("ブラウザの保存領域") lets the user delete (M4-6).
 // Every delete refreshes `opfsStorageInfo` afterwards. On desktop (Tauri) all of it is a no-op.
-// Used by: useCopcViewer.ts; useFileOpen.ts calls `refreshOpfsStorageInfo` when the quota is too small.
+// Used by: useCopcViewer.ts; FileOpener calls `refreshOpfsStorageInfo` when the quota is too small.
 // Entry: `useOpfsStorage()`.
 import { useCallback, useState } from "react";
 import {

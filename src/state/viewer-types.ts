@@ -11,10 +11,8 @@ import type { GpuErrorEntry } from "../renderer/gpu-error-log";
 import type { ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
 import type { ViewerLayer } from "./layers";
-import type { ConversionSession } from "./useConversionSession";
 import type { DisplaySettings } from "./useDisplaySettings";
 import type { ErrorLog } from "./useErrorLog";
-import type { FileOpen } from "./useFileOpen";
 import type { Layers } from "./useLayers";
 import type { OpfsStorage } from "./useOpfsStorage";
 import type { PointCloudTools } from "./usePointCloudTools";
@@ -111,11 +109,6 @@ export type CopcViewerState = Pick<
     | "setMinCenterPriorityWeight"
   > &
   Pick<ErrorLog, "gpuErrors" | "errorHistory" | "reportError" | "dismissGpuError"> &
-  Pick<FileOpen, "openFiles"> &
-  Pick<
-    ConversionSession,
-    "conversionProgress" | "convertingFileName" | "cancelConversion" | "copyConversionBreakdownText"
-  > &
   Pick<PointCloudTools, "toolProgress" | "cancelTool" | "extractFromLayer" | "mergeSelectedLayers"> &
   Pick<
     OpfsStorage,
@@ -131,6 +124,19 @@ export type CopcViewerState = Pick<
     // Only what useCopcViewer makes itself is declared here.
     /** Open / convert status, including the error message (`viewer-status.ts`). Read it through its helpers. */
     status: ViewerStatus;
+    /**
+     * Open the chosen files (desktop: path strings; Web: `File`s from a drop or the file picker). Resolves when the
+     * conversion (if any) and the open have finished. See `FileOpener.openFiles` in src/app/file-opener.ts.
+     */
+    openFiles: (pathsOrFiles: string[] | File[]) => Promise<void>;
+    /** Progress of a running conversion, or null (`FileOpenerSnapshot` in src/app/file-opener.ts). */
+    conversionProgress: ConversionProgress | null;
+    /** Name of the file converted last, for the conversion dialog; null before any conversion. */
+    convertingFileName: string | null;
+    /** Called from the cancel button while converting. */
+    cancelConversion: () => void;
+    /** Copy the breakdown text of the selected layer to the clipboard. True if it succeeded (a failure is only logged). */
+    copyConversionBreakdownText: () => Promise<boolean>;
     /** True in the browser build. Used by the settings pages and the download link. */
     isBrowser: boolean;
     /** 3D coordinates of a screen point (canvas CSS pixels); null where there is no point. The renderer's `pickPoint`. */

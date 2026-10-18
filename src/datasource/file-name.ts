@@ -1,6 +1,6 @@
 // Pure helpers for file names (no React, no I/O), unit-tested in file-name.test.ts.
 // Used by: tauri.ts, web.ts (the name of a conversion result, the "format" row of the breakdown),
-// and state/useFileOpen.ts (the name shown while opening).
+// and app/file-opener.ts (the name shown while opening).
 
 /**
  * M4-12 (`TaskSheets/M4-import-and-conversion.md`): the part of `path` after the last separator

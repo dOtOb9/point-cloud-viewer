@@ -373,7 +373,7 @@ export class WebSource implements DataSource {
    * `startConversion` (LAS/LAZ), but the free-space check uses the point count from the file header
    * (PCD `POINTS`, PLY `element vertex`, E57 `recordCount` in the XML) instead of the file size times 11,
    * which comes from compressed LAZ and is far off for uncompressed formats (a real-device bug).
-   * The caller (`useFileOpen.ts`) decides the format with `detectSourceFormatByName` first.
+   * The caller (`file-opener.ts`) decides the format with `detectSourceFormatByName` first.
    */
   async startPointFileConversion(
     file: File,

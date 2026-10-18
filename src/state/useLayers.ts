@@ -3,8 +3,8 @@
 // also tell the renderer (visible, coloring, point shape/size, focus, remove) and add measurement layers.
 // Rule: the list is held twice, as React state (to re-render) and as a ref (so callbacks read the latest);
 // only `commitLayers` writes them. The renderer / DataSource side is updated by the caller (the actions below,
-// `addOpenedLayer` in useFileOpen.ts).
-// Used by: useCopcViewer.ts; useFileOpen.ts and usePointCloudTools.ts use `layersStateRef`, `commitLayers`, `nextLayerId`.
+// `FileOpener.addOpenedLayer` in src/app/file-opener.ts).
+// Used by: useCopcViewer.ts; useCopcViewer.ts (for FileOpener) and usePointCloudTools.ts use `layersStateRef`, `commitLayers`, `nextLayerId`.
 // Entry: `useLayers({ rendererRef, sourceRef, setStatus, reportError })`.
 import { useCallback, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { DataSource } from "../datasource/DataSource";
