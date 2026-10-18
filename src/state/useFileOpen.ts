@@ -1,12 +1,10 @@
-// The one hook between React and `FileOpener` (src/app/file-opener.ts): it creates the opener once and gives
-// the UI its snapshot (conversion progress, file name). All the opening logic is in the class.
-// Used by: useCopcViewer.ts (exposes openFiles, cancel, progress); usePointCloudTools.ts gets `opener.addOpenedLayer`.
+// The hook between React and `FileOpener` (src/app/file-opener.ts): creates it once, returns its snapshot.
 import { useEffect, useState, useSyncExternalStore, type RefObject } from "react";
 import { FileOpener, type FileOpenerDeps, type FileOpenerSnapshot } from "../app/file-opener";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 
-/** Everything the opener reads, as the latest React values. The refs are stable; the rest may change per render. */
+/** What the opener reads: the newest React values (refs are stable, the rest may change every render). */
 export type FileOpenInputs = Pick<
   FileOpenerDeps,
   "setStatus" | "reportError" | "addLayerToList" | "nextLayerId" | "isMobile" | "pointShape" | "refreshOpfsStorageInfo"
@@ -19,8 +17,7 @@ export type FileOpenInputs = Pick<
 
 export function useFileOpen(inputs: FileOpenInputs): { opener: FileOpener } & FileOpenerSnapshot {
   // The opener is created once, but its getters must see the newest inputs (e.g. a temp dir chosen later).
-  // So the getters read this box, which is refreshed after every render. (A plain box instead of useRef:
-  // the lint rule react-hooks/refs rejects closures over a ref that are handed to a constructor.)
+  // So the getters read this box, refreshed after every render (not a useRef: lint react-hooks/refs rejects it here).
   const [latest] = useState(() => createLatest(inputs));
   useEffect(() => {
     latest.set(inputs);
