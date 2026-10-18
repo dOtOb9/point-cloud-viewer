@@ -1,16 +1,17 @@
-//! R7 (`TaskSheets/R7-web-ply-e57.md`): PLY / E57 to COPC conversion on the Web.
+//! R7 (`TaskSheets/R7-web-ply-e57.md`), M4-17 (`TaskSheets/M4-17-merge-any-format.md`):
+//! PLY / PCD / E57 (and, in a mixed merge, LAS/LAZ) to COPC on the Web.
 //!
-//! `WasmPointFileConverter` is the one converter class the Worker uses for PLY and E57.
-//! It has the same shape as `WasmPcdConverter` (`pcd_import.rs`) and `WasmConverter`
-//! (`convert.rs`): `new` / `totalPoints` / `feed(batch)` / `finish`, so the Worker's
-//! progress and cancel loop is the same for every format.
+//! `WasmPointFileConverter` is the one converter class the Worker uses for every non-LAS
+//! conversion. It has the same shape as `WasmConverter` (`convert.rs`): `new` / `totalPoints` /
+//! `feed(batch)` / `finish`, so the Worker's progress and cancel loop is the same for every format.
 //!
-//! The format specific part is only "give me the next point": `PlyStream` (`ply_import.rs`)
-//! and `E57Stream` (`e57_import.rs`). Everything after that (spill, octree, OPFS output,
-//! timings) is the same code path as the PCD converter. PCD keeps its own class on purpose:
-//! R7 did not touch it (the owner asked to avoid refactoring working code).
+//! It takes a LIST of files. One file is the normal single-file conversion; several files are
+//! read one after another into the same spill (`MergedPoints` in `point_merge.rs`). The format
+//! specific part is only "give me the next point" (`PointStream` in `point_merge.rs`:
+//! `PlyStream`, `PcdStream`, `E57Stream`, `LasStream`). Everything after that (spill, octree,
+//! OPFS output, timings) is the same code path for all of them.
 //!
-//! # Why PLY and E57 are copies of `crates/pcv-convert`
+//! # Why PLY / PCD / E57 are copies of `crates/pcv-convert`
 //!
 //! See the long comment on the `pcd-rs` dependency in `crates/pcv-wasm/Cargo.toml`.
 //! In short, this crate cannot depend on `pcv-convert` (workspace clash, and rayon would leak
@@ -19,8 +20,8 @@
 //!
 //! # Memory
 //!
-//! Nothing here holds a number of points that depends on the file. `feed` keeps at most
-//! `batch_size` records, and the sources keep one row / one E57 packet.
+//! Nothing here holds a number of points that depends on the files. `feed` keeps at most
+//! `batch_size` records, and the sources keep one row / one E57 packet / one LAS batch.
 
 use std::io::BufReader;
 use std::path::Path;
@@ -36,10 +37,9 @@ use web_sys::{File, FileSystemSyncAccessHandle};
 use web_time::Instant;
 
 use crate::convert::handles_from_js_array;
-use crate::e57_import::E57Stream;
 use crate::file_reader::FileRangeReader;
 use crate::opfs::OpfsScratchFs;
-use crate::ply_import::PlyStream;
+use crate::point_merge::{InputInfo, MergedPoints, OpenFile, PointFormat, PointStream};
 use crate::stats::Stats;
 
 /// Same value and reason as `READ_BUFFER_BYTES` in `convert.rs` (fewer JS round trips).
@@ -63,83 +63,112 @@ fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
 
 type FileReader = BufReader<FileRangeReader>;
 
-/// The format specific reader. A plain enum instead of a trait object: there are two
-/// variants and every method is a two-arm `match`.
-enum PointStream {
-    Ply(PlyStream<FileReader>),
-    // Boxed: the E57 reader is much larger than the PLY one (clippy::large_enum_variant).
-    E57(Box<E57Stream<FileReader>>),
+/// The values taken out of the constructor's JS arrays (all three have the same length).
+struct JsInputs {
+    infos: Vec<InputInfo>,
+    formats: Vec<PointFormat>,
+    files: Vec<File>,
 }
 
-impl PointStream {
-    fn has_color(&self) -> bool {
-        match self {
-            PointStream::Ply(s) => s.has_color(),
-            PointStream::E57(s) => s.has_color(),
-        }
+/// Turn the two JS arrays of the constructor into Rust values: the info of each input and the
+/// `File` objects. `formats[i]` is the format of `files[i]`.
+fn inputs_from_js(formats: &Array, files: &Array) -> Result<JsInputs, JsValue> {
+    if formats.length() != files.length() || files.length() == 0 {
+        return Err(to_js_error("formatsとfilesの個数が合わない、または空"));
     }
-
-    fn declared_point_count(&self) -> u64 {
-        match self {
-            PointStream::Ply(s) => s.declared_point_count(),
-            PointStream::E57(s) => s.declared_point_count(),
-        }
+    let mut infos = Vec::new();
+    let mut parsed_formats = Vec::new();
+    let mut parsed_files = Vec::new();
+    for (format, file) in formats.iter().zip(files.iter()) {
+        let format_name = format
+            .as_string()
+            .ok_or_else(|| to_js_error("formatsの要素が文字列ではない"))?;
+        let format = PointFormat::from_name(&format_name).map_err(to_js_error)?;
+        let file: File = file
+            .dyn_into()
+            .map_err(|_| to_js_error("filesの要素がFileではない"))?;
+        infos.push(InputInfo {
+            name: file.name(),
+            format,
+            file_size_bytes: file.size() as u64,
+        });
+        parsed_formats.push(format);
+        parsed_files.push(file);
     }
-
-    fn next_point(&mut self) -> Result<Option<RawPoint>, String> {
-        match self {
-            PointStream::Ply(s) => s.next_point(),
-            PointStream::E57(s) => s.next_point(),
-        }
-    }
+    Ok(JsInputs {
+        infos,
+        formats: parsed_formats,
+        files: parsed_files,
+    })
 }
 
-/// Web PLY / E57 to COPC converter. Used by `runPointFileConversion` in
-/// `src/datasource/copc.worker.ts`.
+/// Web PLY / PCD / E57 / LAS to COPC converter (one or several files). Used by
+/// `runPointFileConversion` in `src/datasource/copc.worker.ts`.
 #[wasm_bindgen]
 pub struct WasmPointFileConverter {
-    stream: PointStream,
+    points: MergedPoints<FileReader>,
     spill: Option<SpillWriter>,
     fs: OpfsScratchFs,
+    /// The progress denominator: the sum of the declared point counts of all files.
     declared_points: u64,
     points_fed: u64,
     output_name: String,
     params: CopcWriterParams,
+    /// WKT of the output CRS (from the LAS/LAZ inputs, if any).
+    wkt_crs: Option<String>,
+    warnings: Vec<String>,
+    input_file_count: u64,
     /// Same idea as in `WasmConverter` (`convert.rs`): `Instant::now()` once per batch,
     /// never once per point.
     source_read_and_decode: Duration,
     spill_write: Duration,
+    /// The sum of the sizes of all input files.
     file_size_bytes: u64,
 }
 
 #[wasm_bindgen]
 impl WasmPointFileConverter {
-    /// `format` is `"ply"` or `"e57"` (lower case, as `detectSourceFormatByName` returns it).
+    /// `formats[i]` is the format of `files[i]`: `"lasLaz"`, `"ply"`, `"pcd"` or `"e57"` (as
+    /// `detectSourceFormatByName` returns it). The files are read in the given order, so the
+    /// caller sorts them by name first (the output must not depend on the selection order).
+    ///
+    /// The constructor does the header pass: it opens every file once to learn whether it has
+    /// color, how many points it declares, and its CRS. A CRS conflict between LAS/LAZ files is
+    /// an error here, before any point is read.
     #[wasm_bindgen(constructor)]
     pub fn new(
-        format: String,
-        file: File,
+        formats: Array,
+        files: Array,
         scratch_handles: Array,
         output_handle: FileSystemSyncAccessHandle,
         output_name: String,
         max_points_per_node: u32,
     ) -> Result<WasmPointFileConverter, JsValue> {
-        let file_size_bytes = file.size() as u64;
-        let source = FileRangeReader::new(file, Stats::new());
-        let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
-        let stream = match format.as_str() {
-            "ply" => PointStream::Ply(PlyStream::open(buffered).map_err(to_js_error)?),
-            "e57" => PointStream::E57(Box::new(E57Stream::open(buffered).map_err(to_js_error)?)),
-            other => return Err(to_js_error(format!("Webで変換できない形式: {other}"))),
-        };
-        let declared_points = stream.declared_point_count();
+        let JsInputs {
+            infos: inputs,
+            formats: parsed_formats,
+            files: parsed_files,
+        } = inputs_from_js(&formats, &files)?;
+        let input_file_count = inputs.len() as u64;
+
+        // Opens file number `i`; `MergedPoints` calls it for the header pass and again when a
+        // file's turn comes. A `File` clone is cheap (a reference to the same browser file).
+        let open: OpenFile<FileReader> = Box::new(move |i| {
+            let (Some(format), Some(file)) = (parsed_formats.get(i), parsed_files.get(i)) else {
+                return Err(format!("ファイル番号{i}が範囲外"));
+            };
+            let source = FileRangeReader::new(file.clone(), Stats::new());
+            let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
+            PointStream::open(*format, buffered)
+        });
+        let (points, plan) = MergedPoints::start(inputs, open).map_err(to_js_error)?;
 
         let handles = handles_from_js_array(&scratch_handles)?;
         let fs = OpfsScratchFs::new(handles, output_handle);
         let layout = StreamingLayout {
             point_format: 0,
             has_gps: false,
-            has_color: stream.has_color(),
+            has_color: plan.output_has_color,
             has_nir: false,
             has_waveform: false,
             extra_bytes: 0,
@@ -148,27 +177,31 @@ impl WasmPointFileConverter {
         let spill = SpillWriter::create(&fs, layout, None).map_err(to_js_error)?;
 
         Ok(Self {
-            stream,
+            points,
             spill: Some(spill),
             fs,
-            declared_points,
+            declared_points: plan.total_points,
             points_fed: 0,
             output_name,
             params: CopcWriterParams::new(max_points_per_node),
+            wkt_crs: plan.wkt_crs,
+            warnings: plan.warnings,
+            input_file_count,
             source_read_and_decode: Duration::ZERO,
             spill_write: Duration::ZERO,
-            file_size_bytes,
+            file_size_bytes: plan.total_file_size_bytes,
         })
     }
 
-    /// The point count the file header declares (the progress denominator). E57 can yield
-    /// fewer points than declared (missing grid slots are skipped).
+    /// The point count the file headers declare, summed over all files (the progress
+    /// denominator). E57 can yield fewer points than declared (missing grid slots are skipped).
     #[wasm_bindgen(js_name = totalPoints)]
     pub fn total_points(&self) -> f64 {
         self.declared_points as f64
     }
 
-    /// Read at most `batch_size` points and write them to the spill.
+    /// Read at most `batch_size` points and write them to the spill. The points of all files
+    /// come as one stream; `points_read` counts over all files so far.
     #[wasm_bindgen(js_name = feed)]
     pub fn feed(&mut self, batch_size: u32) -> Result<JsValue, JsValue> {
         let spill = self
@@ -180,7 +213,7 @@ impl WasmPointFileConverter {
         let mut records = Vec::with_capacity(batch_size as usize);
         let mut done = false;
         while records.len() < batch_size as usize {
-            match self.stream.next_point().map_err(to_js_error)? {
+            match self.points.next_point().map_err(to_js_error)? {
                 Some(p) => records.push(LasPointRecord {
                     x: p.x,
                     y: p.y,
@@ -214,8 +247,7 @@ impl WasmPointFileConverter {
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }
 
-    /// Build the octree and write the COPC to the OPFS output handle
-    /// (same steps as `WasmPcdConverter::finish`).
+    /// Build the octree and write the COPC to the OPFS output handle.
     #[wasm_bindgen(js_name = finish)]
     pub fn finish(mut self) -> Result<JsValue, JsValue> {
         let spill = self
@@ -229,8 +261,10 @@ impl WasmPointFileConverter {
         let mut metadata = CopcWriteMetadata::default();
         metadata.scale = Some(scale);
         metadata.offset = Some(offset);
-        // PLY has no CRS. E57 may have one, but the reader does not pass it on (same as
-        // `pcv-convert`, ADR-0008): `wkt_crs` stays `None` rather than guessing.
+        // PLY / PCD / E57 carry no CRS (E57 may have one, but the reader does not pass it on,
+        // same as `pcv-convert`, ADR-0008). The CRS comes only from LAS/LAZ inputs in a merge
+        // (`plan_merge`); with none, `wkt_crs` stays `None` rather than guessing.
+        metadata.wkt_crs = self.wkt_crs.take();
 
         let post_timings = write_copc_from_spill_with_fs_and_timings(
             &self.fs,
@@ -253,9 +287,9 @@ impl WasmPointFileConverter {
                 Some(self.fs.io_timings()),
                 Some(self.fs.read_stats()),
                 Some(self.fs.seq_read_stats()),
-                1, // One file at a time, as for PCD.
+                self.input_file_count,
             ),
-            warnings: Vec::new(),
+            warnings: std::mem::take(&mut self.warnings),
         };
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }

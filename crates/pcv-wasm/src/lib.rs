@@ -25,6 +25,7 @@ mod opfs;
 mod pcd_import;
 mod ply_import;
 mod point_file_import;
+mod point_merge;
 mod range_math;
 mod stats;
 mod util;
@@ -42,9 +43,7 @@ use web_sys::File;
 pub use convert::WasmConverter;
 // L2-C: Web extraction (point selection, cross section). Used by `src/datasource/copc.worker.ts`.
 pub use extract::WasmExtractor;
-// M4-6/M4-9追記: Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`が使う。
-pub use pcd_import::WasmPcdConverter;
-// R7: Web PLY / E57 to COPC conversion. Used by `src/datasource/copc.worker.ts`.
+// R7 / M4-17: Web PLY / PCD / E57 (and mixed LAS) to COPC conversion, one or several files. Used by `src/datasource/copc.worker.ts`.
 pub use point_file_import::WasmPointFileConverter;
 
 /// 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば
