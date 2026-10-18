@@ -8,7 +8,8 @@
 ```ts
 export interface DataSource {
   open(path: string): Promise<OpenedCloud>;
-  prepareToOpen(items: string[] | File[], options: { tempDir: string | null; isMobile: boolean }): Promise<PrepareOutcome>;
+  prepareToOpen(items: string[] | File[], options: PrepareOptions): Promise<PrepareOutcome>;
+  cancelConversion(): void;
   readNode(cloudId: number, key: string): Promise<ArrayBuffer>;
   close(cloudId: number): Promise<void>;
 }
@@ -18,9 +19,16 @@ export interface DataSource {
 
 選んだファイルを「`open` に渡せる COPC」にする操作です。COPC ならそのまま、そうでなければ変換（複数 LAS/LAZ は結合）します。
 Web とデスクトップで同じことをするので、`useFileOpen.ts` は `instanceof` で分けずにこれを呼びます。
-結果の `PrepareOutcome` は `ready { path }`（`open` に渡せるパス／キー）・`converting`（完了イベントが続きを開く）・
-`failed { summary, details }`（`summary` はパネル、`details` はエラーログ）の3つです。
-`WebSource` は `File` を受けて OPFS で変換し（`tempDir` は使わない）、`TauriSource` は Rust のコマンドを呼びます（`isMobile` は使わない）。
+**変換が要るときも、この呼び出しの中で終わり、終わってから結果を返します**（R11。「変換開始 → 後で完了イベントが開き直す」往復は無い）。
+`options`（`PrepareOptions`）は `tempDir`・`isMobile` に加えて、変換が本当に始まったとき1回呼ばれる `onConverting` と、進捗の `onProgress` を持ちます。
+結果の `PrepareOutcome` は次の3つです。
+- `ready { path, conversion }` — `open` に渡せるパス／キー。変換したときだけ `conversion`（`ConversionResult`: レイヤー名・`platform`・元の形式・段階ごとの秒数・警告・Web のダウンロード用 URL）が入る。
+- `failed { summary, details }` — `summary` はパネル、`details` はエラーログ。変換の失敗もここ。
+- `cancelled` — 利用者が変換を止めた。
+
+`WebSource` は `File` を受けて OPFS で変換し（`tempDir` は使わない）、Worker の `convert-done` / `convert-failed` を要求 id ごとに待ちます。
+`TauriSource` はイベントを先に購読してから Rust のコマンドを呼び（`isMobile` は使わない）、完了／失敗イベントを待ちます。
+`cancelConversion()` は走っている変換を止める合図です（走っていなければ何もしない）。
 `ConversionOutcome` から `PrepareOutcome` への変換と文言は `prepare-outcome.ts` です（[ファイルを開く](../flows/open-file.md)）。
 
 ### cloudId: 複数のファイルを同時に開く
@@ -110,7 +118,7 @@ Web 側には `las` 相当のパーサライブラリが無いため、LAS ヘ�
 
 `isCopcFile`（ヘッダー）は「変換が要るか」を、`detectSourceFormatByName`（拡張子。大文字小文字を区別しない。Rust の `detect_format` と同じ考え方）は
 「どの変換経路に回すか」（`lasLaz`／`pcd`／`ply`／`e57`／`unknown`）を決めます。PCD を LAS/LAZ の見積もりに回して
-「空き容量が足りません」と誤判定した実機不具合から分けられました。呼ぶのは `WebSource.prepareToOpen`（`useFileOpen.ts` の `openFile`／`openFiles` から。[ファイルを開く](../flows/open-file.md)）。
+「空き容量が足りません」と誤判定した実機不具合から分けられました。呼ぶのは `WebSource.prepareToOpen`（`useFileOpen.ts` の `openFiles` から。[ファイルを開く](../flows/open-file.md)）。
 
 ## `update-check.ts`: 更新通知（デスクトップ・Android 共通）
 

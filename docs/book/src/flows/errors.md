@@ -39,12 +39,15 @@
 ### 3. 変換の失敗・キャンセル・容量不足
 
 1. 容量不足は `prepareToOpen` が `failed { summary: "空き容量が足りません", details }` を返し（`details` は `describeInsufficientSpaceWeb`（`src/datasource/opfs.ts`）または `describeInsufficientSpaceDesktop`（`src/datasource/prepare-outcome.ts`）の文）、`useFileOpen.ts` が `details` を `reportError(..., "conversion")` に流し、`status = { kind: "error", message: summary }`。
-2. 変換中の失敗は `useConversionSession.ts` の `reportConversionFailure(message, cancelled)` — 進捗を消し、`status` を `{ kind: "error", message }`（キャンセルなら `{ kind: "idle" }`）にし、
-   `reportError("変換に失敗しました: ..." または "変換をキャンセルしました", "conversion")`。
-   - デスクトップ: Rust の `emit_failed`（`src-tauri/src/conversion.rs`）が `conversion-failed` イベントを送り、`onConversionFailed`（`src/datasource/tauri.ts`）が受ける。
-   - Web: Worker が `convert-failed` を送り、`WebSource.onConvertFailed` が受ける。Worker の `describeConversionFailure`（`src/datasource/copc.worker.ts`）は、
+2. 変換中の失敗・キャンセルも、`prepareToOpen` の結果として `useFileOpen.ts` の `openFiles` に戻る（`toConversionFailureOutcome`、`src/datasource/prepare-outcome.ts`）。
+   失敗は `failed { summary: メッセージ, details: "変換に失敗しました: ..." }` なので 1. と同じ `failOpen` の1か所で出る（`status = { kind: "error", message }` とエラーログ）。
+   キャンセルは `cancelled` で、`status = { kind: "idle" }` にして `reportError("変換をキャンセルしました", "conversion")`。どちらも進捗を消す。
+   変換が成功したときの警告（CRS が無いファイルを通した、など）は `conversion.warnings` を `reportError(..., "conversion")` に流す（R11 までは捨てていた）。
+   Web で変換結果を OPFS から読み戻せなかったときも `failed` になり、エラーログに残る。
+   - デスクトップ: Rust の `emit_failed`（`src-tauri/src/conversion.rs`）が `conversion-failed` イベントを送り、`TauriSource.prepareToOpen`（`src/datasource/tauri.ts`、`watchConversionEnd`）が受ける。
+   - Web: Worker が `convert-failed` を送り、`WebSource.handleResponse`（`convertPending` の待ち）が受ける。Worker の `describeConversionFailure`（`src/datasource/copc.worker.ts`）は、
      wasm のトラップなら `alloc_guard` が残した確保失敗の理由か「メモリ不足の可能性」を添える。
-3. 変換の呼び出し自体の例外は `useFileOpen.ts` の `openItems` の `catch` → `setStatus("error")`・`setError(String(e))`。
+3. 変換の呼び出し自体の例外は `useFileOpen.ts` の `openFiles` の `catch` → `setStatus("error")`・`setError(String(e))`。
 
 ### 4. Rust の panic
 
@@ -53,7 +56,7 @@
 | `pcv://` のノード読み出し | `copc_state.rs` の `catch_unwind` → HTTP 500 | 2. の経路で `reportError(..., "node-read")` |
 | 点群ツール（選択・断面・結合）のコマンド | `src-tauri/src/conversion.rs` の `catch_unwind`（`spawn_blocking` の中）。`"内部エラー(panic): ..."` の `Err` にする | `usePointCloudTools.ts` の `runTool` の `catch` → `reportError(message, "tool")` |
 | Web の Worker（wasm） | `init_panic_hook`（`crates/pcv-wasm/src/lib.rs`。`console.error` に出す）。トラップは Worker の `try/catch` が拾い `error`／`convert-failed` のメッセージに | 3. の経路 |
-| 変換本体（変換スレッド） | `src-tauri/src/conversion.rs` の `spawn_guarded_conversion` → `run_guarded`（`catch_unwind`）。panic は `"内部エラー(panic): ..."` として `emit_failed` へ（F1） | 失敗と同じく `conversion-failed` → `onConversionFailed` → エラーダイアログ（アプリでの実行は未確認、単体テストのみ） |
+| 変換本体（変換スレッド） | `src-tauri/src/conversion.rs` の `spawn_guarded_conversion` → `run_guarded`（`catch_unwind`）。panic は `"内部エラー(panic): ..."` として `emit_failed` へ（F1） | 失敗と同じく `conversion-failed` → `watchConversionEnd` → `prepareToOpen` が `failed` → エラーダイアログ（アプリでの実行は未確認、単体テストのみ） |
 
 ### 5. その他
 

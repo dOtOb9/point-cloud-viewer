@@ -24,7 +24,9 @@
 | Web の PCD・PLY・E57 | `WebSource.startPointFileConversion` → `copc.worker.ts` の `handlePointFileConvertStart` |
 
 画面側の呼び出し元は `src/state/useFileOpen.ts` です(`source.prepareToOpen` を呼び、それが中で `startLasConversion`・`startMultiLasConversion`・`startConversion` などを呼ぶ)。
-進捗・完了・失敗の受け取りは `src/state/useConversionSession.ts` です。
+`prepareToOpen` は**変換が終わってから**結果を返します。進捗・完了・失敗のイベントはその中(`tauri.ts` の `watchConversionEnd`、`web.ts` の `convertPending`)で受け、
+進捗だけが `onProgress` コールバックで `useFileOpen.ts` → `src/state/useConversionSession.ts` の `reportConversionProgress` に届きます。
+`useConversionSession.ts` が持つのは進捗の表示用の値・元ファイル名・キャンセル(`cancelConversion` → `DataSource.cancelConversion`)・内訳のコピーだけです。
 
 ## 3. 流れ
 
@@ -41,6 +43,7 @@
    - `disk_space::free_bytes_at` / `has_enough_free_space`: 入力の約11倍の空きが無ければ `InsufficientSpace`。
 3. 同 `run_conversion_thread` — 拡張子で経路を選ぶ(`import::detect_format`)。LAS/LAZ は `pcv_convert::streaming::convert_and_timings`、E57/PLY/PCD は `pcv_convert::import::convert_to_copc_and_timings`。
    進捗は `conversion-progress` イベント、完了は `conversion-done`、失敗は `conversion-failed`。
+   フロントでは `tauri.ts` の `TauriSource.prepareToOpen` が、コマンドを呼ぶ**前に** `watchConversionEnd` でこの3つを購読し、完了／失敗を待つ。
 4. `crates/pcv-convert/src/streaming.rs` `convert_and_timings` — `las::Reader` を作り、ヘッダーから `StreamingLayout`(`copc_core`)と出力メタデータ(`write_metadata::copc_write_metadata_from_source_header`)を作る。点を1バッチずつ読む `BatchedLasPoints`(イテレータ)を作る。
 5. `vendor/copc-writer/src/writer.rs` `write_streaming_with_cancel_and_timings` — イテレータの点を1点ずつ `SpillWriter::push` で一時ファイル(spill)に書く。ここまでが「読み込み」段階で、`push` が座標の範囲検査と bbox・点数の集計も行う(2回目の全点パスは無い)。
    `push` は点を**出力の COPC と同じ形のレコード**に詰めて書く(`vendor/copc-writer/src/record.rs`。x,y,z は出力と同じ scale/offset の i32。形は [vendor/copc-writer の章](../rust/copc-writer.md)の「L3-C」)。そのため `SpillWriter::create` には出力の scale/offset(`CopcWriteMetadata::transform`)を渡す。

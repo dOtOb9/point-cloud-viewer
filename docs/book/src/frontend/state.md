@@ -35,8 +35,8 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 
 フィールドを足す・消すときは、①その hook の interface ②`viewer-types.ts` の `Pick` の名前の並び ③`useCopcViewer.ts` の `state`（明示的な一覧。スプレッドにしないのは、hook の内部用の値を UI に見せないため）の3か所を揃えます。
 
-呼び出し順には意味が一箇所あります。`useRendererLifecycle` が effect の中で `sourceRef` を埋め、`useConversionSession` の effect がそれを読むので、
-**lifecycle を先に呼ぶ**（effect は呼んだ順に動く）。
+呼び出し順は `useRendererLifecycle` が先です（effect の中で `sourceRef` を埋める。ほかの hook は `sourceRef.current` を呼ばれた時点で読む）。
+R11 で `useConversionSession` から effect が無くなったので、順序が効く場所はほかにありません。
 
 ## hook の一覧（1ファイル1関心事）
 
@@ -49,19 +49,18 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 | `useErrorLog.ts` | `gpuErrors`・`errorHistory`・`reportError`・`dismissGpuError`（`GpuErrorLog` を包む） | `useErrorLog()` |
 | `useDisplaySettings.ts` | 点予算・自動調整・背景・グリッド・EDL・アニメーション・レンダースケール・点の形・中央優先度・`stats`・端末の既定値 | `useDisplaySettings(rendererRef)` |
 | `useLayers.ts` | レイヤー一覧と選択、レイヤーごとの操作（表示・着色・形・大きさ・移動・削除）、計測レイヤー | `useLayers(deps)` |
-| `useFileOpen.ts` | `openFile`・`openFiles`・`addOpenedLayer` | `useFileOpen(deps)` |
-| `useConversionSession.ts` | 変換の進捗・変換元の名前・完了/失敗イベントの購読・完了待ちの結果・キャンセル・内訳のコピー | `useConversionSession(deps)` |
+| `useFileOpen.ts` | `openFiles`・`addOpenedLayer`（`prepareToOpen` を1回 `await` する。変換もその中で終わる） | `useFileOpen(deps)` |
+| `useConversionSession.ts` | 変換の進捗（`reportConversionProgress`）・変換元の名前・キャンセル・内訳のコピー。イベントの購読も完了待ちの結果も持たない（R11） | `useConversionSession(deps)` |
 | `usePointCloudTools.ts` | 選択・断面・結合を「新しいレイヤーを作る」形で実行（ADR-0018）、ツールの進捗・キャンセル | `usePointCloudTools(deps)` |
 | `useOpfsStorage.ts` | Web の保存領域の使用量と掃除（設定ページ用） | `useOpfsStorage()` |
 | `useTempDir.ts` | デスクトップの一時フォルダ設定（localStorage）と `supportsCustomTempDir` | `useTempDir()` |
 | `error-history.ts` | 純粋: 現在のエラー一覧を履歴に統合 | `mergeErrorHistory` |
-| `open-file-text.ts` | 純粋: ファイル名の取り出し・容量不足の文 | `basenameOfPath`・`extensionOfFileName`・`describeInsufficientSpaceDesktop` |
+| `device-meta.ts` | 純粋: 内訳テキストに付ける端末情報（ファイル名の取り出しは `src/datasource/file-name.ts`、容量不足の文は `prepare-outcome.ts`） | `currentDeviceMeta` |
 | `stats-summary.ts` | 純粋: バックエンドのコンソールへ送る統計1行 | `formatStatsSummary` |
 
 hook は **依存を引数で受け取り**、お互いを import しません（例: `useFileOpen` は `conversion`・`display`・レイヤーの ref を引数で受ける）。
 `useFileOpen` の先頭のコメントを読めば、何に依存しているかが分かります。
-`openFileRef` は `useConversionSession` が持ち、`useFileOpen` が毎レンダー後に最新の `openFile` を代入します
-（イベントは一度だけ購読するが、呼ぶのは常に最新の `openFile`、というパターン。両側のコメントに握手の説明があります）。
+変換の進捗だけは、`useFileOpen` が `prepareToOpen` の `onProgress` に `conversion.reportConversionProgress` を渡して `useConversionSession` へ届けます。
 
 ### 純粋関数のファイル（React に触れない。テストあり）
 
