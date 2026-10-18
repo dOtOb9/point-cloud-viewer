@@ -127,3 +127,8 @@ setter が React の state を変えると、React が `AppShell` から下を�
 | 手順 | `src/app/open-files.ts` の `openFiles` → `runOpen` → `addOpenedLayer` |
 | 呼ぶ側 | `src/ui/toolbar/buttons/OpenFileButton.tsx`・`src/ui/shell/AppShell.tsx`（`useFileDrop`）・`src/ui/dialogs/ConversionDialog.tsx` |
 | Web とデスクトップの違い | `src/datasource/web.ts` の `WebSource.prepareToOpen`・`src/datasource/tauri.ts` の `TauriSource.prepareToOpen` |
+
+`openFiles` の中の `source.prepareToOpen` の上で F12（定義へ移動）を押すと、実装ではなく `src/datasource/DataSource.ts` の
+`interface DataSource`（型だけ）に飛びます。`source` の型がインターフェースで、どちらの実装が動くかは起動時に
+`src/state/useRendererLifecycle.ts` の1行（`isTauriEnvironment() ? new TauriSource() : new WebSource()`）で決まるためです。
+実装を見るには **Ctrl+F12（実装へ移動）** を使うと、`WebSource` と `TauriSource` の2つが候補に出ます。
