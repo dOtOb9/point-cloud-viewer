@@ -39,8 +39,8 @@ Web もデスクトップも同じ形式を開けます。
    各ビルドの中身:
    - **Web の `WebSource.prepareToOpen`**（`src/datasource/web.ts`）: `File` 1 件は `isCopcFile`（`copc-header.ts`。拡張子ではなくヘッダーで判定）で COPC なら `registerFile` で `"file:<連番>"` にして `ready`。
      COPC でなければ `detectSourceFormatByName`（`source-format.ts`）で形式を決め、
-     PCD・PLY・E57 は `startPointFileConversion`（1本の経路。形式は Worker が Rust のクラスを選ぶのに使う）、
-     それ以外（LAS/LAZ）は `startConversion`。複数 `File` は `startMultiConversion`。
+     PCD・PLY・E57 は `startPointFileConversion`（1本の経路。`WasmPointFileConverter` が形式ごとの読み元を使い分ける）、
+     それ以外（LAS/LAZ）は `startConversion`。複数 `File` は、LAS/LAZ だけなら `startMultiConversion`、PLY・PCD・E57 が1つでも混じれば `startPointFileConversion`（`needsPointMerge` で決める）。
      変換が始まったら `beginConversion` が要求 id ごとの待ち（`convertPending`）を**投函の前に**登録し、`handleResponse` が
      `convert-progress` を `onProgress` へ、`convert-done` / `convert-failed` を待ちの解決に回す。
      完了したら `opfs.getConvertedFile` で読み戻し → `registerFile` → ダウンロード用の URL を作り、`ready` にする。読み戻せなければ `failed`。
@@ -69,8 +69,10 @@ Web もデスクトップも同じ形式を開けます。
 
 ### 複数ファイル
 
-`openFiles` が 2 件以上を受けたとき: LAS/LAZ 以外が混じっていたら名前を挙げて拒否する。
-そうでなければ `rememberConvertingSource(multiDisplayNameFor(...))` で表示名を覚え、`prepareToOpen` が Web は `startMultiConversion`、
+`openFiles` が 2 件以上を受けたとき: 拡張子が分からないファイルが混じっていたら名前を挙げて拒否する（LAS/LAZ・PLY・PCD・E57 は混ぜてよい。M4-17）。
+そうでなければ `ctx.setConvertingFileName(multiDisplayNameFor(...))` で表示名を覚え、`prepareToOpen` が経路を選ぶ。
+Web は、LAS/LAZ だけなら `startMultiConversion`（属性をすべて残す従来の結合）、PLY・PCD・E57 が1つでもあれば `startPointFileConversion`（x・y・z・色・強度だけを残す「点の結合」。
+ファイルは名前順に並べ、色の無いファイルの点は灰色になり、LAS/LAZ を含むときは属性が落ちる警告がエラーログに出る）。
 デスクトップは `startMultiLasConversion` を呼ぶ。結果の扱いは 1 件のときと同じ（`ready` ならそのまま開く。変換したなら `await` の中で終わってから）。
 変換済みキャッシュに当たった場合、レイヤー名は表示名（「〜 ほかNファイル」）になる。
 

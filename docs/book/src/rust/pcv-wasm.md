@@ -87,17 +87,32 @@ impl WasmCopcFile {
 `write_copc_from_spill_with_fs_and_timings`(書き側、OPFS)をつなぎます。`new`(条件の JSON を `ExtractFilter` に読む)→ `feed` を繰り返す → `finish` で、`WasmConverter` と同じ形です。
 0点のときは `finish` が「選んだ範囲に点がありません」で失敗します。`finish` の間はキャンセルできません。
 
-### `WasmPcdConverter`: PCD の取り込み
-
-[`src/pcd_import.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/pcd_import.rs) の `WasmPcdConverter` は、PCD を直接 spill に流す変換です。LAZ のような分担展開は無く、逐次の `feed` のみです。
-PCD の読み込みは `crates/pcv-convert/src/import/pcd.rs` を**意図的に複製**しています(`pcv-wasm` は別ワークスペースで、`pcv-convert` に依存すると `rayon` が wasm32 のビルドに混入するため)。
-
-### `WasmPointFileConverter`: PLY・E57 の取り込み(R7)
+### `WasmPointFileConverter`: PLY・PCD・E57 の取り込みと、形式をまたぐ結合(R7・M4-17)
 
 [`src/point_file_import.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/point_file_import.rs) の `WasmPointFileConverter` は、
-PLY と E57 を直接 spill に流す変換です。`new(format, ...)` / `totalPoints` / `feed` / `finish` の形は `WasmPcdConverter` と同じで、
-「次の点を1つ返す」読み元だけが形式ごとに違います(`ply_import.rs` の `PlyStream`、`e57_import.rs` の `E57Stream`)。
-どちらも `crates/pcv-convert/src/import/` からの**意図的な複製**です(理由は PCD と同じ)。
+LAS/LAZ 以外の形式(PLY・PCD・E57)を直接 spill に流す変換で、**ファイルの配列**を受け取ります。1件なら単一ファイルの変換、複数件なら順に1本の spill へ流します。
+`new(formats, files, ...)` / `totalPoints` / `feed` / `finish` の形は `WasmConverter` と同じなので、Worker のバッチループは1件でも複数件でも同じです。
+LAZ のような分担展開は無く、逐次の `feed` のみです。
+
+仕事は2つのファイルに分かれています。
+
+- [`src/point_merge.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/point_merge.rs)(ブラウザに依存しない。`cargo test` が合成データで動かす)
+  - `PointStream`: 開いた1ファイル。「次の点を1つ返す」だけが形式ごとに違います(`PlyStream`・`PcdStream`・`E57Stream`・`LasStream`)。
+    `enum` にしたのは4種類しかなく、メソッドが4本の `match` で済むからです(トレイトオブジェクトにしない)。
+  - `plan_merge`: **最初の点を読む前に**全ファイルのヘッダーから出力を決めます(1つでも色があれば出力は色あり、CRS の食い違いはエラー、警告文の組み立て)。
+    spill の形(色の有無)は spill を作る時点で決まっている必要があるためです。
+  - `MergedPoints`: ファイルを名前順に1つずつ開いて、点を1本の流れにします。色の無いファイルの点は、出力に色があれば灰色 `[32768, 32768, 32768]` にします(読み元ごとではなく、この結合の層で塗ります)。
+- `point_file_import.rs`: `File` と OPFS と spill をつなぐ層(`MergedPoints` を `feed` で読んで `SpillWriter` に書く)。
+
+ヘッダーを読む段階(ヘッダーパス)は `new` の中で行います。全ファイルを一度開いてヘッダーを読み、先頭のファイルだけ開いたまま残します
+(1件だけの変換でファイルを2度開かないため)。残りは閉じ、順番が来たときにもう一度開くので、同時に開いているのは常に1ファイルです。
+`LasStream` が持つ点は最大4096点で、メモリは点数に比例しません。
+
+LAS/LAZ を含む結合では、x・y・z・色・強度だけを引き継ぎます(分類・GPS時刻・リターン番号などは出力に入らないため、警告を出します)。
+LAS/LAZ だけの選択はこの経路を通らず、従来の `WasmConverter::open_next_file` の結合が使われます(あちらは属性をすべて残すため)。
+
+以前は PCD 専用の `WasmPcdConverter` クラスがありましたが、読み元の `PcdStream` に縮めて、この1つのクラスにまとめました(使われなくなったクラスと Worker の分岐を残さないため)。
+PLY・PCD・E57 の読み込みは `crates/pcv-convert/src/import/` を**意図的に複製**しています(`pcv-wasm` は別ワークスペースで、`pcv-convert` に依存すると `rayon` が wasm32 のビルドに混入するため)。
 
 E57 の `e57` クレートは、点を返すイテレータが `E57Reader` を借用します。`feed` の呼び出しをまたいでイテレータを持つには
 自己参照になるため、`E57Stream` は reader を `Box::into_raw` で生ポインタにし、`Drop` で「イテレータ、reader」の順に解放します

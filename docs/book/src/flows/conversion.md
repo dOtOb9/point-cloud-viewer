@@ -20,8 +20,8 @@
 | デスクトップ・Android の単一ファイル | `src-tauri/src/conversion.rs` の `start_las_conversion`(Tauri コマンド) |
 | デスクトップの複数ファイル(LAS/LAZ を1つにまとめる) | 同 `start_multi_las_conversion` |
 | Web の LAS/LAZ | `src/datasource/web.ts` の `WebSource.startConversion` → `src/datasource/copc.worker.ts` の `handleConvertStart` |
-| Web の複数ファイル | `WebSource.startMultiConversion` → `copc.worker.ts` の `handleConvertMultiStart` |
-| Web の PCD・PLY・E57 | `WebSource.startPointFileConversion` → `copc.worker.ts` の `handlePointFileConvertStart` |
+| Web の複数ファイル(LAS/LAZ だけ) | `WebSource.startMultiConversion` → `copc.worker.ts` の `handleConvertMultiStart` |
+| Web の PCD・PLY・E57(1件、または複数件。LAS/LAZ を混ぜてもよい) | `WebSource.startPointFileConversion` → `copc.worker.ts` の `handlePointFileConvertStart` |
 
 画面側の呼び出し元は `src/app/open-files.ts` の `openFiles` 関数です(`source.prepareToOpen` を呼び、それが中で `startLasConversion`・`startMultiLasConversion`・`startConversion` などを呼ぶ)。
 `prepareToOpen` は**変換が終わってから**結果を返します。進捗・完了・失敗のイベントはその中(`tauri.ts` の `watchConversionEnd`、`web.ts` の `convertPending`)で受け、
@@ -104,7 +104,8 @@ Web は1本の Worker(`copc.worker.ts`)の中で動き、OPFS に一時ファイ
 5. `converter.finish()`(`WasmConverter::finish`) — `copc_writer::write_copc_from_spill_with_fs_and_timings` を `OpfsScratchFs`(`crates/pcv-wasm/src/opfs.rs`)で呼ぶ。以降は 3-B と同じ(1スレッド)。**この間はキャンセルできない。**
 6. `opfs.writeCacheMeta` の後 `convert-done` を返す。成功・失敗・キャンセルのどれでも `finally` で一時ファイルを消す(失敗時は出力も消す)。
 7. 複数ファイルは `runMultiConversion`: 先に `inspectLasHeaderSummary` で全ファイルのヘッダーを見て、レイアウトの食い違いと(CRS を持つファイル同士の)CRS の食い違いを止める。1本の `WasmConverter` に `setDeclaredTotals` で合計点数を渡し、`openNextFile` で読み元だけを切り替える。
-8. PCD・PLY・E57 は `runPointFileConversion`(形式で Rust のクラスを選ぶ)。PCD は `WasmPcdConverter`(`crates/pcv-wasm/src/pcd_import.rs`)、PLY・E57 は `WasmPointFileConverter`(`point_file_import.rs`。読み元は `ply_import.rs` と `e57_import.rs`)。どれも並列展開は無く、逐次の `feed` のみ。空き容量の見積もりは各ファイルの点数(PCD の `POINTS`、PLY の `element vertex`、E57 は XML の `recordCount` の合計)から求める。
+8. PCD・PLY・E57 は `runPointFileConversion`。Rust は `WasmPointFileConverter`(`point_file_import.rs`)1つで、読み元は形式ごとの `PointStream`(`point_merge.rs`。中身は `ply_import.rs`・`pcd_import.rs`・`e57_import.rs`、結合のときだけ LAS/LAZ の `LasStream`)。並列展開は無く、逐次の `feed` のみ。空き容量の見積もりは各ファイルの点数(PCD の `POINTS`、PLY の `element vertex`、E57 は XML の `recordCount`、LAS はヘッダー)の合計から求める。
+9. 形式をまたぐ結合(M4-17): 複数ファイルに PLY・PCD・E57 が1つでも混じるとき、`web.ts` がファイルを名前順に並べて1回の `pointFileConvertStart` で渡す。`WasmPointFileConverter::new` が全ファイルのヘッダーを読み(ヘッダーパス)、色の有無・合計点数・CRS(LAS/LAZ 同士の食い違いは変換前にエラー)を決める。1つでも色があれば出力は色あり、色の無いファイルの点は灰色 `[32768, 32768, 32768]`。LAS/LAZ を含むときは「分類・GPS時刻・リターン番号などは出力に含まれません」、CRS があって LAS/LAZ 以外が混じるときは「PLY/PCD/E57 の点は LAS/LAZ と同じ座標系として結合しました」を `warnings` で返し、`openFiles` がエラーログに出す。キャッシュ(`findCachedMultiOutput`)は名前・サイズ・更新日時だけで決まるので形式を問わず同じ仕組み。
 
 #### vendor/laz のパッチ(Web の分担展開に必須)
 
