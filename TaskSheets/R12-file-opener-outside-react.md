@@ -92,3 +92,86 @@ place for it (Japanese). Code comments English.
 
 What you did, why, rejected alternatives, files touched, test results, what you could not verify (desktop Tauri build on a real
 machine, Android), and the owner's manual check steps.
+
+### What I did
+
+- New `src/app/file-opener.ts`: `class FileOpener` (260 lines with comments). `openFiles`, `addOpenedLayer`, `cancelConversion`,
+  `getSnapshot`, `subscribe` as in the task sheet. The bodies of `openFiles` / `addOpenedLayer` are the old `useFileOpen` bodies
+  with `rendererRef.current` -> `deps.getRenderer()` etc.; user-visible texts and the order of `setStatus` / `reportError` calls are unchanged.
+  The progress/file-name state of the old `useConversionSession` became the snapshot (`conversionProgress`, `convertingFileName`).
+- `src/state/useFileOpen.ts` is now the bridge hook (kept the name; 54 lines, target was 50). It creates the opener once with
+  `useState(() => new FileOpener(...))`, reads the snapshot with `useSyncExternalStore`, and returns `{ opener, ...snapshot }`.
+- `src/state/useConversionSession.ts` is deleted. `cancelConversion` = `opener.cancelConversion()` (wrapped in `useCallback` in
+  `useCopcViewer.ts`). `copyConversionBreakdownText` is now ~10 lines in `useCopcViewer.ts` (it reads the selected layer, which
+  `useCopcViewer` already has; a separate `src/app/` function would only have been a clipboard call).
+- `viewer-types.ts`: the fields that came from `FileOpen` / `ConversionSession` (`openFiles`, `conversionProgress`, `convertingFileName`,
+  `cancelConversion`, `copyConversionBreakdownText`) are now declared directly in the object part of `CopcViewerState` with their doc
+  comments (same names, same meaning). `src/ui/` needed no code change (one doc comment in `ConversionDialog.tsx` that named the old file).
+- `usePointCloudTools` is untouched except two comment lines that named deleted/moved files; it still gets `addOpenedLayer` as a prop
+  (`(path, name, attachment) => opener.addOpenedLayer(...)`).
+- `src/app/file-opener.test.ts`: 12 tests with a fake `DataSource` and a fake renderer (no React). Docs: `flows/open-file.md`,
+  `conversion.md`, `errors.md`, `node-loading.md`, `point-cloud-tools.md`, `settings.md`, `startup.md`, `frontend/datasource.md`,
+  `frontend/state.md` (new section "src/app: React の外で動く処理").
+- Comment-only edits in `datasource/`, `state/` that pointed at the old file names.
+
+### Design choices to review
+
+- `addLayerToList` takes a `ViewerLayer` (there is no separate `NewLayer` type; the old code built a `ViewerLayer` too).
+- `isMobile` and `pointShape` are plain values (as in the sheet), read once when the opener is created. They come from
+  `deviceProfileDefaults`, which is a `useState` initializer that never changes, so they cannot go stale. `tempDir`, `reportError`,
+  `setStatus`, etc. are read through getters/closures at call time.
+- How the getters see the latest values: the hook keeps a tiny "latest box" (`createLatest`, a closure with `get`/`set`) that an effect
+  updates after every render. I first used `useRef`, but `react-hooks/refs` rejected it ("Passing a ref to a function may read its
+  value during render" for the closures given to the constructor) and `useState({current})` + mutation was rejected by
+  `react-hooks/immutability`. The box is the smallest thing that passes lint; the cost is one 9-line helper in the hook file.
+- The bridge returns the snapshot fields spread next to `opener`, so `useCopcViewer` reads `fileOpen.conversionProgress` directly.
+- `FileOpener` imports `reportToBackendConsole` from `datasource/tauri.ts` (as the old hook did); it is allowed (only the `@tauri-apps`
+  import is restricted). Tests mock that module and `conversion-breakdown` (the formatter has its own tests).
+- Rejected: injecting `reportToBackendConsole` and `currentDeviceMeta` as deps (more plumbing for no gain now); keeping
+  `useConversionSession` as a thin wrapper (the task said to remove it); a separate `src/app/` function for the clipboard copy.
+
+### Commands and output (this worktree, after the last code change)
+
+```
+$ npm run typecheck   -> tsc --noEmit, no errors
+$ npm run lint        -> eslint ., no errors
+$ npm test            -> Test Files 66 passed (66); Tests 594 passed (594)   (12 of them are new, src/app/file-opener.test.ts)
+$ grep -rn "from \"react\"" src/app/                                   -> no hits
+$ grep -rn "useCallback\|useEffect\|useRef\|useState" src/app/         -> no hits
+$ grep -rn "useConversionSession" src/                                 -> no hits  (src/state/useConversionSession.ts is gone)
+$ PCV_E2E_PORT=4391 npm run e2e -> 4 passed (25.4s)
+    web-multi-conversion, web-point-file-conversion (PLY, E57), web-conversion (breakdown + download link)
+```
+
+The E2E server is started and stopped by Playwright itself (`webServer`); afterwards `netstat` showed only TIME_WAIT sockets on 4391,
+so nothing of mine was left running and no process was killed by hand.
+(The E2E ran on the code of the refactor and test commits; the later commits only changed docs and one comment block.)
+
+### Line counts (acceptance 6)
+
+| | before | after |
+|---|---|---|
+| `useFileOpen.ts` | 255 | 54 (bridge hook) |
+| `useConversionSession.ts` | 92 | deleted |
+| `src/app/file-opener.ts` | - | 260 |
+| total | 347 | 314 |
+
+The total barely changes: the logic is the same; what is gone is the React plumbing (`useCallback`, dependency arrays, `.current`).
+
+### Not verified
+
+- Desktop Tauri build on a real machine and Android: not run. The Tauri-only path (`reportToBackendConsole`, desktop progress events,
+  `tempDir` from the settings page) is covered only by type checks and the unit tests with fakes.
+- E2E covers the Web conversion flow only; the cancel button, the tool-running progress filter, and the "copy breakdown" button were
+  not exercised in a browser (the filter and cancel logic are unit-tested/typed; the copy function was moved as is).
+- `docs/book/src/overview.md` still mentions `useConversionSession` (line ~64); I did not touch it because the coordinator is editing it.
+- The mdBook was not built; the anchor `#srcapp-react-の外で動く処理` in `open-file.md` is my guess of mdBook's anchor rule.
+
+### Owner's manual check
+
+1. Web (`npm run dev`): open a `.las`; the conversion dialog shows the file name and progress, the layer appears, the breakdown panel and
+   the download link show, "copy" puts the text on the clipboard.
+2. While converting, press cancel: status returns to idle and the banner says "変換をキャンセルしました".
+3. Select a PLY plus two LAS together: refused with the file names, no conversion starts.
+4. Desktop: open a COPC and a LAZ; run "extract" and see that the tool progress does not show in the conversion dialog.
+5. Change the temp folder in settings, then convert: the new folder is used (the getter reads it at call time).
