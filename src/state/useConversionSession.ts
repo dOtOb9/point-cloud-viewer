@@ -7,17 +7,6 @@
 import { useCallback, useState, type RefObject } from "react";
 import type { DataSource } from "../datasource/DataSource";
 import type { ConversionProgress } from "../datasource/conversion-dto";
-import type { ConversionBreakdownMeta } from "../datasource/conversion-breakdown";
-
-/** M4-12: device info for the breakdown text. `navigator.deviceMemory` is Chrome-only; left undefined when missing. */
-export function currentDeviceMeta(): Pick<ConversionBreakdownMeta, "browser" | "hardwareConcurrency" | "deviceMemoryGiB"> {
-  const nav = navigator as Navigator & { deviceMemory?: number };
-  return {
-    browser: nav.userAgent,
-    hardwareConcurrency: nav.hardwareConcurrency,
-    deviceMemoryGiB: nav.deviceMemory,
-  };
-}
 
 export interface ConversionSessionDeps {
   sourceRef: RefObject<DataSource | null>;

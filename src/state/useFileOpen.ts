@@ -16,7 +16,8 @@ import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { DEFAULT_POINT_SIZE_PX } from "../renderer/layer-focus";
 import { addLayerToState, initialColorModeFor, type LayerDownload, type LayersState } from "./layers";
-import { currentDeviceMeta, type ConversionSession } from "./useConversionSession";
+import { currentDeviceMeta } from "./device-meta";
+import type { ConversionSession } from "./useConversionSession";
 import type { DisplaySettings } from "./useDisplaySettings";
 import type { ViewerStatus } from "./viewer-status";
 
