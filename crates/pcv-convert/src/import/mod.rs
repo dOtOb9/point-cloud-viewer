@@ -26,6 +26,8 @@
 
 mod convert;
 pub mod e57;
+mod las;
+pub mod merge;
 pub mod pcd;
 pub mod ply;
 mod point;
@@ -84,6 +86,9 @@ pub enum ImportError {
     Pcd(#[from] pcd::PcdError),
     #[error("{0}")]
     Copc(#[from] copc_core::Error),
+    /// M4-17: a problem found while merging several files (unreadable file, CRS conflict).
+    #[error("{0}")]
+    Merge(String),
 }
 
 /// `src-tauri`がLAS/LAZ経路(`crate::streaming::convert`、`copc_core::Error`を
