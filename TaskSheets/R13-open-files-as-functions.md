@@ -102,3 +102,63 @@ Describe the lock ("開いている途中にもう1つ開こうとすると断�
 
 What you did, why, rejected alternatives, files touched, results, behaviour change (second open refused), what you could not
 verify (desktop drop during a conversion on a real machine), the owner's manual check steps.
+
+---
+
+# Record (2026-10-18)
+
+## What was done
+
+- `src/app/file-opener.ts` (class `FileOpener`) is now `src/app/open-files.ts`: `openFiles(ctx, items)`, `addOpenedLayer(ctx, ...)`,
+  `cancelConversion(ctx)` and the interface `OpenFilesContext`. Bodies are the old methods; texts and steps are unchanged.
+  Inside, `openFiles` is a thin wrapper (lock) around a private `runOpen` (the old body), so the `finally` that releases the lock is in one place.
+- `src/state/useFileOpen.ts`: two `useState` (progress, file name), `useState(() => ({ busy: false }))` for the lock, and a context object
+  literal rebuilt each render. No `createLatest`, no effect, no `useSyncExternalStore`.
+- `CopcViewerState`: `openFiles` and `cancelConversion` removed, `fileOpenContext` added. `OpenFileButton`, `AppShell` (drop) and
+  `ConversionDialog` import the functions from `src/app/open-files` and pass `viewer.fileOpenContext`.
+- `usePointCloudTools` is untouched except comments; `useCopcViewer` passes `(path, name, a) => addOpenedLayer(fileOpen.fileOpenContext, ...)`.
+  Tool runs do not take the lock (unchanged behaviour).
+- Tests moved to `src/app/open-files.test.ts`. All R12 cases kept; the snapshot test became a check of what `setConversionProgress` /
+  `setConvertingFileName` receive (there is no snapshot any more). New: second open while the first awaits `prepareToOpen` (reports the
+  "開けません" text, no second `prepareToOpen`, status untouched); lock released after success, failure and a thrown error; `cancelConversion`.
+- Book pages updated in Japanese (`flows/open-file.md`, `conversion.md`, `errors.md`, `node-loading.md`, `point-cloud-tools.md`,
+  `settings.md`, `startup.md`, `frontend/datasource.md`, `frontend/state.md`). Not touched, as instructed: `conventions.md`, `overview.md`.
+
+## Why / rejected alternatives
+
+- Plain functions with the context as an argument: no hidden state, so side effects are visible at the call site.
+- Lock as `{ busy: boolean }` and not the status: two drops can arrive before React re-renders with the new status.
+- Rejected: keeping the class and only exposing the methods through `viewer` (F12 would still stop at the type). Rejected: putting the
+  lock in `ViewerStatus` (same race). Rejected: `useRef` for the lock (the lint rule `react-hooks/refs` forbids reading it during render, and `useState` once is simpler).
+- The lock check comes after the "no renderer / no source" guard, so before initialisation a call still returns silently as before.
+- The fix (second open refused) is in the same commit as the refactor: it lives in the function that was rewritten, and the tests
+  of both are in one file that had to be renamed in the same commit to keep typecheck green.
+
+## Results
+
+- `npm run typecheck`: no errors. `npm run lint`: no warnings. `npm test`: Test Files 66 passed, Tests 598 passed.
+- `PCV_E2E_PORT=4391 npm run e2e`: 4 passed (24.4s). No process was left listening on 4391 afterwards.
+- Criterion 1: `grep -rn "class \|this\." src/app/` and the React-hook grep over `src/app/`: no hits. Criterion 2: grep over `src/ e2e/`: no hits.
+- Go-to-definition (TypeScript language service, `getDefinitionAtPosition` over the repo's tsconfig):
+  - `OpenFileButton.tsx` `openFiles(viewer...` -> `src/app/open-files.ts` line 87, the function `openFiles`.
+  - `AppShell.tsx` `openFiles(viewer...` -> `src/app/open-files.ts` line 87.
+  - `ConversionDialog.tsx` `cancelConversion(viewer...` -> `src/app/open-files.ts` line 73.
+- Lines: `useFileOpen.ts` + `file-opener.ts` = 54 + 260 = 314 at b9b91cf; now 51 + 252 = 303.
+
+## Behaviour change
+
+A second `openFiles` while one runs is refused with the error banner text (source `conversion`); the status is left alone.
+Before, on desktop, a drop during a conversion started a second conversion and overwrote the backend cancel flag.
+
+## Not verified
+
+- A drop during a conversion on a real desktop machine (the unit test covers the function, not the Tauri drop event or the backend).
+- No screen check of the banner text in a real window; the E2E specs do not drop a second file.
+- A long open keeps the context of the render it started in. The values taken from it that can change (tempDir, pointShape, isMobile) are read once at the start
+  (intended); the callbacks (`setStatus`, `reportError`, `addLayerToList`, `nextLayerId`) are stable `useCallback`s or setters, so they stay valid. Not tested in a real browser.
+
+## Owner's manual check
+
+1. Desktop: start converting a large LAS, then drop another file on the window. Expect the banner "ファイルを開いている途中・変換中は…", the conversion keeps its progress, and the cancel button still stops it.
+2. After the conversion ends (or is cancelled), open a file again: it must work.
+3. In the editor, F12 on `openFiles` in `OpenFileButton.tsx` and `AppShell.tsx` should land on `src/app/open-files.ts`.
