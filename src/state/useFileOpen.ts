@@ -203,6 +203,8 @@ export function useFileOpen({
 
         // Name in the layer list: the converted file's name for a conversion result, else the chosen file's name.
         const result = outcome.conversion;
+        // Backend warnings (e.g. files without a CRS were let through) go to the error log, not away.
+        for (const warning of result?.warnings ?? []) reportError(warning, "conversion");
         const attachment: ConversionAttachment | null = result && {
           breakdownText: formatConversionBreakdown(result.stageTimings, {
             platform: result.platform,
