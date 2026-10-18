@@ -273,17 +273,17 @@ pub fn start_las_conversion(
     }
 }
 
-/// M4-14: 複数のLAS/LAZファイルを選択したときの変換開始。`pcv_convert::merge`
-/// (元は開発者向けCLI専用だったマージ本体、`TaskSheets/
-/// TOOL-merge-las-to-copc.md`参照)をそのまま呼ぶ。
+/// M4-14: 複数のファイルを選択したときの変換開始。M4-17で、LAS/LAZ以外
+/// (PLY/PCD/E57)や混在も受け付けるようになった。ルートは形式で決まる
+/// (`merge_by_format`): 全部LAS/LAZなら`pcv_convert::merge`(全属性を残す)、
+/// 1つでもPLY/PCD/E57があれば`pcv_convert::import::merge`(x, y, z, 色, 強度だけ)。
 ///
 /// `paths`は`start_las_conversion`と同じ文字列の並び(デスクトップのファイル
-/// システムパス、またはAndroidの`content://` URI)だが、**マージの実体
-/// (`pcv_convert::merge::summarize_headers`/`MultiFileLasPoints`)は
+/// システムパス、またはAndroidの`content://` URI)だが、**マージの実体は
 /// `std::fs::File::open`/`las::Reader::from_path`というパス文字列前提の
 /// APIのままで、Androidの`content://` URIは読めない。** そのため
 /// `content://` URIが混じっていたら、変換を試みる前に明確な日本語エラーで
-/// 止める(Android複数選択への対応は本タスクでは見送った=未対応・未検証。
+/// 止める(Android複数選択への対応は見送った=未対応・未検証。
 /// `TaskSheets/M4-import-and-conversion.md`のM4-14参照)。
 ///
 /// `paths.len() == 1`のときは`start_las_conversion`へそのまま委譲する
@@ -423,18 +423,17 @@ fn run_merge_conversion_thread(
 
     let cancel = AtomicCancel(cancel_flag);
     let mut timings = ConversionStageTimings::default();
-    let result = merge::merge_paths_and_timings(
+    let result = merge_by_format(
         paths,
         &output_path,
         &spill_dir,
-        &CopcWriterParams::default(),
         &cancel,
         on_progress,
         &mut timings,
     );
 
     match result {
-        Ok(summary) => {
+        Ok(merged) => {
             if let Err(e) = cache::write_multi_sidecar(&output_path, fingerprint) {
                 log::warn!(
                     "[conversion] キャッシュ情報の保存に失敗した(次回は再変換される、マージ): {e}"
@@ -444,32 +443,96 @@ fn run_merge_conversion_thread(
             let point_count = points_read_for_breakdown.load(Ordering::Relaxed);
             let event = ConversionDoneEvent {
                 output_path: output_path.to_string_lossy().into_owned(),
-                // M4-14: 複数ファイルの変換は単一拡張子を持たないため固定文字列にする
-                // (内訳テキストの「形式」欄、`conversion-breakdown.ts`参照)。
-                source_format: "las/laz(複数ファイル)".to_string(),
+                // M4-14: a multi-file conversion has no single extension, so the label is fixed
+                // (the "format" column of the breakdown text, see `conversion-breakdown.ts`).
+                source_format: merged.source_format.to_string(),
                 stage_timings: ConversionStageBreakdownDto::new(
                     timings,
                     point_count,
                     fingerprint.total_bytes,
                     input_file_count,
                 ),
-                warnings: summary.crs_warnings(),
+                warnings: merged.warnings,
             };
             if let Err(e) = app.emit(EVENT_DONE, &event) {
                 log::warn!("[conversion] done イベントの送出に失敗した(マージ): {e}");
             }
         }
-        Err(merge::MergeError::Write(copc_core::Error::Cancelled)) => {
+        Err(failure) if failure.cancelled => {
             log::info!(
                 "[conversion] マージがキャンセルされた: {}",
                 output_path.display()
             );
             emit_failed(&app, "キャンセルされた".to_string(), true);
         }
-        Err(e) => {
-            log::error!("[conversion] マージに失敗した: {e}");
-            emit_failed(&app, e.to_string(), false);
+        Err(failure) => {
+            log::error!("[conversion] マージに失敗した: {}", failure.message);
+            emit_failed(&app, failure.message, false);
         }
+    }
+}
+
+/// What a finished multi-file conversion reports to the frontend.
+struct MergedOutcome {
+    source_format: &'static str,
+    warnings: Vec<String>,
+}
+
+struct MergeFailure {
+    message: String,
+    cancelled: bool,
+}
+
+/// M4-17: picks the route by the input formats.
+/// - all LAS/LAZ: the existing `pcv_convert::merge` (keeps every attribute)
+/// - at least one PLY/PCD/E57: the point merge (`pcv_convert::import::merge`; x, y, z, color,
+///   intensity only)
+fn merge_by_format(
+    paths: Vec<PathBuf>,
+    output_path: &Path,
+    spill_dir: &Path,
+    cancel: &AtomicCancel,
+    on_progress: impl FnMut(ReadProgress),
+    timings: &mut ConversionStageTimings,
+) -> Result<MergedOutcome, MergeFailure> {
+    let params = CopcWriterParams::default();
+    if paths.iter().all(|p| import::merge::is_las_or_laz(p)) {
+        return match merge::merge_paths_and_timings(
+            paths,
+            output_path,
+            spill_dir,
+            &params,
+            cancel,
+            on_progress,
+            timings,
+        ) {
+            Ok(summary) => Ok(MergedOutcome {
+                source_format: "las/laz(複数ファイル)",
+                warnings: summary.crs_warnings(),
+            }),
+            Err(e) => Err(MergeFailure {
+                cancelled: matches!(e, merge::MergeError::Write(copc_core::Error::Cancelled)),
+                message: e.to_string(),
+            }),
+        };
+    }
+    match import::merge::convert_paths_to_copc_and_timings(
+        &paths,
+        output_path,
+        spill_dir,
+        &params,
+        cancel,
+        on_progress,
+        timings,
+    ) {
+        Ok(summary) => Ok(MergedOutcome {
+            source_format: "複数ファイル(形式混在)",
+            warnings: summary.warnings,
+        }),
+        Err(e) => Err(MergeFailure {
+            cancelled: matches!(e, import::ImportError::Copc(copc_core::Error::Cancelled)),
+            message: e.to_string(),
+        }),
     }
 }
 
