@@ -5,6 +5,8 @@
 - [全体像](./overview.md)
 - [規約1〜5](./conventions.md)
 - [データの流れ](./data-flow.md)
+- [1枚の図で見る](./maps/README.md)
+  - [ファイルを開く](./maps/open-file.md)
 - [処理の流れ（入口つき）](./flows/README.md)
   - [起動](./flows/startup.md)
   - [ファイルを開く](./flows/open-file.md)
