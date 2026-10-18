@@ -32,7 +32,7 @@
    - 断面: `addSectionPoint` が `viewer.pickPoint`(GPU の深度から3D の点を拾う)で2点を貯める。`confirmSection` が `sectionBox`(`tool-math.ts`)で `{ kind: "orientedBox", center, axes, halfExtents }` を作る。2点が同じ鉛直線上なら向きが決まらないので止める。
 3. `src/state/usePointCloudTools.ts` `extractFromLayer` / `mergeSelectedLayers` — 対象のレイヤーの `sourcePath`(`open()` に渡したパス)を取り、`runTool` に渡す。結合は `toolSourceLayers`(`src/state/layer-selection.ts`)で測定レイヤーを除き、2つ未満なら案内を出して終わり。
 4. 同 `runTool` — 同時に1つだけ(`toolRunningRef`)。進捗を `setToolProgress` に流し、`source` が `WebSource` なら `source.extractToCopc` / `source.mergeCopcs`、そうでなければ `src/datasource/tauri.ts` の `extractToCopc` / `mergeCopcs` を呼ぶ。
-5. 成功したら: 警告(`result.warnings`)をエラーログに出し、`addOpenedLayer(result.outputPath, ...)`(`src/state/useFileOpen.ts`)で新しいレイヤーとして開き、`focusLayer` でそこへ寄る。断面は `sectionYaw` で板を正面から見る向きにする。
+5. 成功したら: 警告(`result.warnings`)をエラーログに出し、`addOpenedLayer(result.outputPath, ...)`(`src/app/file-opener.ts` の `FileOpener.addOpenedLayer`)で新しいレイヤーとして開き、`focusLayer` でそこへ寄る。断面は `sectionYaw` で板を正面から見る向きにする。
    失敗・キャンセル(メッセージに「キャンセル」を含む)は `reportToolMessage` でそのまま出す(ADR-0011 のエラー表示、種別 `"tool"`)。
 
 ### 3-B. デスクトップ

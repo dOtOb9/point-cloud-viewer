@@ -16,9 +16,9 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 
 ここに残してあるものは次のとおりです。
 
-- `status` — ほぼ全部の hook が書くため（hook に入れても同じ引数を持ち回るだけ）。型は `viewer-status.ts` の判別共用体 `ViewerStatus`（`idle`／`opening`／`converting`／`ready`／`error`。`error` だけが `message` を持つ）。読む側は `isFileOpenBusy`・`openButtonLabel`・`statusErrorMessage`・`isOpenRunningOrDone` を使う。変換中のファイル名と進捗は、`converting` になる前や `ready` になった後にも読まれるため、共用体に入れず `useConversionSession` が持つ。
+- `status` — ほぼ全部の hook が書くため（hook に入れても同じ引数を持ち回るだけ）。型は `viewer-status.ts` の判別共用体 `ViewerStatus`（`idle`／`opening`／`converting`／`ready`／`error`。`error` だけが `message` を持つ）。読む側は `isFileOpenBusy`・`openButtonLabel`・`statusErrorMessage`・`isOpenRunningOrDone` を使う。変換中のファイル名と進捗は、`converting` になる前や `ready` になった後にも読まれるため、共用体に入れず `FileOpener`（`src/app/file-opener.ts`）が持つ。
 - `rendererRef`・`sourceRef`・`toolRunningRef` — `useDisplaySettings` が `rendererRef` を、`useRendererLifecycle` が `useDisplaySettings` の `onStats` を必要とする循環を、ref を組み立て側で作ることで避けている。
-  `toolRunningRef` は `useConversionSession`（ツールの進捗イベントを変換と取り違えないため）と `usePointCloudTools`（立てる側）が共有する。
+  `toolRunningRef` は `FileOpener`（`isToolRunning()` 経由。ツールの進捗イベントを変換と取り違えないため）と `usePointCloudTools`（立てる側）が共有する。
 - `pickPoint`・`getViewSnapshot` — renderer への 15 行ほどの素通し。
 - `CopcViewerState` に使う型の再エクスポート（`src/ui` が renderer／datasource の型に届くには state を通す、という規約のため）。
 
@@ -26,17 +26,32 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 
 `CopcViewerState`（[`viewer-types.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/viewer-types.ts)）は、フィールドを自分では宣言せず、
 各 hook の interface から `Pick<Layers, "layers" | ...> & Pick<DisplaySettings, ...> & ...` で選んで束ねています。
-**フィールドの型と説明文は、それを作る hook の interface に1回だけ**書かれています（`useFileOpen.ts` の `FileOpen`、`useLayers.ts` の `Layers` など）。
-`viewer-types.ts` に直接書いてあるのは、`useCopcViewer` 自身が作る `status`・`isBrowser`・`pickPoint`・`getViewSnapshot` だけです。
+**フィールドの型と説明文は、それを作る hook の interface に1回だけ**書かれています（`useLayers.ts` の `Layers`、`useDisplaySettings.ts` の `DisplaySettings` など。開く操作の `openFiles` などは、フックではなく `viewer-types.ts` に直接書いてある）。
+`viewer-types.ts` に直接書いてあるのは、`useCopcViewer` 自身が作る `status`・`isBrowser`・`pickPoint`・`getViewSnapshot` と、`FileOpener` 経由の `openFiles`・`conversionProgress`・`convertingFileName`・`cancelConversion`・`copyConversionBreakdownText` です。
 
 たとえば `OpenFileButton.tsx` の `viewer.openFiles(picked)` で、`openFiles` の上で F12（定義へ移動）を押すと、
-`src/state/useFileOpen.ts` の `interface FileOpen` の `openFiles` に飛びます（ホバーすると、そこに書いた説明文が出ます）。
-実装は同じファイルの下の `useFileOpen()` の中にあります。
+`viewer-types.ts` の `openFiles` に飛びます（ホバーすると、そこに書いた説明文が出ます）。
+実装は `src/app/file-opener.ts` の `FileOpener.openFiles` です（`useCopcViewer.ts` の `openFiles` がそれを呼びます）。
 
 フィールドを足す・消すときは、①その hook の interface ②`viewer-types.ts` の `Pick` の名前の並び ③`useCopcViewer.ts` の `state`（明示的な一覧。スプレッドにしないのは、hook の内部用の値を UI に見せないため）の3か所を揃えます。
 
 呼び出し順は `useRendererLifecycle` が先です（effect の中で `sourceRef` を埋める。ほかの hook は `sourceRef.current` を呼ばれた時点で読む）。
-R11 で `useConversionSession` から effect が無くなったので、順序が効く場所はほかにありません。
+R11 で変換の購読の effect が無くなり、R12 で `useConversionSession` 自体を消したので、順序が効く場所はほかにありません(`FileOpener` は `sourceRef` を開くときに読む)。
+
+## src/app: React の外で動く処理
+
+「手順を踏む・時間をまたいで状態を持つ」処理（開く・変換・レイヤー・ツール）は、フックではなく**普通の TypeScript のクラス**として `src/app/` に置く方針です
+（オーナーの決定 2026-10-18。[R12](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R12-file-opener-outside-react.md)）。React は表示だけをし、
+クラスへは薄いフック1つ越しに届きます。今は1つ目の `FileOpener`（ファイルを開く）だけが移っています。
+
+- `src/app/` は `react`・`use*.ts` のフック・React を import するモジュールを import しない。`src/datasource/`・`src/renderer/`（型と定数）・`src/state/` の React を使わないモジュール（`layers.ts`・`viewer-status.ts` など）は import してよい。
+- クラスは、変わる値（レンダラ・DataSource・一時フォルダ）を**ゲッター**（`getSource()` など）で受け取り、必要な瞬間に読む。古い値を握らないので ref も依存配列も要らない。
+- UI に見せる値は `getSnapshot()`（毎回同じオブジェクトを返し、値が変わったときだけ新しいオブジェクトに替える）と `subscribe()` で出し、フックが `useSyncExternalStore` で読む。
+- テストは React 無しで書ける（`src/app/file-opener.test.ts`。偽の `DataSource` と偽のレンダラー）。
+
+`FileOpener` の使われ方: `useFileOpen.ts`（フック）が `new FileOpener({ getSource, getRenderer, setStatus, reportError, addLayerToList, ... })` を1回作る。
+ゲッターは「最新の入力を入れた箱」を読む（箱は描画のたびに effect で更新する）。`useCopcViewer.ts` が `opener.openFiles`・`opener.cancelConversion` を `CopcViewerState` に出し、`opener.addOpenedLayer` を `usePointCloudTools` に渡す。
+レイヤー一覧はまだ React の state なので、`addLayerToList` で渡している（次の段階で `src/app/` に移す予定）。
 
 ## hook の一覧（1ファイル1関心事）
 
@@ -49,8 +64,7 @@ R11 で `useConversionSession` から effect が無くなったので、順序�
 | `useErrorLog.ts` | `gpuErrors`・`errorHistory`・`reportError`・`dismissGpuError`（`GpuErrorLog` を包む） | `useErrorLog()` |
 | `useDisplaySettings.ts` | 点予算・自動調整・背景・グリッド・EDL・アニメーション・レンダースケール・点の形・中央優先度・`stats`・端末の既定値 | `useDisplaySettings(rendererRef)` |
 | `useLayers.ts` | レイヤー一覧と選択、レイヤーごとの操作（表示・着色・形・大きさ・移動・削除）、計測レイヤー | `useLayers(deps)` |
-| `useFileOpen.ts` | `openFiles`・`addOpenedLayer`（`prepareToOpen` を1回 `await` する。変換もその中で終わる） | `useFileOpen(deps)` |
-| `useConversionSession.ts` | 変換の進捗（`reportConversionProgress`）・変換元の名前・キャンセル・内訳のコピー。イベントの購読も完了待ちの結果も持たない（R11） | `useConversionSession(deps)` |
+| `useFileOpen.ts` | `FileOpener`（`src/app/file-opener.ts`）を1回作り、スナップショット（変換の進捗・変換元の名前）を `useSyncExternalStore` で読んで返すだけ（約50行） | `useFileOpen(inputs)` |
 | `usePointCloudTools.ts` | 選択・断面・結合を「新しいレイヤーを作る」形で実行（ADR-0018）、ツールの進捗・キャンセル | `usePointCloudTools(deps)` |
 | `useOpfsStorage.ts` | Web の保存領域の使用量と掃除（設定ページ用） | `useOpfsStorage()` |
 | `useTempDir.ts` | デスクトップの一時フォルダ設定（localStorage）と `supportsCustomTempDir` | `useTempDir()` |
@@ -58,9 +72,9 @@ R11 で `useConversionSession` から effect が無くなったので、順序�
 | `device-meta.ts` | 純粋: 内訳テキストに付ける端末情報（ファイル名の取り出しは `src/datasource/file-name.ts`、容量不足の文は `prepare-outcome.ts`） | `currentDeviceMeta` |
 | `stats-summary.ts` | 純粋: バックエンドのコンソールへ送る統計1行 | `formatStatsSummary` |
 
-hook は **依存を引数で受け取り**、お互いを import しません（例: `useFileOpen` は `conversion`・`display`・レイヤーの ref を引数で受ける）。
-`useFileOpen` の先頭のコメントを読めば、何に依存しているかが分かります。
-変換の進捗だけは、`useFileOpen` が `prepareToOpen` の `onProgress` に `conversion.reportConversionProgress` を渡して `useConversionSession` へ届けます。
+hook は **依存を引数で受け取り**、お互いを import しません（例: `usePointCloudTools` は `addOpenedLayer` を引数で受ける）。
+各 hook の先頭のコメントを読めば、何に依存しているかが分かります。
+開く処理は hook ではなく `FileOpener` クラスで、`useCopcViewer.ts` が `useFileOpen` に最新の値を渡し、`opener.addOpenedLayer` を `usePointCloudTools` に渡します。
 
 ### 純粋関数のファイル（React に触れない。テストあり）
 
@@ -93,7 +107,7 @@ hook は **依存を引数で受け取り**、お互いを import しません�
 | レイヤーの一覧・選択 | `useLayers`（`layersStateRef` が最新、`commitLayers` だけが書く） |
 | renderer の中の実際の状態（カメラ・点予算の実値・各レイヤーの描画状態） | `PointCloudRenderer`。React 側の値は写しで、`stats` 経由（500ms ごと）か setter で同期する |
 | エラー | `useErrorLog`（出口は `reportError`）と、`useCopcViewer` の `error` |
-| 変換の途中経過 | `useConversionSession` |
+| 変換の途中経過 | `FileOpener`（`getSnapshot()`） |
 | 端末ごとの既定値 | `defaultRenderSettings(readDeviceProfileInput())`（`src/renderer/device-profile.ts`）。`useDisplaySettings` と `PointCloudRenderer` のコンストラクタが同じ純粋関数を同じ入力で呼ぶので、握手なしで一致する |
 | 保存される設定 | テーマ・アニメーション・単位・更新確認・一時フォルダ（[設定と単位](../flows/settings.md)）。ほかは保存されない |
 
@@ -101,4 +115,5 @@ hook は **依存を引数で受け取り**、お互いを import しません�
 
 - [`src/state/useCopcViewer.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useCopcViewer.ts) — 約200行。ここから各 hook へ。各 hook の先頭コメントに「次に読むファイル」が書いてある
 - [`src/state/useLayers.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useLayers.ts) — レイヤー操作の中心
-- [`src/state/useFileOpen.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useFileOpen.ts) — ファイルを開く（一番長い関数がある）
+- [`src/app/file-opener.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/app/file-opener.ts) — ファイルを開く（React を使わないクラス。一番長い関数がある）
+- [`src/state/useFileOpen.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useFileOpen.ts) — `FileOpener` を React につなぐ約50行

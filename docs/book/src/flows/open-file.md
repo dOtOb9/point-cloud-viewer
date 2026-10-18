@@ -18,17 +18,17 @@ COPC（`.copc.laz`）はそのまま開き、生の LAS/LAZ/E57/PLY/PCD は先�
 開ける形式の一覧は `src/datasource/source-format.ts` の `OPENABLE_EXTENSIONS`（`las` `laz` `e57` `ply` `pcd`）の1か所です。
 Web もデスクトップも同じ形式を開けます。
 
-どれも `src/state/useFileOpen.ts` の `openFiles` に着く。
+どれも `src/app/file-opener.ts` の `FileOpener.openFiles` に着く（`viewer.openFiles` は `useFileOpen.ts` が作った `FileOpener` を呼ぶだけ。[src/app](../frontend/state.md#srcapp-react-の外で動く処理)）。
 
 ## 流れ
 
-1. `useFileOpen.ts` の `openFiles(pathsOrFiles)`。0 件なら何もしない。
+1. `FileOpener.openFiles(pathsOrFiles)`。0 件なら何もしない。
    `status` を `"opening"` にし、進捗を消す。2 件以上で LAS/LAZ 以外が混じっていたら、名前を挙げて拒否する（変換前）。
-   表示名を `rememberConvertingSource` に預けてから、**`await source.prepareToOpen(items, { tempDir, isMobile, onConverting, onProgress })`**（`DataSource`）を呼ぶ。
-   Web とデスクトップの違いはこの中にあり、`useFileOpen.ts` には `instanceof` が無い。
+   表示名をスナップショット（`convertingFileName`）に預けてから、**`await source.prepareToOpen(items, { tempDir, isMobile, onConverting, onProgress })`**（`DataSource`）を呼ぶ。
+   Web とデスクトップの違いはこの中にあり、`file-opener.ts` には `instanceof` が無い。
    **変換が要るときも、この `await` の中で終わる**（完了イベントが `openFile` を呼び直すことはない）。変換の進み具合はコールバックで届く:
    - `onConverting` — 変換が本当に始まったとき1回だけ（COPC そのもの・変換済みキャッシュでは呼ばれない）。`status = "converting"` にする。
-   - `onProgress` — 進捗。`useConversionSession.ts` の `reportConversionProgress` が持つ（点群ツールの実行中は無視する）。
+   - `onProgress` — 進捗。`FileOpener` がスナップショット（`conversionProgress`）に持つ（点群ツールの実行中、`isToolRunning()` が真の間は無視する）。
 
    戻り値 `PrepareOutcome` は3種類:
    - `ready { path, conversion }` — 開ける COPC のパス／キー。`conversion` は変換したときだけ入る（COPC そのもの・キャッシュでは `null`）。2. に進む。
@@ -52,12 +52,12 @@ Web もデスクトップも同じ形式を開けます。
    - 変換の中身（段階・進捗・キャンセル・内訳）は [変換の中身](./conversion.md)。
 2. `ready` で `conversion` があれば、`openFiles` が `formatConversionBreakdown`（`src/datasource/conversion-breakdown.ts`）で内訳テキストを作り、
    `conversion.warnings` を1件ずつ `reportError(..., "conversion")` に流す（CRS が無いファイルを通した、など）。
-3. `useFileOpen.ts` の `addOpenedLayer(path, name, conversion)` — 実際にレイヤーを足す。`conversion` は `{ breakdownText, download } | null`（点群ツールの結果は `null`）。
+3. `FileOpener.addOpenedLayer(path, name, conversion)` — 実際にレイヤーを足す。`conversion` は `{ breakdownText, download } | null`（点群ツールの結果は `null`）。
    1. `source.open(path)`（`DataSource.open`）で `OpenedCloud`（`cloudId`・`info`・`nodes`）を得る。
-   2. `nextLayerId()`（`useLayers.ts`）で `layer-N` を採番し、`initialColorModeFor(info)`（`src/state/layers.ts`）で最初の着色（RGB があれば `rgb`、無ければ標高）を決める。
+   2. `deps.nextLayerId()`（`useLayers.ts`）で `layer-N` を採番し、`initialColorModeFor(info)`（`src/state/layers.ts`）で最初の着色（RGB があれば `rgb`、無ければ標高）を決める。
    3. `renderer.addLayer(layerId, { hierarchy: opened.nodes, readNode: (key) => source.readNode(opened.cloudId, key), boundsMin/boundsMax, colorMode, visible, pointShape, pointSizePx })`。
       **renderer は DataSource も cloudId も知らない**。`readNode` が `cloudId` を閉じ込めて渡す。
-   4. `commitLayers(addLayerToState(...))` — UI 側の一覧に足し、そのレイヤーを選択中にする（内訳テキストとダウンロードもここでレイヤーに付く）。
+   4. `deps.addLayerToList(layer)`（`useCopcViewer.ts` が `commitLayers(addLayerToState(layersStateRef.current, layer))` として渡す）— UI 側の一覧に足し、そのレイヤーを選択中にする（内訳テキストとダウンロードもここでレイヤーに付く）。
    5. CRS の読み取りに失敗していたら `reportError(..., "crs")`（ファイルは開く）。
 
    開くのに失敗したら、Web の変換で作ったダウンロード用 URL を `URL.revokeObjectURL` で手放してから例外を投げ直す。
@@ -77,9 +77,9 @@ Web もデスクトップも同じ形式を開けます。
 
 | もの | 持ち主 |
 |---|---|
-| 開く操作そのもの（`openFiles`・`addOpenedLayer`） | `useFileOpen` |
-| 変換の進捗・変換元の名前・キャンセル・内訳のコピー | `useConversionSession`（イベントの購読も、完了待ちの結果も持たない） |
-| レイヤー一覧・選択（`layersStateRef`・`commitLayers`・`nextLayerId`） | `useLayers`（`useFileOpen` は引数で受け取る） |
+| 開く操作そのもの（`openFiles`・`addOpenedLayer`） | `FileOpener`（`src/app/file-opener.ts`。React を使わないクラス）。`useFileOpen` は1回作って渡すだけ |
+| 変換の進捗・変換元の名前・キャンセル | `FileOpener`（`getSnapshot()` が `conversionProgress`・`convertingFileName` を返す。UI へは `useSyncExternalStore`）。内訳のコピーは `useCopcViewer.ts` の数行 |
+| レイヤー一覧・選択（`layersStateRef`・`commitLayers`・`nextLayerId`） | `useLayers`（`FileOpener` は `addLayerToList`・`nextLayerId` の形で受け取る） |
 | 一時フォルダ（`tempDir`） | `useTempDir`（localStorage に保存） |
 | `status`・`error` | `useCopcViewer` |
 | ドラッグ中かどうか | `useFileDrop`（戻り値。`AppShell` が案内を重ねる） |
@@ -89,8 +89,9 @@ Web もデスクトップも同じ形式を開けます。
 - [R1-state-refactor.md](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R1-state-refactor.md)、
   [ADR-0018](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0018-layer-centric-operations.md)（レイヤーから新しいレイヤーを作る）、
   [ADR-0016](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0016-e2e-web-conversion.md)（この流れを実ブラウザで確かめる E2E）、
-  [R11](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R11-open-awaits-conversion.md)（変換の完了まで `await` する形にした記録）。
-- Web とデスクトップの分岐は `DataSource.prepareToOpen`（R9）に移し、R11 で変換の完了待ちもその中に入れた。`useFileOpen.ts` は「呼んで、結果で分けるだけ」。
+  [R11](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R11-open-awaits-conversion.md)（変換の完了まで `await` する形にした記録）、
+  [R12](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R12-file-opener-outside-react.md)（開く処理を React の外へ出した記録）。
+- Web とデスクトップの分岐は `DataSource.prepareToOpen`（R9）に移し、R11 で変換の完了待ちもその中に入れた。`FileOpener.openFiles` は「呼んで、結果で分けるだけ」。R12 で、この処理を React のフック（`useCallback`・ref）から普通のクラスに出した。
   まだ `instanceof` が残っているのは `usePointCloudTools.ts`（別の作業）。
 - 変換の結果（内訳・ダウンロード）は `PrepareOutcome.ready.conversion` で**値として**返り、`addOpenedLayer` の引数でそのレイヤーに付く。
   以前は完了ハンドラが ref に預けて `openFile(出力, true)` を呼び直していたため、順序を間違えると内訳が消える不具合があった（2026-10-08）。今は預ける場所そのものが無い。

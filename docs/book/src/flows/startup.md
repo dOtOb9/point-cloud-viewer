@@ -21,11 +21,10 @@
    `src/ui/shell/UnsupportedDeviceScreen.tsx` に差し替えて終わる（WebGL2 には落とさない。ADR-0002）。
 4. `src/state/useCopcViewer.ts` の `useCopcViewer` — 関心ごとごとの hook を**決まった順に**呼んで組み立てる:
    `useErrorLog` → `useDisplaySettings` → `useRendererLifecycle` → `useLayers` → `useOpfsStorage` → `useTempDir` →
-   `useConversionSession` → `useFileOpen` → `usePointCloudTools`。
+   `useFileOpen`（`FileOpener` を作る） → `usePointCloudTools`。
    `rendererRef`・`sourceRef` はここで作る（`useDisplaySettings` が `rendererRef` を、`useRendererLifecycle` が
    `useDisplaySettings` の `onStats` を必要とする循環を、ref を組み立て側で作ることで避けている）。
-   `useRendererLifecycle` を `useConversionSession` より前に呼ぶ順序には意味がある（5. が `sourceRef` を埋め、
-   `useConversionSession` の effect がそれを読む。effect は呼んだ順に動く）。
+   `FileOpener` は `sourceRef`・`rendererRef` を、開く操作が呼ばれた時点でゲッター越しに読むので、5. より前に作ってよい。
 5. `src/state/useRendererLifecycle.ts` の `useRendererLifecycle` — マウント時の effect（一度だけ）で次をする。
    - `new PointCloudRenderer(canvas)` を作り `rendererRef` に入れる。
    - `isTauriEnvironment()`（`src/datasource/environment.ts`）で `new TauriSource()`（`src/datasource/tauri.ts`）か
@@ -63,8 +62,7 @@
 - [R1-state-refactor.md](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R1-state-refactor.md)（hook を分けた理由）、
   [ADR-0002](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0002-rendering-api.md)（WebGL2 フォールバックを作らない）、
   [ADR-0012](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0012-web-worker-sync-io.md)（Web は Worker）。
-- hook の呼び出し順を入れ替えると、`sourceRef.current` がまだ空のうちに `useConversionSession` の effect が読む。
-  `useCopcViewer.ts` の呼び出し部分のコメントを読んでから動かすこと。
+- `FileOpener` は作った時点で `sourceRef.current` を読まない(開くときにゲッターで読む)ので、hook の呼び出し順で壊れることは今はない。
 - `React.StrictMode` の開発時は effect が二回動く（作る → 破棄 → 作る）。`dispose()` が後始末を落とすと、
   GPU デバイスやイベント購読が二重になる。
 - `useCopcViewer()` を二箇所で呼ぶと、レンダラが二つ作られる。呼ぶのは `AppShell` だけ。

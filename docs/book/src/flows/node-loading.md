@@ -13,13 +13,13 @@
 
 - 欲しいノードを決めて渡す側: `src/renderer/point-cloud-renderer.ts` の `renderOnce` が `NodeLoader.setWanted(selection.wanted, ...)` を呼ぶ(1フレームごと)。
 - 読み込みを実際に始める側: `src/renderer/node-loader.ts` の `NodeLoader`(`setWanted` → `pump` → `startLoad`)。
-- レイヤーを開いたとき、レイヤーごとに読み出し関数を作る側: `src/state/useFileOpen.ts` の `addOpenedLayer`(`readNode: (key) => source.readNode(opened.cloudId, key)`)。
+- レイヤーを開いたとき、レイヤーごとに読み出し関数を作る側: `src/app/file-opener.ts` の `FileOpener.addOpenedLayer`(`readNode: (key) => source.readNode(opened.cloudId, key)`)。
 
 ## 3. 流れ
 
 ### 3-A. 共通(フロント)
 
-1. `src/state/useFileOpen.ts` `addOpenedLayer` — `source.open(path)` で `cloudId` を受け取り、`renderer.addLayer(layerId, { readNode: ... })` に、その `cloudId` を閉じ込めた `readNode` を渡す。レンダラは `DataSource` も `cloudId` も知らない。
+1. `src/app/file-opener.ts` `FileOpener.addOpenedLayer` — `source.open(path)` で `cloudId` を受け取り、`renderer.addLayer(layerId, { readNode: ... })` に、その `cloudId` を閉じ込めた `readNode` を渡す。レンダラは `DataSource` も `cloudId` も知らない。
 2. `src/renderer/point-cloud-renderer.ts` `addLayer` — レイヤーに内部の通し番号(serial)を振る(`layersBySerial`)。ノードのキーはレイヤーで名前空間を分け、`"<serial>:<ノードキー>"` にする(`src/renderer/layer-key.ts` の `layerNodeKey` / `parseLayerNodeKey`)。COPC のノードキー(`"0-0-0-0"` など)はどのファイルにもあり、複数レイヤーで衝突するためです。
 3. `renderOnce` → `NodeLoader.setWanted` — 欲しいノードの集合を丸ごと入れ替える(優先度つき)。キャッシュにあるもの・取得中のものは除く。
 4. `node-loader.ts` `pump` / `pickHighestPriority` / `startLoad` — 同時取得数(`maxConcurrent`)の範囲で、優先度が高い順に始める。同時数の既定は論理コア数(下限4、取れなければ8。`defaultMaxConcurrent`)。

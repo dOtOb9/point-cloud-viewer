@@ -38,8 +38,8 @@
 
 ### 3. 変換の失敗・キャンセル・容量不足
 
-1. 容量不足は `prepareToOpen` が `failed { summary: "空き容量が足りません", details }` を返し（`details` は `describeInsufficientSpaceWeb`（`src/datasource/opfs.ts`）または `describeInsufficientSpaceDesktop`（`src/datasource/prepare-outcome.ts`）の文）、`useFileOpen.ts` が `details` を `reportError(..., "conversion")` に流し、`status = { kind: "error", message: summary }`。
-2. 変換中の失敗・キャンセルも、`prepareToOpen` の結果として `useFileOpen.ts` の `openFiles` に戻る（`toConversionFailureOutcome`、`src/datasource/prepare-outcome.ts`）。
+1. 容量不足は `prepareToOpen` が `failed { summary: "空き容量が足りません", details }` を返し（`details` は `describeInsufficientSpaceWeb`（`src/datasource/opfs.ts`）または `describeInsufficientSpaceDesktop`（`src/datasource/prepare-outcome.ts`）の文）、`FileOpener`(`src/app/file-opener.ts`)が `details` を `reportError(..., "conversion")` に流し、`status = { kind: "error", message: summary }`。
+2. 変換中の失敗・キャンセルも、`prepareToOpen` の結果として `FileOpener.openFiles` に戻る（`toConversionFailureOutcome`、`src/datasource/prepare-outcome.ts`）。
    失敗は `failed { summary: メッセージ, details: "変換に失敗しました: ..." }` なので 1. と同じ `failOpen` の1か所で出る（`status = { kind: "error", message }` とエラーログ）。
    キャンセルは `cancelled` で、`status = { kind: "idle" }` にして `reportError("変換をキャンセルしました", "conversion")`。どちらも進捗を消す。
    変換が成功したときの警告（CRS が無いファイルを通した、など）は `conversion.warnings` を `reportError(..., "conversion")` に流す（R11 までは捨てていた）。
@@ -47,7 +47,7 @@
    - デスクトップ: Rust の `emit_failed`（`src-tauri/src/conversion.rs`）が `conversion-failed` イベントを送り、`TauriSource.prepareToOpen`（`src/datasource/tauri.ts`、`watchConversionEnd`）が受ける。
    - Web: Worker が `convert-failed` を送り、`WebSource.handleResponse`（`convertPending` の待ち）が受ける。Worker の `describeConversionFailure`（`src/datasource/copc.worker.ts`）は、
      wasm のトラップなら `alloc_guard` が残した確保失敗の理由か「メモリ不足の可能性」を添える。
-3. 変換の呼び出し自体の例外は `useFileOpen.ts` の `openFiles` の `catch` → `setStatus("error")`・`setError(String(e))`。
+3. 変換の呼び出し自体の例外は `FileOpener.openFiles` の `catch` → `setStatus("error")`・`setError(String(e))`。
 
 ### 4. Rust の panic
 
@@ -60,7 +60,7 @@
 
 ### 5. その他
 
-- CRS の読み取り失敗: `useFileOpen.ts` の `addOpenedLayer` が `reportError(..., "crs")`。ファイルは開く。
+- CRS の読み取り失敗: `FileOpener.addOpenedLayer` が `reportError(..., "crs")`。ファイルは開く。
 - ファイルを閉じる失敗: `useLayers.ts` の `removeLayer` が `reportError(..., "node-read")`。
 - 計測の深度読み戻しの失敗: `useCopcViewer.ts` の `pickPoint` が `reportError(...)`。
 - 点群ツールの警告（CRS なしを通したなど）と失敗: `usePointCloudTools.ts` の `reportToolMessage` → `source = "tool"`。

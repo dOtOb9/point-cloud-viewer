@@ -18,7 +18,7 @@ export interface DataSource {
 ### prepareToOpen: 開く前の準備
 
 選んだファイルを「`open` に渡せる COPC」にする操作です。COPC ならそのまま、そうでなければ変換（複数 LAS/LAZ は結合）します。
-Web とデスクトップで同じことをするので、`useFileOpen.ts` は `instanceof` で分けずにこれを呼びます。
+Web とデスクトップで同じことをするので、`src/app/file-opener.ts` は `instanceof` で分けずにこれを呼びます。
 **変換が要るときも、この呼び出しの中で終わり、終わってから結果を返します**（R11。「変換開始 → 後で完了イベントが開き直す」往復は無い）。
 `options`（`PrepareOptions`）は `tempDir`・`isMobile` に加えて、変換が本当に始まったとき1回呼ばれる `onConverting` と、進捗の `onProgress` を持ちます。
 結果の `PrepareOutcome` は次の3つです。
@@ -39,7 +39,7 @@ Web とデスクトップで同じことをするので、`useFileOpen.ts` は `
 閉じたあとの `readNode`、および古い世代宛ての要求は `StaleNodeRequestError`（`stale-node-error.ts`。Tauri では HTTP 409）になり、
 呼び出し側（`NodeLoader`）が**黙って捨てます**。知らない `cloudId` を `close` してもエラーにしません。
 
-renderer は `cloudId` を知りません。`useFileOpen.ts` の `addOpenedLayer` が
+renderer は `cloudId` を知りません。`src/app/file-opener.ts` の `FileOpener.addOpenedLayer` が
 `readNode: (key) => source.readNode(opened.cloudId, key)` と `cloudId` を閉じ込めた関数にして renderer に渡します
 （`NodeReader` インターフェース、`DataSource.ts`）。ファイルを閉じるのは `useLayers.ts` の `removeLayer`（[レイヤー操作](../flows/layers.md)）。
 
@@ -118,7 +118,7 @@ Web 側には `las` 相当のパーサライブラリが無いため、LAS ヘ�
 
 `isCopcFile`（ヘッダー）は「変換が要るか」を、`detectSourceFormatByName`（拡張子。大文字小文字を区別しない。Rust の `detect_format` と同じ考え方）は
 「どの変換経路に回すか」（`lasLaz`／`pcd`／`ply`／`e57`／`unknown`）を決めます。PCD を LAS/LAZ の見積もりに回して
-「空き容量が足りません」と誤判定した実機不具合から分けられました。呼ぶのは `WebSource.prepareToOpen`（`useFileOpen.ts` の `openFiles` から。[ファイルを開く](../flows/open-file.md)）。
+「空き容量が足りません」と誤判定した実機不具合から分けられました。呼ぶのは `WebSource.prepareToOpen`（`FileOpener.openFiles`（`src/app/file-opener.ts`）から。[ファイルを開く](../flows/open-file.md)）。
 
 ## `update-check.ts`: 更新通知（デスクトップ・Android 共通）
 
