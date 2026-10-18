@@ -253,6 +253,74 @@ describe("WebSource.prepareToOpen", () => {
     expect(outcome.conversion.sourceFormat).toBe("las/laz(複数ファイル)");
   });
 
+  // M4-17: a selection with at least one PLY/PCD/E57 takes the point merge, in name order.
+  it("several files with a PLY take the point merge route, sorted by name, one format each", async () => {
+    const { source, worker } = makeSource();
+    const files = [
+      new File([new Uint8Array(4)], "c.ply"),
+      new File([new Uint8Array(4)], "a.las"),
+      new File([new Uint8Array(4)], "b.pcd"),
+    ];
+    opfsMock.getConvertedFile.mockResolvedValue(new File([new Uint8Array(4)], "hash.copc.laz"));
+    const promise = source.prepareToOpen(files, options);
+    const id = await waitForRequest(worker);
+    expect(worker.sent.map((r) => r.type)).toEqual(["pointFileConvertStart"]);
+    const request = worker.sent[0];
+    if (request.type !== "pointFileConvertStart") throw new Error("unexpected request");
+    expect(request.files.map((f) => f.name)).toEqual(["a.las", "b.pcd", "c.ply"]);
+    expect(request.formats).toEqual(["lasLaz", "pcd", "ply"]);
+    expect(opfsMock.findCachedMultiOutput).toHaveBeenCalledTimes(1);
+    expect(opfsMock.findCachedOutput).not.toHaveBeenCalled();
+    worker.respond(
+      doneResponse(id, {
+        warnings: ["w"],
+        stageTimings: { ...stageTimingsDto, input_file_count: 3 },
+      }),
+    );
+    const outcome = await promise;
+    if (outcome.kind !== "ready" || !outcome.conversion) throw new Error("expected a conversion result");
+    expect(outcome.conversion.sourceFormat).toBe("複数ファイル(形式混在)");
+    expect(outcome.conversion.warnings).toEqual(["w"]);
+  });
+
+  it("several LAS/LAZ files still take the LAS merge route (attributes are kept)", async () => {
+    const { source, worker } = makeSource();
+    const files = [new File([new Uint8Array(4)], "a.las"), new File([new Uint8Array(4)], "b.laz")];
+    const promise = source.prepareToOpen(files, options);
+    await waitForRequest(worker);
+    expect(worker.sent.map((r) => r.type)).toEqual(["convertMultiStart"]);
+    worker.respond({ type: "convert-failed", id: worker.sent[0].id, message: "stop", cancelled: true });
+    await promise;
+  });
+
+  it("a cached point merge is ready without converting", async () => {
+    opfsMock.findCachedMultiOutput.mockResolvedValue(new File([new Uint8Array(4)], "out.copc.laz"));
+    const { source, worker } = makeSource();
+    const files = [new File([new Uint8Array(4)], "a.las"), new File([new Uint8Array(4)], "b.ply")];
+    const outcome = await source.prepareToOpen(files, options);
+    expect(outcome).toEqual({ kind: "ready", path: "file:0", conversion: null });
+    expect(worker.sent).toHaveLength(0);
+  });
+
+  it("a point merge with OPFS unavailable fails with the multi-file text", async () => {
+    opfsMock.isOpfsAvailable.mockResolvedValue(false);
+    const { source } = makeSource();
+    const files = [new File([new Uint8Array(4)], "a.las"), new File([new Uint8Array(4)], "b.ply")];
+    const outcome = await source.prepareToOpen(files, options);
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind !== "failed") return;
+    expect(outcome.details).toContain("デスクトップ版でまとめてCOPC");
+  });
+
+  it("a point merge with too little space fails before starting the Worker", async () => {
+    opfsMock.estimateQuota.mockResolvedValue({ quota: 1, usage: 0 });
+    const { source, worker } = makeSource();
+    const files = [new File([new Uint8Array(4)], "a.las"), new File([new Uint8Array(4)], "b.e57")];
+    const outcome = await source.prepareToOpen(files, options);
+    expect(outcome.kind).toBe("failed");
+    expect(worker.sent).toHaveLength(0);
+  });
+
   it("several files with OPFS unavailable fail with the multi-file text", async () => {
     opfsMock.isOpfsAvailable.mockResolvedValue(false);
     const { source } = makeSource();

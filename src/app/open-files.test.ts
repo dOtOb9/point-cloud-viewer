@@ -141,13 +141,21 @@ describe("openFiles", () => {
     expect(h.errors).toEqual([["変換をキャンセルしました", "conversion"]]);
   });
 
-  it("refuses several files with a non-LAS one before prepareToOpen", async () => {
+  it("passes several files of mixed formats to prepareToOpen (M4-17: no LAS/LAZ-only refusal)", async () => {
     const h = makeHarness({ kind: "cancelled" });
-    await openFiles(h.ctx, [fakeFile("a.las"), fakeFile("b.ply"), fakeFile("c.pcd")]);
+    const files = [fakeFile("a.las"), fakeFile("b.ply"), fakeFile("c.pcd"), fakeFile("d.e57")];
+    await openFiles(h.ctx, files);
+    expect(h.prepareToOpen).toHaveBeenCalledTimes(1);
+    expect(h.prepareToOpen.mock.calls[0][0]).toEqual(files);
+  });
+
+  it("refuses several files with an unknown extension before prepareToOpen, naming them", async () => {
+    const h = makeHarness({ kind: "cancelled" });
+    await openFiles(h.ctx, [fakeFile("a.las"), fakeFile("b.zip"), fakeFile("c.txt")]);
     expect(h.prepareToOpen).not.toHaveBeenCalled();
     expect(h.statuses[h.statuses.length - 1]).toMatchObject({ kind: "error" });
     expect(h.errors).toHaveLength(1);
-    expect(h.errors[0][0]).toContain("b.ply、c.pcd");
+    expect(h.errors[0][0]).toContain("b.zip、c.txt");
   });
 
   it("revokes the download URL when adding the layer throws", async () => {

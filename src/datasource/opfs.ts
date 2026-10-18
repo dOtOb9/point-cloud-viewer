@@ -313,7 +313,7 @@ export function outputFileNameForMulti(fingerprints: FileFingerprint[]): string 
  */
 export function multiDisplayNameFor(sortedNames: string[]): string {
   if (sortedNames.length === 0) return "";
-  const first = sortedNames[0].replace(/\.(las|laz)$/i, "");
+  const first = sortedNames[0].replace(/\.(las|laz|pcd|ply|e57)$/i, "");
   const rest = sortedNames.length - 1;
   return rest === 0 ? sortedNames[0] : `${first} ほか${rest}ファイル`;
 }

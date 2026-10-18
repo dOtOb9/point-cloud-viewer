@@ -68,22 +68,26 @@ export interface ConvertMultiStartRequest {
   isMobile: boolean;
 }
 
-/** The raw point-file formats the Web converts with one streaming converter each (not LAS/LAZ). */
-export type PointFileFormat = "pcd" | "ply" | "e57";
+/**
+ * The formats the Web point-file converter (`WasmPointFileConverter`) reads. "lasLaz" appears only in a mixed
+ * merge (M4-17): a selection of LAS/LAZ only goes to the LAS route (`convertMultiStart`) instead.
+ * The names are those of `detectSourceFormatByName` (`source-format.ts`).
+ */
+export type PointFileFormat = "lasLaz" | "pcd" | "ply" | "e57";
 
 /**
- * M4-9 / R7 (`TaskSheets/M4-import-and-conversion.md`, `R7-web-ply-e57.md`): start converting a raw PCD, PLY
- * or E57 file to COPC. Same role as `ConvertStartRequest` (LAS/LAZ), but the Worker handles it in
- * `handlePointFileConvertStart`, which picks the Rust converter by `format` (`WasmPcdConverter` for PCD,
- * `WasmPointFileConverter` for PLY / E57). None of them has the parallel decompression of LAZ (M4-7), so the
- * path is a plain batch loop. The responses (`convert-progress` / `convert-done` / `convert-failed`) are
- * the same types as for LAS/LAZ.
+ * M4-9 / R7 / M4-17: start converting raw PCD / PLY / E57 files (one file, or several files of any format
+ * including LAS/LAZ) to one COPC. Same role as `ConvertStartRequest` (LAS/LAZ), but the Worker handles it in
+ * `handlePointFileConvertStart` with `WasmPointFileConverter`. It has no parallel decompression of LAZ (M4-7),
+ * so the path is a plain batch loop. `formats[i]` is the format of `files[i]`, and the files are already sorted
+ * by name (`WebSource.startPointFileConversion`). The responses (`convert-progress` / `convert-done` /
+ * `convert-failed`) are the same types as for LAS/LAZ.
  */
 export interface PointFileConvertStartRequest {
   type: "pointFileConvertStart";
   id: number;
-  file: File;
-  format: PointFileFormat;
+  files: File[];
+  formats: PointFileFormat[];
   maxPointsPerNode: number;
   isMobile: boolean;
 }
@@ -274,12 +278,12 @@ export function buildConvertMultiStartRequest(
 
 export function buildPointFileConvertStartRequest(
   id: number,
-  file: File,
-  format: PointFileFormat,
+  files: File[],
+  formats: PointFileFormat[],
   isMobile: boolean,
   maxPointsPerNode: number = DEFAULT_MAX_POINTS_PER_NODE,
 ): PointFileConvertStartRequest {
-  return { type: "pointFileConvertStart", id, file, format, maxPointsPerNode, isMobile };
+  return { type: "pointFileConvertStart", id, files, formats, maxPointsPerNode, isMobile };
 }
 
 // --- L2-C: point-cloud tools (extraction, COPC merge) ---

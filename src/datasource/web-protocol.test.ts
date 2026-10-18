@@ -127,26 +127,33 @@ describe("buildConvertMultiStartRequest", () => {
 describe("buildPointFileConvertStartRequest", () => {
   it("pointFileConvertStartリクエストを組み立てる", () => {
     const file = new File([new Uint8Array([1, 2, 3])], "cloud.pcd");
-    const req = buildPointFileConvertStartRequest(20, file, "pcd", false);
+    const req = buildPointFileConvertStartRequest(20, [file], ["pcd"], false);
     expect(req).toEqual({
       type: "pointFileConvertStart",
       id: 20,
-      file,
-      format: "pcd",
+      files: [file],
+      formats: ["pcd"],
       maxPointsPerNode: DEFAULT_MAX_POINTS_PER_NODE,
       isMobile: false,
     });
   });
 
-  it("passes the format through (PLY and E57 use the same request)", () => {
+  it("passes the formats through (PLY and E57 use the same request)", () => {
     const file = new File([new Uint8Array([1])], "scan.e57");
-    expect(buildPointFileConvertStartRequest(22, file, "e57", false).format).toBe("e57");
-    expect(buildPointFileConvertStartRequest(23, file, "ply", false).format).toBe("ply");
+    expect(buildPointFileConvertStartRequest(22, [file], ["e57"], false).formats).toEqual(["e57"]);
+    expect(buildPointFileConvertStartRequest(23, [file], ["ply"], false).formats).toEqual(["ply"]);
+  });
+
+  it("carries several files with one format each (M4-17 merge, LAS/LAZ included)", () => {
+    const files = [new File([new Uint8Array([1])], "a.las"), new File([new Uint8Array([1])], "b.ply")];
+    const req = buildPointFileConvertStartRequest(24, files, ["lasLaz", "ply"], false);
+    expect(req.files).toEqual(files);
+    expect(req.formats).toEqual(["lasLaz", "ply"]);
   });
 
   it("isMobileとmaxPointsPerNodeを明示的に指定できる", () => {
     const file = new File([new Uint8Array([1])], "cloud.pcd");
-    const req = buildPointFileConvertStartRequest(21, file, "pcd", true, 5_000);
+    const req = buildPointFileConvertStartRequest(21, [file], ["pcd"], true, 5_000);
     expect(req.isMobile).toBe(true);
     expect(req.maxPointsPerNode).toBe(5_000);
   });

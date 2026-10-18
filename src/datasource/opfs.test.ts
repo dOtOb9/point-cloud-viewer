@@ -91,6 +91,11 @@ describe("multiDisplayNameFor", () => {
     expect(multiDisplayNameFor(names.slice(0, 4))).toBe("09LD2626 ほか3ファイル");
   });
 
+  it("strips PLY / PCD / E57 extensions too (M4-17: mixed selections)", () => {
+    expect(multiDisplayNameFor(["a.ply", "b.las"])).toBe("a ほか1ファイル");
+    expect(multiDisplayNameFor(["scan.E57", "b.pcd", "c.las"])).toBe("scan ほか2ファイル");
+  });
+
   it("1ファイルだけなら拡張子付きのそのままの名前を返す", () => {
     expect(multiDisplayNameFor(["a.las"])).toBe("a.las");
   });

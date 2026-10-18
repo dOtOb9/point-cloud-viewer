@@ -36,3 +36,23 @@ export function detectSourceFormatByName(fileName: string): SourceFormat {
 
 /** File name extensions every build can open (lower case, no dot). Web and desktop open the same formats. */
 export const OPENABLE_EXTENSIONS = ["las", "laz", "e57", "ply", "pcd"] as const;
+
+/**
+ * M4-17: does a selection of several files take the "point merge" route? Yes when at least one file is
+ * PLY / PCD / E57. A selection of LAS/LAZ only keeps the older LAS merge (it keeps classification, GPS time and
+ * so on). An unknown extension does not decide the route: it stays with the LAS merge, which reports it.
+ */
+export function needsPointMerge(fileNames: string[]): boolean {
+  return fileNames.some((name) => {
+    const format = detectSourceFormatByName(name);
+    return format === "pcd" || format === "ply" || format === "e57";
+  });
+}
+
+/**
+ * M4-17: the "format" text of the breakdown for several files. All LAS/LAZ gives "las/laz(複数ファイル)" (as
+ * before); anything else gives "複数ファイル(形式混在)", the same text the desktop build shows for the point merge.
+ */
+export function multiSourceFormatLabel(fileNames: string[]): string {
+  return needsPointMerge(fileNames) ? "複数ファイル(形式混在)" : "las/laz(複数ファイル)";
+}

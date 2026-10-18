@@ -18,7 +18,7 @@ import type { DataSource, OpenedCloud, PrepareOptions, PrepareOutcome } from "./
 import { isCopcFile } from "./copc-header";
 import { extensionOfFileName } from "./file-name";
 import { toConversionFailureOutcome, toPrepareOutcome } from "./prepare-outcome";
-import { detectSourceFormatByName } from "./source-format";
+import { detectSourceFormatByName, multiSourceFormatLabel, needsPointMerge } from "./source-format";
 import { toCloudInfo, toHierarchyNodeInfo } from "./copc-dto";
 import {
   toConversionProgress,
@@ -58,6 +58,7 @@ type InsufficientSpaceWeb = Extract<ConversionOutcome, { kind: "insufficientSpac
 
 /** How the free-space check gets the point count of each raw point-file format (from its header). */
 const POINT_COUNT_ESTIMATORS: Record<PointFileFormat, (file: File) => Promise<number | null>> = {
+  lasLaz: estimatePointCountForLasFile,
   pcd: estimatePointCountForPcdFile,
   ply: estimatePointCountForPlyFile,
   e57: estimatePointCountForE57File,
@@ -112,11 +113,17 @@ async function checkInsufficientSpace(
  * 倒してファイルサイズの合計から見積もる(単一ファイル版と同じ考え方。
  * 一部だけ点数で・残りをファイルサイズで見積もると係数の意味が食い違うため、
  * 「全部わかるか、全部わからないか」の二択にしている)。
+ *
+ * M4-17: `pointCountEstimator` is given per file because a mixed selection has files of several formats
+ * (LAS merge: always the LAS estimator; point merge: the estimator of each file's own format).
  */
-async function checkInsufficientSpaceMulti(files: File[]): Promise<InsufficientSpaceWeb | null> {
+async function checkInsufficientSpaceMulti(
+  files: File[],
+  pointCountEstimator: (file: File) => Promise<number | null>,
+): Promise<InsufficientSpaceWeb | null> {
   await opfs.ensurePersistentStorage(navigator.storage);
 
-  const pointCounts = await Promise.all(files.map(estimatePointCountForLasFile));
+  const pointCounts = await Promise.all(files.map(pointCountEstimator));
   const allKnown = pointCounts.every((c): c is number => c !== null);
   const requiredBytes = allKnown
     ? opfs.requiredBytesForPointCount(pointCounts.reduce((sum, c) => sum + c, 0))
@@ -240,11 +247,17 @@ export class WebSource implements DataSource {
     // M4-9: decide the format first, then the conversion route. (A real-device bug: every non-COPC
     // file used to go to the LAS/LAZ route, so PCD was wrongly judged "not enough space".)
     // PCD, PLY and E57 share one route (R7); everything else goes to the LAS/LAZ route.
+    // M4-17: several files take the LAS merge when all are LAS/LAZ (it keeps every attribute), and the point
+    // merge when at least one is PLY/PCD/E57 (`needsPointMerge`).
     const format = detectSourceFormatByName(first.name);
-    const started = isMulti
-      ? await this.startMultiConversion(files, options.isMobile, onProgress)
-      : format === "pcd" || format === "ply" || format === "e57"
-        ? await this.startPointFileConversion(first, format, options.isMobile, onProgress)
+    const names = files.map((f) => f.name);
+    const usesPointFileRoute = isMulti
+      ? needsPointMerge(names)
+      : format === "pcd" || format === "ply" || format === "e57";
+    const started = usesPointFileRoute
+      ? await this.startPointFileConversion(files, options.isMobile, onProgress)
+      : isMulti
+        ? await this.startMultiConversion(files, options.isMobile, onProgress)
         : await this.startConversion(first, options.isMobile, onProgress);
     if (started.kind !== "converting") return toPrepareOutcome(started, isMulti);
 
@@ -267,7 +280,7 @@ export class WebSource implements DataSource {
         outputName: end.suggestedFileName,
         platform: "web",
         // M4-14: several files have no single extension, so use the same wording as the desktop build.
-        sourceFormat: end.stageTimings.inputFileCount > 1 ? "las/laz(複数ファイル)" : extensionOfFileName(first.name),
+        sourceFormat: end.stageTimings.inputFileCount > 1 ? multiSourceFormatLabel(names) : extensionOfFileName(first.name),
         stageTimings: end.stageTimings,
         warnings: end.warnings,
         download: { url: URL.createObjectURL(file), fileName: end.suggestedFileName },
@@ -369,21 +382,20 @@ export class WebSource implements DataSource {
   }
 
   /**
-   * M4-9 / R7: start converting a raw PCD, PLY or E57 file to COPC. Same division of work as
-   * `startConversion` (LAS/LAZ), but the free-space check uses the point count from the file header
-   * (PCD `POINTS`, PLY `element vertex`, E57 `recordCount` in the XML) instead of the file size times 11,
-   * which comes from compressed LAZ and is far off for uncompressed formats (a real-device bug).
-   * The caller (`open-files.ts`) decides the format with `detectSourceFormatByName` first.
+   * M4-9 / R7 / M4-17: start converting raw PCD, PLY or E57 files to COPC. One file is the single-file
+   * conversion; several files (at least one of them PLY/PCD/E57, any LAS/LAZ mixed in) are merged into one
+   * COPC by the point merge. Same division of work as `startConversion` (LAS/LAZ), but the free-space check
+   * uses the point count from each file header (PCD `POINTS`, PLY `element vertex`, E57 `recordCount` in the
+   * XML, LAS header) instead of the file size times 11, which comes from compressed LAZ and is far off for
+   * uncompressed formats (a real-device bug). The formats come from `detectSourceFormatByName`.
    */
-  async startPointFileConversion(
-    file: File,
-    format: PointFileFormat,
-    isMobile: boolean,
-    onProgress: ProgressCallback,
-  ): Promise<WebStart> {
-    const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
+  async startPointFileConversion(files: File[], isMobile: boolean, onProgress: ProgressCallback): Promise<WebStart> {
+    const isMulti = files.length > 1;
+    const fingerprints = files.map((f) => ({ name: f.name, size: f.size, lastModified: f.lastModified }));
 
-    const cached = await opfs.findCachedOutput(fingerprint);
+    const cached = isMulti
+      ? await opfs.findCachedMultiOutput(fingerprints)
+      : await opfs.findCachedOutput(fingerprints[0]);
     if (cached) {
       const key = this.registerFile(cached);
       return { kind: "cached", outputPath: key };
@@ -393,11 +405,27 @@ export class WebSource implements DataSource {
       return { kind: "opfsUnavailable" };
     }
 
-    const insufficient = await checkInsufficientSpace(file, POINT_COUNT_ESTIMATORS[format]);
+    // Files are read in name order, so the output does not depend on the selection order (the same rule
+    // as the desktop build and the cache key, `cacheKeyForMulti`).
+    const sorted = [...files].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const formats: PointFileFormat[] = [];
+    const formatOf = new Map<File, PointFileFormat>();
+    for (const file of sorted) {
+      const format = detectSourceFormatByName(file.name);
+      // `prepareToOpen`'s caller refuses unknown extensions first; this is the safety net.
+      if (format === "unknown") throw new Error(`対応していない形式のファイルです: ${file.name}`);
+      formats.push(format);
+      formatOf.set(file, format);
+    }
+
+    const estimator = (file: File) => POINT_COUNT_ESTIMATORS[formatOf.get(file) ?? "lasLaz"](file);
+    const insufficient = isMulti
+      ? await checkInsufficientSpaceMulti(sorted, estimator)
+      : await checkInsufficientSpace(sorted[0], estimator);
     if (insufficient) return insufficient;
 
     const id = this.nextRequestId++;
-    return this.beginConversion(id, buildPointFileConvertStartRequest(id, file, format, isMobile), onProgress);
+    return this.beginConversion(id, buildPointFileConvertStartRequest(id, sorted, formats, isMobile), onProgress);
   }
 
   /**
@@ -422,7 +450,7 @@ export class WebSource implements DataSource {
       return { kind: "opfsUnavailable" };
     }
 
-    const insufficient = await checkInsufficientSpaceMulti(files);
+    const insufficient = await checkInsufficientSpaceMulti(files, estimatePointCountForLasFile);
     if (insufficient) return insufficient;
 
     const id = this.nextRequestId++;
@@ -530,7 +558,7 @@ export class WebSource implements DataSource {
     if (!(await opfs.isOpfsAvailable())) {
       throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
     }
-    const insufficient = await checkInsufficientSpaceMulti(files);
+    const insufficient = await checkInsufficientSpaceMulti(files, estimatePointCountForLasFile);
     if (insufficient) throw new Error("空き容量が足りないため、結合を実行できません");
     const id = this.nextRequestId++;
     const label = `結合: ${opfs.multiDisplayNameFor(files.map((f) => f.name).sort())}`;

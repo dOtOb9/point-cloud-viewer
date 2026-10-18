@@ -113,3 +113,32 @@ test("E57 file is converted on the Web and opens", async ({ page }) => {
     rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// M4-17: PCD now goes through the same `WasmPointFileConverter` as PLY / E57 (the old PCD-only class was removed).
+test("PCD file is converted on the Web and opens", async ({ page }) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pcv-e2e-pcd-"));
+  try {
+    const pcdPath = join(tmpDir, "synthetic.pcd");
+    const rows = Array.from({ length: POINT_COUNT }, (_, i) => `${((i * 37) % 500) * 0.1} ${((i * 53) % 500) * 0.1} ${((i * 13) % 200) * 0.1}`);
+    writeFileSync(
+      pcdPath,
+      [
+        "VERSION .7",
+        "FIELDS x y z",
+        "SIZE 4 4 4",
+        "TYPE F F F",
+        "COUNT 1 1 1",
+        `WIDTH ${POINT_COUNT}`,
+        "HEIGHT 1",
+        "VIEWPOINT 0 0 0 1 0 0 0",
+        `POINTS ${POINT_COUNT}`,
+        "DATA ascii",
+        ...rows,
+        "",
+      ].join("\n"),
+    );
+    await convertThroughTheOpenButton(page, pcdPath);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

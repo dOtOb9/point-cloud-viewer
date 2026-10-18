@@ -34,7 +34,6 @@ import init, {
   WasmConverter,
   WasmExtractor,
   WasmCopcFile,
-  WasmPcdConverter,
   WasmPointFileConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
@@ -1129,16 +1128,17 @@ async function runExtract(
 // 2. Cancel is checked between `feed` calls, and the post-processing (`finish`) cannot be interrupted;
 //    both are the same as for LAS/LAZ (all converters use the same SpillWriter ->
 //    write_copc_from_spill_with_fs).
-// One function handles all three formats: the Rust class is chosen by `format` in `runPointFileConversion`.
+// M4-17: one Rust class (`WasmPointFileConverter`) reads all formats, one file or several. With several files
+// the Rust side reads them one after another into one spill, so this loop is the same for one file or many.
 
-/** What `WasmPcdConverter::feed` and `WasmPointFileConverter::feed` return (same shape as `FeedResultDto`). */
+/** What `WasmPointFileConverter::feed` returns (same shape as `FeedResultDto`). */
 interface PointFileFeedResultDto {
   points_read: number;
   total_points: number;
   done: boolean;
 }
 
-/** `WasmPcdConverter::finish`が返すDTO(`FinishResultDto`と同じ形)。 */
+/** What `WasmPointFileConverter::finish` returns (same shape as `FinishResultDto`). */
 interface PointFileFinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
@@ -1147,10 +1147,10 @@ interface PointFileFinishResultDto {
 }
 
 async function handlePointFileConvertStart(request: PointFileConvertStartRequest): Promise<void> {
-  const { id, file, format, maxPointsPerNode } = request;
+  const { id, files, formats, maxPointsPerNode } = request;
   reportPreparing(id, { step: "acquiring_lock" });
   const outcome = await opfs.withConversionLock(navigator.locks, () =>
-    runPointFileConversion(id, file, format, maxPointsPerNode),
+    runPointFileConversion(id, files, formats, maxPointsPerNode),
   );
   if (outcome.kind === "busy") {
     scope.postMessage({
@@ -1164,22 +1164,25 @@ async function handlePointFileConvertStart(request: PointFileConvertStartRequest
 
 async function runPointFileConversion(
   id: number,
-  file: File,
-  format: PointFileFormat,
+  files: File[],
+  formats: PointFileFormat[],
   maxPointsPerNode: number,
 ): Promise<void> {
   activeConvertId = id;
   convertCancelRequested = false;
 
-  const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
-  const outputName = opfs.outputFileNameFor(fingerprint);
+  // One file keeps the single-file cache key and name; several files use the multi-file ones
+  // (the same as the LAS merge, so the cache check in `WebSource` and the write below agree).
+  const isMulti = files.length > 1;
+  const fingerprints = files.map((f) => ({ name: f.name, size: f.size, lastModified: f.lastModified }));
+  const outputName = isMulti ? opfs.outputFileNameForMulti(fingerprints) : opfs.outputFileNameFor(fingerprints[0]);
   const startedAt = performance.now();
   const elapsedSecs = () => (performance.now() - startedAt) / 1000;
 
   let scratchDirName: string | null = null;
   let scratchHandles: FileSystemSyncAccessHandle[] = [];
   let outputHandle: FileSystemSyncAccessHandle | null = null;
-  let converter: WasmPcdConverter | WasmPointFileConverter | null = null;
+  let converter: WasmPointFileConverter | null = null;
   let succeeded = false;
 
   try {
@@ -1200,15 +1203,12 @@ async function runPointFileConversion(
     outputHandle = await opfs.createOutputHandle(outputName);
 
     reportPreparing(id, { step: "reading_header" });
-    // Both classes have the same methods (totalPoints / feed / finish); only the constructor differs.
-    converter =
-      format === "pcd"
-        ? new WasmPcdConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode)
-        : new WasmPointFileConverter(format, file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
+    // The constructor reads the header of every file (the header pass) and fails on a CRS conflict.
+    converter = new WasmPointFileConverter(formats, files, scratchHandles, outputHandle, outputName, maxPointsPerNode);
 
     const totalPoints = converter.totalPoints();
-    // PCDには並列展開が無いため、常に逐次バッチループ(LAS/LAZ版の
-    // `workerCount <= 1`のときと同じ経路)。
+    // No parallel decompression here, so always the sequential batch loop (the same path as the LAS/LAZ
+    // route when `workerCount <= 1`).
     for (;;) {
       if (convertCancelRequested) {
         scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
@@ -1251,13 +1251,20 @@ async function runPointFileConversion(
       return;
     }
 
-    await opfs.writeCacheMeta(fingerprint, outputName);
+    if (isMulti) {
+      await opfs.writeMultiCacheMeta(fingerprints, outputName);
+    } else {
+      await opfs.writeCacheMeta(fingerprints[0], outputName);
+    }
     succeeded = true;
+    const sortedNames = files.map((f) => f.name).sort();
     scope.postMessage({
       type: "convert-done",
       id,
       outputName,
-      suggestedFileName: suggestedFileNameFor(file.name),
+      suggestedFileName: isMulti
+        ? `${opfs.multiDisplayNameFor(sortedNames)}.copc.laz`
+        : suggestedFileNameFor(files[0].name),
       pointCount: finishResult.point_count,
       stageTimings: finishResult.stage_timings,
       warnings: finishResult.warnings ?? [],

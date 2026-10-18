@@ -1,5 +1,5 @@
-// Opening files, as plain functions (no class, no React): `openFiles` (one or several files; several LAS/LAZ are
-// merged into one COPC), `addOpenedLayer` (open a COPC with the DataSource and add it to the renderer and the layer
+// Opening files, as plain functions (no class, no React): `openFiles` (one or several files; several files of any
+// openable format, mixed or not, are merged into one COPC), `addOpenedLayer` (open a COPC with the DataSource and add it to the renderer and the layer
 // list) and `cancelConversion`. Everything they read or change comes in through `OpenFilesContext`.
 // Flow: `openFiles` awaits `source.prepareToOpen` once. The DataSource decides: a COPC is ready at once; a raw
 // LAS/LAZ/PCD/PLY/E57 is converted inside the call and the promise resolves when the conversion is done (or has
@@ -77,7 +77,8 @@ export function cancelConversion(ctx: OpenFilesContext): void {
 /**
  * Open the chosen files (desktop: path strings; Web: `File`s from a drop or the file picker):
  * 0. If another open is running, refuse (see `ctx.openLock`); the running one keeps its status.
- * 1. Several items must all be LAS/LAZ (checked here, before anything is converted).
+ * 1. Several items may be of any openable format (LAS/LAZ/PLY/PCD/E57, mixed too). Only a file with an
+ *    unknown extension is refused (checked here, before anything is converted).
  * 2. `source.prepareToOpen` makes the item(s) ready and returns when that is done: a COPC opens as it is,
  *    anything else is converted first (progress and "converting" come through the callbacks).
  *    What differs between the Web and the desktop build lives in the DataSource, not here.
@@ -111,11 +112,13 @@ async function runOpen(ctx: OpenFilesContext, source: DataSource, items: string[
 
   const names = items.map((item) => (typeof item === "string" ? basenameOfPath(item) : item.name));
 
-  // LAS/LAZ may be mixed; if PLY/PCD/E57 is among several files, say so before converting (naming the files).
+  // Several files of any openable format can be merged (M4-17): all LAS/LAZ takes the older LAS merge, anything
+  // else the point merge (decided by the DataSource). A file whose extension is not openable is named before
+  // converting, so a long conversion does not start and then fail.
   if (items.length > 1) {
-    const nonLasNames = names.filter((n) => detectSourceFormatByName(n) !== "lasLaz");
-    if (nonLasNames.length > 0) {
-      failOpen(ctx, `複数ファイルの選択はLAS/LAZのみ対応しています。次のファイルは対象外です: ${nonLasNames.join("、")}`);
+    const unknownNames = names.filter((n) => detectSourceFormatByName(n) === "unknown");
+    if (unknownNames.length > 0) {
+      failOpen(ctx, `対応していない形式のファイルが含まれています: ${unknownNames.join("、")}`);
       return;
     }
   }
