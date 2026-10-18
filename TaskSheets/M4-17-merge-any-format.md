@@ -203,3 +203,116 @@ would add about 19 MB or more).
 - Progress for a selection that includes E57 can end below 100% (E57 declared counts can exceed
   the visited points; existing behavior of the single-file import).
 - `cargo test` was not run with the Android target or in a CI environment.
+
+## Result (Track W)
+
+Done 2026-10-18 (Sonnet 5.5), branch `m4-17-web`.
+
+### What was done
+
+- `crates/pcv-wasm/src/point_merge.rs` (new, no browser types, host-testable):
+  `PointFormat`, `PointStream<R>` (enum: `Las` / `Ply` / `Pcd` / `E57`), `LasStream` (LAS/LAZ as a point
+  stream, 4096-point batches), `plan_merge` (header summaries -> output color flag, total points, CRS/WKT,
+  warnings, CRS conflict error naming the file), `MergedPoints` (opens the files one after another, paints
+  gray `[32768,32768,32768]` for a file without color when the output has color).
+  The two warning texts are constants, copied literally from "Shared rules".
+- `crates/pcv-wasm/src/pcd_import.rs`: `WasmPcdConverter` is gone; PCD is now `PcdStream`
+  (`open` / `has_color` / `declared_point_count` / `next_point`). The `binary_compressed` size guard and
+  the helper functions stay. Errors are `String` instead of `JsValue` so the host tests can run it.
+- `crates/pcv-wasm/src/point_file_import.rs`: `WasmPointFileConverter::new(formats[], files[], ...)` takes a
+  list. The constructor does the header pass (`MergedPoints::start`), so a CRS conflict fails before any
+  point is read. `feed` / `finish` keep the shape of the other converters; `finish` returns the warnings and
+  `input_file_count`. One file is the normal single-file conversion (its stream is kept from the header pass,
+  so it is not opened twice).
+- `src/datasource/copc.worker.ts`: `runPointFileConversion(id, files, formats, ...)`; the `WasmPcdConverter`
+  branch is removed. One file keeps `outputFileNameFor` / `writeCacheMeta`; several files use
+  `outputFileNameForMulti` / `writeMultiCacheMeta` and `multiDisplayNameFor` (same as the LAS merge).
+- `src/datasource/web.ts`: `prepareToOpen` routes several files by `needsPointMerge`
+  (any PLY/PCD/E57 -> `startPointFileConversion(files, ...)`, otherwise the unchanged
+  `startMultiConversion`). `startPointFileConversion` sorts by name, resolves each format,
+  uses the multi cache for several files, and checks free space with the point count of each file
+  (`checkInsufficientSpaceMulti` now takes the estimator; the LAS merge and the COPC merge tool pass the LAS one).
+- `src/datasource/web-protocol.ts`: `PointFileFormat` gets `"lasLaz"`; `PointFileConvertStartRequest` carries
+  `files[]` + `formats[]`.
+- `src/datasource/source-format.ts`: `needsPointMerge`, `multiSourceFormatLabel` (breakdown text:
+  `las/laz(複数ファイル)` for LAS only, `複数ファイル(形式混在)` otherwise, the same text as Track D).
+- `src/datasource/opfs.ts`: `multiDisplayNameFor` strips `.ply/.pcd/.e57` too.
+- `src/app/open-files.ts`: the LAS/LAZ-only refusal is removed; a file with an unknown extension in a
+  multi-selection is still refused before converting (a small safety net; the old message listed non-LAS files).
+- `src/wasm/pcv-wasm/*` regenerated (`cargo build --release --target wasm32-unknown-unknown`, then
+  `wasm-bindgen --target web`, 0.2.128 as in `Cargo.lock`), because the repository commits these files.
+- Docs: `docs/book/src/rust/pcv-wasm.md`, `flows/open-file.md` (section 複数ファイル and the Web route),
+  `flows/conversion.md` (route table, step 8, new step 9). `maps/open-file.md` needed no change.
+
+### Why this way / alternatives rejected
+
+- One converter class for all non-LAS formats, taking a list: the Worker loop (`feed` / `finish`) is the same
+  for one file or many, and `WasmPcdConverter` became dead code (R10), so it was removed with its Worker branch.
+  Rejected: a separate "merge" class next to the single-file class (two classes with the same spill / finish code).
+- Header pass inside the constructor (Rust) instead of in TypeScript like `inspectLasHeaderSummary`: the
+  color flag decides the spill layout, which is created in the same constructor, and the CRS/warning logic
+  (`plan_merge`) can be tested on the host with plain data. Rejected: a JS-side header pass that passes
+  `has_color` and the CRS back into the constructor (more JS <-> Rust plumbing).
+- `PointStream<R>` is generic over the reader and `MergedPoints` takes an "open file N" closure, only so the
+  host `cargo test` can feed `Cursor` data. Documented in the file header.
+- Only the first file stays open after the header pass; the others are reopened in turn. Keeping all open would
+  hold up to N readers (PCD `binary_compressed` can be 512 MB each). Cost: PCD `binary_compressed` files
+  after the first are decompressed twice (once for the header pass, once for reading).
+- Files are sorted by name in `web.ts` (not in Rust) because Rust only sees `File` objects there.
+- Gray fill is in `MergedPoints`, not in the readers (the sheet's rule). `LasStream` returns `[0,0,0]` for a
+  format without color instead of the gray that `LasPointRecord::from_las_point` would put.
+- The unknown-extension refusal stays in `open-files.ts`: otherwise the Web build would throw from `web.ts`
+  after the free-space checks, and the desktop build has no such check of its own.
+
+### Files touched
+
+`crates/pcv-wasm/src/{point_merge.rs,point_file_import.rs,pcd_import.rs,lib.rs,convert.rs (comment)}`,
+`crates/pcv-wasm/tests/memory_pcd_conversion.rs (comment)`,
+`src/datasource/{copc.worker.ts,web.ts,web-protocol.ts,source-format.ts,opfs.ts}` and their tests
+(`web-prepare.test.ts`, `web-protocol.test.ts`, `source-format.test.ts`, `opfs.test.ts`),
+`src/app/{open-files.ts,open-files.test.ts}`, `src/wasm/pcv-wasm/*` (generated),
+`e2e/{web-multi-conversion.spec.ts,web-point-file-conversion.spec.ts}`, three book pages, this sheet.
+The cache (`findCachedMultiOutput`, `writeMultiCacheMeta`) is format-agnostic (name, size, mtime), unchanged.
+
+### Tests (all synthetic, in memory)
+
+Rust, in `point_merge.rs` (8 new): PLY + PCD without color (count = sum, order kept, no color, no warning);
+colored PLY + uncolored PCD (PCD points are gray); LAS + PLY (attribute warning, real coordinates, color and
+intensity kept, PLY gray); uncolored LAS + uncolored PLY (no color); two LAS with different CRS + PLY (error
+naming the file, via `plan_merge`); unknown CRS agrees and both warnings appear; a single file is opened once;
+`LasStream` buffer stays within one batch while reading 12,298 points (the bounded-memory check).
+TypeScript: routing (`needsPointMerge`, `multiSourceFormatLabel`), `web-prepare` (mixed merge request is
+sorted with one format each, LAS-only still `convertMultiStart`, cached mixed merge, OPFS unavailable,
+too little space), the request builder, `multiDisplayNameFor`, `open-files` (mixed set is passed on, unknown
+extension is refused).
+E2E (real headless Chromium): LAS + PLY merged (points = sum, "入力ファイル数: 2"), PCD single file through the
+new class.
+
+### Commands run (in `C:\rust\pcv-wt-m417-web`)
+
+- `cargo fmt --check` (crates/pcv-wasm): clean.
+- `cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings` (as `pages.yml` runs it): clean.
+- `cargo test` (crates/pcv-wasm): lib 57 passed, 1 ignored (the E57 fixture writer); integration tests 1+1+1+1+2 passed.
+- `cargo build --release --target wasm32-unknown-unknown` and `wasm-bindgen --target web ...`: built, committed.
+- `npm run typecheck`, `npm run lint`: clean (lint was run once with the mdbook output present, which only added
+  2 warnings in generated files; that output was deleted). `npm test` (vitest): 66 files, 611 tests passed;
+  the 16 `src/datasource` files were re-run after the last label change: 180 passed.
+- `PCV_E2E_PORT=4391 npx playwright test` for `web-multi-conversion`, `web-point-file-conversion`,
+  `web-conversion`: 5 passed; after adding the PCD test, the point-file spec: 3 passed. Nothing was left listening on 4391.
+- `mdbook build docs/book`: built without errors.
+
+### Not verified
+
+- Real files: no real PLY/PCD/E57/LAS from `data/` was merged in a browser. The owner should try 2+ real files,
+  and LAS + PLY, on the Web build, and check the merged layer (gray points for files without color) and the
+  warnings in the error log.
+- E57 in a merge has no test of its own (no synthetic E57 writer for the host tests); it uses the same
+  `E57Stream` as the single-file path, which the existing E2E covers.
+- LAZ (compressed) through `LasStream` is covered only by the shared `las` reader code, not by a test here
+  (the unit test writes a plain LAS).
+- A real CRS in a LAS: only `plan_merge` is tested with `CrsId` values; `LasStream::open` reading a real CRS
+  VLR was not exercised. Web keeps its older limit that a GeoTIFF-only CRS gives no WKT in the output.
+- Memory with huge inputs (hundreds of millions of points) in a browser was not measured; the bound is by
+  construction (one open file, 4096-point LAS batch, `feed` batch) and by the unit test above.
+- Cancel during the header pass is not possible (it runs inside the constructor); cancel works between `feed`
+  batches as before.
