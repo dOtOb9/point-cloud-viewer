@@ -259,3 +259,38 @@ Desktop (`npm run tauri dev`):
 
 Web (GitHub Pages build or `npm run dev`): the same 1-4, plus: after a conversion the "download" link in the layer info downloads the
 `.copc.laz`; open a second file and check the first layer keeps its own breakdown and link (nothing leaks to the new layer).
+
+## AI legibility benchmark (coordinator, 2026-10-18)
+
+The owner asked how much this refactor is worth to an AI working on the code. Method: a fresh Sonnet subagent with no
+context answers the same three questions (scratchpad `bench-prompt.md`, read-only): Q1 trace the desktop open of one raw LAS
+to the new layer, Q2 locate where the Web breakdown text / download link are built and attached and what a failure shows,
+Q3 plan "show the done-time warnings in the error log". Two runs on `2474477` (before) and two on `0be457d` (after), each in
+a detached worktree frozen at that commit. Tokens / tool uses / time are the harness's numbers for each subagent.
+
+| run | tokens | tool uses | time | Q1 | Q2 | Q3 |
+|---|---|---|---|---|---|---|
+| before 1 | 99,453 | 14 | 78 s | correct | correct | correct |
+| before 2 | 104,422 | 17 | 92 s | correct | correct | correct |
+| after 1 | 104,356 | 14 | 95 s | correct | correct | found it already done |
+| after 2 | 110,584 | 17 | 100 s | correct | correct | found it already done |
+
+Reading of the numbers:
+
+- **Cost did not go down.** Tokens and tool uses are the same within run-to-run noise (2 runs each; not enough to see a small
+  difference). Q3 is not comparable: after the fix the answer is "already done", and both after-runs spent the effort
+  explaining why single-file conversions send no warnings (Rust/wasm), which inflates the after numbers somewhat.
+- **Correctness was already full before.** Sonnet traced the old event round trip correctly both times. Both before-runs cited
+  `useConversionSession.ts` line numbers off by +234 (they printed two files with one `cat -n`); the after-runs' line
+  numbers were right. This is a reading-method artefact, not counted.
+- **What changed is where the difficulty sits.** Before, both runs named the cross-hook hand-off as the hardest part
+  (`openFileRef` re-entry, the pending-result ref, desktop and Web interleaved in one effect). After, both named the
+  datasource internals (Tauri events subscribed before the command; the Web request-id waiter map), i.e. platform plumbing
+  behind one `await`, which is where it belongs.
+- Side finding by all four runs: single-file conversions never produce warnings (desktop `run_conversion_thread` sends
+  `Vec::new()`, wasm gates on `input_file_count > 1`, by design). The warnings fix therefore only shows for merges.
+
+Conclusion: for an AI reader, the measurable value is small: no saving in tokens, no gain in correctness at this size.
+The value of this refactor is for the human reader (one `await` instead of an event round trip across two hooks;
+-150 lines in the two hooks, 55 → 23 occurrences of the hook-wiring names) and in the two behaviour fixes found while doing it
+(dropped warnings; the second `start_las_conversion` call).
