@@ -203,55 +203,34 @@ export class WasmExtractor {
 }
 
 /**
- * Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`の
- * `handlePcdConvertStart`が使う。メソッド構成は`convert.rs`の
- * `WasmConverter`に揃えてある(`totalPoints`/`feed`/`finish`)。
- */
-export class WasmPcdConverter {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * 最大`batch_size`点を読み、spillへ書く。LAS/LAZ版と違い並列展開は無い
-     * (モジュールドキュメント参照)ので、呼び出し側は常にこの逐次バッチ
-     * ループで進める。
-     */
-    feed(batch_size: number): any;
-    /**
-     * 読み込みを終え、octreeを構築してOPFSの出力ハンドルへ書き出す
-     * (`convert.rs`の`WasmConverter::finish`と同じ役割)。
-     */
-    finish(): any;
-    constructor(file: File, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
-    /**
-     * 入力の総点数(ヘッダーの申告値)。`convert.rs`の`WasmConverter::total_points`
-     * と同じ役割。
-     */
-    totalPoints(): number;
-}
-
-/**
- * Web PLY / E57 to COPC converter. Used by `runPointFileConversion` in
- * `src/datasource/copc.worker.ts`.
+ * Web PLY / PCD / E57 / LAS to COPC converter (one or several files). Used by
+ * `runPointFileConversion` in `src/datasource/copc.worker.ts`.
  */
 export class WasmPointFileConverter {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Read at most `batch_size` points and write them to the spill.
+     * Read at most `batch_size` points and write them to the spill. The points of all files
+     * come as one stream; `points_read` counts over all files so far.
      */
     feed(batch_size: number): any;
     /**
-     * Build the octree and write the COPC to the OPFS output handle
-     * (same steps as `WasmPcdConverter::finish`).
+     * Build the octree and write the COPC to the OPFS output handle.
      */
     finish(): any;
     /**
-     * `format` is `"ply"` or `"e57"` (lower case, as `detectSourceFormatByName` returns it).
+     * `formats[i]` is the format of `files[i]`: `"lasLaz"`, `"ply"`, `"pcd"` or `"e57"` (as
+     * `detectSourceFormatByName` returns it). The files are read in the given order, so the
+     * caller sorts them by name first (the output must not depend on the selection order).
+     *
+     * The constructor does the header pass: it opens every file once to learn whether it has
+     * color, how many points it declares, and its CRS. A CRS conflict between LAS/LAZ files is
+     * an error here, before any point is read.
      */
-    constructor(format: string, file: File, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+    constructor(formats: Array<any>, files: Array<any>, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
     /**
-     * The point count the file header declares (the progress denominator). E57 can yield
-     * fewer points than declared (missing grid slots are skipped).
+     * The point count the file headers declare, summed over all files (the progress
+     * denominator). E57 can yield fewer points than declared (missing grid slots are skipped).
      */
     totalPoints(): number;
 }
@@ -312,7 +291,6 @@ export interface InitOutput {
     readonly __wbg_wasmconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
     readonly __wbg_wasmextractor_free: (a: number, b: number) => void;
-    readonly __wbg_wasmpcdconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmpointfileconverter_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
     readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
@@ -338,13 +316,9 @@ export interface InitOutput {
     readonly wasmextractor_feed: (a: number, b: number) => [number, number, number];
     readonly wasmextractor_finish: (a: number) => [number, number, number];
     readonly wasmextractor_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
-    readonly wasmpcdconverter_feed: (a: number, b: number) => [number, number, number];
-    readonly wasmpcdconverter_finish: (a: number) => [number, number, number];
-    readonly wasmpcdconverter_new: (a: any, b: any, c: any, d: number, e: number, f: number) => [number, number, number];
-    readonly wasmpcdconverter_totalPoints: (a: number) => number;
     readonly wasmpointfileconverter_feed: (a: number, b: number) => [number, number, number];
     readonly wasmpointfileconverter_finish: (a: number) => [number, number, number];
-    readonly wasmpointfileconverter_new: (a: number, b: number, c: any, d: any, e: any, f: number, g: number, h: number) => [number, number, number];
+    readonly wasmpointfileconverter_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly wasmpointfileconverter_totalPoints: (a: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -405,81 +405,8 @@ export class WasmExtractor {
 if (Symbol.dispose) WasmExtractor.prototype[Symbol.dispose] = WasmExtractor.prototype.free;
 
 /**
- * Web版のPCD→COPC変換。`src/datasource/copc.worker.ts`の
- * `handlePcdConvertStart`が使う。メソッド構成は`convert.rs`の
- * `WasmConverter`に揃えてある(`totalPoints`/`feed`/`finish`)。
- */
-export class WasmPcdConverter {
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        WasmPcdConverterFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_wasmpcdconverter_free(ptr, 0);
-    }
-    /**
-     * 最大`batch_size`点を読み、spillへ書く。LAS/LAZ版と違い並列展開は無い
-     * (モジュールドキュメント参照)ので、呼び出し側は常にこの逐次バッチ
-     * ループで進める。
-     * @param {number} batch_size
-     * @returns {any}
-     */
-    feed(batch_size) {
-        const ret = wasm.wasmpcdconverter_feed(this.__wbg_ptr, batch_size);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * 読み込みを終え、octreeを構築してOPFSの出力ハンドルへ書き出す
-     * (`convert.rs`の`WasmConverter::finish`と同じ役割)。
-     * @returns {any}
-     */
-    finish() {
-        const ptr = this.__destroy_into_raw();
-        const ret = wasm.wasmpcdconverter_finish(ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * @param {File} file
-     * @param {Array<any>} scratch_handles
-     * @param {FileSystemSyncAccessHandle} output_handle
-     * @param {string} output_name
-     * @param {number} max_points_per_node
-     */
-    constructor(file, scratch_handles, output_handle, output_name, max_points_per_node) {
-        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.wasmpcdconverter_new(file, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        this.__wbg_ptr = ret[0];
-        WasmPcdConverterFinalization.register(this, this.__wbg_ptr, this);
-        return this;
-    }
-    /**
-     * 入力の総点数(ヘッダーの申告値)。`convert.rs`の`WasmConverter::total_points`
-     * と同じ役割。
-     * @returns {number}
-     */
-    totalPoints() {
-        const ret = wasm.wasmpcdconverter_totalPoints(this.__wbg_ptr);
-        return ret;
-    }
-}
-if (Symbol.dispose) WasmPcdConverter.prototype[Symbol.dispose] = WasmPcdConverter.prototype.free;
-
-/**
- * Web PLY / E57 to COPC converter. Used by `runPointFileConversion` in
- * `src/datasource/copc.worker.ts`.
+ * Web PLY / PCD / E57 / LAS to COPC converter (one or several files). Used by
+ * `runPointFileConversion` in `src/datasource/copc.worker.ts`.
  */
 export class WasmPointFileConverter {
     __destroy_into_raw() {
@@ -493,7 +420,8 @@ export class WasmPointFileConverter {
         wasm.__wbg_wasmpointfileconverter_free(ptr, 0);
     }
     /**
-     * Read at most `batch_size` points and write them to the spill.
+     * Read at most `batch_size` points and write them to the spill. The points of all files
+     * come as one stream; `points_read` counts over all files so far.
      * @param {number} batch_size
      * @returns {any}
      */
@@ -505,8 +433,7 @@ export class WasmPointFileConverter {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * Build the octree and write the COPC to the OPFS output handle
-     * (same steps as `WasmPcdConverter::finish`).
+     * Build the octree and write the COPC to the OPFS output handle.
      * @returns {any}
      */
     finish() {
@@ -518,20 +445,24 @@ export class WasmPointFileConverter {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * `format` is `"ply"` or `"e57"` (lower case, as `detectSourceFormatByName` returns it).
-     * @param {string} format
-     * @param {File} file
+     * `formats[i]` is the format of `files[i]`: `"lasLaz"`, `"ply"`, `"pcd"` or `"e57"` (as
+     * `detectSourceFormatByName` returns it). The files are read in the given order, so the
+     * caller sorts them by name first (the output must not depend on the selection order).
+     *
+     * The constructor does the header pass: it opens every file once to learn whether it has
+     * color, how many points it declares, and its CRS. A CRS conflict between LAS/LAZ files is
+     * an error here, before any point is read.
+     * @param {Array<any>} formats
+     * @param {Array<any>} files
      * @param {Array<any>} scratch_handles
      * @param {FileSystemSyncAccessHandle} output_handle
      * @param {string} output_name
      * @param {number} max_points_per_node
      */
-    constructor(format, file, scratch_handles, output_handle, output_name, max_points_per_node) {
-        const ptr0 = passStringToWasm0(format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    constructor(formats, files, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.wasmpointfileconverter_new(ptr0, len0, file, scratch_handles, output_handle, ptr1, len1, max_points_per_node);
+        const ret = wasm.wasmpointfileconverter_new(formats, files, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -540,8 +471,8 @@ export class WasmPointFileConverter {
         return this;
     }
     /**
-     * The point count the file header declares (the progress denominator). E57 can yield
-     * fewer points than declared (missing grid slots are skipped).
+     * The point count the file headers declare, summed over all files (the progress
+     * denominator). E57 can yield fewer points than declared (missing grid slots are skipped).
      * @returns {number}
      */
     totalPoints() {
@@ -754,6 +685,16 @@ function __wbg_get_imports() {
             let result;
             try {
                 result = arg0 instanceof FileSystemSyncAccessHandle;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
+        __wbg_instanceof_File_388508da6a606d0d: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof File;
             } catch (_) {
                 result = false;
             }
@@ -975,9 +916,6 @@ const WasmCopcFileFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmExtractorFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmextractor_free(ptr, 1));
-const WasmPcdConverterFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_wasmpcdconverter_free(ptr, 1));
 const WasmPointFileConverterFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmpointfileconverter_free(ptr, 1));
