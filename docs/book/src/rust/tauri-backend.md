@@ -68,7 +68,7 @@ Android の `content://` を開く経路は、`tauri-plugin-fs` のソースを�
 | コマンド | 内容 |
 |---|---|
 | `start_las_conversion` | 単一ファイルの変換を始める。`AlreadyCopc`・`Cached`・`InsufficientSpace`・`Converting` のどれかを返し、`Converting` のときだけ別スレッド(`run_conversion_thread`)で変換する。LAS/LAZ と E57/PLY/PCD の両方を扱う |
-| `start_multi_las_conversion` | 複数の LAS/LAZ を1つの COPC にまとめる(M4-14)。`run_merge_conversion_thread` が `pcv_convert::merge::merge_paths_and_timings` を呼ぶ。1つだけなら `start_las_conversion` に委譲。`content://` は未対応 |
+| `start_multi_las_conversion` | 複数のファイルを1つの COPC にまとめる(M4-14。M4-17 で PLY/PCD/E57 と混在も可)。`run_merge_conversion_thread` が `merge_by_format` を呼び、全部 LAS/LAZ なら `pcv_convert::merge::merge_paths_and_timings`、1つでも PLY/PCD/E57 があれば `pcv_convert::import::merge::convert_paths_to_copc_and_timings`（x, y, z, 色, 強度だけ。警告が `done` イベントの `warnings` に入る）を呼ぶ。1つだけなら `start_las_conversion` に委譲。`content://` は未対応 |
 | `cancel_las_conversion` | `ConversionState` のキャンセルフラグを立てる(変換とツールで共通) |
 | `supports_custom_temp_dir` | 一時フォルダの場所を設定できる環境か |
 | `extract_copc` | 点の選択・断面(L2-C)。`pcv_convert::extract::extract_path_and_timings` を呼び、結果の COPC のパスを返す |

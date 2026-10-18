@@ -121,3 +121,85 @@ Do not touch `crates/pcv-convert` or `src-tauri`.
       run with their output summary, what was not verified.
 - [ ] Not verifiable by agents (owner): open 2+ real PLY/E57/PCD files, and LAS + PLY, on Web and desktop;
       check the merged layer looks right and the warnings appear in the error log.
+
+## Result (Track D)
+
+Done 2026-10-18 (Sonnet 5.5), branch `m4-17-desktop`.
+
+### What was done
+
+- `crates/pcv-convert/src/import/las.rs` (new): `LasSource`, a LAS/LAZ `PointSource`. It reads the
+  header on `open` (color flag, declared count, `CrsId`, WKT) and decodes points in batches of
+  1M (`fill_points`), passing x, y, z, RGB, intensity to the visitor one by one.
+- `crates/pcv-convert/src/import/merge.rs` (new): `convert_paths_to_copc_and_timings(paths, output,
+  spill_dir, params, cancel, on_progress, timings) -> PointMergeSummary { import, warnings }`.
+  1. sorts the paths, 2. header pass over every file (`read_headers`: color flag, declared count,
+  CRS check for LAS/LAZ), 3. `MergedSource` (a `PointSource`) opens the files one by one and fills
+  gray `[32768,32768,32768]` for files without color when the output has color, 4. calls the
+  existing `run_import`. The two warning texts are public constants.
+  `is_las_or_laz` is the routing predicate.
+- `import/mod.rs`: `mod las; pub mod merge;` and a new `ImportError::Merge(String)` (unreadable
+  file, CRS conflict).
+- `src-tauri/src/conversion.rs`: `run_merge_conversion_thread` now calls `merge_by_format`:
+  all inputs LAS/LAZ -> the old `merge::merge_paths_and_timings`; otherwise the new function.
+  Warnings go into `ConversionDoneEvent.warnings` like the LAS merge. The command name is unchanged.
+  `source_format` is `"las/laz(複数ファイル)"` for the old route (as before) and
+  `"複数ファイル(形式混在)"` for the new one (display text only).
+- Docs: `docs/book/src/rust/pcv-convert.md`, `docs/book/src/rust/tauri-backend.md`.
+
+### Why this way / alternatives rejected
+
+- One `MergedSource` implementing the existing `PointSource`, reusing `run_import` unchanged: no
+  change to the spill/scale/writer code and no new abstraction. Rejected: a generic "chain of
+  sources" type (the sources have different types, so it would need boxing for no gain; a plain
+  `match` per file is easier to read).
+- Header pass re-opens every file a second time when streaming (cheap for LAS; E57/PLY/PCD parse
+  only their header on `open`). Rejected: keeping the opened sources between the passes (would
+  keep all files open at once).
+- Gray fill is in `MergedSource`, not in the readers, as the sheet requires.
+- CRS check reimplemented in about 25 lines in `import/merge.rs` instead of reusing
+  `merge::summarize_headers_lenient`: that function also requires identical point layouts, which a
+  mixed merge must not require.
+- The CRS written to the output is the WKT of the first LAS/LAZ file that has a CRS.
+
+### Files touched
+
+`crates/pcv-convert/src/import/{mod.rs,las.rs,merge.rs}`,
+`crates/pcv-convert/tests/{import_merge.rs,import_merge_memory_is_bounded.rs}`,
+`src-tauri/src/conversion.rs`, the two book pages, this sheet.
+The cache (`cache::multi_fingerprint_of_paths` / sidecar) is format-agnostic (names, sizes,
+mtimes only), so it was left unchanged.
+
+### Tests (all synthetic, written by the tests)
+
+`tests/import_merge.rs` (7): PLY+PCD count/bounds/no color (checks the output header has no
+color); colored PLY + uncolored PCD (output has color, PCD points are gray); LAS+PLY (attribute
+warning, PLY points gray); LAS with CRS + PLY (CRS kept, both warnings); two LAS with different
+CRS + PLY (error naming the file, no output file); LAS without CRS + LAS with CRS agree; all-LAS
+still goes through `pcv_convert::merge` and classification survives (read back with `las`).
+`tests/import_merge_memory_is_bounded.rs` (1): counting global allocator; the merge of a PLY and
+a PCD (2 x 200k points) peaks at 47,484,933 heap bytes vs 46,353,917 for the single-file import
+of one PLY with the same points (release build); the test allows +5 MB (a `Vec` of the points
+would add about 19 MB or more).
+
+### Commands run (in `C:\rust\pcv-wt-m417-desktop`)
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: finished, no warnings or errors.
+- `cargo test --workspace`: all green (pcv-convert unit tests 75 passed; `import_merge` 7 passed;
+  `import_merge_memory_is_bounded` 1 passed; other suites unchanged and passing; pcv-core 59;
+  src-tauri lib 18).
+- `cargo build` (workspace, includes the `pcv-tauri` crate): finished.
+
+### Not verified
+
+- Real files: no real PLY/PCD/E57/LAS from `data/` was merged; the owner should try 2+ real
+  files, and LAS + PLY, on desktop and check the layer and the warnings in the error log.
+- E57 inside a merge has no test of its own (no synthetic E57 writer in the crate); it goes through
+  the same `E57Source` as single-file import.
+- The routing in `src-tauri` (`merge_by_format`) has no Rust test of its own; the route predicate
+  and both routes are tested in `pcv-convert`.
+- Android: multi-file selection with `content://` URIs is still rejected (as before); not tested.
+- Progress for a selection that includes E57 can end below 100% (E57 declared counts can exceed
+  the visited points; existing behavior of the single-file import).
+- `cargo test` was not run with the Android target or in a CI environment.

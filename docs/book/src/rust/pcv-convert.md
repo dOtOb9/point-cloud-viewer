@@ -23,6 +23,7 @@
 - merge:          複数ファイルの結合(M4-14。アプリからも呼ぶ。L2-C でCRS無しを通す寛容モード)
 - extract:        COPCから条件に合う点だけを新しいCOPCにする(L2-C。点の選択・断面)
 - import:         E57/PLY/PCDの取り込み(M4-9。中間のLASは作らない)
+  M4-17 で、形式が混ざった複数ファイルの結合(import/merge.rs)も加わった
 - stage_timings:  段階ごとの所要時間(M4-12)
 - write_metadata: 元のLASヘッダーからCopcWriteMetadataを組み立てる
 - crs_override:   元ヘッダーのCRSからWKT文字列を解決する
@@ -140,6 +141,33 @@ M4-4 の最初の設計は「いったんプレーンな LAS に書き出す」�
 選ぶ純粋関数です。CRS は推測せず「不明」のままです。色・強度の値域の扱いは形式ごとに異なり、
 各ファイル冒頭のコメントと
 [ADR-0008 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#追記2026-09-25-e57--ply--pcd--lasの実装m4-4) にあります。
+
+### 複数ファイルの結合(M4-17): 形式が混ざっていても1つの COPC にする
+
+`import/merge.rs` の `convert_paths_to_copc_and_timings` は、PLY・PCD・E57 を1つでも含む選択（LAS/LAZ との混在も可）を
+1つの COPC にします。**全部 LAS/LAZ の選択は今までどおり `merge.rs` が受け持ちます**（分類・GPS 時刻・リターン番号を残せるため。
+この経路は x, y, z, 色, 強度しか持てません）。どちらの経路を使うかは `src-tauri` の `merge_by_format` が拡張子で決めます。
+
+流れは3段です。
+
+1. ヘッダーの確認。全ファイルを1回ずつ開き、色の有無・申告点数（進捗の分母になる合計）・LAS/LAZ の CRS だけを読む
+2. CRS の確認。LAS/LAZ の CRS が互いに食い違ったら、1点も書く前にファイル名つきのエラーにする
+   （CRS が不明のファイルは「一致」とみなす。`merge.rs` と同じ）。PLY/PCD/E57 は CRS を持たない
+3. `MergedSource`（`PointSource` の実装）が、ファイルをパスの昇順に1つずつ開いて点を `run_import` に渡す。
+   `run_import` は単一ファイルの取り込みと同じで、`SpillWriter` へ流してから scale/offset を選ぶ
+
+色は「どれか1つでも色があれば出力に色あり。色の無いファイルの点は灰色 `[32768, 32768, 32768]`」です。
+灰色はファイルごとに `MergedSource` が入れるので、各形式の読み込み側（`ply.rs` など）は変わっていません。
+LAS/LAZ を点のストリームとして読む `import/las.rs`（`LasSource`）が加わりました。
+
+警告は戻り値の `PointMergeSummary::warnings` で返り、画面のエラーログに出ます。
+
+- LAS/LAZ と他の形式を混ぜたとき: 「LAS/LAZ と他の形式を結合したため、LAS/LAZ の分類・GPS時刻・リターン番号などの属性は出力に含まれません」
+- 出力に CRS があり、PLY/PCD/E57 も混ざるとき: 「PLY/PCD/E57 の点は LAS/LAZ と同じ座標系として結合しました」
+
+メモリは点数に比例しません。同時に開くファイルは1つだけで、`MergedSource` が持つのはファイルの一覧だけです。
+テスト `tests/import_merge_memory_is_bounded.rs` が、アロケーターでピークのヒープ量を数え、同じ点数の単一ファイルの取り込みと
+ほぼ同じ（差が 5MB 未満）であることを確かめます。
 
 Web 版も PCD・PLY・E57 を取り込めます。`crates/pcv-wasm/src/` の `pcd_import.rs`・`ply_import.rs`・`e57_import.rs` に、
 それぞれの読み込みを**意図的に複製**しています
