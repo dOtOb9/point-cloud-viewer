@@ -32,6 +32,8 @@ const START_ABOVE_TOP: f32 = 0.05;
 /// Slope post-processing only looks at groups of connected movable particles larger than this
 /// (reference `MAX_PARTICLE_FOR_POSTPROCESSIN`).
 const MIN_GROUP_FOR_POST: usize = 50;
+/// `active` is rebuilt at most once per this many steps, and only if some particle was fixed.
+const REBUILD_INTERVAL: u32 = 8;
 /// The reference passes 9999 as `heightThreshold` to the slope post-processing (CSF.cpp), so that
 /// check never rejects anything. Kept as a constant to stay faithful; `hdiff` is the reference's
 /// `smoothThreshold` (0.3).
@@ -197,6 +199,12 @@ pub struct Cloth {
     /// Squared XY distance (in cell units) of the point that set `ihv`; INFINITY = no point yet.
     ihv_dist: Vec<f32>,
     movable: Vec<bool>,
+    /// Indices (ascending) of the particles the simulation must visit: movable ones and fixed ones
+    /// next to a movable one. May hold a few extra fixed particles between rebuilds.
+    active: Vec<u32>,
+    /// Particles fixed, and steps run, since `active` was last rebuilt.
+    fixed_since_rebuild: usize,
+    steps_since_rebuild: u32,
     /// Highest inverted height of all points seen (the cloth starts above it).
     max_inverted: f32,
     phase: Phase,
@@ -235,6 +243,9 @@ impl Cloth {
         let nx = nx_f as usize;
         let ny = ny_f as usize;
         let n = nx * ny;
+        if n > u32::MAX as usize {
+            return Err("布の粒子数が多すぎます".to_string());
+        }
         Ok(Self {
             params,
             nx,
@@ -246,6 +257,9 @@ impl Cloth {
             ihv: vec![f32::NEG_INFINITY; n],
             ihv_dist: vec![f32::INFINITY; n],
             movable: vec![true; n],
+            active: Vec::new(),
+            fixed_since_rebuild: 0,
+            steps_since_rebuild: 0,
             max_inverted: f32::NEG_INFINITY,
             phase: Phase::Collecting,
             iterations_done: 0,
@@ -270,6 +284,7 @@ impl Cloth {
             + self.ihv.len() * 4
             + self.ihv_dist.len() * 4
             + self.movable.len()
+            + self.active.capacity() * 4
     }
 
     // ---- Pass 1: IHV ------------------------------------------------------------------------
@@ -377,6 +392,7 @@ impl Cloth {
         let start = self.max_inverted + START_ABOVE_TOP;
         self.h.iter_mut().for_each(|v| *v = start);
         self.prev.copy_from_slice(&self.h);
+        self.active = (0..nx * ny).map(|p| p as u32).collect();
         self.phase = Phase::Simulating;
         Ok(())
     }
@@ -461,12 +477,16 @@ impl Cloth {
 
     /// One step: Verlet move under gravity, one constraint pass, then terrain collision
     /// (paper sections 2.2 and 2.3). Returns the largest vertical move of a movable particle.
+    ///
+    /// Only particles in `active` are visited; the others are fixed and have only fixed
+    /// neighbours, so the original full pass would not have changed anything for them.
     fn one_step(&mut self) -> f32 {
         let dt2 = self.params.time_step * self.params.time_step;
         // Inverted coordinates: gravity pulls the cloth towards smaller values. The reference's
         // acceleration is already scaled by dt^2 and Verlet scales it by dt^2 again.
         let fall = -GRAVITY * dt2 * dt2;
-        for k in 0..self.h.len() {
+        for &k in &self.active {
+            let k = k as usize;
             if self.movable[k] {
                 let cur = self.h[k];
                 self.h[k] = cur + (cur - self.prev[k]) * (1.0 - DAMPING) + fall;
@@ -474,20 +494,43 @@ impl Cloth {
             }
         }
         self.satisfy_constraints();
+        // Largest move of a movable particle, then collision: a particle that went below the
+        // terrain is put on it and fixed. One loop is enough because the collision of a particle
+        // only changes that particle.
         let mut max_diff = 0.0f32;
-        for k in 0..self.h.len() {
+        let mut newly_fixed = 0usize;
+        for &k in &self.active {
+            let k = k as usize;
             if self.movable[k] {
                 max_diff = max_diff.max((self.h[k] - self.prev[k]).abs());
+                if self.h[k] < self.ihv[k] {
+                    self.h[k] = self.ihv[k];
+                    self.movable[k] = false;
+                    newly_fixed += 1;
+                }
             }
         }
-        // Collision: a particle that went below the terrain is put on it and fixed.
-        for k in 0..self.h.len() {
-            if self.movable[k] && self.h[k] < self.ihv[k] {
-                self.h[k] = self.ihv[k];
-                self.movable[k] = false;
-            }
+        // A stale list is still correct (it only holds extra particles), so shrink it only when
+        // something changed and a few steps have passed, so rebuilds stay cheap.
+        self.fixed_since_rebuild += newly_fixed;
+        self.steps_since_rebuild += 1;
+        if self.fixed_since_rebuild > 0 && self.steps_since_rebuild >= REBUILD_INTERVAL {
+            self.rebuild_active();
         }
         max_diff
+    }
+
+    /// Drops from `active` the particles that are fixed and have no movable neighbour. Keeps the
+    /// index order, which the constraint pass depends on.
+    fn rebuild_active(&mut self) {
+        let mut active = std::mem::take(&mut self.active);
+        active.retain(|&p| {
+            let p = p as usize;
+            self.movable[p] || self.neighbours(p).any(|q| self.movable[q])
+        });
+        self.active = active;
+        self.fixed_since_rebuild = 0;
+        self.steps_since_rebuild = 0;
     }
 
     /// Internal force (paper section 2.2, Eq. 3; reference `satisfyConstraintSelf`): each particle
@@ -495,32 +538,53 @@ impl Cloth {
     /// particles move `DOUBLE_MOVE[rigidness]` of the height difference each; if only one is
     /// movable it moves `SINGLE_MOVE[rigidness]` of it. Particles are visited in index order and
     /// updated in place, each pair from both sides, as in the reference (single-threaded).
+    /// A pair of two fixed particles changes nothing, so particles that are fixed and have only
+    /// fixed neighbours are not in `active` and are skipped.
     fn satisfy_constraints(&mut self) {
         let r = self.params.rigidness as usize;
         let single = SINGLE_MOVE.get(r).copied().unwrap_or(1.0);
         let double = DOUBLE_MOVE.get(r).copied().unwrap_or(0.5);
-        let (nx, ny) = (self.nx as i64, self.ny as i64);
-        for j in 0..ny {
-            for i in 0..nx {
-                let p = (j * nx + i) as usize;
-                for &(dx, dy) in &NEIGHBOURS {
-                    let (a, b) = (i + dx as i64, j + dy as i64);
-                    if a < 0 || a >= nx || b < 0 || b >= ny {
+        let (nx, ny) = (self.nx, self.ny);
+        // Index offsets of the 16 neighbours, same order as `NEIGHBOURS`.
+        let offsets: [isize; 16] =
+            NEIGHBOURS.map(|(dx, dy)| dy as isize * nx as isize + dx as isize);
+        let h = &mut self.h[..];
+        let movable = &self.movable[..];
+        for &p in &self.active {
+            let p = p as usize;
+            let (i, j) = (p % nx, p / nx);
+            let p_movable = movable[p];
+            let mut hp = h[p];
+            let interior = i >= 2 && i + 2 < nx && j >= 2 && j + 2 < ny;
+            for (k, &(dx, dy)) in NEIGHBOURS.iter().enumerate() {
+                let q = if interior {
+                    (p as isize + offsets[k]) as usize
+                } else {
+                    let (a, b) = (i as i64 + dx as i64, j as i64 + dy as i64);
+                    if a < 0 || a >= nx as i64 || b < 0 || b >= ny as i64 {
                         continue;
                     }
-                    let q = (b * nx + a) as usize;
-                    let diff = self.h[q] - self.h[p];
-                    match (self.movable[p], self.movable[q]) {
-                        (true, true) => {
-                            self.h[p] += diff * double;
-                            self.h[q] -= diff * double;
-                        }
-                        (true, false) => self.h[p] += diff * single,
-                        (false, true) => self.h[q] -= diff * single,
-                        (false, false) => {}
-                    }
+                    b as usize * nx + a as usize
+                };
+                // Written as selects so the compiler can avoid unpredictable branches. A fixed
+                // particle's value is kept as it is (adding 0.0 could turn -0.0 into +0.0).
+                let q_movable = movable[q];
+                let hq = h[q];
+                let diff = hq - hp;
+                let amount = diff
+                    * if p_movable && q_movable {
+                        double
+                    } else {
+                        single
+                    };
+                if p_movable {
+                    hp += amount;
+                }
+                if q_movable {
+                    h[q] = hq - amount;
                 }
             }
+            h[p] = hp;
         }
     }
 
@@ -968,6 +1032,131 @@ mod tests {
         }
         assert_eq!(cloth.memory_bytes(), before);
         assert_eq!(before, cloth.particle_count() * 17);
+    }
+
+    /// The step function before the `active` list was added: every particle is visited, bounds
+    /// are checked per neighbour. Kept only to prove the faster version gives the same bits.
+    fn old_one_step(c: &mut Cloth) -> f32 {
+        let dt2 = c.params.time_step * c.params.time_step;
+        let fall = -GRAVITY * dt2 * dt2;
+        for k in 0..c.h.len() {
+            if c.movable[k] {
+                let cur = c.h[k];
+                c.h[k] = cur + (cur - c.prev[k]) * (1.0 - DAMPING) + fall;
+                c.prev[k] = cur;
+            }
+        }
+        let r = c.params.rigidness as usize;
+        let single = SINGLE_MOVE.get(r).copied().unwrap_or(1.0);
+        let double = DOUBLE_MOVE.get(r).copied().unwrap_or(0.5);
+        let (nx, ny) = (c.nx as i64, c.ny as i64);
+        for j in 0..ny {
+            for i in 0..nx {
+                let p = (j * nx + i) as usize;
+                for &(dx, dy) in &NEIGHBOURS {
+                    let (a, b) = (i + dx as i64, j + dy as i64);
+                    if a < 0 || a >= nx || b < 0 || b >= ny {
+                        continue;
+                    }
+                    let q = (b * nx + a) as usize;
+                    let diff = c.h[q] - c.h[p];
+                    match (c.movable[p], c.movable[q]) {
+                        (true, true) => {
+                            c.h[p] += diff * double;
+                            c.h[q] -= diff * double;
+                        }
+                        (true, false) => c.h[p] += diff * single,
+                        (false, true) => c.h[q] -= diff * single,
+                        (false, false) => {}
+                    }
+                }
+            }
+        }
+        let mut max_diff = 0.0f32;
+        for k in 0..c.h.len() {
+            if c.movable[k] {
+                max_diff = max_diff.max((c.h[k] - c.prev[k]).abs());
+            }
+        }
+        for k in 0..c.h.len() {
+            if c.movable[k] && c.h[k] < c.ihv[k] {
+                c.h[k] = c.ihv[k];
+                c.movable[k] = false;
+            }
+        }
+        max_diff
+    }
+
+    /// Same loop as `Cloth::step(u32::MAX)` but with `old_one_step`.
+    fn old_run(c: &mut Cloth) -> u32 {
+        while c.iterations_done < c.params.iterations {
+            let max_diff = old_one_step(c);
+            c.iterations_done += 1;
+            if max_diff < c.params.convergence_threshold {
+                break;
+            }
+        }
+        if c.params.slope_smooth {
+            c.slope_post_process();
+        }
+        c.iterations_done
+    }
+
+    fn assert_same_as_old(points: &[P], params: CsfParams) {
+        let build = || {
+            let mut c = Cloth::new(extent_of(points), params, 10_000_000).unwrap();
+            for &(x, y, z) in points {
+                c.add_point_for_ihv(x, y, z);
+            }
+            c.finish_ihv().unwrap();
+            c
+        };
+        let mut old = build();
+        let iterations = old_run(&mut old);
+        let mut new = build();
+        let progress = new.step(u32::MAX).unwrap();
+        assert!(progress.finished);
+        assert_eq!(progress.iterations_done, iterations);
+        assert_eq!(old.movable, new.movable);
+        let old_bits: Vec<u32> = old.h.iter().map(|v| v.to_bits()).collect();
+        let new_bits: Vec<u32> = new.h.iter().map(|v| v.to_bits()).collect();
+        assert!(old_bits == new_bits, "cloth heights differ");
+        for &(x, y, z) in points.iter().step_by(7) {
+            assert_eq!(old.is_ground(x, y, z), new.is_ground(x, y, z));
+        }
+    }
+
+    #[test]
+    fn same_bits_as_full_pass() {
+        let (a, _, _) = scene_a();
+        let (ramp30, _) = scene_ramp(30.0, 0.3);
+        let (ramp45, _) = scene_ramp(45.0, 0.1);
+        // Rough scene: random heights, so particles are fixed in a scattered order.
+        let mut rng = Lcg(99);
+        let rough: Vec<P> = (0..6000)
+            .map(|_| {
+                let (x, y) = (rng.next_f64() * 40.0, rng.next_f64() * 25.0);
+                (x, y, rng.next_f64() * 6.0 - 3.0)
+            })
+            .collect();
+        for points in [&a, &ramp30, &ramp45, &rough] {
+            for params in [CsfParams::standard(), CsfParams::steep()] {
+                assert_same_as_old(points, params);
+                // Forced run to the iteration cap, other rigidness values and no slope smoothing.
+                for rigidness in [1, 3, 15] {
+                    assert_same_as_old(
+                        points,
+                        CsfParams {
+                            convergence_threshold: 0.0,
+                            iterations: 150,
+                            rigidness,
+                            slope_smooth: rigidness != 3,
+                            ..params
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// Timing on a synthetic 1000x1000-particle cloth. Run with
