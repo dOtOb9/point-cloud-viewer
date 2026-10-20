@@ -70,11 +70,18 @@ pub fn missing_crs_warning(epsg: Option<u32>) -> Option<String> {
     }
 }
 
-/// Iterates the display points of a finished accumulator: one per non-empty cell, in
-/// image order. `cells_visited` says where it is, so a caller that must yield to an
-/// event loop (the Web) can take a batch at a time.
-pub struct DisplayPoints<'a> {
-    acc: &'a CellAccumulator,
+/// Number of non-empty cells (the display layer's point count). Walks every cell.
+pub fn filled_cells(acc: &CellAccumulator) -> u64 {
+    (0..acc.spec().cell_count() as usize)
+        .filter(|&i| acc.is_filled(i))
+        .count() as u64
+}
+
+/// Where a walk over the display points of a finished accumulator has got to. It does
+/// not borrow the accumulator (the caller passes it on every call), so a struct that
+/// owns both can keep one: the Web yields to the event loop between batches and
+/// resumes from `cells_visited`.
+pub struct DisplayCursor {
     next_cell: usize,
     /// Count is scaled so that this count becomes 65535 (1 for other kinds).
     count_max: f32,
@@ -82,10 +89,10 @@ pub struct DisplayPoints<'a> {
     extra_bytes_len: usize,
 }
 
-impl<'a> DisplayPoints<'a> {
+impl DisplayCursor {
     /// `extra_bytes_len` is the layout's extra bytes per point (the output keeps the
     /// source's point format, so the records must have the same size).
-    pub fn new(acc: &'a CellAccumulator, extra_bytes_len: usize) -> Self {
+    pub fn new(acc: &CellAccumulator, extra_bytes_len: usize) -> Self {
         let count_max = if acc.value_kind() == RasterValue::Count {
             (0..acc.spec().cell_count() as usize)
                 .filter_map(|i| acc.value_at(i))
@@ -94,7 +101,6 @@ impl<'a> DisplayPoints<'a> {
             1.0
         };
         Self {
-            acc,
             next_cell: 0,
             count_max,
             extra_bytes_len,
@@ -106,36 +112,37 @@ impl<'a> DisplayPoints<'a> {
         self.next_cell as u64
     }
 
-    pub fn cell_total(&self) -> u64 {
-        self.acc.spec().cell_count()
+    /// The next non-empty cell as a point, or `None` after the last cell.
+    pub fn next_record(&mut self, acc: &CellAccumulator) -> Option<LasPointRecord> {
+        let total = acc.spec().cell_count() as usize;
+        while self.next_cell < total {
+            let i = self.next_cell;
+            self.next_cell += 1;
+            if let Some(record) = self.record_at(acc, i) {
+                return Some(record);
+            }
+        }
+        None
     }
 
-    /// Number of non-empty cells (the display layer's point count). Walks every cell.
-    pub fn filled_cells(acc: &CellAccumulator) -> u64 {
-        (0..acc.spec().cell_count() as usize)
-            .filter(|&i| acc.is_filled(i))
-            .count() as u64
-    }
-
-    fn record_at(&self, i: usize) -> Option<LasPointRecord> {
-        let z = self.acc.display_z_at(i)?;
-        let (x, y) = self.acc.spec().cell_center(i);
-        let intensity = match self.acc.value_kind() {
+    fn record_at(&self, acc: &CellAccumulator, i: usize) -> Option<LasPointRecord> {
+        let z = acc.display_z_at(i)?;
+        let (x, y) = acc.spec().cell_center(i);
+        let intensity = match acc.value_kind() {
             RasterValue::Count => {
-                let v = self.acc.value_at(i).unwrap_or(0.0);
+                let v = acc.value_at(i).unwrap_or(0.0);
                 (v / self.count_max * 65_535.0)
                     .round()
                     .clamp(0.0, 65_535.0) as u16
             }
-            RasterValue::IntensityMean => self
-                .acc
+            RasterValue::IntensityMean => acc
                 .value_at(i)
                 .unwrap_or(0.0)
                 .round()
                 .clamp(0.0, 65_535.0) as u16,
             _ => 0,
         };
-        let [red, green, blue] = self.acc.rgb_at(i).unwrap_or([0, 0, 0]);
+        let [red, green, blue] = acc.rgb_at(i).unwrap_or([0, 0, 0]);
         Some(LasPointRecord {
             x,
             y,
@@ -153,19 +160,27 @@ impl<'a> DisplayPoints<'a> {
     }
 }
 
+/// The display points of a finished accumulator as an iterator: one per non-empty
+/// cell, in image order (this is what the desktop hands to the COPC writer).
+pub struct DisplayPoints<'a> {
+    acc: &'a CellAccumulator,
+    cursor: DisplayCursor,
+}
+
+impl<'a> DisplayPoints<'a> {
+    pub fn new(acc: &'a CellAccumulator, extra_bytes_len: usize) -> Self {
+        Self {
+            acc,
+            cursor: DisplayCursor::new(acc, extra_bytes_len),
+        }
+    }
+}
+
 impl Iterator for DisplayPoints<'_> {
     type Item = LasPointRecord;
 
     fn next(&mut self) -> Option<LasPointRecord> {
-        let total = self.acc.spec().cell_count() as usize;
-        while self.next_cell < total {
-            let i = self.next_cell;
-            self.next_cell += 1;
-            if let Some(record) = self.record_at(i) {
-                return Some(record);
-            }
-        }
-        None
+        self.cursor.next_record(self.acc)
     }
 }
 
@@ -193,7 +208,7 @@ mod tests {
         // Image order: NE (cell 1) first, then SW (cell 2).
         assert_eq!((points[0].x, points[0].y, points[0].z), (11.5, 21.5, 1.0));
         assert_eq!((points[1].x, points[1].y, points[1].z), (10.5, 20.5, 6.0));
-        assert_eq!(DisplayPoints::filled_cells(&a), 2);
+        assert_eq!(filled_cells(&a), 2);
     }
 
     #[test]

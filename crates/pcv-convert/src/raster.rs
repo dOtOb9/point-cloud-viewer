@@ -30,7 +30,7 @@ use pcv_core::crs::{crs_id_from_las_header, CrsId};
 use pcv_core::extract::{ExtractPoints, ExtractStats};
 use pcv_core::raster::output::{missing_crs_warning, write_geotiff};
 use pcv_core::raster::{
-    CellAccumulator, DisplayPoints, GridSpec, RasterError, RasterOptions, RasterValue,
+    filled_cells, CellAccumulator, DisplayPoints, GridSpec, RasterError, RasterOptions, RasterValue,
 };
 
 use crate::stage_timings::ConversionStageTimings;
@@ -211,7 +211,7 @@ where
     drop(out);
 
     // 2. Display COPC: one point per non-empty cell, handed to the writer lazily.
-    let display_points = DisplayPoints::filled_cells(&acc);
+    let display_points = filled_cells(&acc);
     let records = DisplayPoints::new(&acc, usize::from(layout.extra_bytes)).map(Ok);
     let mut ingest = copc_writer::IngestStageTimings::default();
     let mut post = copc_writer::PostProcessStageTimings::default();

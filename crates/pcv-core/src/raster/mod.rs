@@ -11,7 +11,7 @@ pub mod geotiff;
 pub mod grid;
 pub mod output;
 
-pub use output::{DisplayPoints, RasterOptions};
+pub use output::{filled_cells, DisplayCursor, DisplayPoints, RasterOptions};
 
 pub use grid::{CellAccumulator, ClassFilter, GridSpec, RasterValue, NODATA};
 
