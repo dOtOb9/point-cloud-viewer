@@ -99,7 +99,7 @@ export async function extractFromLayer(
   ctx: PointCloudToolsContext,
   layerId: string,
   filter: ExtractFilter,
-  label: "選択" | "断面",
+  label: "カット" | "断面",
   viewNormal?: readonly [number, number, number],
 ): Promise<void> {
   const layer = findLayer(ctx.getLayersState().layers, layerId);
@@ -126,14 +126,14 @@ export async function mergeSelectedLayers(ctx: PointCloudToolsContext): Promise<
     effectiveSelectedIds(current.layers, current.selectedLayerId, ctx.extraSelectedIds),
   );
   if (sources.length < 2) {
-    reportToolMessage(ctx, "結合するには点群のレイヤーを2つ以上選んでください（Ctrl か Shift を押しながらクリック）");
+    reportToolMessage(ctx, "合成するには点群のレイヤーを2つ以上選んでください（Ctrl か Shift を押しながらクリック）");
     return;
   }
   const paths = sources.map((l) => l.sourcePath as string);
   await runTool(
     ctx,
-    `結合（${sources.length}レイヤー）`,
-    `結合 (${sources.length})`,
+    `合成（${sources.length}レイヤー）`,
+    `合成 (${sources.length})`,
     (source, options) =>
       source instanceof WebSource ? source.mergeCopcs(paths, { ...options, isMobile: ctx.isMobile }) : tauriMergeCopcs(paths, options),
   );

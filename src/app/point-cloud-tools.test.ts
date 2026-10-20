@@ -66,11 +66,11 @@ describe("extractFromLayer", () => {
   it("adds the result as a new layer and sets the status ready", async () => {
     tauri.extractToCopc.mockResolvedValueOnce(result());
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
-    await extractFromLayer(h.ctx, "a", FILTER, "選択");
-    expect(h.opened).toEqual([["out.copc.laz", "選択 - 地形"]]);
+    await extractFromLayer(h.ctx, "a", FILTER, "カット");
+    expect(h.opened).toEqual([["out.copc.laz", "カット - 地形"]]);
     expect(h.statuses).toEqual([{ kind: "ready" }]);
     expect(h.errors).toEqual([]);
-    expect(h.progresses[0]).toEqual({ title: "選択（地形）", pointsRead: 0, totalPoints: 0 });
+    expect(h.progresses[0]).toEqual({ title: "カット（地形）", pointsRead: 0, totalPoints: 0 });
     expect(h.progresses[h.progresses.length - 1]).toBeNull();
     expect(h.ctx.toolLock.running).toBe(false);
   });
@@ -78,7 +78,7 @@ describe("extractFromLayer", () => {
   it("sends warnings to the error log but still opens the layer", async () => {
     tauri.extractToCopc.mockResolvedValueOnce(result(["注意です"]));
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
-    await extractFromLayer(h.ctx, "a", FILTER, "選択");
+    await extractFromLayer(h.ctx, "a", FILTER, "カット");
     expect(h.errors).toEqual([["注意です", "tool"]]);
     expect(h.opened).toHaveLength(1);
   });
@@ -97,14 +97,14 @@ describe("extractFromLayer", () => {
   it("reports a cancellation with the tool title", async () => {
     tauri.extractToCopc.mockRejectedValueOnce(new Error("変換をキャンセルしました"));
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
-    await extractFromLayer(h.ctx, "a", FILTER, "選択");
-    expect(h.errors).toEqual([["選択（地形）をキャンセルしました", "tool"]]);
+    await extractFromLayer(h.ctx, "a", FILTER, "カット");
+    expect(h.errors).toEqual([["カット（地形）をキャンセルしました", "tool"]]);
   });
 
   it("refuses to start while another tool runs, without touching the running one", async () => {
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
     h.ctx.toolLock.running = true;
-    await extractFromLayer(h.ctx, "a", FILTER, "選択");
+    await extractFromLayer(h.ctx, "a", FILTER, "カット");
     expect(h.errors).toEqual([["別の点群ツールを実行中です。終わってからやり直してください", "tool"]]);
     expect(tauri.extractToCopc).not.toHaveBeenCalled();
     expect(h.ctx.toolLock.running).toBe(true);
@@ -113,7 +113,7 @@ describe("extractFromLayer", () => {
 
   it("refuses a layer that is not a point cloud", async () => {
     const h = makeHarness([], null);
-    await extractFromLayer(h.ctx, "missing", FILTER, "選択");
+    await extractFromLayer(h.ctx, "missing", FILTER, "カット");
     expect(h.errors).toEqual([["点群のレイヤーを選んでください", "tool"]]);
   });
 });
@@ -124,7 +124,7 @@ describe("mergeSelectedLayers", () => {
     const h = makeHarness([pointCloudLayer("a", "A"), pointCloudLayer("b", "B")], "b", ["a", "b"]);
     await mergeSelectedLayers(h.ctx);
     expect(tauri.mergeCopcs).toHaveBeenLastCalledWith(["a.copc.laz", "b.copc.laz"], expect.anything());
-    expect(h.opened).toEqual([["out.copc.laz", "結合 (2)"]]);
+    expect(h.opened).toEqual([["out.copc.laz", "合成 (2)"]]);
     expect(h.statuses).toEqual([{ kind: "ready" }]);
   });
 

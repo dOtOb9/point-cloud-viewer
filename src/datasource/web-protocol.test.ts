@@ -184,12 +184,12 @@ describe("点群ツールのリクエスト(L2-C)", () => {
   it("toolMergeStartに複数ファイルを載せる", () => {
     const a = new File([new Uint8Array([1])], "a.copc.laz");
     const b = new File([new Uint8Array([2])], "b.copc.laz");
-    expect(buildToolMergeStartRequest(6, [a, b], false, "結合")).toEqual({
+    expect(buildToolMergeStartRequest(6, [a, b], false, "合成")).toEqual({
       type: "toolMergeStart",
       id: 6,
       files: [a, b],
       isMobile: false,
-      label: "結合",
+      label: "合成",
     });
   });
 });

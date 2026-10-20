@@ -992,7 +992,7 @@ pub async fn merge_copcs(
     state: State<'_, ConversionState>,
 ) -> Result<ToolOutput, String> {
     if paths.len() < 2 {
-        return Err("結合するレイヤーが2つ未満です".to_string());
+        return Err("合成するレイヤーが2つ未満です".to_string());
     }
     let mut fs_paths: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for raw in &paths {

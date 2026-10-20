@@ -10,7 +10,7 @@ interface Props {
 }
 
 /**
- * L2-F / ADR-0018: "点の選択". Draw a polygon on the screen; the points of the chosen layer that
+ * L2-F / ADR-0018: "カット". Draw a polygon on the screen; the points of the chosen layer that
  * fall inside it become a new layer (the source layer is not rewritten).
  *
  * - Active while the select tool is running.
@@ -22,7 +22,7 @@ export function SelectPointsButton({ viewer, layerTool }: Props) {
   return (
     <ToolbarButton
       icon={MousePointerClick}
-      label="点の選択"
+      label="カット"
       title="画面に多角形を描き、選んだレイヤーの中で多角形に映る点を新しいレイヤーにする（クリックで頂点、ダブルクリックか Enter で閉じる、Esc でやめる）"
       active={active}
       disabled={(!hasPointCloud(viewer) && !active) || isToolRunning(viewer)}

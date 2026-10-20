@@ -4,7 +4,7 @@ import { MIN_POLYGON_VERTICES, type LayerToolState } from "../../state/useLayerT
 import { projectPoint } from "../../renderer/screen-project";
 import { glassSurfaceClass } from "../common/glass";
 
-// L2-F: what is drawn over the 3D view while "点の選択" or "断面" is on, plus the guide at the bottom.
+// L2-F: what is drawn over the 3D view while "カット" or "断面" is on, plus the guide at the bottom.
 //  - Polygon: the vertices are stored in canvas pixels, so they are drawn as they are (the polygon is
 //    thrown away when the camera moves, see useLayerTool.ts).
 //  - Section: the two picked points are 3D, so they are projected again every frame with the renderer's
@@ -84,7 +84,7 @@ export function LayerToolOverlay({
 }
 
 function LayerToolHud({ tool, glassEnabled }: { tool: LayerToolState; glassEnabled: boolean }) {
-  const name = tool.mode === "select" ? "点の選択" : "断面";
+  const name = tool.mode === "select" ? "カット" : "断面";
   let guide: string;
   if (tool.mode === "select") {
     const n = tool.polygon.length;

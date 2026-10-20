@@ -553,15 +553,15 @@ export class WebSource implements DataSource {
    * both have a CRS differ.
    */
   async mergeCopcs(paths: string[], options?: ToolOptions & { isMobile?: boolean }): Promise<ToolResult> {
-    if (paths.length < 2) throw new Error("結合するレイヤーが2つ未満です");
+    if (paths.length < 2) throw new Error("合成するレイヤーが2つ未満です");
     const files = paths.map((p) => this.fileForToolInput(p));
     if (!(await opfs.isOpfsAvailable())) {
       throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
     }
     const insufficient = await checkInsufficientSpaceMulti(files, estimatePointCountForLasFile);
-    if (insufficient) throw new Error("空き容量が足りないため、結合を実行できません");
+    if (insufficient) throw new Error("空き容量が足りないため、合成を実行できません");
     const id = this.nextRequestId++;
-    const label = `結合: ${opfs.multiDisplayNameFor(files.map((f) => f.name).sort())}`;
+    const label = `合成: ${opfs.multiDisplayNameFor(files.map((f) => f.name).sort())}`;
     return await this.runTool(
       id,
       buildToolMergeStartRequest(id, files, options?.isMobile ?? false, label),
