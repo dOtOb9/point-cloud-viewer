@@ -304,6 +304,9 @@ pub struct TilePoint {
 #[derive(Debug, Clone)]
 pub struct TileData {
     pub core: TileRect,
+    /// The planned tile itself, for `owns()` (callers that decide ownership of things
+    /// other than points, such as thinning cells, need it).
+    pub tile: Tile,
     pub points: Vec<TilePoint>,
     /// Points decompressed for this tile (all points of the nodes read, including the
     /// ones outside the tile). Summing this over tiles gives the total work, which
@@ -324,6 +327,7 @@ where
     margin: f64,
     z_min: f64,
     z_max: f64,
+    extent: TileRect,
 }
 
 impl<R, F> TileReader<R, F>
@@ -343,6 +347,10 @@ where
         let tiles = plan_tiles_for_reader(&reader, cap, min_tile_size)?;
         let header = reader.header();
         let (z_min, z_max) = (header.min_z, header.max_z);
+        let extent = TileRect {
+            min: [header.min_x, header.min_y],
+            max: [header.max_x, header.max_y],
+        };
         Ok(Self {
             open,
             tiles,
@@ -350,7 +358,13 @@ where
             margin,
             z_min,
             z_max,
+            extent,
         })
+    }
+
+    /// The XY extent of the whole file (the header bounds) that the tiles cover.
+    pub fn extent(&self) -> TileRect {
+        self.extent
     }
 
     pub fn tiles(&self) -> &[Tile] {
@@ -400,6 +414,7 @@ where
             points,
             scanned_points: extract.stats().points_scanned,
             estimated_points: tile.estimated_points,
+            tile,
         })
     }
 }
@@ -426,11 +441,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use copc_writer::{
-        write_source, CopcPointFields, CopcPointSource, CopcWriteMetadata, CopcWriterParams,
-    };
+    use crate::test_support::{field, open_fn, write_copc};
+    use copc_reader::CopcReader;
+    use copc_writer::CopcPointFields;
     use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> TileRect {
         TileRect {
@@ -512,69 +526,6 @@ mod tests {
 
     // ---- reading (synthetic COPC) ----
 
-    struct Source(Vec<CopcPointFields>);
-
-    impl CopcPointSource for Source {
-        fn len(&self) -> usize {
-            self.0.len()
-        }
-        fn xyz(&self, i: usize) -> copc_core::Result<(f64, f64, f64)> {
-            Ok((self.0[i].x, self.0[i].y, self.0[i].z))
-        }
-        fn fields_into(&self, i: usize, out: &mut CopcPointFields) -> copc_core::Result<()> {
-            out.clone_from(&self.0[i]);
-            Ok(())
-        }
-    }
-
-    fn field(x: f64, y: f64, z: f64, id: f64) -> CopcPointFields {
-        CopcPointFields {
-            x,
-            y,
-            z,
-            intensity: 0,
-            return_number: 1,
-            number_of_returns: 1,
-            synthetic: 0,
-            key_point: 0,
-            withheld: 0,
-            overlap: 0,
-            scan_channel: 0,
-            scan_direction_flag: 0,
-            edge_of_flight_line: 0,
-            classification: 2,
-            user_data: 0,
-            scan_angle: 0.0,
-            point_source_id: 1,
-            gps_time: id, // unique id of the point
-            red: 0,
-            green: 0,
-            blue: 0,
-            extra_bytes: Vec::new(),
-        }
-    }
-
-    fn write_copc(dir: &Path, points: Vec<CopcPointFields>, max_per_node: u32) -> PathBuf {
-        let bounds = points.iter().fold(
-            copc_core::Bounds::point(points[0].x, points[0].y, points[0].z),
-            |mut b, p| {
-                b.extend(p.x, p.y, p.z);
-                b
-            },
-        );
-        let path = dir.join("tiles.copc.laz");
-        write_source(
-            &path,
-            &Source(points),
-            false,
-            bounds,
-            &CopcWriterParams::new(max_per_node),
-            &CopcWriteMetadata::default(),
-        )
-        .expect("write copc");
-        path
-    }
-
     /// A 60 x 40 grid of points at 1 m spacing (coordinates are exact in the LAS scale),
     /// so many points sit exactly on tile boundaries. `gps_time` = running number.
     fn grid_points() -> Vec<CopcPointFields> {
@@ -592,12 +543,6 @@ mod tests {
             }
         }
         v
-    }
-
-    type FileReader = CopcReader<std::io::BufReader<std::fs::File>>;
-
-    fn open_fn(path: &Path) -> impl FnMut() -> copc_core::Result<FileReader> + '_ {
-        move || CopcReader::from_path(path)
     }
 
     #[test]

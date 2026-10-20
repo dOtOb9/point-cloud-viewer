@@ -15,6 +15,8 @@ pub mod extract;
 mod node_format;
 pub mod raster;
 pub mod tiles;
+#[cfg(test)]
+mod test_support;
 
 pub use copc::{CloudInfo, CopcError, CopcFile, Hierarchy, HierarchyNode, NodeKey, Result};
 pub use node_format::{
