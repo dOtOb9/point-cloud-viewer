@@ -99,11 +99,15 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
 
   if (!layer) return null;
 
-  const placement = narrow ? "inset-x-0 bottom-12 h-[42vh] rounded-t-xl" : "bottom-14 right-3 h-[340px] w-[min(640px,calc(100%-1.5rem))] rounded-xl";
+  // Narrow: sit above the layer drawer's toggle button (bottom-16, 44 px tall, so its top is at 6.75rem) and below the
+  // drawer itself (z-10), so both stay usable. The wide panel has no such neighbour.
+  const placement = narrow
+    ? "inset-x-2 bottom-28 z-[5] h-[38vh] rounded-xl"
+    : "bottom-14 right-3 z-20 h-[340px] w-[min(640px,calc(100%-1.5rem))] rounded-xl";
   return (
     <div
       data-testid="section-panel"
-      className={`absolute z-20 flex flex-col overflow-hidden ${placement} ${glassSurfaceClass(glassEnabled)} shadow-xl`}
+      className={`absolute flex flex-col overflow-hidden ${placement} ${glassSurfaceClass(glassEnabled)} shadow-xl`}
     >
       <div className="flex items-center gap-2 px-3 py-1.5">
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={layer.name}>
