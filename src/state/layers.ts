@@ -16,6 +16,20 @@ export interface LayerDownload {
   fileName: string;
 }
 
+// --- G2: cross-section view ---
+/**
+ * What the cross-section tool used to cut this layer (file coordinates). The section panel needs A, B and `up` to turn
+ * the layer's points into `(s, z)`; later steps (G2-4 and after) keep the section line here too.
+ */
+export interface SectionInfo {
+  a: [number, number, number];
+  b: [number, number, number];
+  /** Direction of "up" of the view that picked A and B. */
+  up: [number, number, number];
+  /** Thickness of the slab in file units (both sides together). */
+  thickness: number;
+}
+
 /** 画面の「レイヤー」1件。ADR-0018 の「選んだレイヤーから新しいレイヤーを作る」の元になる単位。 */
 export interface ViewerLayer {
   /** UI・renderer 共通のレイヤー id（`layer-1` のような通し番号。消しても再利用しない）。 */
@@ -38,6 +52,8 @@ export interface ViewerLayer {
   download: LayerDownload | null;
   /** L2-D: present only on measurement layers (kind "measurement"); point-cloud layers have none. Test with `isMeasureLayer`. */
   measurement?: Measurement;
+  /** G2: present only on a layer made by the cross-section tool ("断面"). */
+  section?: SectionInfo;
 }
 
 /** 追加・削除の結果。一覧と選択中の id をひとまとめに返す（選択は常に一覧の中の id か null）。 */

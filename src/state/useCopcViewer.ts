@@ -17,6 +17,7 @@
 // The type re-exports below exist because src/ui must reach the renderer / datasource types through state (ARCHITECTURE.md rule 3).
 import { useCallback, useRef, useState, type RefObject } from "react";
 import { addOpenedLayer } from "../app/open-files";
+import { openSectionPanel } from "../app/section-view";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
@@ -28,6 +29,7 @@ import { useLayers } from "./useLayers";
 import { useOpfsStorage } from "./useOpfsStorage";
 import { usePointCloudTools } from "./usePointCloudTools";
 import { useRendererLifecycle } from "./useRendererLifecycle";
+import { useSectionView } from "./useSectionView";
 import { useTempDir } from "./useTempDir";
 import type { CopcViewerState } from "./viewer-types";
 import type { ViewerStatus } from "./viewer-status";
@@ -94,6 +96,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       return false;
     }
   }, [selectedBreakdownText]);
+  // --- G2: cross-section view --- the 2D panel's state; the section tool opens it when it has made a layer.
+  const sectionViewHook = useSectionView({ sourceRef, layersStateRef: layers.layersStateRef, reportError: errorLog.reportError });
   const tools = usePointCloudTools({
     rendererRef,
     sourceRef,
@@ -102,7 +106,9 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     extraSelectedIds: layers.extraSelectedIds,
     tempDir: tempDirSetting.tempDir,
     isMobile: display.deviceProfileDefaults.isMobile,
-    addOpenedLayer: (path, name) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null),
+    addOpenedLayer: (path, name, section) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null, section),
+    // --- G2: cross-section view ---
+    openSectionView: (layerId) => void openSectionPanel(sectionViewHook.sectionContext, layerId),
     focusLayer: layers.focusLayer,
     setLayerVisible: layers.setLayerVisible,
     setStatus,
@@ -143,6 +149,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     selectLayerRange: layers.selectLayerRange,
     toolProgress: tools.toolProgress,
     toolContext: tools.toolContext,
+    sectionView: sectionViewHook.sectionView, // G2
+    sectionContext: sectionViewHook.sectionContext, // G2
     removeLayer: layers.removeLayer,
     pickPoint,
     getViewSnapshot,

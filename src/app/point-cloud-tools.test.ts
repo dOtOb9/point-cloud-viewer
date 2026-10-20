@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataSource } from "../datasource/DataSource";
 import type { ExtractFilter, ToolResult } from "../datasource/tools";
-import type { ViewerLayer } from "../state/layers";
+import type { SectionInfo, ViewerLayer } from "../state/layers";
 import type { ViewerStatus } from "../state/viewer-status";
 import type { ToolProgressState } from "../state/viewer-types";
 import { cancelTool, extractFromLayer, hideSourceLayers, mergeSelectedLayers, type PointCloudToolsContext } from "./point-cloud-tools";
@@ -30,6 +30,7 @@ interface Harness {
   opened: Array<[string, string]>;
   focused: string[];
   hidden: string[];
+  sectionViews: string[];
 }
 
 function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extraSelectedIds: string[] = []): Harness {
@@ -39,6 +40,7 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
   const opened: Array<[string, string]> = [];
   const focused: string[] = [];
   const hidden: string[] = [];
+  const sectionViews: string[] = [];
   const source = {} as DataSource;
   const ctx: PointCloudToolsContext = {
     getSource: () => source,
@@ -51,6 +53,7 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
       opened.push([path, name]);
       return { layerId: "new-layer" };
     },
+    openSectionView: (id) => sectionViews.push(id),
     focusLayer: (id) => focused.push(id),
     setLayerVisible: (id, visible) => {
       if (!visible) hidden.push(id);
@@ -60,7 +63,7 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
     reportError: (message, src) => errors.push([message, src]),
     toolLock: { running: false },
   };
-  return { ctx, statuses, errors, progresses, opened, focused, hidden };
+  return { ctx, statuses, errors, progresses, opened, focused, hidden, sectionViews };
 }
 
 function result(warnings: string[] = []): ToolResult {
@@ -123,6 +126,25 @@ describe("extractFromLayer", () => {
     const h = makeHarness([], null);
     await extractFromLayer(h.ctx, "missing", FILTER, "カット");
     expect(h.errors).toEqual([["点群のレイヤーを選んでください", "tool"]]);
+  });
+
+  it("opens the section panel for a cross section, not for a cut", async () => {
+    const section = { a: [0, 0, 0], b: [10, 0, 0], up: [0, 0, 1], thickness: 1 } as SectionInfo;
+    tauri.extractToCopc.mockResolvedValue(result());
+    const cut = makeHarness([pointCloudLayer("a", "地形")], "a");
+    await extractFromLayer(cut.ctx, "a", FILTER, "カット");
+    expect(cut.sectionViews).toEqual([]);
+    const cross = makeHarness([pointCloudLayer("a", "地形")], "a");
+    await extractFromLayer(cross.ctx, "a", FILTER, "断面", [0, 1, 0], section);
+    expect(cross.sectionViews).toEqual(["new-layer"]);
+  });
+
+  it("does not open the section panel when the tool fails", async () => {
+    const section = { a: [0, 0, 0], b: [10, 0, 0], up: [0, 0, 1], thickness: 1 } as SectionInfo;
+    tauri.extractToCopc.mockRejectedValueOnce(new Error("失敗"));
+    const h = makeHarness([pointCloudLayer("a", "地形")], "a");
+    await extractFromLayer(h.ctx, "a", FILTER, "断面", [0, 1, 0], section);
+    expect(h.sectionViews).toEqual([]);
   });
 });
 

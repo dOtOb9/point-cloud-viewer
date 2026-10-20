@@ -186,7 +186,14 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
         return;
       }
       reset(null);
-      void extractFromLayer(viewerRef.current.toolContext, layer.id, box.filter, "断面", box.normal);
+      // --- G2: cross-section view --- the layer keeps A, B, up and the thickness for the 2D panel.
+      const section = {
+        a: [points[0][0], points[0][1], points[0][2]] as [number, number, number],
+        b: [points[1][0], points[1][1], points[1][2]] as [number, number, number],
+        up: [up[0], up[1], up[2]] as [number, number, number],
+        thickness,
+      };
+      void extractFromLayer(viewerRef.current.toolContext, layer.id, box.filter, "断面", box.normal, section);
     },
     [reset, setSectionBoth, showNotice, targetLayer],
   );

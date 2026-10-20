@@ -12,7 +12,7 @@ import type { DataSource } from "../datasource/DataSource";
 import type { ExtractFilter, ToolOptions, ToolResult } from "../datasource/tools";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { horizontalBasis } from "../renderer/up-axis";
-import { findLayer, isMeasureLayer, type LayersState } from "../state/layers";
+import { findLayer, isMeasureLayer, type LayersState, type SectionInfo } from "../state/layers";
 import { effectiveSelectedIds, toolSourceLayers } from "../state/layer-selection";
 import { sectionYaw } from "../state/tool-math";
 import type { ToolProgressState } from "../state/viewer-types";
@@ -33,7 +33,10 @@ export interface PointCloudToolsContext {
   tempDir: string | null;
   isMobile: boolean;
   /** Open `path` as a new layer called `name`; returns its id (this is `addOpenedLayer` of src/app/open-files.ts). */
-  addOpenedLayer: (path: string, name: string) => Promise<{ layerId: string }>;
+  addOpenedLayer: (path: string, name: string, section?: SectionInfo) => Promise<{ layerId: string }>;
+  // --- G2: cross-section view ---
+  /** Open the 2D section panel for a layer the cross-section tool has just made (`openSectionPanel`, src/app/section-view.ts). */
+  openSectionView: (layerId: string) => void;
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
   /** Show or hide a layer, the same function the layer list's checkbox calls (React state and renderer). */
   setLayerVisible: (id: string, visible: boolean) => void;
@@ -74,6 +77,8 @@ async function runTool(
   sourceLayerIds: readonly string[],
   run: (source: DataSource, options: ToolOptions) => Promise<ToolResult>,
   viewNormal?: readonly [number, number, number],
+  // --- G2: cross-section view ---
+  section?: SectionInfo,
 ): Promise<void> {
   const source = ctx.getSource();
   if (!source) return;
@@ -89,7 +94,7 @@ async function runTool(
       onProgress: (p) => ctx.setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints }),
     });
     for (const warning of result.warnings) reportToolMessage(ctx, warning);
-    const { layerId } = await ctx.addOpenedLayer(result.outputPath, resultName);
+    const { layerId } = await ctx.addOpenedLayer(result.outputPath, resultName, section);
     // A tool that worked means the viewer is fine now, so the panel's old open error goes away.
     // Nothing is lost: an open failure is also in the error log / banner history (`failOpen` in src/app/open-files.ts).
     ctx.setStatus({ kind: "ready" });
@@ -99,6 +104,9 @@ async function runTool(
       const { right, forward } = horizontalBasis(ctx.getViewUp());
       ctx.focusLayer(layerId, { yaw: sectionYaw(viewNormal, right, forward), pitch: 0 });
     }
+    // --- G2: cross-section view ---
+    // A cross section also opens the 2D panel. Its own failure is reported by the panel, so it does not fail the tool.
+    if (section) ctx.openSectionView(layerId);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     reportToolMessage(ctx, message.includes("キャンセル") ? `${title}をキャンセルしました` : message);
@@ -115,6 +123,8 @@ export async function extractFromLayer(
   filter: ExtractFilter,
   label: "カット" | "断面",
   viewNormal?: readonly [number, number, number],
+  // --- G2: cross-section view ---
+  section?: SectionInfo,
 ): Promise<void> {
   const layer = findLayer(ctx.getLayersState().layers, layerId);
   if (!layer || isMeasureLayer(layer) || layer.sourcePath === undefined) {
@@ -130,6 +140,7 @@ export async function extractFromLayer(
     (source, options) =>
       source instanceof WebSource ? source.extractToCopc(path, filter, options) : tauriExtractToCopc(path, filter, options),
     viewNormal,
+    section,
   );
 }
 

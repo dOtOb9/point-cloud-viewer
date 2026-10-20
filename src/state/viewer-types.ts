@@ -17,6 +17,7 @@ import type { ErrorLog } from "./useErrorLog";
 import type { Layers } from "./useLayers";
 import type { OpfsStorage } from "./useOpfsStorage";
 import type { PointCloudTools } from "./usePointCloudTools";
+import type { SectionViewHook } from "./useSectionView";
 import type { TempDirSetting } from "./useTempDir";
 
 /** Progress of the running point-cloud tool (L2-F). `totalPoints` is 0 until the first progress arrives. */
@@ -111,6 +112,7 @@ export type CopcViewerState = Pick<
   > &
   Pick<ErrorLog, "gpuErrors" | "errorHistory" | "reportError" | "dismissGpuError"> &
   Pick<PointCloudTools, "toolProgress" | "toolContext"> &
+  Pick<SectionViewHook, "sectionView" | "sectionContext"> & // G2: cross-section view
   Pick<
     OpfsStorage,
     | "opfsStorageInfo"

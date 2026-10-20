@@ -19,7 +19,7 @@ import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX } from "../renderer/layer-focus";
-import { initialColorModeFor, type LayerDownload, type ViewerLayer } from "../state/layers";
+import { initialColorModeFor, type LayerDownload, type SectionInfo, type ViewerLayer } from "../state/layers";
 import { currentDeviceMeta } from "../state/device-meta";
 import type { ViewerStatus } from "../state/viewer-status";
 
@@ -201,6 +201,8 @@ export async function addOpenedLayer(
   path: string,
   name: string,
   attachment: ConversionAttachment | null,
+  // --- G2: cross-section view ---
+  section?: SectionInfo,
 ): Promise<{ layerId: string; pointCount: number; nodeCount: number }> {
   const renderer = ctx.getRenderer();
   const source = ctx.getSource();
@@ -236,6 +238,7 @@ export async function addOpenedLayer(
     sourcePath: path,
     conversionBreakdownText: attachment?.breakdownText ?? null,
     download: attachment?.download ?? null,
+    ...(section ? { section } : {}),
   });
   // A CRS read failure does not stop the file from opening (ADR-0015). The text goes to the error log.
   if (opened.info.crs.error) {
