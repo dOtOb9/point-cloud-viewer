@@ -102,6 +102,9 @@ export function formatTick(value: number, step: number): string {
   return (value + 0).toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
+/** Height reserved for one axis label (11 px font). */
+const LABEL_HEIGHT_PX = 14;
+
 export interface DrawSectionOptions {
   /** Device pixels per CSS pixel (the canvas is `cssWidth * dpr` wide). */
   dpr: number;
@@ -216,7 +219,10 @@ function drawAxes(
   }
   ctx.globalAlpha = 0.9;
   for (const t of zTicks) {
-    ctx.fillText(formatTick(t, zStep), 3, view.offsetY - (t / vScale) * view.scale - 1);
+    const y = view.offsetY - (t / vScale) * view.scale;
+    // The label sits just above its line: keep it inside the drawable area (not cut at the top, not on the s labels).
+    if (y < LABEL_HEIGHT_PX || y > cssHeight - LABEL_HEIGHT_PX) continue;
+    ctx.fillText(formatTick(t, zStep), 3, y - 1);
   }
 
   // The unit, once, at the top right.
