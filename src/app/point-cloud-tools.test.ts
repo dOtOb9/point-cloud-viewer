@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataSource } from "../datasource/DataSource";
-import type { ExtractFilter, ToolResult } from "../datasource/tools";
 import type { SectionInfo, ViewerLayer } from "../state/layers";
+import type { ExtractFilter, RasterLayerInfo, RasterRequest, ToolResult } from "../datasource/tools";
 import type { ViewerStatus } from "../state/viewer-status";
 import type { ToolProgressState } from "../state/viewer-types";
-import { cancelTool, extractFromLayer, hideSourceLayers, mergeSelectedLayers, type PointCloudToolsContext } from "./point-cloud-tools";
+import { cancelTool, extractFromLayer, hideSourceLayers, mergeSelectedLayers, rasterizeLayer, type PointCloudToolsContext } from "./point-cloud-tools";
 
 // The Tauri commands are what a fake (non-Web) source reaches; each test decides what they answer.
 const tauri = vi.hoisted(() => ({
   extractToCopc: vi.fn(),
+  rasterizeToCopc: vi.fn(),
   mergeCopcs: vi.fn(),
   cancelLasConversion: vi.fn(async () => {}),
 }));
@@ -28,6 +29,7 @@ interface Harness {
   errors: Array<[string, string | undefined]>;
   progresses: Array<ToolProgressState | null>;
   opened: Array<[string, string]>;
+  rasters: Array<RasterLayerInfo | undefined>;
   focused: string[];
   hidden: string[];
   sectionViews: string[];
@@ -38,6 +40,7 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
   const errors: Array<[string, string | undefined]> = [];
   const progresses: Array<ToolProgressState | null> = [];
   const opened: Array<[string, string]> = [];
+  const rasters: Array<RasterLayerInfo | undefined> = [];
   const focused: string[] = [];
   const hidden: string[] = [];
   const sectionViews: string[] = [];
@@ -49,7 +52,8 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
     extraSelectedIds,
     tempDir: null,
     isMobile: false,
-    addOpenedLayer: async (path, name) => {
+    addOpenedLayer: async (path, name, _section, raster) => {
+      rasters.push(raster);
       opened.push([path, name]);
       return { layerId: "new-layer" };
     },
@@ -63,7 +67,7 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
     reportError: (message, src) => errors.push([message, src]),
     toolLock: { running: false },
   };
-  return { ctx, statuses, errors, progresses, opened, focused, hidden, sectionViews };
+  return { ctx, statuses, errors, progresses, opened, rasters, focused, hidden, sectionViews };
 }
 
 function result(warnings: string[] = []): ToolResult {
@@ -166,6 +170,69 @@ describe("mergeSelectedLayers", () => {
     expect(h.opened).toEqual([]);
   });
 });
+
+// --- G1: rasterize ---
+describe("rasterizeLayer", () => {
+  const REQUEST: RasterRequest = { cellSize: 2, value: "zMean", groundOnly: false };
+  const RASTER: RasterLayerInfo = {
+    ...REQUEST,
+    width: 5,
+    height: 4,
+    geotiff: { path: "raster.tif", download: null },
+  };
+
+  function colouredLayer(id: string, name: string, hasColor: boolean): ViewerLayer {
+    return { ...pointCloudLayer(id, name), info: { hasColor } } as unknown as ViewerLayer;
+  }
+
+  it("opens the display layer with the raster info and hides the source", async () => {
+    tauri.rasterizeToCopc.mockResolvedValueOnce({ ...result(["座標系がありません"]), raster: RASTER });
+    const h = makeHarness([colouredLayer("a", "地形", true)], "a");
+    await rasterizeLayer(h.ctx, "a", REQUEST);
+    expect(tauri.rasterizeToCopc).toHaveBeenLastCalledWith("a.copc.laz", REQUEST, expect.anything());
+    expect(h.opened).toEqual([["out.copc.laz", "ラスタ - 地形"]]);
+    expect(h.rasters).toEqual([RASTER]);
+    expect(h.hidden).toEqual(["a"]);
+    expect(h.statuses).toEqual([{ kind: "ready" }]);
+    // The warning (no CRS in the GeoTIFF) goes to the error log.
+    expect(h.errors).toEqual([["座標系がありません", "tool"]]);
+    expect(h.progresses[0]).toEqual({ title: "ラスタ化（地形）", pointsRead: 0, totalPoints: 0 });
+    expect(h.ctx.toolLock.running).toBe(false);
+  });
+
+  it("leaves the source visible and adds no layer when the run fails", async () => {
+    tauri.rasterizeToCopc.mockRejectedValueOnce(new Error("ラスタが大きすぎます"));
+    const h = makeHarness([colouredLayer("a", "地形", true)], "a");
+    await rasterizeLayer(h.ctx, "a", REQUEST);
+    expect(h.errors).toEqual([["ラスタが大きすぎます", "tool"]]);
+    expect(h.hidden).toEqual([]);
+    expect(h.opened).toEqual([]);
+    expect(h.progresses[h.progresses.length - 1]).toBeNull();
+  });
+
+  it("leaves the source visible when cancelled", async () => {
+    tauri.rasterizeToCopc.mockRejectedValueOnce(new Error("キャンセルされた"));
+    const h = makeHarness([colouredLayer("a", "地形", true)], "a");
+    await rasterizeLayer(h.ctx, "a", REQUEST);
+    expect(h.errors).toEqual([["ラスタ化（地形）をキャンセルしました", "tool"]]);
+    expect(h.hidden).toEqual([]);
+  });
+
+  it("refuses RGB for a layer without colour before calling Rust", async () => {
+    const h = makeHarness([colouredLayer("a", "地形", false)], "a");
+    await rasterizeLayer(h.ctx, "a", { ...REQUEST, value: "rgbMean" });
+    expect(h.errors).toEqual([["このレイヤーは色を持たないため、色(RGB)のラスタは作れません", "tool"]]);
+    expect(tauri.rasterizeToCopc).not.toHaveBeenCalled();
+    expect(h.progresses).toEqual([]);
+  });
+
+  it("refuses a layer that is not a point cloud", async () => {
+    const h = makeHarness([], null);
+    await rasterizeLayer(h.ctx, "missing", REQUEST);
+    expect(h.errors).toEqual([["点群のレイヤーを選んでください", "tool"]]);
+  });
+});
+// ---
 
 describe("hideSourceLayers", () => {
   it("hides exactly the given layers", () => {

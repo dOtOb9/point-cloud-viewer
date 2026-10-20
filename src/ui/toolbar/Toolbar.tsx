@@ -6,6 +6,7 @@ import { glassSurfaceClass } from "../common/glass";
 import { MeasureButton } from "./buttons/MeasureButton";
 import { MergeLayersButton } from "./buttons/MergeLayersButton";
 import { OpenFileButton } from "./buttons/OpenFileButton";
+import { RasterizeButton } from "./buttons/RasterizeButton";
 import { SectionButton } from "./buttons/SectionButton";
 import { SelectPointsButton } from "./buttons/SelectPointsButton";
 import { SettingsButton } from "./buttons/SettingsButton";
@@ -20,6 +21,8 @@ interface Props {
   measure: MeasureToolState;
   /** L2-F: state of the point selection / cross section tools. */
   layerTool: LayerToolState;
+  /** G1: opens the rasterize dialog. */
+  onOpenRaster: () => void;
 }
 
 /**
@@ -41,7 +44,7 @@ interface Props {
  * Below 768px (`useNarrowViewport`) it only stretches to the edges and drops the rounded
  * corners. Touch targets are 44px or more (buttons are `min-h-14` = 56px).
  */
-export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool }: Props) {
+export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster }: Props) {
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useToolbarDragScroll();
   // Narrow screens: stretched to the edges, no rounded corners. Wide: floats a little, rounded.
@@ -63,6 +66,7 @@ export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTo
       <SelectPointsButton viewer={viewer} layerTool={layerTool} />
       <SectionButton viewer={viewer} layerTool={layerTool} />
       <MergeLayersButton viewer={viewer} />
+      <RasterizeButton viewer={viewer} onOpen={onOpenRaster} />
       <ToolbarSeparator />
       <SettingsButton onOpenSettings={onOpenSettings} />
     </div>

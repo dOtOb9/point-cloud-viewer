@@ -5,6 +5,7 @@
 // 「選択中を消したら先頭を選ぶ」のような規則を直接テストできないため。
 
 import type { CloudInfo } from "../datasource/DataSource";
+import type { RasterLayerInfo } from "../datasource/tools";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX, sanitizePointSize } from "../renderer/layer-focus";
@@ -54,6 +55,10 @@ export interface ViewerLayer {
   measurement?: Measurement;
   /** G2: present only on a layer made by the cross-section tool ("断面"). */
   section?: SectionInfo;
+  // --- G1: rasterize ---
+  /** Present only on the display layer a Rasterize run made: cell size, value kind, grid size and the GeoTIFF. */
+  raster?: RasterLayerInfo;
+  // ---
 }
 
 /** 追加・削除の結果。一覧と選択中の id をひとまとめに返す（選択は常に一覧の中の id か null）。 */

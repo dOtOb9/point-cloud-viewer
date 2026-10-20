@@ -13,6 +13,7 @@ import { MeasureOverlay } from "../tools/MeasureOverlay";
 import { LayerToolOverlay } from "../tools/LayerToolOverlay";
 import { SectionDialog } from "../tools/SectionDialog";
 import { SectionPanel } from "../section/SectionPanel";
+import { RasterDialog } from "../tools/RasterDialog";
 import { ToolProgressDialog } from "../tools/ToolProgressDialog";
 import { ViewerPanel } from "./ViewerPanel";
 import { ConversionDialog } from "../dialogs/ConversionDialog";
@@ -53,6 +54,8 @@ export function AppShell() {
   // デスクトップ幅では開いていることが必要)。
   const [layerOpen, setLayerOpen] = useState(() => !(typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // G1: the Rasterize dialog.
+  const [rasterOpen, setRasterOpen] = useState(false);
   // ファイルのドラッグ&ドロップで開く(ADR-0017)。ドラッグ中は案内を重ねて出す。
   const dragging = useFileDrop((items) => openFiles(viewer.fileOpenContext, items));
   const [conversionDialogOpen, setConversionDialogOpen] = useState(false);
@@ -113,6 +116,7 @@ export function AppShell() {
         onOpenSettings={() => setSettingsOpen(true)}
         measure={measure}
         layerTool={layerTool}
+        onOpenRaster={() => setRasterOpen(true)}
       />
 
       <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
@@ -145,6 +149,8 @@ export function AppShell() {
       <SectionDialog viewer={viewer} tool={layerTool} />
       {/* G2: the 2D cross-section panel, opened when a cross section has been made. */}
       <SectionPanel viewer={viewer} glassEnabled={glassEnabled} />
+      {/* G1: the Rasterize dialog (opened from the toolbar button). */}
+      <RasterDialog viewer={viewer} open={rasterOpen} onClose={() => setRasterOpen(false)} />
       <ToolProgressDialog viewer={viewer} />
 
       <ConversionDialog viewer={viewer} open={conversionDialogVisible} onClose={() => setConversionDialogOpen(false)} />

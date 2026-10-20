@@ -106,7 +106,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     extraSelectedIds: layers.extraSelectedIds,
     tempDir: tempDirSetting.tempDir,
     isMobile: display.deviceProfileDefaults.isMobile,
-    addOpenedLayer: (path, name, section) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null, section),
+    addOpenedLayer: (path, name, section, raster) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null, section, raster),
     // --- G2: cross-section view ---
     openSectionView: (layerId) => void openSectionPanel(sectionViewHook.sectionContext, layerId),
     focusLayer: layers.focusLayer,
