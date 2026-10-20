@@ -98,3 +98,5 @@ path = "src/main.rs"
 # 依存グラフに入っているため、ワークスペース全体では新規クレートは増えない。
 [dev-dependencies]
 chrono = "0.4"
+# G1-3: raster.rs's tests read the GeoTIFF back (same version as pcv-core's dev-dependency).
+tiff = "0.11.3"

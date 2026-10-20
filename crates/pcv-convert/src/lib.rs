@@ -36,6 +36,7 @@ pub mod disk_space;
 pub mod extract;
 pub mod merge;
 pub mod output_path;
+pub mod raster;
 pub mod stage_timings;
 pub mod streaming;
 pub mod thin_filter;
