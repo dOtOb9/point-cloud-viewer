@@ -334,10 +334,11 @@ impl CellAccumulator {
         (0..self.spec.cell_count() as usize).map(move |i| self.value_at(i).unwrap_or(nodata))
     }
 
-    /// All cells in image order as RGB; empty cells are black (0, 0, 0), because an
-    /// RGB GeoTIFF has no NoData value here. Feed it to `geotiff::write_rgb_u16`.
-    pub fn rgb_samples(&self) -> impl Iterator<Item = [u16; 3]> + '_ {
-        (0..self.spec.cell_count() as usize).map(move |i| self.rgb_at(i).unwrap_or([0, 0, 0]))
+    /// All cells in image order as RGB; empty cells are `None`, which
+    /// `geotiff::write_rgb_u16` writes as a transparent pixel (alpha band 0), not as
+    /// black. Feed it to that function.
+    pub fn rgb_samples(&self) -> impl Iterator<Item = Option<[u16; 3]>> + '_ {
+        (0..self.spec.cell_count() as usize).map(move |i| self.rgb_at(i))
     }
 }
 
@@ -497,10 +498,10 @@ mod tests {
         assert_eq!(a.rgb_at(2), Some([65_535, 5, 200]));
         assert_eq!(a.rgb_at(0), None);
         assert_eq!(a.value_at(2), None, "RGB has no single-band value");
-        let px: Vec<[u16; 3]> = a.rgb_samples().collect();
+        let px: Vec<Option<[u16; 3]>> = a.rgb_samples().collect();
         assert_eq!(px.len(), 4);
-        assert_eq!(px[0], [0, 0, 0]);
-        assert_eq!(px[2], [65_535, 5, 200]);
+        assert_eq!(px[0], None);
+        assert_eq!(px[2], Some([65_535, 5, 200]));
     }
 
     #[test]

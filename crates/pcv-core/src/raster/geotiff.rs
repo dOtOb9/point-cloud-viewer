@@ -29,7 +29,8 @@
 //!   `ProjectedCSTypeGeoKey = epsg`. Without a code no CRS keys are written (a
 //!   "projected" model type with no CRS would claim more than we know); the caller is
 //!   expected to warn.
-//! - `GDAL_NODATA` (42113, ASCII) for the float form.
+//! - `GDAL_NODATA` (42113, ASCII) for the float form. The RGB form has an alpha band
+//!   instead (0 for empty cells).
 
 use std::io::Write;
 
@@ -98,6 +99,8 @@ struct PixelFormat {
     sample_format: u16,
     /// 1 = BlackIsZero (single band), 2 = RGB.
     photometric: u16,
+    /// The last sample is an unassociated alpha channel (`ExtraSamples` = 2).
+    has_alpha: bool,
 }
 
 /// Writes a single-band float32 GeoTIFF. `values` is every cell in image order (row 0
@@ -120,6 +123,7 @@ pub fn write_f32<W: Write>(
         bits_per_sample: 32,
         sample_format: 3,
         photometric: 1,
+        has_alpha: false,
     };
     let nodata_text = format!("{nodata}");
     write_tiff(
@@ -133,23 +137,32 @@ pub fn write_f32<W: Write>(
     )
 }
 
-/// Writes a 3-band u16 RGB GeoTIFF (no NoData tag). `pixels` is every cell in image order.
+/// Writes a 4-band u16 GeoTIFF: red, green, blue and an alpha band (`ExtraSamples`
+/// = 2, unassociated alpha). `pixels` is every cell in image order; `None` is an
+/// empty cell and is written as (0, 0, 0) with alpha 0, i.e. transparent, so that
+/// viewers do not show empty cells as black. Cells with a colour get alpha 65535.
 pub fn write_rgb_u16<W: Write>(
     out: &mut W,
     spec: &GridSpec,
     epsg: Option<u32>,
-    pixels: impl Iterator<Item = [u16; 3]>,
+    pixels: impl Iterator<Item = Option<[u16; 3]>>,
 ) -> Result<(), RasterError> {
     let format = PixelFormat {
-        samples_per_pixel: 3,
+        samples_per_pixel: 4,
         bits_per_sample: 16,
         sample_format: 1,
         photometric: 2,
+        has_alpha: true,
     };
     write_tiff(out, spec, epsg, &format, None, pixels, |p, buf| {
-        for c in p {
+        let (rgb, alpha) = match p {
+            Some(rgb) => (*rgb, u16::MAX),
+            None => ([0, 0, 0], 0),
+        };
+        for c in rgb {
             buf.extend_from_slice(&c.to_le_bytes());
         }
+        buf.extend_from_slice(&alpha.to_le_bytes());
     })
 }
 
@@ -176,10 +189,15 @@ fn build_entries(
         longs(278, &[rows_per_strip]),                          // RowsPerStrip
         longs(279, strip_counts),                               // StripByteCounts
         shorts(284, &[1]),                                      // PlanarConfiguration: chunky
-        shorts(339, &vec![format.sample_format; n]),            // SampleFormat
+    ];
+    if format.has_alpha {
+        entries.push(shorts(338, &[2])); // ExtraSamples: unassociated alpha
+    }
+    entries.extend([
+        shorts(339, &vec![format.sample_format; n]), // SampleFormat
         doubles(33550, &[spec.cell_size, spec.cell_size, 0.0]), // ModelPixelScaleTag
         doubles(33922, &[0.0, 0.0, 0.0, spec.origin_x, spec.top_y(), 0.0]), // ModelTiepointTag
-    ];
+    ]);
     if let Some(code) = epsg {
         // Header (version 1.0.0, 3 keys), then key = (id, location 0 = inline, count 1, value).
         entries.push(shorts(
@@ -427,20 +445,29 @@ mod tests {
     #[test]
     fn rgb_roundtrip() {
         let s = spec(3, 2);
-        let pixels = (0..6u16).map(|i| [i * 1000, 65_535 - i, i]);
+        // Pixel 4 is an empty cell.
+        let pixels = (0..6u16).map(|i| (i != 4).then_some([i * 1000, 65_535 - i, i]));
         let mut out = Vec::new();
         write_rgb_u16(&mut out, &s, Some(6677), pixels).expect("write");
         let mut d = Decoder::new(Cursor::new(out)).expect("decoder");
         assert_eq!(d.dimensions().expect("dims"), (3, 2));
         match d.read_image().expect("image") {
             DecodingResult::U16(v) => {
-                assert_eq!(v.len(), 18);
-                assert_eq!(&v[0..3], &[0, 65_535, 0]);
-                assert_eq!(&v[15..18], &[5000, 65_530, 5]);
+                assert_eq!(v.len(), 24);
+                assert_eq!(&v[0..4], &[0, 65_535, 0, 65_535]);
+                // The empty cell is transparent black.
+                assert_eq!(&v[16..20], &[0, 0, 0, 0]);
+                assert_eq!(&v[20..24], &[5000, 65_530, 5, 65_535]);
             }
             other => panic!("unexpected sample type: {other:?}"),
         }
         assert!(d.find_tag(Tag::GdalNodata).expect("find").is_none());
+        // ExtraSamples = 2 (unassociated alpha) and four samples per pixel.
+        assert_eq!(
+            d.get_tag_u32_vec(Tag::ExtraSamples).expect("extra"),
+            vec![2]
+        );
+        assert_eq!(d.get_tag_u32(Tag::SamplesPerPixel).expect("spp"), 4);
     }
 
     #[test]
