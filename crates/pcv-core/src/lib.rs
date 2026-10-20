@@ -12,6 +12,7 @@ mod copc;
 pub mod crs;
 pub mod extract;
 mod node_format;
+pub mod raster;
 pub mod tiles;
 
 pub use copc::{CloudInfo, CopcError, CopcFile, Hierarchy, HierarchyNode, NodeKey, Result};

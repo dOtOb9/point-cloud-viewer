@@ -272,7 +272,8 @@ pub type NodeCallback<'a> = Box<dyn FnMut(&ExtractStats) -> copc_core::Result<()
 /// Iterator that yields only the points of a COPC file that match a condition.
 pub struct ExtractPoints<'a, R: Read + Seek + Send> {
     reader: CopcReader<R>,
-    filter: ExtractFilter,
+    /// `None` means "every point" (see `ExtractPoints::all`).
+    filter: Option<ExtractFilter>,
     pending: VecDeque<VoxelKey>,
     /// Matching points of the node being read (dropped once consumed).
     current: VecDeque<LasPointRecord>,
@@ -306,12 +307,41 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         }
         Ok(Self {
             reader,
-            filter,
+            filter: Some(filter),
             pending,
             current: VecDeque::new(),
             stats,
             on_node: None,
         })
+    }
+
+    /// Selects every node of the hierarchy and yields every point (no condition).
+    /// COPC levels hold disjoint points, so each point of the file is yielded exactly
+    /// once. Reading is node at a time, exactly like `new`, so memory does not grow
+    /// with the point count. Used by raster tools that need all points.
+    ///
+    /// This is a separate constructor, not an `ExtractFilter` variant, because
+    /// `ExtractFilter` is deserialized from TypeScript and its shape is a contract.
+    pub fn all(reader: CopcReader<R>) -> Self {
+        let mut stats = ExtractStats::default();
+        let mut pending = VecDeque::new();
+        for entry in reader.file().hierarchy_entries() {
+            if !entry.has_point_data() {
+                continue;
+            }
+            stats.nodes_total += 1;
+            stats.nodes_selected += 1;
+            stats.candidate_points += u64::try_from(entry.point_count).unwrap_or(0);
+            pending.push_back(entry.key);
+        }
+        Self {
+            reader,
+            filter: None,
+            pending,
+            current: VecDeque::new(),
+            stats,
+            on_node: None,
+        }
     }
 
     pub fn stats(&self) -> ExtractStats {
@@ -337,7 +367,11 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         self.stats.points_scanned += points.len() as u64;
         self.stats.max_buffered_points = self.stats.max_buffered_points.max(points.len());
         for point in &points {
-            if self.filter.contains([point.x, point.y, point.z]) {
+            let matches = match &self.filter {
+                Some(filter) => filter.contains([point.x, point.y, point.z]),
+                None => true,
+            };
+            if matches {
                 self.current
                     .push_back(LasPointRecord::from_las_point(point));
             }
@@ -371,6 +405,9 @@ impl<R: Read + Seek + Send> Iterator for ExtractPoints<'_, R> {
         }
     }
 }
+
+#[cfg(test)]
+mod all_points_tests;
 
 #[cfg(test)]
 mod tests {
