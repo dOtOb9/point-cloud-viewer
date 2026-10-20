@@ -1031,6 +1031,110 @@ pub async fn merge_copcs(
     .await
 }
 
+// --- G1: rasterize ---
+
+/// The largest raster the desktop accepts (cells). The grid holds up to about 28 bytes per
+/// cell (RGB), so this is about 1.8 GB at most. See `TaskSheets/G1-T6-rasterize-tool.md` for
+/// how the value was chosen.
+const RASTER_MAX_CELLS_DESKTOP: u64 = 64_000_000;
+
+/// Result of a rasterisation. Matches the frontend `RasterToolResultDto` in `tauri.ts`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RasterOutput {
+    /// The display COPC (one point per non-empty cell).
+    pub output_path: String,
+    pub point_count: u64,
+    pub warnings: Vec<String>,
+    /// The GeoTIFF (in the same temp folder).
+    pub geotiff_path: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Rasterises an open COPC: writes a GeoTIFF and a display COPC (G1-3).
+#[tauri::command]
+pub async fn rasterize_copc(
+    app: AppHandle,
+    path: String,
+    options: pcv_core::raster::RasterOptions,
+    temp_dir: Option<String>,
+    state: State<'_, ConversionState>,
+) -> Result<RasterOutput, String> {
+    if FilePath::from_str(&path).is_ok_and(|p| matches!(p, FilePath::Url(_))) {
+        return Err("この環境(content:// URI)では未対応です".to_string());
+    }
+    let stem = Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| {
+            n.trim_end_matches(".laz")
+                .trim_end_matches(".copc")
+                .to_string()
+        })
+        .unwrap_or_else(|| "raster".to_string());
+    let output = tool_output_path(&app, temp_dir.as_deref(), &format!("{stem}-raster"))?;
+    // `<name>.copc.laz` -> `<name>.tif`, next to it.
+    let geotiff_output = output.with_file_name(
+        output
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| format!("{}.tif", n.trim_end_matches(".copc.laz")))
+            .unwrap_or_else(|| "raster.tif".to_string()),
+    );
+    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
+    redirect_os_temp_dir(&spill_dir);
+    let on_progress = tool_progress(&app);
+    run_tool(&state, move |cancel| {
+        let mut timings = ConversionStageTimings::default();
+        let summary = pcv_convert::raster::rasterize_path_and_timings(
+            Path::new(&path),
+            options,
+            RASTER_MAX_CELLS_DESKTOP,
+            &geotiff_output,
+            &output,
+            &spill_dir,
+            &CopcWriterParams::default(),
+            &cancel,
+            on_progress,
+            &mut timings,
+        )
+        .map_err(|e| {
+            if e.is_cancelled() {
+                "キャンセルされた".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+        Ok(RasterOutput {
+            output_path: output.to_string_lossy().into_owned(),
+            point_count: summary.display_points,
+            warnings: summary.warnings,
+            geotiff_path: geotiff_output.to_string_lossy().into_owned(),
+            width: summary.width,
+            height: summary.height,
+        })
+    })
+    .await
+}
+
+/// Copies a file a tool wrote (under the `pcv-tools` temp folder) to the place the user chose
+/// in the save dialog. Refuses any other source so that the command cannot be used to copy
+/// arbitrary files.
+#[tauri::command]
+pub async fn save_tool_file(source: String, destination: String) -> Result<(), String> {
+    let source = PathBuf::from(source);
+    let in_tools_folder = source
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n.to_str() == Some("pcv-tools"));
+    if !in_tools_folder {
+        return Err("ツールが作ったファイル以外は保存できません".to_string());
+    }
+    std::fs::copy(&source, &destination)
+        .map(|_| ())
+        .map_err(|e| format!("ファイルを保存できませんでした ({destination}): {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

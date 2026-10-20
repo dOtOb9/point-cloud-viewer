@@ -302,6 +302,10 @@ pub fn run() {
             conversion::cancel_las_conversion,
             conversion::extract_copc,
             conversion::merge_copcs,
+            // --- G1: rasterize ---
+            conversion::rasterize_copc,
+            conversion::save_tool_file,
+            // ---
             conversion::supports_custom_temp_dir,
             // --- G2: cross-section view ---
             copc_state::read_section_profile
