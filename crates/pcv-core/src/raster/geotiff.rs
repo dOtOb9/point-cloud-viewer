@@ -179,16 +179,16 @@ fn build_entries(
     let n = usize::from(format.samples_per_pixel);
     // Tags must be in ascending order in a TIFF IFD.
     let mut entries = vec![
-        longs(256, &[spec.width]),                              // ImageWidth
-        longs(257, &[spec.height]),                             // ImageLength
-        shorts(258, &vec![format.bits_per_sample; n]),          // BitsPerSample
-        shorts(259, &[1]),                                      // Compression: none
-        shorts(262, &[format.photometric]),                     // PhotometricInterpretation
-        longs(273, strip_offsets),                              // StripOffsets
-        shorts(277, &[format.samples_per_pixel]),               // SamplesPerPixel
-        longs(278, &[rows_per_strip]),                          // RowsPerStrip
-        longs(279, strip_counts),                               // StripByteCounts
-        shorts(284, &[1]),                                      // PlanarConfiguration: chunky
+        longs(256, &[spec.width]),                     // ImageWidth
+        longs(257, &[spec.height]),                    // ImageLength
+        shorts(258, &vec![format.bits_per_sample; n]), // BitsPerSample
+        shorts(259, &[1]),                             // Compression: none
+        shorts(262, &[format.photometric]),            // PhotometricInterpretation
+        longs(273, strip_offsets),                     // StripOffsets
+        shorts(277, &[format.samples_per_pixel]),      // SamplesPerPixel
+        longs(278, &[rows_per_strip]),                 // RowsPerStrip
+        longs(279, strip_counts),                      // StripByteCounts
+        shorts(284, &[1]),                             // PlanarConfiguration: chunky
     ];
     if format.has_alpha {
         entries.push(shorts(338, &[2])); // ExtraSamples: unassociated alpha

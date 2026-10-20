@@ -428,7 +428,12 @@ mod tests {
     fn rgb_geotiff_has_four_bands_with_colour_means() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 500, 2);
-        let (result, paths) = run(&source, dir.path(), options(RasterValue::RgbMean, false), 100);
+        let (result, paths) = run(
+            &source,
+            dir.path(),
+            options(RasterValue::RgbMean, false),
+            100,
+        );
         result.expect("rgb");
         let file = File::open(&paths.tif).expect("open tiff");
         let mut d = Decoder::new(std::io::BufReader::new(file)).expect("decoder");

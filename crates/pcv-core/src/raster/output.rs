@@ -131,15 +131,11 @@ impl DisplayCursor {
         let intensity = match acc.value_kind() {
             RasterValue::Count => {
                 let v = acc.value_at(i).unwrap_or(0.0);
-                (v / self.count_max * 65_535.0)
-                    .round()
-                    .clamp(0.0, 65_535.0) as u16
+                (v / self.count_max * 65_535.0).round().clamp(0.0, 65_535.0) as u16
             }
-            RasterValue::IntensityMean => acc
-                .value_at(i)
-                .unwrap_or(0.0)
-                .round()
-                .clamp(0.0, 65_535.0) as u16,
+            RasterValue::IntensityMean => {
+                acc.value_at(i).unwrap_or(0.0).round().clamp(0.0, 65_535.0) as u16
+            }
             _ => 0,
         };
         let [red, green, blue] = acc.rgb_at(i).unwrap_or([0, 0, 0]);
