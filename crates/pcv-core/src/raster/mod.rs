@@ -2,12 +2,16 @@
 //!
 //! - `grid`: the cell grid and the per-cell accumulators (G1-1).
 //! - `geotiff`: a small hand-written GeoTIFF writer (G1-2).
+//! - `output`: the options, and the GeoTIFF and display points of a finished raster (G1-3).
 //!
 //! Everything here is pure (no files, no Tauri) and builds for wasm32. Reading the
 //! points out of a COPC file is `crate::extract::ExtractPoints::all`.
 
 pub mod geotiff;
 pub mod grid;
+pub mod output;
+
+pub use output::{DisplayPoints, RasterOptions};
 
 pub use grid::{CellAccumulator, ClassFilter, GridSpec, RasterValue, NODATA};
 
