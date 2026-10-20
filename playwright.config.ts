@@ -72,7 +72,24 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         channel: "chromium",
-        launchOptions: { args: ["--enable-unsafe-webgpu"] },
+        launchOptions: {
+          args: [
+            "--enable-unsafe-webgpu",
+            // Linux only (CI): without these, the GPU process intermittently aborts ("Target crashed",
+            // `Could not find SharedImageBackingFactory` for the WebGPU swap chain) on SwiftShader.
+            // Measured: 0 aborts in 90 executions with all four flags together; 11-17 aborts in 30 with
+            // single flags (see TaskSheets/CI-e2e-gpu-crash.md). Not used on Windows, where
+            // --use-angle=swiftshader made requestAdapter() return null (see above).
+            ...(process.platform === "linux"
+              ? [
+                  "--enable-features=Vulkan",
+                  "--use-vulkan=swiftshader",
+                  "--use-angle=swiftshader",
+                  "--use-webgpu-adapter=swiftshader",
+                ]
+              : []),
+          ],
+        },
       },
     },
   ],
