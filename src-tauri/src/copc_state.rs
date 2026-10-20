@@ -548,6 +548,52 @@ fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+// --- G2: cross-section view ---
+
+/// Reads the whole opened file (a cross-section layer) as `(s, z)` points for the section panel
+/// (`pcv_core::profile`). Returns the binary buffer described there. Heavy work (disk and LAZ
+/// decompression for every node) runs on the blocking thread pool, like `pcv://` reads, and a panic
+/// is turned into an error (the reader that panicked is dropped and the pool is refilled).
+#[tauri::command]
+pub async fn read_section_profile(
+    generation: u64,
+    line: pcv_core::profile::SectionLine,
+    cap: Option<u32>,
+    state: State<'_, CopcState>,
+) -> Result<tauri::ipc::Response, String> {
+    let pool = state
+        .lock_opened()?
+        .get(&generation)
+        .cloned()
+        .ok_or_else(|| "断面のレイヤーが閉じられています".to_string())?;
+    let cap = cap.map_or(0, |c| c as usize);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let mut file = pool.checkout();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            pcv_core::profile::read_section_profile(&mut file, &line, cap)
+        }));
+        match result {
+            Ok(read) => {
+                pool.checkin(file);
+                read.map_err(|e| e.to_string())
+            }
+            Err(payload) => {
+                pool.replenish_after_panic();
+                Err(format!(
+                    "断面の読み出し中にpanicが発生した: {}",
+                    panic_payload_message(payload)
+                ))
+            }
+        }
+    })
+    .await;
+    match joined {
+        Ok(Ok(bytes)) => Ok(tauri::ipc::Response::new(bytes)),
+        Ok(Err(message)) => Err(message),
+        Err(e) => Err(format!("断面の読み出しを実行できなかった: {e}")),
+    }
+}
+
 // テスト専用: trueにすると、次の`read_node_bytes`呼び出しが実際の`read_node`より
 // 前に必ずpanicする（読んだら自動的にfalseへ戻る、一回限りのフラグ）。
 // スレッドローカルにしてあるのは、他のテストと状態を共有しないため

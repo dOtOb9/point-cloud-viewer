@@ -302,7 +302,9 @@ pub fn run() {
             conversion::cancel_las_conversion,
             conversion::extract_copc,
             conversion::merge_copcs,
-            conversion::supports_custom_temp_dir
+            conversion::supports_custom_temp_dir,
+            // --- G2: cross-section view ---
+            copc_state::read_section_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

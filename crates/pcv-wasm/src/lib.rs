@@ -148,6 +148,18 @@ impl WasmCopcFile {
         Ok(buf.bytes)
     }
 
+    // --- G2: cross-section view ---
+    /// Reads the whole file as `(s, z)` points of a cross section (`pcv_core::profile`).
+    /// `line` is the `SectionLine` JSON (a, b, up); `cap` 0 means the default. The result is the binary
+    /// buffer described in `crates/pcv-core/src/profile.rs` (at most 24 bytes + cap * 12 bytes).
+    #[wasm_bindgen(js_name = readSectionProfile)]
+    pub fn read_section_profile(&mut self, line: JsValue, cap: u32) -> Result<Vec<u8>, JsValue> {
+        let line: pcv_core::profile::SectionLine = serde_wasm_bindgen::from_value(line)
+            .map_err(|e| JsValue::from_str(&format!("断面の指定が正しくありません: {e}")))?;
+        pcv_core::profile::read_section_profile(&mut self.inner, &line, cap as usize)
+            .map_err(to_js_error)
+    }
+
     /// これまでにJS側へ渡したバイト数の合計。ファイルサイズと比べることで
     /// 「ファイル全体を読んでいないこと」を確認できる(受け入れ条件)。
     #[wasm_bindgen(js_name = bytesRead)]
