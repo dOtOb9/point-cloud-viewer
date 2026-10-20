@@ -38,4 +38,5 @@ pub mod merge;
 pub mod output_path;
 pub mod stage_timings;
 pub mod streaming;
+pub mod thin_filter;
 pub mod write_metadata;
