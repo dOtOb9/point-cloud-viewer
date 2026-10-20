@@ -255,17 +255,30 @@ pub fn plan_tiles(
     Ok(tiles)
 }
 
+/// The XY extent the tiles cover: the header bounds, widened by one scale unit on every
+/// side. A writer may compute the bounds from unrounded coordinates while the stored
+/// coordinates are rounded to the scale, so a point can land just outside the header
+/// bounds; without the padding it would be core in no tile and silently dropped.
+fn header_extent(header: &copc_reader::LasHeader) -> TileRect {
+    TileRect {
+        min: [
+            header.min_x - header.x_scale_factor.abs(),
+            header.min_y - header.y_scale_factor.abs(),
+        ],
+        max: [
+            header.max_x + header.x_scale_factor.abs(),
+            header.max_y + header.y_scale_factor.abs(),
+        ],
+    }
+}
+
 /// Plans tiles for an opened COPC file (header bounds + hierarchy).
 pub fn plan_tiles_for_reader<R: Read + Seek + Send>(
     reader: &CopcReader<R>,
     cap: u64,
     min_tile_size: f64,
 ) -> Result<Vec<Tile>, copc_core::Error> {
-    let header = reader.header();
-    let extent = TileRect {
-        min: [header.min_x, header.min_y],
-        max: [header.max_x, header.max_y],
-    };
+    let extent = header_extent(reader.header());
     let info = *reader.copc_info();
     let mut nodes = Vec::new();
     for entry in reader.file().hierarchy_entries() {
@@ -284,7 +297,7 @@ pub fn plan_tiles_for_reader<R: Read + Seek + Send>(
     plan_tiles(
         extent,
         &nodes,
-        header.number_of_points(),
+        reader.header().number_of_points(),
         cap,
         min_tile_size,
     )
@@ -347,10 +360,7 @@ where
         let tiles = plan_tiles_for_reader(&reader, cap, min_tile_size)?;
         let header = reader.header();
         let (z_min, z_max) = (header.min_z, header.max_z);
-        let extent = TileRect {
-            min: [header.min_x, header.min_y],
-            max: [header.max_x, header.max_y],
-        };
+        let extent = header_extent(header);
         Ok(Self {
             open,
             tiles,
