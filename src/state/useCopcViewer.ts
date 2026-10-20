@@ -104,6 +104,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     isMobile: display.deviceProfileDefaults.isMobile,
     addOpenedLayer: (path, name) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null),
     focusLayer: layers.focusLayer,
+    setLayerVisible: layers.setLayerVisible,
     setStatus,
     reportError: errorLog.reportError,
   });

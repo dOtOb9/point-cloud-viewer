@@ -35,6 +35,8 @@ export interface PointCloudToolsContext {
   /** Open `path` as a new layer called `name`; returns its id (this is `addOpenedLayer` of src/app/open-files.ts). */
   addOpenedLayer: (path: string, name: string) => Promise<{ layerId: string }>;
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
+  /** Show or hide a layer, the same function the layer list's checkbox calls (React state and renderer). */
+  setLayerVisible: (id: string, visible: boolean) => void;
   setStatus: (status: ViewerStatus) => void;
   setToolProgress: (progress: ToolProgressState | null) => void;
   reportError: (message: string, source?: GpuErrorSource) => void;
@@ -53,6 +55,15 @@ function reportToolMessage(ctx: PointCloudToolsContext, message: string): void {
 }
 
 /**
+ * Turn off the visibility of the layers a tool read from, once the tool has made its new layer (G0-2). It does what
+ * unticking the checkbox in the layer list does; the source layers are neither deleted nor changed. Every tool that
+ * makes a layer from other layers (cut, cross section, merge, and later thinning, filters, DTM) goes through this.
+ */
+export function hideSourceLayers(ctx: PointCloudToolsContext, sourceLayerIds: readonly string[]): void {
+  for (const id of sourceLayerIds) ctx.setLayerVisible(id, false);
+}
+
+/**
  * Run one tool: show progress, open the result as a new layer, send warnings and failures to the error log.
  * `viewNormal` (cross section only): after opening, look at the result from that horizontal direction.
  */
@@ -60,6 +71,7 @@ async function runTool(
   ctx: PointCloudToolsContext,
   title: string,
   resultName: string,
+  sourceLayerIds: readonly string[],
   run: (source: DataSource, options: ToolOptions) => Promise<ToolResult>,
   viewNormal?: readonly [number, number, number],
 ): Promise<void> {
@@ -81,6 +93,8 @@ async function runTool(
     // A tool that worked means the viewer is fine now, so the panel's old open error goes away.
     // Nothing is lost: an open failure is also in the error log / banner history (`failOpen` in src/app/open-files.ts).
     ctx.setStatus({ kind: "ready" });
+    // Only a tool that worked hides its sources; on failure or cancel they stay visible (the throw skips this).
+    hideSourceLayers(ctx, sourceLayerIds);
     if (viewNormal) {
       const { right, forward } = horizontalBasis(ctx.getViewUp());
       ctx.focusLayer(layerId, { yaw: sectionYaw(viewNormal, right, forward), pitch: 0 });
@@ -112,6 +126,7 @@ export async function extractFromLayer(
     ctx,
     `${label}（${layer.name}）`,
     `${label} - ${layer.name}`,
+    [layer.id],
     (source, options) =>
       source instanceof WebSource ? source.extractToCopc(path, filter, options) : tauriExtractToCopc(path, filter, options),
     viewNormal,
@@ -134,6 +149,7 @@ export async function mergeSelectedLayers(ctx: PointCloudToolsContext): Promise<
     ctx,
     `合成（${sources.length}レイヤー）`,
     `合成 (${sources.length})`,
+    sources.map((l) => l.id),
     (source, options) =>
       source instanceof WebSource ? source.mergeCopcs(paths, { ...options, isMobile: ctx.isMobile }) : tauriMergeCopcs(paths, options),
   );

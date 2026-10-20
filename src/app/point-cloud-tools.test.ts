@@ -4,7 +4,7 @@ import type { ExtractFilter, ToolResult } from "../datasource/tools";
 import type { ViewerLayer } from "../state/layers";
 import type { ViewerStatus } from "../state/viewer-status";
 import type { ToolProgressState } from "../state/viewer-types";
-import { cancelTool, extractFromLayer, mergeSelectedLayers, type PointCloudToolsContext } from "./point-cloud-tools";
+import { cancelTool, extractFromLayer, hideSourceLayers, mergeSelectedLayers, type PointCloudToolsContext } from "./point-cloud-tools";
 
 // The Tauri commands are what a fake (non-Web) source reaches; each test decides what they answer.
 const tauri = vi.hoisted(() => ({
@@ -29,6 +29,7 @@ interface Harness {
   progresses: Array<ToolProgressState | null>;
   opened: Array<[string, string]>;
   focused: string[];
+  hidden: string[];
 }
 
 function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extraSelectedIds: string[] = []): Harness {
@@ -37,6 +38,7 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
   const progresses: Array<ToolProgressState | null> = [];
   const opened: Array<[string, string]> = [];
   const focused: string[] = [];
+  const hidden: string[] = [];
   const source = {} as DataSource;
   const ctx: PointCloudToolsContext = {
     getSource: () => source,
@@ -50,12 +52,15 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
       return { layerId: "new-layer" };
     },
     focusLayer: (id) => focused.push(id),
+    setLayerVisible: (id, visible) => {
+      if (!visible) hidden.push(id);
+    },
     setStatus: (s) => statuses.push(s),
     setToolProgress: (p) => progresses.push(p),
     reportError: (message, src) => errors.push([message, src]),
     toolLock: { running: false },
   };
-  return { ctx, statuses, errors, progresses, opened, focused };
+  return { ctx, statuses, errors, progresses, opened, focused, hidden };
 }
 
 function result(warnings: string[] = []): ToolResult {
@@ -68,6 +73,7 @@ describe("extractFromLayer", () => {
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
     await extractFromLayer(h.ctx, "a", FILTER, "カット");
     expect(h.opened).toEqual([["out.copc.laz", "カット - 地形"]]);
+    expect(h.hidden).toEqual(["a"]);
     expect(h.statuses).toEqual([{ kind: "ready" }]);
     expect(h.errors).toEqual([]);
     expect(h.progresses[0]).toEqual({ title: "カット（地形）", pointsRead: 0, totalPoints: 0 });
@@ -88,6 +94,7 @@ describe("extractFromLayer", () => {
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
     await extractFromLayer(h.ctx, "a", FILTER, "断面");
     expect(h.errors).toEqual([["読み込みに失敗", "tool"]]);
+    expect(h.hidden).toEqual([]);
     expect(h.opened).toEqual([]);
     expect(h.statuses).toEqual([]);
     expect(h.progresses[h.progresses.length - 1]).toBeNull();
@@ -99,6 +106,7 @@ describe("extractFromLayer", () => {
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
     await extractFromLayer(h.ctx, "a", FILTER, "カット");
     expect(h.errors).toEqual([["カット（地形）をキャンセルしました", "tool"]]);
+    expect(h.hidden).toEqual([]);
   });
 
   it("refuses to start while another tool runs, without touching the running one", async () => {
@@ -125,6 +133,7 @@ describe("mergeSelectedLayers", () => {
     await mergeSelectedLayers(h.ctx);
     expect(tauri.mergeCopcs).toHaveBeenLastCalledWith(["a.copc.laz", "b.copc.laz"], expect.anything());
     expect(h.opened).toEqual([["out.copc.laz", "合成 (2)"]]);
+    expect(h.hidden).toEqual(["a", "b"]);
     expect(h.statuses).toEqual([{ kind: "ready" }]);
   });
 
@@ -133,6 +142,14 @@ describe("mergeSelectedLayers", () => {
     await mergeSelectedLayers(h.ctx);
     expect(h.errors).toHaveLength(1);
     expect(h.opened).toEqual([]);
+  });
+});
+
+describe("hideSourceLayers", () => {
+  it("hides exactly the given layers", () => {
+    const h = makeHarness([], null);
+    hideSourceLayers(h.ctx, ["x", "y"]);
+    expect(h.hidden).toEqual(["x", "y"]);
   });
 });
 
