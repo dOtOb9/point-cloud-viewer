@@ -17,12 +17,59 @@
 //! No randomness and no hash maps are used: the result depends only on the input values (and, for
 //! `add_point_for_ihv`, not on the point order, see the tie-break there).
 
-/// Gravity acceleration per step, and Verlet damping (paper section 2.2, Eq. 1-2). The values are
-/// the reference implementation's constants, recalled from memory (unverified): 0.2 and 0.01.
+// Constants below were checked against the reference source (jianboqi/CSF master, src/CSF.cpp,
+// Particle.h, Particle.cpp, Cloth.cpp, Rasterization.cpp) on 2026-10-21.
+
+/// Gravity and Verlet damping (paper section 2.2, Eq. 1-2). In the reference the acceleration is
+/// `-GRAVITY * time_step^2` (CSF.cpp `addForce`) and Verlet multiplies it by `time_step^2` again
+/// (Particle.cpp), so one step falls `GRAVITY * time_step^4`. We do the same.
 const GRAVITY: f32 = 0.2;
 const DAMPING: f32 = 0.01;
-/// Particles of margin added around the point extent on every side.
+/// Particles of margin added around the point extent on every side (reference `clothbuffer_d`).
 const MARGIN_CELLS: usize = 2;
+/// The cloth starts this far above the highest inverted point (reference `cloth_y_height`).
+const START_ABOVE_TOP: f32 = 0.05;
+/// Slope post-processing only looks at groups of connected movable particles larger than this
+/// (reference `MAX_PARTICLE_FOR_POSTPROCESSIN`).
+const MIN_GROUP_FOR_POST: usize = 50;
+/// The reference passes 9999 as `heightThreshold` to the slope post-processing (CSF.cpp), so that
+/// check never rejects anything. Kept as a constant to stay faithful; `hdiff` is the reference's
+/// `smoothThreshold` (0.3).
+const SLOPE_HEIGHT_THRESHOLD: f32 = 9999.0;
+
+/// Constraint neighbours as (dx, dy), in the order of the reference neighbour lists. The reference
+/// builds constraints in loops with x outer and y inner, immediate ones (distance 1) first and the
+/// secondary ones (distance 2) after; each constraint goes into both particles' lists. For a
+/// particle the resulting order is this fixed table (neighbours outside the grid are skipped).
+const NEIGHBOURS: [(i32, i32); 16] = [
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (0, 1),
+    (1, 1),
+    (-2, -2),
+    (-2, 0),
+    (-2, 2),
+    (0, -2),
+    (2, -2),
+    (2, 0),
+    (0, 2),
+    (2, 2),
+];
+
+/// Reference `singleMove1` / `doubleMove1` (Particle.h), indexed by `rigidness`; from index 15 the
+/// values are 1 and 0.5. They are the closed form of applying the 0.3 move `rigidness` times.
+const SINGLE_MOVE: [f32; 15] = [
+    0.0, 0.3, 0.51, 0.657, 0.7599, 0.83193, 0.88235, 0.91765, 0.94235, 0.95965, 0.97175, 0.98023,
+    0.98616, 0.99031, 0.99322,
+];
+const DOUBLE_MOVE: [f32; 15] = [
+    0.0, 0.3, 0.42, 0.468, 0.4872, 0.4949, 0.498, 0.4992, 0.4997, 0.4999, 0.4999, 0.5, 0.5, 0.5,
+    0.5,
+];
 
 /// Parameters of the filter. Distances are in the units of the point coordinates (metres).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -31,9 +78,9 @@ pub struct CsfParams {
     pub cloth_resolution: f64,
     /// How stiff the cloth is (1, 2, 3, ...; larger = stiffer). In the paper (section 2.2) this is
     /// the number of constraint relaxations; in the reference implementation it selects the
-    /// strength of one relaxation per step (see `single_move_factor`).
+    /// strength of one relaxation per step (`SINGLE_MOVE` / `DOUBLE_MOVE`).
     pub rigidness: u32,
-    /// Verlet time step. The displacement per step is proportional to `time_step^2`.
+    /// Verlet time step. One step of gravity falls `0.2 * time_step^4` (as in the reference).
     pub time_step: f32,
     /// A point at most this far above the cloth is ground (decided Q20: asymmetric).
     pub class_threshold_upper: f32,
@@ -43,8 +90,8 @@ pub struct CsfParams {
     pub iterations: u32,
     /// Enable the slope post-processing (paper section 2.4).
     pub slope_smooth: bool,
-    /// Slope post-processing: a movable particle next to a fixed one is snapped to its own IHV
-    /// only if the IHV difference to that neighbour is below this value.
+    /// Slope post-processing (reference `smoothThreshold`): a movable particle next to a fixed one
+    /// is snapped to its own IHV only if the IHV difference to that neighbour is below this value.
     pub hdiff: f32,
     /// Stop early when the largest vertical move of a movable particle in one step is below this.
     /// The reference implementation uses `class_threshold / 100` (0.005 for 0.5).
@@ -150,6 +197,8 @@ pub struct Cloth {
     /// Squared XY distance (in cell units) of the point that set `ihv`; INFINITY = no point yet.
     ihv_dist: Vec<f32>,
     movable: Vec<bool>,
+    /// Highest inverted height of all points seen (the cloth starts above it).
+    max_inverted: f32,
     phase: Phase,
     iterations_done: u32,
     converged: bool,
@@ -168,11 +217,12 @@ impl Cloth {
             return Err("点群の範囲が正しくありません".to_string());
         }
         let res = params.cloth_resolution;
-        let cells_x = ((extent.max_x - extent.min_x) / res).ceil();
-        let cells_y = ((extent.max_y - extent.min_y) / res).ceil();
+        // Same size as the reference: floor(extent / resolution) + 2 * margin.
+        let cells_x = ((extent.max_x - extent.min_x) / res).floor();
+        let cells_y = ((extent.max_y - extent.min_y) / res).floor();
         // Compare in f64 first so a huge extent cannot overflow usize.
-        let nx_f = cells_x + 1.0 + 2.0 * MARGIN_CELLS as f64;
-        let ny_f = cells_y + 1.0 + 2.0 * MARGIN_CELLS as f64;
+        let nx_f = cells_x + 2.0 * MARGIN_CELLS as f64;
+        let ny_f = cells_y + 2.0 * MARGIN_CELLS as f64;
         let total_f = nx_f * ny_f;
         if total_f > max_particles as f64 {
             return Err(format!(
@@ -196,6 +246,7 @@ impl Cloth {
             ihv: vec![f32::NEG_INFINITY; n],
             ihv_dist: vec![f32::INFINITY; n],
             movable: vec![true; n],
+            max_inverted: f32::NEG_INFINITY,
             phase: Phase::Collecting,
             iterations_done: 0,
             converged: false,
@@ -223,47 +274,43 @@ impl Cloth {
 
     // ---- Pass 1: IHV ------------------------------------------------------------------------
 
-    /// Feeds one point of the first pass. Points outside the cloth, non-finite points, and calls
-    /// after `finish_ihv` are ignored.
+    /// Feeds one point of the first pass. Non-finite points and calls after `finish_ihv` are ignored.
     ///
-    /// Each point offers its inverted height to the 4 particles around its cell; a particle keeps
-    /// the offer from the nearest point in XY. On an exact distance tie the higher inverted height
-    /// wins, so the result does not depend on the order of the points.
+    /// As in the reference (Rasterization.cpp `RasterTerrian`), the point belongs to the particle
+    /// nearest to it (`int(d / step + 0.5)`, clamped to the grid, so a point outside the cloth goes
+    /// to the edge) and a particle keeps the nearest of its points in XY. The reference keeps the
+    /// first point on an exact distance tie; we keep the higher inverted height instead, so the
+    /// result does not depend on the order of the points (difference from the reference).
     pub fn add_point_for_ihv(&mut self, x: f64, y: f64, z: f64) {
         if self.phase != Phase::Collecting || !(x.is_finite() && y.is_finite() && z.is_finite()) {
             return;
         }
+        self.points_seen += 1;
         let res = self.params.cloth_resolution;
         let fx = (x - self.origin_x) / res;
         let fy = (y - self.origin_y) / res;
-        if fx < 0.0 || fy < 0.0 || fx > (self.nx - 1) as f64 || fy > (self.ny - 1) as f64 {
-            return;
-        }
-        self.points_seen += 1;
-        let i0 = (fx.floor() as usize).min(self.nx.saturating_sub(2));
-        let j0 = (fy.floor() as usize).min(self.ny.saturating_sub(2));
+        let i = ((fx + 0.5).max(0.0) as usize).min(self.nx - 1);
+        let j = ((fy + 0.5).max(0.0) as usize).min(self.ny - 1);
         let inv = -(z as f32);
-        for dj in 0..2usize {
-            for di in 0..2usize {
-                let i = (i0 + di).min(self.nx - 1);
-                let j = (j0 + dj).min(self.ny - 1);
-                let ddx = (fx - i as f64) as f32;
-                let ddy = (fy - j as f64) as f32;
-                let d = ddx * ddx + ddy * ddy;
-                let idx = j * self.nx + i;
-                if d < self.ihv_dist[idx] || (d == self.ihv_dist[idx] && inv > self.ihv[idx]) {
-                    self.ihv_dist[idx] = d;
-                    self.ihv[idx] = inv;
-                }
-            }
+        self.max_inverted = self.max_inverted.max(inv);
+        let ddx = (fx - i as f64) as f32;
+        let ddy = (fy - j as f64) as f32;
+        let d = ddx * ddx + ddy * ddy;
+        let idx = j * self.nx + i;
+        if d < self.ihv_dist[idx] || (d == self.ihv_dist[idx] && inv > self.ihv[idx]) {
+            self.ihv_dist[idx] = d;
+            self.ihv[idx] = inv;
         }
     }
 
     /// Ends pass 1: fills particles that have no point and puts the cloth at its start height.
     ///
-    /// Fill (reference implementation's scan-line fill): an empty particle takes the value of the
-    /// nearest filled particle in its row (left wins a tie). A row with no filled particle at all
-    /// takes the value from the nearest row (up wins a tie) that has one, in the same column.
+    /// Fill (reference `findHeightValByScanline`): an empty particle takes the value of the first
+    /// particle with a point found by scanning to the right along its row, then to the left, then
+    /// towards smaller rows in its column, then towards larger rows. Note this is the first one
+    /// found in that direction order, not the nearest. If the whole row and column are empty, a
+    /// breadth-first search over the 16 constraint neighbours finds the closest one
+    /// (`findHeightValByNeighbor`).
     pub fn finish_ihv(&mut self) -> Result<(), String> {
         if self.phase != Phase::Collecting {
             return Err("IHV はすでに確定しています".to_string());
@@ -272,72 +319,104 @@ impl Cloth {
             return Err("布の範囲に点が 1 つもありません".to_string());
         }
         let (nx, ny) = (self.nx, self.ny);
-        let mut row_has_value = vec![false; ny];
-        let mut filled = self.ihv.clone();
-        for (j, has_value) in row_has_value.iter_mut().enumerate() {
-            let row = j * nx;
-            let known: Vec<usize> = (0..nx)
-                .filter(|&i| self.ihv_dist[row + i].is_finite())
-                .collect();
-            if known.is_empty() {
-                continue;
-            }
-            *has_value = true;
+        // `ihv_dist` stays finite only where a point exists, so it is the "has a point" flag even
+        // after `ihv` of empty particles has been filled in below.
+        let has_point = |dist: &[f32], idx: usize| dist[idx].is_finite();
+        let mut bfs_seen: Vec<bool> = Vec::new(); // allocated only if a BFS is needed
+        for j in 0..ny {
             for i in 0..nx {
-                if self.ihv_dist[row + i].is_finite() {
+                let p = j * nx + i;
+                if has_point(&self.ihv_dist, p) {
                     continue;
                 }
-                // Nearest known index on each side; `known` is sorted.
-                let pos = known.partition_point(|&k| k < i);
-                let left = pos.checked_sub(1).map(|p| known[p]);
-                let right = known.get(pos).copied();
-                let pick = match (left, right) {
-                    (Some(l), Some(r)) => {
-                        if i - l <= r - i {
-                            l
-                        } else {
-                            r
+                let mut found = None;
+                for ii in i + 1..nx {
+                    if has_point(&self.ihv_dist, j * nx + ii) {
+                        found = Some(j * nx + ii);
+                        break;
+                    }
+                }
+                if found.is_none() {
+                    for ii in (0..i).rev() {
+                        if has_point(&self.ihv_dist, j * nx + ii) {
+                            found = Some(j * nx + ii);
+                            break;
                         }
                     }
-                    (Some(l), None) => l,
-                    (None, Some(r)) => r,
-                    (None, None) => continue,
+                }
+                if found.is_none() {
+                    for jj in (0..j).rev() {
+                        if has_point(&self.ihv_dist, jj * nx + i) {
+                            found = Some(jj * nx + i);
+                            break;
+                        }
+                    }
+                }
+                if found.is_none() {
+                    for jj in j + 1..ny {
+                        if has_point(&self.ihv_dist, jj * nx + i) {
+                            found = Some(jj * nx + i);
+                            break;
+                        }
+                    }
+                }
+                if found.is_none() {
+                    if bfs_seen.is_empty() {
+                        bfs_seen = vec![false; nx * ny];
+                    }
+                    found = self.nearest_point_by_neighbours(p, &mut bfs_seen);
+                }
+                let Some(src) = found else {
+                    return Err("布の範囲に点が 1 つもありません".to_string());
                 };
-                filled[row + i] = self.ihv[row + pick];
+                self.ihv[p] = self.ihv[src];
             }
         }
-        for j in 0..ny {
-            if row_has_value[j] {
-                continue;
-            }
-            // Nearest row that has values; search outward, up first on a tie.
-            let mut src = None;
-            for d in 1..ny {
-                if j >= d && row_has_value[j - d] {
-                    src = Some(j - d);
-                    break;
-                }
-                if j + d < ny && row_has_value[j + d] {
-                    src = Some(j + d);
-                    break;
-                }
-            }
-            let Some(s) = src else {
-                return Err("布の範囲に点が 1 つもありません".to_string());
-            };
-            for i in 0..nx {
-                filled[j * nx + i] = filled[s * nx + i];
-            }
-        }
-        self.ihv = filled;
         self.ihv_dist = Vec::new();
-        // Start above the highest inverted height (paper section 2.1; the reference starts the
-        // cloth at the top of the inverted points). Known only now because points are not stored.
-        let top = self.ihv.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        self.h.iter_mut().for_each(|v| *v = top);
+        // The cloth starts a little above the highest inverted point (reference CSF.cpp).
+        let start = self.max_inverted + START_ABOVE_TOP;
+        self.h.iter_mut().for_each(|v| *v = start);
         self.prev.copy_from_slice(&self.h);
         self.phase = Phase::Simulating;
         Ok(())
+    }
+
+    /// Breadth-first search from `start` over the 16 constraint neighbours for the first particle
+    /// that has a point (reference `findHeightValByNeighbor`). `seen` is all-false on entry and is
+    /// cleaned again before returning.
+    fn nearest_point_by_neighbours(&self, start: usize, seen: &mut [bool]) -> Option<usize> {
+        let mut queue = vec![start];
+        seen[start] = true;
+        let mut head = 0;
+        let mut result = None;
+        while head < queue.len() {
+            let c = queue[head];
+            head += 1;
+            if c != start && self.ihv_dist[c].is_finite() {
+                result = Some(c);
+                break;
+            }
+            for q in self.neighbours(c) {
+                if !seen[q] {
+                    seen[q] = true;
+                    queue.push(q);
+                }
+            }
+        }
+        for &c in &queue {
+            seen[c] = false;
+        }
+        result
+    }
+
+    /// The constraint neighbours of particle `p` that lie inside the grid, in reference order.
+    fn neighbours(&self, p: usize) -> impl Iterator<Item = usize> + '_ {
+        let (nx, ny) = (self.nx as i64, self.ny as i64);
+        let (i, j) = ((p % self.nx) as i64, (p / self.nx) as i64);
+        NEIGHBOURS.iter().filter_map(move |&(dx, dy)| {
+            let (a, b) = (i + dx as i64, j + dy as i64);
+            (a >= 0 && a < nx && b >= 0 && b < ny).then(|| (b * nx + a) as usize)
+        })
     }
 
     // ---- Simulation -------------------------------------------------------------------------
@@ -384,8 +463,9 @@ impl Cloth {
     /// (paper sections 2.2 and 2.3). Returns the largest vertical move of a movable particle.
     fn one_step(&mut self) -> f32 {
         let dt2 = self.params.time_step * self.params.time_step;
-        // Inverted coordinates: gravity pulls the cloth towards smaller values.
-        let fall = -GRAVITY * dt2;
+        // Inverted coordinates: gravity pulls the cloth towards smaller values. The reference's
+        // acceleration is already scaled by dt^2 and Verlet scales it by dt^2 again.
+        let fall = -GRAVITY * dt2 * dt2;
         for k in 0..self.h.len() {
             if self.movable[k] {
                 let cur = self.h[k];
@@ -402,7 +482,7 @@ impl Cloth {
         }
         // Collision: a particle that went below the terrain is put on it and fixed.
         for k in 0..self.h.len() {
-            if self.movable[k] && self.h[k] <= self.ihv[k] {
+            if self.movable[k] && self.h[k] < self.ihv[k] {
                 self.h[k] = self.ihv[k];
                 self.movable[k] = false;
             }
@@ -410,25 +490,25 @@ impl Cloth {
         max_diff
     }
 
-    /// Internal force (paper section 2.2, Eq. 3): each particle is pulled towards the height of its
-    /// 4 neighbours. Two movable particles move a fraction of the difference each; if only one is
-    /// movable it takes a (larger) fraction. The factors depend on `rigidness`.
-    /// Particles are visited in row-major order and updated in place (Gauss-Seidel), which is
-    /// deterministic.
+    /// Internal force (paper section 2.2, Eq. 3; reference `satisfyConstraintSelf`): each particle
+    /// is pulled towards the height of its up to 16 neighbours, once per step. Two movable
+    /// particles move `DOUBLE_MOVE[rigidness]` of the height difference each; if only one is
+    /// movable it moves `SINGLE_MOVE[rigidness]` of it. Particles are visited in index order and
+    /// updated in place, each pair from both sides, as in the reference (single-threaded).
     fn satisfy_constraints(&mut self) {
-        let single = single_move_factor(self.params.rigidness);
-        let double = double_move_factor(self.params.rigidness);
-        let (nx, ny) = (self.nx, self.ny);
+        let r = self.params.rigidness as usize;
+        let single = SINGLE_MOVE.get(r).copied().unwrap_or(1.0);
+        let double = DOUBLE_MOVE.get(r).copied().unwrap_or(0.5);
+        let (nx, ny) = (self.nx as i64, self.ny as i64);
         for j in 0..ny {
             for i in 0..nx {
-                let p = j * nx + i;
-                let neighbours = [
-                    (i > 0).then(|| p - 1),
-                    (i + 1 < nx).then(|| p + 1),
-                    (j > 0).then(|| p - nx),
-                    (j + 1 < ny).then(|| p + nx),
-                ];
-                for q in neighbours.into_iter().flatten() {
+                let p = (j * nx + i) as usize;
+                for &(dx, dy) in &NEIGHBOURS {
+                    let (a, b) = (i + dx as i64, j + dy as i64);
+                    if a < 0 || a >= nx || b < 0 || b >= ny {
+                        continue;
+                    }
+                    let q = (b * nx + a) as usize;
                     let diff = self.h[q] - self.h[p];
                     match (self.movable[p], self.movable[q]) {
                         (true, true) => {
@@ -444,61 +524,98 @@ impl Cloth {
         }
     }
 
-    /// Slope post-processing (paper section 2.4): movable particles that are almost on the terrain
-    /// next to a fixed particle are snapped to the terrain, and this spreads to their neighbours.
-    /// A particle is snapped if its cloth height is within `class_threshold_upper` of its IHV and
-    /// the IHV differs from the fixed neighbour's by less than `hdiff`.
+    /// Slope post-processing (paper section 2.4; reference `movableFilter`, `findUnmovablePoint`,
+    /// `handle_slop_connected`). Groups of 4-connected movable particles with more than
+    /// `MIN_GROUP_FOR_POST` members are processed: a member next to a fixed particle whose IHV
+    /// differs by less than `hdiff` is snapped to its IHV and fixed, and that spreads breadth-first
+    /// to the movable neighbours with a similar IHV. Groups are found scanning columns first
+    /// (x outer, y inner) and neighbours are visited in the order left, right, y-1, y+1, because
+    /// the result depends on that order.
     fn slope_post_process(&mut self) {
         let (nx, ny) = (self.nx, self.ny);
-        let near = self.params.class_threshold_upper;
         let hdiff = self.params.hdiff;
-        let mut queue: Vec<usize> = Vec::new();
-        // Seeds: movable particles next to a fixed one.
-        for p in 0..self.h.len() {
-            if !self.movable[p] {
-                continue;
-            }
-            let (i, j) = (p % nx, p / nx);
-            let nb = [
-                (i > 0).then(|| p - 1),
-                (i + 1 < nx).then(|| p + 1),
-                (j > 0).then(|| p - nx),
-                (j + 1 < ny).then(|| p + nx),
-            ];
-            let hit = nb.into_iter().flatten().any(|q| {
-                !self.movable[q]
-                    && (self.ihv[q] - self.ihv[p]).abs() < hdiff
-                    && self.h[p] - self.ihv[p] < near
-            });
-            if hit {
-                self.h[p] = self.ihv[p];
-                self.movable[p] = false;
-                queue.push(p);
-            }
-        }
-        // Spread (breadth-first; FIFO order keeps it deterministic).
-        let mut head = 0;
-        while head < queue.len() {
-            let c = queue[head];
-            head += 1;
-            let (i, j) = (c % nx, c / nx);
-            let nb = [
-                (i > 0).then(|| c - 1),
-                (i + 1 < nx).then(|| c + 1),
-                (j > 0).then(|| c - nx),
-                (j + 1 < ny).then(|| c + nx),
-            ];
-            for q in nb.into_iter().flatten() {
-                if self.movable[q]
-                    && (self.ihv[q] - self.ihv[c]).abs() < hdiff
-                    && self.h[q] - self.ihv[q] < near
-                {
-                    self.h[q] = self.ihv[q];
-                    self.movable[q] = false;
-                    queue.push(q);
+        // `visited`: movable particles already put in a group. A neighbour that is visited is in
+        // the same group as the particle next to it, so it also serves as the group membership test
+        // that the reference keeps in its `neibors` lists.
+        let mut visited = vec![false; nx * ny];
+        let mut queued = vec![false; nx * ny];
+        for x in 0..nx {
+            for y in 0..ny {
+                let start = y * nx + x;
+                if !self.movable[start] || visited[start] {
+                    continue;
+                }
+                // Group search; `group` is also the BFS queue.
+                let mut group = vec![start];
+                visited[start] = true;
+                let mut head = 0;
+                while head < group.len() {
+                    let c = group[head];
+                    head += 1;
+                    for q in self.axis_neighbours(c).into_iter().flatten() {
+                        if self.movable[q] && !visited[q] {
+                            visited[q] = true;
+                            group.push(q);
+                        }
+                    }
+                }
+                if group.len() <= MIN_GROUP_FOR_POST {
+                    continue;
+                }
+                // findUnmovablePoint: seeds, in group order. Particles snapped earlier in this loop
+                // already count as fixed for the later ones.
+                let mut seeds: Vec<usize> = Vec::new();
+                for &c in &group {
+                    let hit = self.axis_neighbours(c).into_iter().flatten().any(|q| {
+                        !self.movable[q]
+                            && (self.ihv[c] - self.ihv[q]).abs() < hdiff
+                            && self.h[c] - self.ihv[c] < SLOPE_HEIGHT_THRESHOLD
+                    });
+                    if hit {
+                        self.h[c] = self.ihv[c];
+                        self.movable[c] = false;
+                        seeds.push(c);
+                    }
+                }
+                // handle_slop_connected: spread from the seeds through the group.
+                let mut queue = seeds;
+                for &c in &queue {
+                    queued[c] = true;
+                }
+                let mut head = 0;
+                while head < queue.len() {
+                    let c = queue[head];
+                    head += 1;
+                    for q in self.axis_neighbours(c).into_iter().flatten() {
+                        if visited[q]
+                            && (self.ihv[c] - self.ihv[q]).abs() < hdiff
+                            && (self.h[q] - self.ihv[q]).abs() < SLOPE_HEIGHT_THRESHOLD
+                        {
+                            self.h[q] = self.ihv[q];
+                            self.movable[q] = false;
+                            if !queued[q] {
+                                queued[q] = true;
+                                queue.push(q);
+                            }
+                        }
+                    }
+                }
+                for &c in &queue {
+                    queued[c] = false;
                 }
             }
         }
+    }
+
+    /// The 4-neighbours of `p` in the reference order: left, right, y-1, y+1 (None outside).
+    fn axis_neighbours(&self, p: usize) -> [Option<usize>; 4] {
+        let (i, j) = (p % self.nx, p / self.nx);
+        [
+            (i > 0).then(|| p - 1),
+            (i + 1 < self.nx).then(|| p + 1),
+            (j > 0).then(|| p - self.nx),
+            (j + 1 < self.ny).then(|| p + self.nx),
+        ]
     }
 
     // ---- Output -----------------------------------------------------------------------------
@@ -527,29 +644,6 @@ impl Cloth {
     pub fn is_ground(&self, x: f64, y: f64, z: f64) -> bool {
         let d = z as f32 - self.height_at(x, y);
         d >= -self.params.class_threshold_lower && d <= self.params.class_threshold_upper
-    }
-}
-
-/// Strength of one constraint pass when only one of two particles can move, by `rigidness`.
-/// The reference implementation has a table indexed by rigidness (up to 14); its values could not
-/// be read, so this is an approximation with the same shape: weak for 1, full from 3.
-fn single_move_factor(rigidness: u32) -> f32 {
-    match rigidness {
-        0 => 0.0,
-        1 => 0.3,
-        2 => 0.6,
-        _ => 1.0,
-    }
-}
-
-/// Same, when both particles can move: each moves this fraction of the height difference
-/// (at most 0.5, which makes them meet in the middle).
-fn double_move_factor(rigidness: u32) -> f32 {
-    match rigidness {
-        0 => 0.0,
-        1 => 0.3,
-        2 => 0.45,
-        _ => 0.5,
     }
 }
 
@@ -755,6 +849,8 @@ mod tests {
             (30.0, 0.02),
             (45.0, 0.02),
             (45.0, 0.005),
+            (30.0, 0.3),
+            (45.0, 0.3),
         ] {
             let (pts, truth) = scene_ramp(angle, frac);
             let std = classify(&run_cloth(&pts, CsfParams::standard()), &pts);
@@ -764,19 +860,19 @@ mod tests {
             eprintln!(
                 "ramp {angle} deg, ground fraction {frac}: standard recall {r_std:.4} prec {p_std:.4}; steep recall {r_steep:.4} prec {p_steep:.4}"
             );
-            // Measured on these synthetic scenes (see TaskSheets/G1-T3-csf-core.md): with a heavy
-            // canopy (10 % ground returns) on a 30/45 degree slope the steep preset is clearly
-            // more precise (0.29 vs 0.14 and 0.18 vs 0.11) with about the same recall. With a
-            // light canopy (30 %) it is NOT better (the standard preset wins), so this is the only
-            // advantage asserted.
+            // Measured with the reference-matching implementation (see
+            // TaskSheets/G1-T3-csf-core.md): with a heavy canopy (10 % ground returns) on a 30/45
+            // degree slope the steep preset finds clearly more of the ground (recall +0.19 / +0.20)
+            // at the same precision. At other settings the difference is not consistent, so only
+            // this case is asserted (margins: recall at least +0.1, precision not worse by 0.05).
             if angle >= 30.0 && frac == 0.1 {
                 assert!(
-                    p_steep > p_std + 0.03,
-                    "{angle}: steep {p_steep} std {p_std}"
+                    r_steep > r_std + 0.1,
+                    "{angle}: steep {r_steep} std {r_std}"
                 );
                 assert!(
-                    r_steep > r_std - 0.05,
-                    "{angle}: steep {r_steep} std {r_std}"
+                    p_steep > p_std - 0.05,
+                    "{angle}: steep {p_steep} std {p_std}"
                 );
             }
         }
@@ -832,7 +928,7 @@ mod tests {
             .unwrap();
         assert!(err.contains("解像度"), "{err}");
         assert!(err.contains("範囲"), "{err}");
-        // Just under the cap is accepted: (2000 + 1 + 4)^2 particles.
+        // Just under the cap is accepted: (2000 + 4)^2 particles.
         assert!(Cloth::new(e, CsfParams::standard(), 4_100_000).is_ok());
     }
 
@@ -884,9 +980,9 @@ mod tests {
         let e = XyExtent {
             min_x: 0.0,
             min_y: 0.0,
-            max_x: 497.5,
-            max_y: 497.5,
-        }; // 497.5 / 0.5 = 995 cells + 1 + 4 margin = 1000 per side
+            max_x: 498.0,
+            max_y: 498.0,
+        }; // floor(498 / 0.5) = 996 cells + 4 margin = 1000 per side
         for threshold in [0.005f32, 0.0] {
             let params = CsfParams {
                 convergence_threshold: threshold,
@@ -900,7 +996,7 @@ mod tests {
             for iy in 0..1000 {
                 for ix in 0..1000 {
                     let z = 5.0 * ((ix as f64) * 0.02).sin() + rng.next_f64() * 0.1;
-                    cloth.add_point_for_ihv(ix as f64 * 0.4975, iy as f64 * 0.4975, z);
+                    cloth.add_point_for_ihv(ix as f64 * 0.498, iy as f64 * 0.498, z);
                 }
             }
             cloth.finish_ihv().unwrap();
