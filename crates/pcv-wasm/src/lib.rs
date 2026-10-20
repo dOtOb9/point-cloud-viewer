@@ -26,6 +26,9 @@ mod pcd_import;
 mod ply_import;
 mod point_file_import;
 mod point_merge;
+// --- G1: rasterize ---
+mod raster;
+// ---
 mod range_math;
 mod stats;
 mod util;
@@ -43,6 +46,9 @@ use web_sys::File;
 pub use convert::WasmConverter;
 // L2-C: Web extraction (point selection, cross section). Used by `src/datasource/copc.worker.ts`.
 pub use extract::WasmExtractor;
+// --- G1: rasterize --- Web rasterization (the Rasterize tool). Used by `src/datasource/copc.worker.ts`.
+pub use raster::WasmRasterizer;
+// ---
 // R7 / M4-17: Web PLY / PCD / E57 (and mixed LAS) to COPC conversion, one or several files. Used by `src/datasource/copc.worker.ts`.
 pub use point_file_import::WasmPointFileConverter;
 
