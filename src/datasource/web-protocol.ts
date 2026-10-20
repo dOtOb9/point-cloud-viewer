@@ -11,6 +11,7 @@
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
 import type { ExtractFilter } from "./tools";
+import type { SectionLineInput } from "./section-profile";
 
 /** ローカルファイルかURLか。`WebSource.open(path)`の`path`から組み立てる。 */
 export type OpenSource = { kind: "file"; file: File } | { kind: "url"; url: string };
@@ -110,7 +111,37 @@ export interface CloseRequest {
   cloudId: number;
 }
 
+// --- G2: cross-section view ---
+
+/** Read the whole opened file (`cloudId`) as `(s, z)` points of a cross section. Answered by `SectionProfileResponse`. */
+export interface SectionProfileRequest {
+  type: "sectionProfile";
+  id: number;
+  cloudId: number;
+  line: SectionLineInput;
+  /** Largest number of points; 0 = the default. */
+  cap: number;
+}
+
+export interface SectionProfileResponse {
+  type: "section-profile-result";
+  id: number;
+  ok: true;
+  /** Transferred, not copied. Layout: `section-profile.ts`. */
+  buffer: ArrayBuffer;
+}
+
+export function buildSectionProfileRequest(
+  id: number,
+  cloudId: number,
+  line: SectionLineInput,
+  cap: number,
+): SectionProfileRequest {
+  return { type: "sectionProfile", id, cloudId, line, cap };
+}
+
 export type WorkerRequest =
+  | SectionProfileRequest
   | ExtractStartRequest
   | ToolMergeStartRequest
   | OpenRequest
@@ -205,6 +236,7 @@ export interface ConvertFailedResponse {
 }
 
 export type WorkerResponse =
+  | SectionProfileResponse
   | ToolProgressResponse
   | ToolDoneResponse
   | ToolFailedResponse

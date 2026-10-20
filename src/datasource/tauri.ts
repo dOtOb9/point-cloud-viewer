@@ -28,6 +28,7 @@ import {
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
 import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
+import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
 import { StaleNodeRequestError } from "./stale-node-error";
 import { buildNodeRequestPath } from "./tauri-protocol";
 import { OPENABLE_EXTENSIONS } from "./source-format";
@@ -448,4 +449,19 @@ export async function mergeCopcs(paths: string[], options?: ToolOptions): Promis
     });
     return toToolResult(dto);
   });
+}
+
+// --- G2: cross-section view ---
+
+/**
+ * Reads the points of an open cross-section layer (`cloudId` from `open()`) as `(s, z)` points, at most `cap`
+ * of them (0 = the default). The binary buffer comes straight from Rust (see `section-profile.ts`).
+ */
+export async function readSectionProfile(
+  cloudId: number,
+  line: SectionLineInput,
+  cap: number,
+): Promise<SectionPoints> {
+  const buffer = await invoke<ArrayBuffer>("read_section_profile", { generation: cloudId, line, cap });
+  return decodeSectionProfile(buffer);
 }

@@ -45,6 +45,7 @@ import {
   buildOpenUrlRequest,
   buildPointFileConvertStartRequest,
   buildReadNodeRequest,
+  buildSectionProfileRequest,
   classifyOpenPath,
   makeFileKey,
   type PointFileFormat,
@@ -53,6 +54,7 @@ import {
 } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
 import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
+import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
 
 type InsufficientSpaceWeb = Extract<ConversionOutcome, { kind: "insufficientSpaceWeb" }>;
 
@@ -331,6 +333,16 @@ export class WebSource implements DataSource {
     }
     this.lastBytesRead = response.bytesRead;
     return response.buffer;
+  }
+
+  // --- G2: cross-section view ---
+  /** Reads the points of an open cross-section layer (`cloudId` from `open()`) as `(s, z)` points, at most `cap` (0 = default). */
+  async readSectionProfile(cloudId: number, line: SectionLineInput, cap: number): Promise<SectionPoints> {
+    const response = await this.send(buildSectionProfileRequest(this.nextRequestId++, cloudId, line, cap));
+    if (response.type !== "section-profile-result") {
+      throw new Error(`readSectionProfile()に対して予期しない応答: ${response.type}`);
+    }
+    return decodeSectionProfile(response.buffer);
   }
 
   async close(cloudId: number): Promise<void> {

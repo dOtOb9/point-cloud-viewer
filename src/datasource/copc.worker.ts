@@ -55,6 +55,7 @@ import type {
   OpenSource,
   PointFileConvertStartRequest,
   PointFileFormat,
+  SectionProfileRequest,
   WorkerRequest,
   WorkerResponse,
 } from "./web-protocol";
@@ -217,6 +218,10 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       case "close":
         handleClose(request.id, request.cloudId);
         return;
+      // --- G2: cross-section view ---
+      case "sectionProfile":
+        handleSectionProfile(request);
+        return;
       case "convertStart":
         await handleConvertStart(request.id, request.file, request.maxPointsPerNode, request.isMobile);
         return;
@@ -300,6 +305,20 @@ function handleReadNode(id: number, key: string, generation: number): void {
     },
     [buffer],
   );
+}
+
+// --- G2: cross-section view ---
+/** Read the whole opened file as `(s, z)` points of a cross section and send the buffer without copying it. */
+function handleSectionProfile(request: SectionProfileRequest): void {
+  const openFile = openFiles.get(request.cloudId);
+  if (!openFile) {
+    // A failure goes through the generic "error" response (the caller shows its text).
+    throw new Error("断面のレイヤーが閉じられています");
+  }
+  const bytes = openFile.readSectionProfile(request.line, request.cap);
+  // Same as handleReadNode: wasm-bindgen already copied the bytes out of wasm memory, so the buffer is ours.
+  const buffer = bytes.buffer as ArrayBuffer;
+  scope.postMessage({ type: "section-profile-result", id: request.id, ok: true, buffer }, [buffer]);
 }
 
 /** L1-B: そのファイルを閉じる。wasm側のリーダーを`free()`で手放す。知らない世代は何もしない。 */
