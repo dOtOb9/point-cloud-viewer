@@ -12,6 +12,7 @@ import { MeasureHud } from "../tools/MeasureHud";
 import { MeasureOverlay } from "../tools/MeasureOverlay";
 import { LayerToolOverlay } from "../tools/LayerToolOverlay";
 import { SectionDialog } from "../tools/SectionDialog";
+import { SectionPanel } from "../section/SectionPanel";
 import { ToolProgressDialog } from "../tools/ToolProgressDialog";
 import { ViewerPanel } from "./ViewerPanel";
 import { ConversionDialog } from "../dialogs/ConversionDialog";
@@ -142,6 +143,8 @@ export function AppShell() {
 
       {/* L2-F: cross-section thickness / height range, and the progress of a running point-cloud tool. */}
       <SectionDialog viewer={viewer} tool={layerTool} />
+      {/* G2: the 2D cross-section panel, opened when a cross section has been made. */}
+      <SectionPanel viewer={viewer} glassEnabled={glassEnabled} />
       <ToolProgressDialog viewer={viewer} />
 
       <ConversionDialog viewer={viewer} open={conversionDialogVisible} onClose={() => setConversionDialogOpen(false)} />
