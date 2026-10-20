@@ -153,7 +153,8 @@ export function drawSection(
   const fillMs = performance.now() - fillStart;
   ctx.putImageData(image, 0, 0);
 
-  drawAxes(ctx, canvas, cssWidth, cssHeight, view, options);
+  // With no points the view is a meaningless fit of an empty range, so no axes either.
+  if (points.count > 0) drawAxes(ctx, canvas, cssWidth, cssHeight, view, options);
   return { fillMs, totalMs: performance.now() - start, drawn };
 }
 

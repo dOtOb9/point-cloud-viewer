@@ -17,7 +17,7 @@
 | 操作 | 最初に呼ばれるもの |
 |---|---|
 | カット(多角形を閉じる) | `src/state/useLayerTool.ts` の `finishPolygon` → `extractFromLayer(viewer.toolContext, ..., "カット")` |
-| 断面(厚みと高さを確定) | 同 `confirmSection` → `extractFromLayer(viewer.toolContext, ..., "断面", box.normal)` |
+| 断面(厚みと高さを確定) | 同 `confirmSection` → `extractFromLayer(viewer.toolContext, ..., "断面", box.normal, section)`。成功すると右下に[断面図のパネル](#3-d-断面図2d-のパネルg2-3)が開く |
 | 合成(ツールバーの「合成」) | `src/ui/toolbar/buttons/MergeLayersButton.tsx` の `onClick` → `mergeSelectedLayers(viewer.toolContext)` |
 
 `extractFromLayer` / `mergeSelectedLayers` / `cancelTool` の実体は `src/app/point-cloud-tools.ts` の普通の関数です(R13 の `openFiles` と同じ形。F12 で飛べる)。
@@ -61,6 +61,22 @@
    5. `opfs.writeToolOutputMeta` の後 `tool-done`。成功・失敗とも `finally` で一時ファイルを消す(失敗時は出力も消す)。
 3. 合成: `toolMergeStart` → `handleConvertMultiStart` → `runMultiConversion`(複数ファイルの変換と同じコード)。結果だけは `toolRequestIds` に入っている id について、`convert-*` を `tool-*` に書き換えて送る(`translateForTool`)。アプリ全体の変換のリスナー(「変換結果を開く」)が反応しないようにするため。
 4. `WebSource.runTool` — `tool-done` を待ち、`opfs.getConvertedFile` で OPFS の出力を `File` として取り出し、`registerFile` で新しいキー(`"file:N"`)にして `outputPath` として返す。以降は 3-A の step 5。
+
+### 3-D. 断面図(2D のパネル。G2-3)
+
+断面が成功すると、新しいレイヤーに断面の情報(`ViewerLayer.section` = A・B・上方向・厚み。`src/state/layers.ts` の `SectionInfo`)を持たせ、
+画面の右下に **2D の断面図**を出します(狭い画面では下に横幅いっぱい)。元のレイヤーは 3-A step 5 のとおり非表示のままで、パネルを閉じても戻しません。
+
+1. `useLayerTool.ts` の `confirmSection` が A・B・`up`・厚みを `extractFromLayer(..., "断面", box.normal, section)` に渡す。`runTool` は `addOpenedLayer(..., section)` でレイヤーに持たせ、最後に `ctx.openSectionView(layerId)` を呼ぶ。
+2. `src/app/section-view.ts` `openSectionPanel` — レイヤーの点を `(s, z)` で読む。`s` = A から A→B の水平方向への距離、`z` = 上方向の高さ(どちらもファイルの単位)。
+   - デスクトップ: `src/datasource/tauri.ts` `readSectionProfile` → Tauri コマンド `read_section_profile`(`src-tauri/src/copc_state.rs`。開いているファイルの世代番号で読む。`spawn_blocking` + `catch_unwind`)。バイナリをそのまま返す。
+   - Web: `WebSource.readSectionProfile` → Worker の `sectionProfile` メッセージ → `WasmCopcFile.readSectionProfile`(`crates/pcv-wasm/src/lib.rs`)。`ArrayBuffer` を転送で返す。
+   - Rust の本体は `crates/pcv-core/src/profile.rs` `read_section_profile`。ノードを1つずつ読み、**返す点は最大 200 万点**(既定)。点数が上限以下なら全部、超えるなら `(s, z)` の細かい格子(セルは上限以下)の1セルに最初の1点だけ残す。メモリは上限×12 B(約 24 MB)で、点数に比例しません(テスト: `never_returns_more_than_the_cap_and_still_covers_the_whole_section`)。
+   - バッファの形は `src/datasource/section-profile.ts`(24 B のヘッダー + 1点 12 B: f32 s, f32 z, u8 r, g, b, 分類)。RGB があれば RGB、無ければ分類の色(`classificationToColor`)で塗る。
+3. 状態は `src/state/useSectionView.ts`(`useState` だけ。開いているレイヤー・点・表示(拡大と位置)・パネルの大きさ)。表示が `null` の間は「全部が入るように自動で合わせる」(`effectiveSectionView`)。
+4. 描画は `src/renderer/section-2d.ts`(React を使わない)。点を `ImageData` に直接書き(`fillSectionPixels`)、軸・目盛り・単位(m / ft。計測と同じ換算)を Canvas 2D で重ねる。縦と横の倍率は同じ(縦の強調は無い)。
+5. 操作は `src/ui/section/SectionPanel.tsx` が `section-view.ts` の関数に渡すだけ。ホイールとピンチは `zoomAt`、右ボタンのドラッグ・右ボタンの長押し・2本指のドラッグは `panBy`(計算は `src/app/section-math.ts`)。ブラウザの右クリックメニューは出さない。
+   右クリック(動かさず短く)・1本指の長押しは GL と傾斜角を出す予定の場所(G2-6)で、今は何もしません。断面線・線の編集は G2-4 / G2-5 です。
 
 ### 読み側の中身(`ExtractPoints`)
 
