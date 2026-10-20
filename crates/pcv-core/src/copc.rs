@@ -251,6 +251,20 @@ impl<R: Read + Seek + Send> CopcFile<R> {
     /// このファイルから削除した。
     pub fn read_node(&mut self, key: NodeKey) -> Result<NodeBuffer> {
         let node = *self.hierarchy.get(key).ok_or(CopcError::UnknownNode(key))?;
+        let node_points = self.read_node_points(key)?;
+        Ok(encode_node(
+            &node_points,
+            node.bounds_min,
+            self.info.has_color,
+        ))
+    }
+
+    /// Reads the points of one node as plain values (f64 world coordinates, colour already normalised
+    /// to 8 bit, classification). `read_node` encodes exactly this list. The section view
+    /// (`crate::profile`) uses it directly because it needs the exact coordinates, not the
+    /// node-relative f32 of the render format.
+    pub fn read_node_points(&mut self, key: NodeKey) -> Result<Vec<NodePoint>> {
+        let node = *self.hierarchy.get(key).ok_or(CopcError::UnknownNode(key))?;
         let has_color = self.info.has_color;
         let target_key = VoxelKey::from(key);
 
@@ -288,7 +302,7 @@ impl<R: Read + Seek + Send> CopcFile<R> {
             });
         }
 
-        Ok(encode_node(&node_points, node.bounds_min, has_color))
+        Ok(node_points)
     }
 }
 
