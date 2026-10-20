@@ -1,4 +1,5 @@
 import { Layers } from "lucide-react";
+import { mergeSelectedLayers } from "../../../app/point-cloud-tools";
 import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { ToolbarButton } from "../ToolbarButton";
 import { isToolRunning, selectedPointCloudCount } from "../toolbar-state";
@@ -22,7 +23,7 @@ export function MergeLayersButton({ viewer }: { viewer: CopcViewerState }) {
           : "レイヤー欄で Ctrl か Shift を押しながら2つ以上の点群レイヤーを選ぶと、結合できる"
       }
       disabled={count < 2 || isToolRunning(viewer)}
-      onClick={() => void viewer.mergeSelectedLayers()}
+      onClick={() => void mergeSelectedLayers(viewer.toolContext)}
     />
   );
 }

@@ -7,7 +7,7 @@
 //   useDisplaySettings.ts    point budget, background, grid, EDL, animation, render scale, shape, center priority, stats
 //   useLayers.ts             layer list, selection, per-layer actions, measurement layers
 //   useFileOpen.ts           conversion progress / file name state + the OpenFilesContext for src/app/open-files.ts
-//   usePointCloudTools.ts    extract / cross section / merge as new layers
+//   usePointCloudTools.ts    tool progress state + the PointCloudToolsContext for src/app/point-cloud-tools.ts
 //   useOpfsStorage.ts        Web storage usage and cleanup (settings page)
 //   useTempDir.ts            desktop temp folder setting
 //
@@ -56,8 +56,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [status, setStatus] = useState<ViewerStatus>({ kind: "idle" });
   // A renderer init failure is shown like an open failure (R5). Stable, because an effect depends on it.
   const setInitError = useCallback((message: string) => setStatus({ kind: "error", message }), []);
-  // Shared by openFiles (to ignore tool progress) and usePointCloudTools (sets it).
-  const toolRunningRef = useRef(false);
+  // Shared by openFiles (to ignore tool progress) and the tool functions (set it). One object for the app's lifetime.
+  const [toolLock] = useState(() => ({ running: false }));
 
   const errorLog = useErrorLog();
   const display = useDisplaySettings(rendererRef);
@@ -71,7 +71,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const fileOpen = useFileOpen({
     rendererRef,
     sourceRef,
-    toolRunningRef,
+    toolLock,
     setStatus,
     reportError: errorLog.reportError,
     addLayerToList: (layer) => layers.commitLayers(addLayerToState(layers.layersStateRef.current, layer)),
@@ -97,12 +97,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const tools = usePointCloudTools({
     rendererRef,
     sourceRef,
-    toolRunningRef,
+    toolLock,
     layersStateRef: layers.layersStateRef,
     extraSelectedIds: layers.extraSelectedIds,
     tempDir: tempDirSetting.tempDir,
     isMobile: display.deviceProfileDefaults.isMobile,
-    addOpenedLayer: (path, name, attachment) => addOpenedLayer(fileOpen.fileOpenContext, path, name, attachment),
+    addOpenedLayer: (path, name) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null),
     focusLayer: layers.focusLayer,
     setStatus,
     reportError: errorLog.reportError,
@@ -141,9 +141,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     toggleLayerSelection: layers.toggleLayerSelection,
     selectLayerRange: layers.selectLayerRange,
     toolProgress: tools.toolProgress,
-    cancelTool: tools.cancelTool,
-    extractFromLayer: tools.extractFromLayer,
-    mergeSelectedLayers: tools.mergeSelectedLayers,
+    toolContext: tools.toolContext,
     removeLayer: layers.removeLayer,
     pickPoint,
     getViewSnapshot,

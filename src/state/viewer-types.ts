@@ -110,7 +110,7 @@ export type CopcViewerState = Pick<
     | "setMinCenterPriorityWeight"
   > &
   Pick<ErrorLog, "gpuErrors" | "errorHistory" | "reportError" | "dismissGpuError"> &
-  Pick<PointCloudTools, "toolProgress" | "cancelTool" | "extractFromLayer" | "mergeSelectedLayers"> &
+  Pick<PointCloudTools, "toolProgress" | "toolContext"> &
   Pick<
     OpfsStorage,
     | "opfsStorageInfo"

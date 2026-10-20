@@ -1,3 +1,4 @@
+import { cancelTool } from "../../app/point-cloud-tools";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_BUTTON_CLASS } from "../dialogs/dialog-styles";
@@ -11,9 +12,9 @@ export function ToolProgressDialog({ viewer }: { viewer: CopcViewerState }) {
       open={progress !== null}
       title="点群ツールを実行中"
       accent="secondary"
-      onClose={viewer.cancelTool}
+      onClose={() => cancelTool(viewer.toolContext)}
       footer={
-        <button type="button" onClick={viewer.cancelTool} className={DIALOG_BUTTON_CLASS} data-testid="tool-cancel">
+        <button type="button" onClick={() => cancelTool(viewer.toolContext)} className={DIALOG_BUTTON_CLASS} data-testid="tool-cancel">
           キャンセル
         </button>
       }

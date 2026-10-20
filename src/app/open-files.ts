@@ -5,7 +5,7 @@
 // LAS/LAZ/PCD/PLY/E57 is converted inside the call and the promise resolves when the conversion is done (or has
 // failed or been cancelled). Progress goes out through `ctx.setConversionProgress`.
 // Called by: the open button and the drop handler directly (F12 on `openFiles` lands here);
-// usePointCloudTools.ts calls `addOpenedLayer` for tool results. The context is built by src/state/useFileOpen.ts.
+// src/app/point-cloud-tools.ts calls `addOpenedLayer` (through its context) for tool results. The context is built by src/state/useFileOpen.ts.
 // Rule: nothing in src/app/ imports React or a `use*` hook, and these are plain functions (TaskSheets/R13-open-files-as-functions.md).
 // Errors are put in `setStatus({ kind: "error", message })` and the error log (`reportError`).
 import { reportToBackendConsole } from "../datasource/tauri";

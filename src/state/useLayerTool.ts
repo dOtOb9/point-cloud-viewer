@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { extractFromLayer } from "../app/point-cloud-tools";
 import type { CopcViewerState } from "./useCopcViewer";
 import { isMeasureLayer } from "./layers";
 import { pixelToNdc, sectionBox, type Vec3 } from "./tool-math";
 
 // L2-F: operation of the two tools that draw on the 3D view: "点の選択" (polygon on the screen) and
-// "断面" (a line between two picked 3D points). The result is made by `viewer.extractFromLayer`
+// "断面" (a line between two picked 3D points). The result is made by `extractFromLayer` (src/app/point-cloud-tools.ts)
 // (a new layer; the source layer is never changed, ADR-0018).
 //
 // Click handling is the same as useMeasureTool.ts (L2-D): a click counts only if the pointer moved
@@ -135,7 +136,7 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
     const polygonNdc = points.map((p) => pixelToNdc(p.x, p.y, width, height));
     // Done drawing: leave the tool first (the extraction can take a long time), then start it.
     reset(null);
-    void viewerRef.current.extractFromLayer(layer.id, { kind: "screenPolygon", viewProj: [...anchor], polygonNdc }, "選択");
+    void extractFromLayer(viewerRef.current.toolContext, layer.id, { kind: "screenPolygon", viewProj: [...anchor], polygonNdc }, "選択");
   }, [canvasRef, reset, setPolygonBoth, showNotice, targetLayer]);
 
   const addPolygonVertex = useCallback(
@@ -185,7 +186,7 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
         return;
       }
       reset(null);
-      void viewerRef.current.extractFromLayer(layer.id, box.filter, "断面", box.normal);
+      void extractFromLayer(viewerRef.current.toolContext, layer.id, box.filter, "断面", box.normal);
     },
     [reset, setSectionBoth, showNotice, targetLayer],
   );

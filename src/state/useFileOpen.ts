@@ -13,7 +13,7 @@ export type FileOpenInputs = Pick<
 > & {
   rendererRef: RefObject<PointCloudRenderer | null>;
   sourceRef: RefObject<DataSource | null>;
-  toolRunningRef: RefObject<boolean>;
+  toolLock: { running: boolean };
   tempDir: string | null;
 };
 
@@ -43,7 +43,7 @@ export function useFileOpen(inputs: FileOpenInputs): FileOpen {
     tempDir: inputs.tempDir,
     isMobile: inputs.isMobile,
     pointShape: inputs.pointShape,
-    isToolRunning: () => inputs.toolRunningRef.current,
+    isToolRunning: () => inputs.toolLock.running,
     refreshOpfsStorageInfo: inputs.refreshOpfsStorageInfo,
     openLock,
   };
