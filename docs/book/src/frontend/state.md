@@ -17,8 +17,8 @@ R1（[`TaskSheets/R1-state-refactor.md`](https://github.com/dOtOb9/point-cloud-v
 ここに残してあるものは次のとおりです。
 
 - `status` — ほぼ全部の hook が書くため（hook に入れても同じ引数を持ち回るだけ）。型は `viewer-status.ts` の判別共用体 `ViewerStatus`（`idle`／`opening`／`converting`／`ready`／`error`。`error` だけが `message` を持つ）。読む側は `isFileOpenBusy`・`openButtonLabel`・`statusErrorMessage`・`isOpenRunningOrDone` を使う。変換中のファイル名と進捗は、`converting` になる前や `ready` になった後にも読まれるため、共用体に入れず `useFileOpen` の `useState` が持つ（`openFiles` が `OpenFilesContext` 越しに書く）。
-- `rendererRef`・`sourceRef`・`toolRunningRef` — `useDisplaySettings` が `rendererRef` を、`useRendererLifecycle` が `useDisplaySettings` の `onStats` を必要とする循環を、ref を組み立て側で作ることで避けている。
-  `toolRunningRef` は `openFiles`（`ctx.isToolRunning()` 経由。ツールの進捗イベントを変換と取り違えないため）と `usePointCloudTools`（立てる側）が共有する。
+- `rendererRef`・`sourceRef` — `useDisplaySettings` が `rendererRef` を、`useRendererLifecycle` が `useDisplaySettings` の `onStats` を必要とする循環を、ref を組み立て側で作ることで避けている。
+- `toolLock`（`{ running: boolean }`。`useCopcViewer.ts` が `useState` で一度だけ作る素のオブジェクト）— `openFiles`（`ctx.isToolRunning()` 経由。ツールの進捗イベントを変換と取り違えないため）と `src/app/point-cloud-tools.ts`（立てる側）が共有する。`openLock` と同じ考え方。
 - `pickPoint`・`getViewSnapshot` — renderer への 15 行ほどの素通し。
 - `CopcViewerState` に使う型の再エクスポート（`src/ui` が renderer／datasource の型に届くには state を通す、という規約のため）。
 
@@ -52,7 +52,7 @@ R11 で変換の購読の effect が無くなり、R12 で `useConversionSession
 - テストは React 無しで書ける（`src/app/open-files.test.ts`。偽の `DataSource` と偽のレンダラー）。
 
 使われ方: `useFileOpen.ts`（フック）が、描画のたびに `OpenFilesContext`（`{ getSource, getRenderer, setStatus, reportError, addLayerToList, ... }` の普通のオブジェクト）を作る。
-`useCopcViewer.ts` がそれを `fileOpenContext` として `CopcViewerState` に出し、`addOpenedLayer(fileOpenContext, ...)` を `usePointCloudTools` に渡す。UI は `openFiles(viewer.fileOpenContext, ...)` を直接呼ぶ。
+`useCopcViewer.ts` がそれを `fileOpenContext` として `CopcViewerState` に出し、`addOpenedLayer(fileOpenContext, ...)` を `usePointCloudTools` に渡す。ツールも同じ形で、手順は `src/app/point-cloud-tools.ts` の関数、`usePointCloudTools` は進捗の state と `PointCloudToolsContext`（`viewer.toolContext`）を作るだけ。UI は `openFiles(viewer.fileOpenContext, ...)` を直接呼ぶ。
 レイヤー一覧はまだ React の state なので、`addLayerToList` で渡している（次の段階で `src/app/` に移す予定）。
 
 ## hook の一覧（1ファイル1関心事）
@@ -67,7 +67,7 @@ R11 で変換の購読の effect が無くなり、R12 で `useConversionSession
 | `useDisplaySettings.ts` | 点予算・自動調整・背景・グリッド・EDL・アニメーション・レンダースケール・点の形・中央優先度・`stats`・端末の既定値 | `useDisplaySettings(rendererRef)` |
 | `useLayers.ts` | レイヤー一覧と選択、レイヤーごとの操作（表示・着色・形・大きさ・移動・削除）、計測レイヤー | `useLayers(deps)` |
 | `useFileOpen.ts` | 変換の進捗・変換元の名前の `useState`、`openLock`、`src/app/open-files.ts` の関数に渡す `OpenFilesContext` を作って返すだけ（約50行） | `useFileOpen(inputs)` |
-| `usePointCloudTools.ts` | 選択・断面・結合を「新しいレイヤーを作る」形で実行（ADR-0018）、ツールの進捗・キャンセル | `usePointCloudTools(deps)` |
+| `usePointCloudTools.ts` | ツールの進捗の state と `PointCloudToolsContext`（手順は `src/app/point-cloud-tools.ts`。カット・断面・合成を「新しいレイヤーを作る」形で実行。ADR-0018） | `usePointCloudTools(inputs)` |
 | `useOpfsStorage.ts` | Web の保存領域の使用量と掃除（設定ページ用） | `useOpfsStorage()` |
 | `useTempDir.ts` | デスクトップの一時フォルダ設定（localStorage）と `supportsCustomTempDir` | `useTempDir()` |
 | `error-history.ts` | 純粋: 現在のエラー一覧を履歴に統合 | `mergeErrorHistory` |
@@ -93,7 +93,7 @@ hook は **依存を引数で受け取り**、お互いを import しません�
 次の hook は `CopcViewerState` の一部ではなく、**`AppShell` が個別に呼び**、`CopcViewerState` を入力として受け取ります。
 
 - `useMeasureTool.ts` — 計測のマウス操作（[計測](../flows/measure.md)）。結果は `viewer.addMeasurement` で計測レイヤーになる。
-- `useLayerTool.ts` — 点の選択（画面上の多角形）と断面（2点を結ぶ線）のマウス操作。結果は `viewer.extractFromLayer` で新しいレイヤーになる。
+- `useLayerTool.ts` — カット（画面上の多角形）と断面（2点を結ぶ線）のマウス操作。結果は `extractFromLayer(viewer.toolContext, ...)`（`src/app/point-cloud-tools.ts`）で新しいレイヤーになる。
   `usePointCloudTools` が「ツールを走らせる側」、`useLayerTool` が「画面に描く側」。
 - `useDisplayUnit.ts` — 表示単位（m／ft）。hook というよりモジュール単位の小さなストア（[設定と単位](../flows/settings.md)）。
 - `useFileDrop.ts` — ドラッグ&ドロップで開く（受け取り方の違いは `datasource/file-picker.ts`）（[ファイルを開く](../flows/open-file.md)）。

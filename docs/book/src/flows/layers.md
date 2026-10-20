@@ -34,7 +34,7 @@ UI の入口は `src/ui/layers/` の三つ。いずれも最後は `viewer.xxx(.
 2. Ctrl／Cmd クリック: `toggleLayerSelection(id)` — `src/state/layer-selection.ts` の `toggleSelectedId` で追加・解除。主選択は「最後に選んだもの」。
 3. Shift クリック: `selectLayerRange(id)` — `rangeSelectedIds` で主選択から押した行までを選ぶ（主選択は動かさない）。
 4. `selectedLayerIds` は `effectiveSelectedIds` で毎回計算する。追加選択のリストは**主選択を含んでいるときだけ信用**する（通常クリック・開く・削除のあとに自然に無効になるので、リセットを書いて回らなくてよい）。
-5. 着色・見た目・移動・削除のボタンは**主選択（`selectedLayerId`）**に効く。複数選択を使うのは結合（`usePointCloudTools.ts` の `mergeSelectedLayers`。`toolSourceLayers`）だけ。
+5. 着色・見た目・移動・削除のボタンは**主選択（`selectedLayerId`）**に効く。複数選択を使うのは合成（`src/app/point-cloud-tools.ts` の `mergeSelectedLayers`。`toolSourceLayers`）だけ。
 
 ### 着色・見た目
 

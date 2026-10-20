@@ -59,8 +59,8 @@ renderer は `cloudId` を知りません。`src/app/open-files.ts` の `addOpen
 - `mergeCopcs(paths, options)` — 開いている複数の COPC を一つにする（デスクトップ `merge_copcs`、Web `WebSource.mergeCopcs`）。CRS が無いファイルは通し、理由を `warnings` で返す。CRS が違えば失敗。
 - `ToolResult` — `outputPath`（そのまま `DataSource.open()` に渡せる）・`pointCount`・`warnings`（エラーログへ）。`ToolOptions` — 進捗コールバックと一時フォルダ。
 
-これらを呼ぶのは `src/state/usePointCloudTools.ts` です。デスクトップでは変換と同じ `conversion-progress` イベントで進捗が来るため、
-変換側が取り違えないよう `toolRunningRef` で区別しています。
+これらを呼ぶのは `src/app/point-cloud-tools.ts` です。デスクトップでは変換と同じ `conversion-progress` イベントで進捗が来るため、
+変換側が取り違えないよう `toolLock`（`src/app/point-cloud-tools.ts` の `PointCloudToolsContext`）で区別しています。
 
 ## `tauri.ts`: デスクトップ・Android 実装
 

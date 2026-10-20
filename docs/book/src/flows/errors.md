@@ -54,7 +54,7 @@
 | 入口 | 受け止める場所 | 画面に出る形 |
 |---|---|---|
 | `pcv://` のノード読み出し | `copc_state.rs` の `catch_unwind` → HTTP 500 | 2. の経路で `reportError(..., "node-read")` |
-| 点群ツール（選択・断面・結合）のコマンド | `src-tauri/src/conversion.rs` の `catch_unwind`（`spawn_blocking` の中）。`"内部エラー(panic): ..."` の `Err` にする | `usePointCloudTools.ts` の `runTool` の `catch` → `reportError(message, "tool")` |
+| 点群ツール（カット・断面・合成）のコマンド | `src-tauri/src/conversion.rs` の `catch_unwind`（`spawn_blocking` の中）。`"内部エラー(panic): ..."` の `Err` にする | `src/app/point-cloud-tools.ts` の `runTool` の `catch` → `reportError(message, "tool")` |
 | Web の Worker（wasm） | `init_panic_hook`（`crates/pcv-wasm/src/lib.rs`。`console.error` に出す）。トラップは Worker の `try/catch` が拾い `error`／`convert-failed` のメッセージに | 3. の経路 |
 | 変換本体（変換スレッド） | `src-tauri/src/conversion.rs` の `spawn_guarded_conversion` → `run_guarded`（`catch_unwind`）。panic は `"内部エラー(panic): ..."` として `emit_failed` へ（F1） | 失敗と同じく `conversion-failed` → `watchConversionEnd` → `prepareToOpen` が `failed` → エラーダイアログ（アプリでの実行は未確認、単体テストのみ） |
 
@@ -63,7 +63,7 @@
 - CRS の読み取り失敗: `addOpenedLayer` が `reportError(..., "crs")`。ファイルは開く。
 - ファイルを閉じる失敗: `useLayers.ts` の `removeLayer` が `reportError(..., "node-read")`。
 - 計測の深度読み戻しの失敗: `useCopcViewer.ts` の `pickPoint` が `reportError(...)`。
-- 点群ツールの警告（CRS なしを通したなど）と失敗: `usePointCloudTools.ts` の `reportToolMessage` → `source = "tool"`。
+- 点群ツールの警告（CRS なしを通したなど）と失敗: `src/app/point-cloud-tools.ts` の `reportToolMessage` → `source = "tool"`。
 - `renderer.init()` の失敗: `useRendererLifecycle.ts` が `status` を `{ kind: "error", message: String(e) }` にする（他の失敗と同じ画面内の表示）。
 - WebGPU 非対応: `UnsupportedDeviceScreen`（[起動](./startup.md)）。
 

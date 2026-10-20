@@ -15,7 +15,7 @@
 |   useDisplaySettings   --> isMobile, pointShape
 |   useTempDir           --> tempDir
 |   useOpfsStorage       --> refreshOpfsStorageInfo
-|   useRef(false)        --> toolRunningRef  (set by the point-cloud tools)
+|   useRef(false)        --> toolLock  (set by the point-cloud tools)
 |
 |   all of the above, as inputs
 v

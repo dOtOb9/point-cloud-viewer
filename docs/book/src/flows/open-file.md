@@ -97,10 +97,10 @@ Web は、LAS/LAZ だけなら `startMultiConversion`（属性をすべて残す
   [R12](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R12-file-opener-outside-react.md)（開く処理を React の外へ出した記録）、
   [R13](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/R13-open-files-as-functions.md)（クラスをやめて関数にした・開いている途中の2つ目を断る記録）。
 - Web とデスクトップの分岐は `DataSource.prepareToOpen`（R9）に移し、R11 で変換の完了待ちもその中に入れた。`openFiles` は「呼んで、結果で分けるだけ」。R12 で、この処理を React のフックから `src/app/` に出し、R13 でクラスをやめて普通の関数にした（隠れた状態を持たず、UI が直接呼ぶため F12 で実装に着く）。
-  まだ `instanceof` が残っているのは `usePointCloudTools.ts`（別の作業）。
+  まだ `instanceof` が残っているのは `src/app/point-cloud-tools.ts`（別の作業）。
 - 変換の結果（内訳・ダウンロード）は `PrepareOutcome.ready.conversion` で**値として**返り、`addOpenedLayer` の引数でそのレイヤーに付く。
   以前は完了ハンドラが ref に預けて `openFile(出力, true)` を呼び直していたため、順序を間違えると内訳が消える不具合があった（2026-10-08）。今は預ける場所そのものが無い。
 - デスクトップのイベント（`conversion-progress` など）には変換の識別子が付かない。同時に2つの変換を走らせると、最初の完了イベントで両方の待ちが解決してしまう。
-  Rust は2つ目を拒まず、キャンセルのフラグを上書きする（`ConversionState`）ので、`openFiles` の中で断る（R13。開くボタンもドロップも同じ関数を通る）。ただしツールの実行（`usePointCloudTools`）は `openLock` を取らない（これまでどおり）。
+  Rust は2つ目を拒まず、キャンセルのフラグを上書きする（`ConversionState`）ので、`openFiles` の中で断る（R13。開くボタンもドロップも同じ関数を通る）。ただしツールの実行（`src/app/point-cloud-tools.ts`）は `openLock` を取らない（代わりに `toolLock` で同時に1つだけにしている）（これまでどおり）。
 - E2E が使う `data-testid`（`open-button`・`conversion-breakdown`・`download-link`・`viewer-error`）は、UI を作り直しても付け直すこと。
 - ファイル選択は OS のダイアログとドロップだけ（パスを人に打たせない。所有者の要件）。
