@@ -40,6 +40,7 @@ import {
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
+  buildRasterStartRequest,
   buildToolMergeStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
@@ -53,10 +54,19 @@ import {
   type WorkerResponse,
 } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
-import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
+import type { ExtractFilter, RasterRequest, ToolOptions, ToolProgress, ToolResult } from "./tools";
 import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
 
 type InsufficientSpaceWeb = Extract<ConversionOutcome, { kind: "insufficientSpaceWeb" }>;
+
+/** What the Worker's `tool-done` carries (`ToolDoneResponse` in web-protocol.ts, without the type and id). */
+interface ToolDone {
+  outputName: string;
+  pointCount: number;
+  warnings: string[];
+  /** Only the Rasterize tool (G1). */
+  raster?: { geotiff: Uint8Array; width: number; height: number };
+}
 
 /** How the free-space check gets the point count of each raw point-file format (from its header). */
 const POINT_COUNT_ESTIMATORS: Record<PointFileFormat, (file: File) => Promise<number | null>> = {
@@ -489,7 +499,7 @@ export class WebSource implements DataSource {
   private readonly toolPending = new Map<
     number,
     {
-      resolve: (done: { outputName: string; pointCount: number; warnings: string[] }) => void;
+      resolve: (done: ToolDone) => void;
       reject: (error: Error) => void;
       onProgress?: (progress: ToolProgress) => void;
     }
@@ -510,15 +520,14 @@ export class WebSource implements DataSource {
     id: number,
     request: WorkerRequest,
     options: ToolOptions | undefined,
+    addToResult?: (done: ToolDone) => Partial<ToolResult>,
   ): Promise<ToolResult> {
     this.activeConvertId = id;
     try {
-      const done = await new Promise<{ outputName: string; pointCount: number; warnings: string[] }>(
-        (resolve, reject) => {
-          this.toolPending.set(id, { resolve, reject, onProgress: options?.onProgress });
-          this.worker.postMessage(request);
-        },
-      );
+      const done = await new Promise<ToolDone>((resolve, reject) => {
+        this.toolPending.set(id, { resolve, reject, onProgress: options?.onProgress });
+        this.worker.postMessage(request);
+      });
       const file = await opfs.getConvertedFile(done.outputName);
       if (!file) {
         throw new Error(`作った点群をOPFSから開けませんでした: ${done.outputName}`);
@@ -527,6 +536,7 @@ export class WebSource implements DataSource {
         outputPath: this.registerFile(file),
         pointCount: done.pointCount,
         warnings: done.warnings,
+        ...addToResult?.(done),
       };
     } finally {
       if (this.activeConvertId === id) this.activeConvertId = null;
@@ -558,6 +568,38 @@ export class WebSource implements DataSource {
       options,
     );
   }
+
+  // --- G1: rasterize ---
+
+  /**
+   * Rasterizes an open COPC (`path` = the key passed to `open()`): a display COPC on OPFS (one point per non-empty
+   * cell; passing `outputPath` to `open()` makes the layer) and a GeoTIFF as a download (`raster.geotiff.download`).
+   * Cancel with `cancelConversion()`.
+   */
+  async rasterizeToCopc(path: string, request: RasterRequest, options?: ToolOptions): Promise<ToolResult> {
+    const file = this.fileForToolInput(path);
+    if (!(await opfs.isOpfsAvailable())) {
+      throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
+    }
+    // The display COPC has at most one point per cell, far fewer than the source, so the source estimate is the safe side.
+    const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
+    if (insufficient) throw new Error("空き容量が足りないため、ラスタ化を実行できません");
+    const id = this.nextRequestId++;
+    return await this.runTool(id, buildRasterStartRequest(id, file, request, `ラスタ化: ${file.name}`), options, (done) => {
+      if (!done.raster) return {};
+      const baseName = file.name.replace(/\.laz$/i, "").replace(/\.copc$/i, "");
+      const url = URL.createObjectURL(new Blob([done.raster.geotiff as BlobPart], { type: "image/tiff" }));
+      return {
+        raster: {
+          ...request,
+          width: done.raster.width,
+          height: done.raster.height,
+          geotiff: { path: null, download: { url, fileName: `${baseName}-raster.tif` } },
+        },
+      };
+    });
+  }
+  // ---
 
   /**
    * Merges several open COPC files (keys passed to `open()`) into one COPC (on OPFS).
@@ -631,6 +673,7 @@ export class WebSource implements DataSource {
         outputName: response.outputName,
         pointCount: response.pointCount,
         warnings: response.warnings,
+        raster: response.raster,
       });
       return;
     }

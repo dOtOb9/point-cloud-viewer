@@ -33,6 +33,7 @@ import init, {
   opfsScratchPoolSize,
   WasmConverter,
   WasmExtractor,
+  WasmRasterizer,
   WasmCopcFile,
   WasmPointFileConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
@@ -56,6 +57,7 @@ import type {
   PointFileConvertStartRequest,
   PointFileFormat,
   SectionProfileRequest,
+  RasterStartRequest,
   WorkerRequest,
   WorkerResponse,
 } from "./web-protocol";
@@ -233,6 +235,9 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         return;
       case "extractStart":
         await handleExtractStart(request);
+        return;
+      case "rasterStart":
+        await handleRasterStart(request);
         return;
       case "toolMergeStart":
         toolRequestIds.add(request.id);
@@ -1138,6 +1143,121 @@ async function runExtract(
     if (activeConvertId === id) activeConvertId = null;
   }
 }
+
+// --- G1: rasterize ---
+//
+// Same sequence as `runExtract` (lock -> scratch-file pool -> sequential feed loop -> finish -> cleanup), with a
+// `WasmRasterizer`. `feed` first reads points into the grid, then writes the non-empty cells; the GeoTIFF bytes are
+// taken after the last `feed` and sent (transferred) in `tool-done` together with the grid size.
+
+async function handleRasterStart(request: RasterStartRequest): Promise<void> {
+  const { id, file, options, label } = request;
+  const outcome = await opfs.withConversionLock(navigator.locks, () => runRaster(id, file, options, label));
+  if (outcome.kind === "busy") {
+    scope.postMessage({
+      type: "tool-failed",
+      id,
+      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
+      cancelled: false,
+    });
+  }
+}
+
+async function runRaster(id: number, file: File, options: RasterStartRequest["options"], label: string): Promise<void> {
+  activeConvertId = id;
+  convertCancelRequested = false;
+
+  const outputName = opfs.toolOutputName();
+  let scratchDirName: string | null = null;
+  let scratchHandles: FileSystemSyncAccessHandle[] = [];
+  let outputHandle: FileSystemSyncAccessHandle | null = null;
+  let rasterizer: WasmRasterizer | null = null;
+  let succeeded = false;
+  const cancelled = () => scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
+
+  try {
+    try {
+      await opfs.cleanupStaleScratchDirs();
+    } catch {
+      // Carry on even if cleanup fails (same as conversion).
+    }
+    const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
+    scratchDirName = pool.dirName;
+    scratchHandles = pool.handles;
+    outputHandle = await opfs.createOutputHandle(outputName);
+
+    // The constructor refuses a grid over the cell cap before any point is read.
+    rasterizer = new WasmRasterizer(file, options, scratchHandles, outputHandle, outputName, DEFAULT_MAX_POINTS_PER_NODE);
+
+    for (;;) {
+      if (convertCancelRequested) {
+        cancelled();
+        return;
+      }
+      const result = rasterizer.feed(CONVERT_BATCH_SIZE) as {
+        points_scanned: number;
+        candidate_points: number;
+        done: boolean;
+      };
+      scope.postMessage({
+        type: "tool-progress",
+        id,
+        pointsRead: result.points_scanned,
+        totalPoints: result.candidate_points,
+      });
+      if (result.done) break;
+      await yieldToEventLoop();
+    }
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+
+    const geotiff = rasterizer.geotiff();
+    // `finish()` consumes the Rust-side object when called (same as runExtract).
+    let finishResult: { point_count: number; width: number; height: number; warnings: string[] };
+    try {
+      finishResult = rasterizer.finish() as typeof finishResult;
+    } finally {
+      rasterizer = null;
+    }
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+
+    await opfs.writeToolOutputMeta(outputName, label);
+    succeeded = true;
+    scope.postMessage(
+      {
+        type: "tool-done",
+        id,
+        outputName,
+        pointCount: finishResult.point_count,
+        warnings: finishResult.warnings,
+        raster: { geotiff, width: finishResult.width, height: finishResult.height },
+      },
+      [geotiff.buffer],
+    );
+  } catch (err) {
+    scope.postMessage({
+      type: "tool-failed",
+      id,
+      message: describeConversionFailure(err),
+      cancelled: false,
+    });
+  } finally {
+    rasterizer?.free();
+    opfs.closeHandles(scratchHandles);
+    if (outputHandle) opfs.closeHandles([outputHandle]);
+    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
+    if (!succeeded) {
+      await opfs.removeOutputFile(outputName);
+    }
+    if (activeConvertId === id) activeConvertId = null;
+  }
+}
+// ---
 
 // --- M4-9 / R7: PCD, PLY and E57 to COPC (TaskSheets/M4-import-and-conversion.md, R7-web-ply-e57.md) ---
 //

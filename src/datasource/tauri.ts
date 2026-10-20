@@ -5,7 +5,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import type { DataSource, OpenedCloud, PrepareOptions, PrepareOutcome } from "./DataSource";
 import { basenameOfPath } from "./file-name";
 import { toConversionFailureOutcome, toPrepareOutcome } from "./prepare-outcome";
@@ -27,7 +27,7 @@ import {
   type ConversionStageBreakdownDto,
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
-import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
+import type { ExtractFilter, RasterRequest, ToolOptions, ToolResult } from "./tools";
 import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
 import { StaleNodeRequestError } from "./stale-node-error";
 import { buildNodeRequestPath } from "./tauri-protocol";
@@ -464,4 +464,49 @@ export async function readSectionProfile(
 ): Promise<SectionPoints> {
   const buffer = await invoke<ArrayBuffer>("read_section_profile", { generation: cloudId, line, cap });
   return decodeSectionProfile(buffer);
+}
+
+// --- G1: rasterize ---
+
+interface RasterToolResultDto extends ToolResultDto {
+  geotiff_path: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Rasterizes an open COPC (`path` = the path passed to `open()`): writes a GeoTIFF and a display COPC (one point per
+ * non-empty cell). Passing the returned `outputPath` to `open()` makes the display layer; `raster.geotiff.path` is the
+ * GeoTIFF in the temp folder (copy it with `saveGeoTiff`). Cancel with `cancelLasConversion()`.
+ */
+export async function rasterizeToCopc(
+  path: string,
+  request: RasterRequest,
+  options?: ToolOptions,
+): Promise<ToolResult> {
+  return await withToolProgress(options, async () => {
+    const dto = await invoke<RasterToolResultDto>("rasterize_copc", {
+      path,
+      options: request,
+      tempDir: options?.tempDir ?? null,
+    });
+    return {
+      ...toToolResult(dto),
+      raster: { ...request, width: dto.width, height: dto.height, geotiff: { path: dto.geotiff_path, download: null } },
+    };
+  });
+}
+
+/**
+ * Asks the user where to save a GeoTIFF (the system save dialog), then copies `sourcePath` there.
+ * Returns false when the user closed the dialog without choosing.
+ */
+export async function saveGeoTiff(sourcePath: string, suggestedName: string): Promise<boolean> {
+  const destination = await saveFileDialog({
+    defaultPath: suggestedName,
+    filters: [{ name: "GeoTIFF", extensions: ["tif", "tiff"] }],
+  });
+  if (!destination) return false;
+  await invoke("save_tool_file", { source: sourcePath, destination });
+  return true;
 }

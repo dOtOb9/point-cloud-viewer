@@ -8,6 +8,7 @@ import {
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
+  buildRasterStartRequest,
   buildToolMergeStartRequest,
   buildOpenFileRequest,
   buildOpenUrlRequest,
@@ -178,6 +179,18 @@ describe("点群ツールのリクエスト(L2-C)", () => {
       file,
       filter,
       label: "抽出: a",
+    });
+  });
+
+  it("rasterStartにファイルと設定を載せる (G1)", () => {
+    const file = new File([new Uint8Array([1])], "a.copc.laz");
+    const options = { cellSize: 2, value: "zMean", groundOnly: true } as const;
+    expect(buildRasterStartRequest(4, file, options, "ラスタ化: a")).toEqual({
+      type: "rasterStart",
+      id: 4,
+      file,
+      options,
+      label: "ラスタ化: a",
     });
   });
 

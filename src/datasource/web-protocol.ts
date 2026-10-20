@@ -10,7 +10,7 @@
 
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
-import type { ExtractFilter } from "./tools";
+import type { ExtractFilter, RasterRequest } from "./tools";
 import type { SectionLineInput } from "./section-profile";
 
 /** ローカルファイルかURLか。`WebSource.open(path)`の`path`から組み立てる。 */
@@ -142,6 +142,7 @@ export function buildSectionProfileRequest(
 
 export type WorkerRequest =
   | SectionProfileRequest
+  | RasterStartRequest
   | ExtractStartRequest
   | ToolMergeStartRequest
   | OpenRequest
@@ -358,6 +359,8 @@ export interface ToolDoneResponse {
   outputName: string;
   pointCount: number;
   warnings: string[];
+  /** Only the Rasterize tool (G1): the GeoTIFF bytes (transferred, not copied) and the grid size. */
+  raster?: { geotiff: Uint8Array; width: number; height: number };
 }
 
 export interface ToolFailedResponse {
@@ -375,6 +378,23 @@ export function buildExtractStartRequest(
 ): ExtractStartRequest {
   return { type: "extractStart", id, file, filter, label };
 }
+
+// --- G1: rasterize ---
+
+/** Rasterizes the open COPC (`file`): a GeoTIFF (returned in `tool-done`) and a display COPC (on OPFS). */
+export interface RasterStartRequest {
+  type: "rasterStart";
+  id: number;
+  file: File;
+  options: RasterRequest;
+  /** Name shown in the usage breakdown (settings). */
+  label: string;
+}
+
+export function buildRasterStartRequest(id: number, file: File, options: RasterRequest, label: string): RasterStartRequest {
+  return { type: "rasterStart", id, file, options, label };
+}
+// ---
 
 export function buildToolMergeStartRequest(
   id: number,
