@@ -13,6 +13,7 @@ pub mod crs;
 pub mod csf;
 pub mod extract;
 mod node_format;
+pub mod outlier;
 pub mod raster;
 #[cfg(test)]
 mod test_support;

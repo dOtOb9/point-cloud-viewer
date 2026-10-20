@@ -75,4 +75,3 @@ pub(crate) type FileReader = CopcReader<std::io::BufReader<std::fs::File>>;
 pub(crate) fn open_fn(path: &Path) -> impl FnMut() -> copc_core::Result<FileReader> + '_ {
     move || CopcReader::from_path(path)
 }
-
