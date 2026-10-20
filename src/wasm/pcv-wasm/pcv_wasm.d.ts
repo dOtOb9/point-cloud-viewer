@@ -178,6 +178,12 @@ export class WasmCopcFile {
      */
     readNode(key: string): Uint8Array;
     /**
+     * Reads the whole file as `(s, z)` points of a cross section (`pcv_core::profile`).
+     * `line` is the `SectionLine` JSON (a, b, up); `cap` 0 means the default. The result is the binary
+     * buffer described in `crates/pcv-core/src/profile.rs` (at most 24 bytes + cap * 12 bytes).
+     */
+    readSectionProfile(line: any, cap: number): Uint8Array;
+    /**
      * 元のファイル/URL全体のバイト数。`bytesRead()`と比べることで
      * 「ファイル全体を読んでいないこと」を確認できる(受け入れ条件)。
      */
@@ -312,6 +318,7 @@ export interface InitOutput {
     readonly wasmcopcfile_openFile: (a: any) => [number, number, number];
     readonly wasmcopcfile_openUrl: (a: number, b: number) => [number, number, number];
     readonly wasmcopcfile_readNode: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly wasmcopcfile_readSectionProfile: (a: number, b: any, c: number) => [number, number, number, number];
     readonly wasmcopcfile_totalSize: (a: number) => number;
     readonly wasmextractor_feed: (a: number, b: number) => [number, number, number];
     readonly wasmextractor_finish: (a: number) => [number, number, number];

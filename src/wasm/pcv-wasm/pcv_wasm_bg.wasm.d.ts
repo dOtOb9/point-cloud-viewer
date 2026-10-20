@@ -26,6 +26,7 @@ export const wasmcopcfile_info: (a: number) => [number, number, number];
 export const wasmcopcfile_openFile: (a: any) => [number, number, number];
 export const wasmcopcfile_openUrl: (a: number, b: number) => [number, number, number];
 export const wasmcopcfile_readNode: (a: number, b: number, c: number) => [number, number, number, number];
+export const wasmcopcfile_readSectionProfile: (a: number, b: any, c: number) => [number, number, number, number];
 export const wasmcopcfile_totalSize: (a: number) => number;
 export const wasmextractor_feed: (a: number, b: number) => [number, number, number];
 export const wasmextractor_finish: (a: number) => [number, number, number];

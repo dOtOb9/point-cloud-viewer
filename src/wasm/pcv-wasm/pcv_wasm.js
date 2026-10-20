@@ -334,6 +334,23 @@ export class WasmCopcFile {
         return v2;
     }
     /**
+     * Reads the whole file as `(s, z)` points of a cross section (`pcv_core::profile`).
+     * `line` is the `SectionLine` JSON (a, b, up); `cap` 0 means the default. The result is the binary
+     * buffer described in `crates/pcv-core/src/profile.rs` (at most 24 bytes + cap * 12 bytes).
+     * @param {any} line
+     * @param {number} cap
+     * @returns {Uint8Array}
+     */
+    readSectionProfile(line, cap) {
+        const ret = wasm.wasmcopcfile_readSectionProfile(this.__wbg_ptr, line, cap);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * 元のファイル/URL全体のバイト数。`bytesRead()`と比べることで
      * 「ファイル全体を読んでいないこと」を確認できる(受け入れ条件)。
      * @returns {number}
@@ -669,6 +686,10 @@ function __wbg_get_imports() {
         },
         __wbg_get_unchecked_363572bdd397d473: function(arg0, arg1) {
             const ret = arg0[arg1 >>> 0];
+            return ret;
+        },
+        __wbg_get_with_ref_key_6412cf3094599694: function(arg0, arg1) {
+            const ret = arg0[arg1];
             return ret;
         },
         __wbg_instanceof_ArrayBuffer_d4ff01f8247925ae: function(arg0) {
