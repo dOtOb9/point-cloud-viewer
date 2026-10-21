@@ -40,6 +40,9 @@ import {
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
+  buildRasterPreviewCloseRequest,
+  buildRasterPreviewOpenRequest,
+  buildRasterPreviewRenderRequest,
   buildRasterStartRequest,
   buildToolMergeStartRequest,
   buildOpenFileRequest,
@@ -51,11 +54,20 @@ import {
   classifyOpenPath,
   makeFileKey,
   type PointFileFormat,
+  type RasterDoneResponse,
   type WorkerRequest,
   type WorkerResponse,
 } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
-import type { ExtractFilter, RasterRequest, ToolOptions, ToolProgress, ToolResult } from "./tools";
+import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
+import {
+  decodePreviewImage,
+  type RasterExportRequest,
+  type RasterExportResult,
+  type RasterPreviewImage,
+  type RasterPreviewSession,
+  type RasterRequest,
+} from "./raster";
 import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
 import { decodeSectionLine, type SectionGroundLine, type SectionLineRequest } from "./section-line";
 
@@ -66,8 +78,6 @@ interface ToolDone {
   outputName: string;
   pointCount: number;
   warnings: string[];
-  /** Only the Rasterize tool (G1). */
-  raster?: { geotiff: Uint8Array; width: number; height: number };
 }
 
 /** How the free-space check gets the point count of each raw point-file format (from its header). */
@@ -556,7 +566,6 @@ export class WebSource implements DataSource {
     id: number,
     request: WorkerRequest,
     options: ToolOptions | undefined,
-    addToResult?: (done: ToolDone) => Partial<ToolResult>,
   ): Promise<ToolResult> {
     this.activeConvertId = id;
     try {
@@ -572,7 +581,6 @@ export class WebSource implements DataSource {
         outputPath: this.registerFile(file),
         pointCount: done.pointCount,
         warnings: done.warnings,
-        ...addToResult?.(done),
       };
     } finally {
       if (this.activeConvertId === id) this.activeConvertId = null;
@@ -607,33 +615,73 @@ export class WebSource implements DataSource {
 
   // --- G1: rasterize ---
 
-  /**
-   * Rasterizes an open COPC (`path` = the key passed to `open()`): a display COPC on OPFS (one point per non-empty
-   * cell; passing `outputPath` to `open()` makes the layer) and a GeoTIFF as a download (`raster.geotiff.download`).
-   * Cancel with `cancelConversion()`.
-   */
-  async rasterizeToCopc(path: string, request: RasterRequest, options?: ToolOptions): Promise<ToolResult> {
-    const file = this.fileForToolInput(path);
-    if (!(await opfs.isOpfsAvailable())) {
-      throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
+  /** Waiters of the export (`raster-done`). Progress and failure use the `tool-*` messages with the same id. */
+  private readonly rasterPending = new Map<
+    number,
+    {
+      resolve: (done: RasterDoneResponse) => void;
+      reject: (error: Error) => void;
+      onProgress?: (progress: ToolProgress) => void;
     }
-    // The display COPC has at most one point per cell, far fewer than the source, so the source estimate is the safe side.
-    const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
-    if (insufficient) throw new Error("空き容量が足りないため、ラスタ化を実行できません");
+  >();
+
+  /**
+   * Reads the upper levels of an open COPC (`path` = the key passed to `open()`) and keeps them in the Worker while
+   * the Rasterize window is open. Close with `closeRasterPreview`.
+   */
+  async openRasterPreview(path: string): Promise<RasterPreviewSession> {
+    const file = this.fileForToolInput(path);
     const id = this.nextRequestId++;
-    return await this.runTool(id, buildRasterStartRequest(id, file, request, `ラスタ化: ${file.name}`), options, (done) => {
-      if (!done.raster) return {};
+    const response = await this.send(buildRasterPreviewOpenRequest(id, file));
+    if (response.type !== "raster-preview-open-result") {
+      throw new Error(`openRasterPreview()に対して予期しない応答: ${response.type}`);
+    }
+    return { id, info: response.info };
+  }
+
+  /** Draws the preview for `request` from the kept points (no file is read). */
+  async renderRasterPreview(sessionId: number, request: RasterRequest): Promise<RasterPreviewImage> {
+    const response = await this.send(buildRasterPreviewRenderRequest(this.nextRequestId++, sessionId, request));
+    if (response.type !== "raster-preview-image") {
+      throw new Error(`renderRasterPreview()に対して予期しない応答: ${response.type}`);
+    }
+    return decodePreviewImage(response.buffer);
+  }
+
+  /** Frees the kept points. Failures are only logged: the window is closing anyway. */
+  async closeRasterPreview(sessionId: number): Promise<void> {
+    try {
+      await this.send(buildRasterPreviewCloseRequest(this.nextRequestId++, sessionId));
+    } catch (e) {
+      console.error("closeRasterPreview failed", e);
+    }
+  }
+
+  /**
+   * Exports the GeoTIFF of an open COPC (`path` = the key passed to `open()`): every point is read. The file is
+   * returned as a download (`download`). Cancel with `cancelConversion()`.
+   */
+  async exportRasterGeoTiff(path: string, request: RasterExportRequest, options?: ToolOptions): Promise<RasterExportResult> {
+    const file = this.fileForToolInput(path);
+    const id = this.nextRequestId++;
+    this.activeConvertId = id;
+    try {
+      const done = await new Promise<RasterDoneResponse>((resolve, reject) => {
+        this.rasterPending.set(id, { resolve, reject, onProgress: options?.onProgress });
+        this.worker.postMessage(buildRasterStartRequest(id, file, request));
+      });
       const baseName = file.name.replace(/\.laz$/i, "").replace(/\.copc$/i, "");
-      const url = URL.createObjectURL(new Blob([done.raster.geotiff as BlobPart], { type: "image/tiff" }));
+      const url = URL.createObjectURL(new Blob([done.geotiff as BlobPart], { type: "image/tiff" }));
       return {
-        raster: {
-          ...request,
-          width: done.raster.width,
-          height: done.raster.height,
-          geotiff: { path: null, download: { url, fileName: `${baseName}-raster.tif` } },
-        },
+        width: done.width,
+        height: done.height,
+        warnings: done.warnings,
+        path: null,
+        download: { url, fileName: `${baseName}-raster.tif` },
       };
-    });
+    } finally {
+      if (this.activeConvertId === id) this.activeConvertId = null;
+    }
   }
   // ---
 
@@ -716,12 +764,19 @@ export class WebSource implements DataSource {
       return;
     }
     if (response.type === "tool-progress") {
-      this.toolPending.get(response.id)?.onProgress?.({
-        pointsRead: response.pointsRead,
-        totalPoints: response.totalPoints,
-      });
+      const progress = { pointsRead: response.pointsRead, totalPoints: response.totalPoints };
+      this.toolPending.get(response.id)?.onProgress?.(progress);
+      this.rasterPending.get(response.id)?.onProgress?.(progress); // G1
       return;
     }
+    // --- G1: rasterize ---
+    if (response.type === "raster-done") {
+      const waiting = this.rasterPending.get(response.id);
+      this.rasterPending.delete(response.id);
+      waiting?.resolve(response);
+      return;
+    }
+    // ---
     if (response.type === "tool-done") {
       const waiting = this.toolPending.get(response.id);
       this.toolPending.delete(response.id);
@@ -729,7 +784,6 @@ export class WebSource implements DataSource {
         outputName: response.outputName,
         pointCount: response.pointCount,
         warnings: response.warnings,
-        raster: response.raster,
       });
       return;
     }
@@ -737,6 +791,11 @@ export class WebSource implements DataSource {
       const waiting = this.toolPending.get(response.id);
       this.toolPending.delete(response.id);
       waiting?.reject(new Error(response.message));
+      // --- G1: rasterize --- (the export fails with the same message)
+      const rasterWaiting = this.rasterPending.get(response.id);
+      this.rasterPending.delete(response.id);
+      rasterWaiting?.reject(new Error(response.message));
+      // ---
       return;
     }
     if (response.type === "convert-failed") {

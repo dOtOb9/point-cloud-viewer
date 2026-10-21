@@ -35,8 +35,6 @@ export interface ToolResult {
   /** Warnings for the error log (ADR-0011), e.g. files without a CRS were let
    *  through. Empty when there are none. */
   warnings: string[];
-  /** Only the Rasterize tool sets this (G1): what to show about the raster on the new layer. */
-  raster?: RasterLayerInfo;
 }
 
 /** Progress of the read phase. `totalPoints` is the number of points that will be read. */
@@ -51,32 +49,3 @@ export interface ToolOptions {
   tempDir?: string | null;
 }
 
-// --- G1: rasterize ---
-// The Rasterize tool (plan `TaskSheets/G1-raster-and-dtm.md`, 2.1). Rust types: `RasterOptions` and
-// `RasterValue` in `crates/pcv-core/src/raster/`.
-
-/** What each cell of the raster holds. RGB is offered only when the layer has colour. */
-export type RasterValueKind = "zMin" | "zMax" | "zMean" | "count" | "intensityMean" | "rgbMean";
-
-/** The user's choices. `cellSize` is in the file's horizontal unit (the dialog converts from m / ft). */
-export interface RasterRequest {
-  cellSize: number;
-  value: RasterValueKind;
-  /** Count only points classified as ground (2). */
-  groundOnly: boolean;
-}
-
-/** The GeoTIFF as the UI needs it: a file on disk (desktop) or a download (Web). */
-export interface RasterGeoTiff {
-  /** Desktop: the file in the temp folder. The "保存" button copies it where the user chooses. */
-  path: string | null;
-  /** Web: an object URL and the suggested file name. */
-  download: { url: string; fileName: string } | null;
-}
-
-/** What is left on the display layer of a raster (shown in the layer info). */
-export interface RasterLayerInfo extends RasterRequest {
-  width: number;
-  height: number;
-  geotiff: RasterGeoTiff;
-}

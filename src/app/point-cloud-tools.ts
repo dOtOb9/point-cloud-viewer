@@ -9,14 +9,12 @@
 import {
   extractToCopc as tauriExtractToCopc,
   mergeCopcs as tauriMergeCopcs,
-  rasterizeToCopc as tauriRasterizeToCopc,
-  saveGeoTiff as tauriSaveGeoTiff,
   computeSectionLine as tauriComputeSectionLine, // G2
   cancelLasConversion,
 } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
 import type { DataSource } from "../datasource/DataSource";
-import type { ExtractFilter, RasterLayerInfo, RasterRequest, ToolOptions, ToolResult } from "../datasource/tools";
+import type { ExtractFilter, ToolOptions, ToolResult } from "../datasource/tools";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { horizontalBasis } from "../renderer/up-axis";
 import type { SectionGroundLine } from "../datasource/section-line";
@@ -43,7 +41,7 @@ export interface PointCloudToolsContext {
   tempDir: string | null;
   isMobile: boolean;
   /** Open `path` as a new layer called `name`; returns its id (this is `addOpenedLayer` of src/app/open-files.ts). */
-  addOpenedLayer: (path: string, name: string, section?: SectionInfo, raster?: RasterLayerInfo) => Promise<{ layerId: string }>;
+  addOpenedLayer: (path: string, name: string, section?: SectionInfo) => Promise<{ layerId: string }>;
   // --- G2: cross-section view ---
   /** Open the 2D section panel for a layer the cross-section tool has just made (`openSectionPanel`, src/app/section-view.ts). */
   openSectionView: (layerId: string) => void;
@@ -106,7 +104,7 @@ async function runTool(
       onProgress: (p) => ctx.setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints }),
     });
     for (const warning of result.warnings) reportToolMessage(ctx, warning);
-    const { layerId } = await ctx.addOpenedLayer(result.outputPath, resultName, section, result.raster);
+    const { layerId } = await ctx.addOpenedLayer(result.outputPath, resultName, section);
     // A tool that worked means the viewer is fine now, so the panel's old open error goes away.
     // Nothing is lost: an open failure is also in the error log / banner history (`failOpen` in src/app/open-files.ts).
     ctx.setStatus({ kind: "ready" });
@@ -228,48 +226,6 @@ export async function mergeSelectedLayers(ctx: PointCloudToolsContext): Promise<
       source instanceof WebSource ? source.mergeCopcs(paths, { ...options, isMobile: ctx.isMobile }) : tauriMergeCopcs(paths, options),
   );
 }
-
-// --- G1: rasterize ---
-
-/**
- * Rasterize the point-cloud layer `layerId` (G1): a GeoTIFF plus a new layer with one point per non-empty cell
- * (ADR-0018: the source layer is not changed; it is hidden once the new layer exists). `request.cellSize` is in the
- * file's horizontal unit (the dialog converts from the display unit). Failures go to the error log.
- */
-export async function rasterizeLayer(ctx: PointCloudToolsContext, layerId: string, request: RasterRequest): Promise<void> {
-  const layer = findLayer(ctx.getLayersState().layers, layerId);
-  if (!layer || isMeasureLayer(layer) || layer.sourcePath === undefined) {
-    reportToolMessage(ctx, "点群のレイヤーを選んでください");
-    return;
-  }
-  if (request.value === "rgbMean" && !layer.info.hasColor) {
-    reportToolMessage(ctx, "このレイヤーは色を持たないため、色(RGB)のラスタは作れません");
-    return;
-  }
-  const path = layer.sourcePath;
-  await runTool(
-    ctx,
-    `ラスタ化（${layer.name}）`,
-    `ラスタ - ${layer.name}`,
-    [layer.id],
-    (source, options) =>
-      source instanceof WebSource ? source.rasterizeToCopc(path, request, options) : tauriRasterizeToCopc(path, request, options),
-  );
-}
-
-/** Desktop: ask where to save the GeoTIFF of a raster layer (system save dialog) and copy it there. */
-export async function saveRasterGeoTiff(ctx: PointCloudToolsContext, layerId: string): Promise<void> {
-  const layer = findLayer(ctx.getLayersState().layers, layerId);
-  const path = layer?.raster?.geotiff.path;
-  if (!layer || !path) return;
-  const baseName = layer.name.replace(/^ラスタ - /, "").replace(/(\.copc)?\.laz$/i, "");
-  try {
-    await tauriSaveGeoTiff(path, `${baseName}-raster.tif`);
-  } catch (e) {
-    reportToolMessage(ctx, e instanceof Error ? e.message : String(e));
-  }
-}
-// ---
 
 /** The desktop tools share the cancel command with conversion (the Web build cancels the Worker job). */
 export function cancelTool(ctx: PointCloudToolsContext): void {

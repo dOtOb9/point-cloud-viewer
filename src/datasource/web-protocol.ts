@@ -10,7 +10,8 @@
 
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
-import type { ExtractFilter, RasterRequest } from "./tools";
+import type { ExtractFilter } from "./tools";
+import type { RasterExportRequest, RasterPreviewInfo, RasterRequest } from "./raster";
 import type { SectionLineInput } from "./section-profile";
 import type { SectionLineRequest } from "./section-line";
 
@@ -145,6 +146,9 @@ export type WorkerRequest =
   | SectionProfileRequest
   | SectionLineStartRequest
   | RasterStartRequest
+  | RasterPreviewOpenRequest
+  | RasterPreviewRenderRequest
+  | RasterPreviewCloseRequest
   | ExtractStartRequest
   | ToolMergeStartRequest
   | OpenRequest
@@ -246,6 +250,10 @@ export type WorkerResponse =
   | ToolProgressResponse
   | ToolDoneResponse
   | ToolFailedResponse
+  | RasterDoneResponse
+  | RasterPreviewOpenResponse
+  | RasterPreviewImageResponse
+  | RasterPreviewClosedResponse
   | OpenResponse
   | ReadNodeResponse
   | ReadNodeStaleResponse
@@ -364,8 +372,6 @@ export interface ToolDoneResponse {
   outputName: string;
   pointCount: number;
   warnings: string[];
-  /** Only the Rasterize tool (G1): the GeoTIFF bytes (transferred, not copied) and the grid size. */
-  raster?: { geotiff: Uint8Array; width: number; height: number };
 }
 
 export interface ToolFailedResponse {
@@ -386,18 +392,78 @@ export function buildExtractStartRequest(
 
 // --- G1: rasterize ---
 
-/** Rasterizes the open COPC (`file`): a GeoTIFF (returned in `tool-done`) and a display COPC (on OPFS). */
+/** Export: rasterizes the open COPC (`file`) into a GeoTIFF. Progress and failure use `tool-progress` / `tool-failed`; the result is `raster-done`. */
 export interface RasterStartRequest {
   type: "rasterStart";
   id: number;
   file: File;
-  options: RasterRequest;
-  /** Name shown in the usage breakdown (settings). */
-  label: string;
+  options: RasterExportRequest;
 }
 
-export function buildRasterStartRequest(id: number, file: File, options: RasterRequest, label: string): RasterStartRequest {
-  return { type: "rasterStart", id, file, options, label };
+export function buildRasterStartRequest(id: number, file: File, options: RasterExportRequest): RasterStartRequest {
+  return { type: "rasterStart", id, file, options };
+}
+
+export interface RasterDoneResponse {
+  type: "raster-done";
+  id: number;
+  /** Transferred, not copied. */
+  geotiff: Uint8Array;
+  width: number;
+  height: number;
+  warnings: string[];
+}
+
+/** Preview: reads the upper levels of `file` and keeps them in the Worker under `id` until `rasterPreviewClose`. Answered by `RasterPreviewOpenResponse`. */
+export interface RasterPreviewOpenRequest {
+  type: "rasterPreviewOpen";
+  id: number;
+  file: File;
+}
+
+export function buildRasterPreviewOpenRequest(id: number, file: File): RasterPreviewOpenRequest {
+  return { type: "rasterPreviewOpen", id, file };
+}
+
+export function buildRasterPreviewRenderRequest(id: number, sessionId: number, options: RasterRequest): RasterPreviewRenderRequest {
+  return { type: "rasterPreviewRender", id, sessionId, options };
+}
+
+export function buildRasterPreviewCloseRequest(id: number, sessionId: number): RasterPreviewCloseRequest {
+  return { type: "rasterPreviewClose", id, sessionId };
+}
+
+export interface RasterPreviewOpenResponse {
+  type: "raster-preview-open-result";
+  id: number;
+  info: RasterPreviewInfo;
+}
+
+/** Preview: draws a picture from the kept points `sessionId`. Answered by `RasterPreviewImageResponse`. */
+export interface RasterPreviewRenderRequest {
+  type: "rasterPreviewRender";
+  id: number;
+  sessionId: number;
+  options: RasterRequest;
+}
+
+export interface RasterPreviewImageResponse {
+  type: "raster-preview-image";
+  id: number;
+  /** Transferred, not copied. Layout: `decodePreviewImage` in raster.ts. */
+  buffer: ArrayBuffer;
+}
+
+/** Preview: frees the kept points. Answered by `RasterPreviewClosedResponse`. */
+export interface RasterPreviewCloseRequest {
+  type: "rasterPreviewClose";
+  id: number;
+  sessionId: number;
+}
+
+export interface RasterPreviewClosedResponse {
+  type: "raster-preview-closed";
+  id: number;
 }
 // ---
 

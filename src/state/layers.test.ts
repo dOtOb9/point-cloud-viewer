@@ -5,7 +5,6 @@ import {
   addLayerToState,
   findLayer,
   initialColorModeFor,
-  initialColorModeForRaster,
   isMeasureLayer,
   makeMeasureLayer,
   removeLayerFromState,
@@ -133,14 +132,6 @@ describe("表示・着色", () => {
     expect(initialColorModeFor(info(false))).toBe("elevation");
   });
 
-  it("ラスタのレイヤーの着色の初期値は、セルの値に合わせる (G1)", () => {
-    expect(initialColorModeForRaster("rgbMean")).toBe("rgb");
-    expect(initialColorModeForRaster("zMean")).toBe("elevation");
-    expect(initialColorModeForRaster("zMin")).toBe("elevation");
-    expect(initialColorModeForRaster("zMax")).toBe("elevation");
-    expect(initialColorModeForRaster("count")).toBe("intensity");
-    expect(initialColorModeForRaster("intensityMean")).toBe("intensity");
-  });
 
   it("findLayer", () => {
     expect(findLayer([layer("a")], "a")?.id).toBe("a");

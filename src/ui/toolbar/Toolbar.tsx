@@ -21,7 +21,7 @@ interface Props {
   measure: MeasureToolState;
   /** L2-F: state of the point selection / cross section tools. */
   layerTool: LayerToolState;
-  /** G1: opens the rasterize dialog. */
+  /** G1: opens the rasterize window. */
   onOpenRaster: () => void;
 }
 

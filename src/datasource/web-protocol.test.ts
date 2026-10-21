@@ -8,6 +8,9 @@ import {
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
+  buildRasterPreviewCloseRequest,
+  buildRasterPreviewOpenRequest,
+  buildRasterPreviewRenderRequest,
   buildRasterStartRequest,
   buildToolMergeStartRequest,
   buildOpenFileRequest,
@@ -184,14 +187,21 @@ describe("点群ツールのリクエスト(L2-C)", () => {
 
   it("rasterStartにファイルと設定を載せる (G1)", () => {
     const file = new File([new Uint8Array([1])], "a.copc.laz");
-    const options = { cellSize: 2, value: "zMean", groundOnly: true } as const;
-    expect(buildRasterStartRequest(4, file, options, "ラスタ化: a")).toEqual({
+    const options = { cellSize: 2, value: "zMean", groundOnly: true, tiff: "colored", range: [1, 9] } as const;
+    expect(buildRasterStartRequest(4, file, { ...options, range: [1, 9] })).toEqual({
       type: "rasterStart",
       id: 4,
       file,
       options,
-      label: "ラスタ化: a",
     });
+  });
+
+  it("ラスタ化のプレビューの要求にファイル・設定・セッションを載せる (G1)", () => {
+    const file = new File([new Uint8Array([1])], "a.copc.laz");
+    const request = { cellSize: 2, value: "count", groundOnly: false } as const;
+    expect(buildRasterPreviewOpenRequest(5, file)).toEqual({ type: "rasterPreviewOpen", id: 5, file });
+    expect(buildRasterPreviewRenderRequest(6, 5, request)).toEqual({ type: "rasterPreviewRender", id: 6, sessionId: 5, options: request });
+    expect(buildRasterPreviewCloseRequest(7, 5)).toEqual({ type: "rasterPreviewClose", id: 7, sessionId: 5 });
   });
 
   it("toolMergeStartに複数ファイルを載せる", () => {

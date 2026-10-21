@@ -27,7 +27,16 @@ import {
   type ConversionStageBreakdownDto,
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
-import type { ExtractFilter, RasterRequest, ToolOptions, ToolResult } from "./tools";
+import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
+import {
+  decodePreviewImage,
+  type RasterExportRequest,
+  type RasterExportResult,
+  type RasterPreviewImage,
+  type RasterPreviewInfo,
+  type RasterPreviewSession,
+  type RasterRequest,
+} from "./raster";
 import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
 import { decodeSectionLine, type SectionGroundLine, type SectionLineRequest } from "./section-line";
 import { StaleNodeRequestError } from "./stale-node-error";
@@ -469,47 +478,72 @@ export async function readSectionProfile(
 
 // --- G1: rasterize ---
 
-interface RasterToolResultDto extends ToolResultDto {
-  geotiff_path: string;
-  width: number;
-  height: number;
+interface RasterPreviewOpenDto extends RasterPreviewInfo {
+  id: number;
 }
 
 /**
- * Rasterizes an open COPC (`path` = the path passed to `open()`): writes a GeoTIFF and a display COPC (one point per
- * non-empty cell). Passing the returned `outputPath` to `open()` makes the display layer; `raster.geotiff.path` is the
- * GeoTIFF in the temp folder (copy it with `saveGeoTiff`). Cancel with `cancelLasConversion()`.
+ * Reads the upper levels of an open COPC (`path` = the path passed to `open()`) and keeps them in Rust while the
+ * Rasterize window is open. Close with `closeRasterPreview`.
  */
-export async function rasterizeToCopc(
+export async function openRasterPreview(path: string): Promise<RasterPreviewSession> {
+  const dto = await invoke<RasterPreviewOpenDto>("raster_preview_open", { path });
+  return { id: dto.id, info: { heldPoints: dto.heldPoints, depth: dto.depth, truncated: dto.truncated } };
+}
+
+/** Draws the preview for `request` from the kept points (no file is read). */
+export async function renderRasterPreview(sessionId: number, request: RasterRequest): Promise<RasterPreviewImage> {
+  const buffer = await invoke<ArrayBuffer>("raster_preview_render", { id: sessionId, options: request });
+  return decodePreviewImage(buffer);
+}
+
+/** Frees the kept points. Failures are only logged: the window is closing anyway. */
+export async function closeRasterPreview(sessionId: number): Promise<void> {
+  try {
+    await invoke("raster_preview_close", { id: sessionId });
+  } catch (e) {
+    console.error("raster_preview_close failed", e);
+  }
+}
+
+interface RasterExportDto {
+  geotiff_path: string;
+  width: number;
+  height: number;
+  warnings: string[];
+}
+
+/**
+ * Exports the GeoTIFF of an open COPC (`path` = the path passed to `open()`): every point is read. The file is in the
+ * temp folder (`path` of the result); copy it where the user chose with `saveToolFile`. Cancel with
+ * `cancelLasConversion()`.
+ */
+export async function exportRasterGeoTiff(
   path: string,
-  request: RasterRequest,
+  request: RasterExportRequest,
   options?: ToolOptions,
-): Promise<ToolResult> {
+): Promise<RasterExportResult> {
   return await withToolProgress(options, async () => {
-    const dto = await invoke<RasterToolResultDto>("rasterize_copc", {
+    const dto = await invoke<RasterExportDto>("rasterize_copc", {
       path,
       options: request,
       tempDir: options?.tempDir ?? null,
     });
-    return {
-      ...toToolResult(dto),
-      raster: { ...request, width: dto.width, height: dto.height, geotiff: { path: dto.geotiff_path, download: null } },
-    };
+    return { width: dto.width, height: dto.height, warnings: dto.warnings, path: dto.geotiff_path, download: null };
   });
 }
 
-/**
- * Asks the user where to save a GeoTIFF (the system save dialog), then copies `sourcePath` there.
- * Returns false when the user closed the dialog without choosing.
- */
-export async function saveGeoTiff(sourcePath: string, suggestedName: string): Promise<boolean> {
-  const destination = await saveFileDialog({
+/** Asks where to save a GeoTIFF (the system save dialog). Null when the user closed the dialog without choosing. */
+export async function chooseGeoTiffDestination(suggestedName: string): Promise<string | null> {
+  return await saveFileDialog({
     defaultPath: suggestedName,
     filters: [{ name: "GeoTIFF", extensions: ["tif", "tiff"] }],
   });
-  if (!destination) return false;
+}
+
+/** Copies a file a tool wrote (in the temp folder) to `destination`. */
+export async function saveToolFile(sourcePath: string, destination: string): Promise<void> {
   await invoke("save_tool_file", { source: sourcePath, destination });
-  return true;
 }
 
 // --- G2: section line ---

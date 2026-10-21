@@ -34,11 +34,13 @@ import init, {
   WasmConverter,
   WasmExtractor,
   WasmRasterizer,
+  WasmRasterPreview,
   WasmSectionLine,
   WasmCopcFile,
   WasmPointFileConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
+import type { RasterPreviewInfo } from "./raster";
 import type { ConversionStageBreakdownDto, PreparingStepDto } from "./conversion-dto";
 import {
   BoundedBatchFlow,
@@ -59,6 +61,9 @@ import type {
   PointFileFormat,
   SectionProfileRequest,
   RasterStartRequest,
+  RasterPreviewOpenRequest,
+  RasterPreviewRenderRequest,
+  RasterPreviewCloseRequest,
   SectionLineStartRequest,
   WorkerRequest,
   WorkerResponse,
@@ -240,6 +245,15 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         return;
       case "extractStart":
         await handleExtractStart(request);
+        return;
+      case "rasterPreviewOpen":
+        await handleRasterPreviewOpen(request);
+        return;
+      case "rasterPreviewRender":
+        handleRasterPreviewRender(request);
+        return;
+      case "rasterPreviewClose":
+        handleRasterPreviewClose(request);
         return;
       case "rasterStart":
         await handleRasterStart(request);
@@ -1204,52 +1218,56 @@ async function runExtract(
 
 // --- G1: rasterize ---
 //
-// Same sequence as `runExtract` (lock -> scratch-file pool -> sequential feed loop -> finish -> cleanup), with a
-// `WasmRasterizer`. `feed` first reads points into the grid, then writes the non-empty cells; the GeoTIFF bytes are
-// taken after the last `feed` and sent (transferred) in `tool-done` together with the grid size.
+// Preview: `WasmRasterPreview` keeps the thinned points of the open Rasterize window (bounded in Rust), keyed by the
+// request id of `rasterPreviewOpen`. Render and close use that id. Errors go out through the generic "error" reply.
+// Export: `WasmRasterizer` reads every point in batches (so the cancel message gets through between batches), then the
+// GeoTIFF bytes are transferred in `raster-done`. Nothing is written to OPFS: the raster is not a layer.
 
-async function handleRasterStart(request: RasterStartRequest): Promise<void> {
-  const { id, file, options, label } = request;
-  const outcome = await opfs.withConversionLock(navigator.locks, () => runRaster(id, file, options, label));
-  if (outcome.kind === "busy") {
-    scope.postMessage({
-      type: "tool-failed",
-      id,
-      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
-      cancelled: false,
-    });
+const rasterPreviews = new Map<number, WasmRasterPreview>();
+
+async function handleRasterPreviewOpen(request: RasterPreviewOpenRequest): Promise<void> {
+  const preview = new WasmRasterPreview(request.file);
+  try {
+    for (;;) {
+      const result = preview.feed(CONVERT_BATCH_SIZE) as { done: boolean };
+      if (result.done) break;
+      await yieldToEventLoop();
+    }
+    const info = preview.info() as RasterPreviewInfo;
+    rasterPreviews.set(request.id, preview);
+    scope.postMessage({ type: "raster-preview-open-result", id: request.id, info });
+  } catch (err) {
+    preview.free();
+    throw err;
   }
 }
 
-async function runRaster(id: number, file: File, options: RasterStartRequest["options"], label: string): Promise<void> {
+function handleRasterPreviewRender(request: RasterPreviewRenderRequest): void {
+  const preview = rasterPreviews.get(request.sessionId);
+  if (!preview) throw new Error("ラスタ化のウィンドウが閉じられています");
+  const bytes = preview.render(request.options);
+  // `bytes` is a fresh copy made by wasm-bindgen, so its buffer can be transferred.
+  const buffer = bytes.buffer as ArrayBuffer;
+  scope.postMessage({ type: "raster-preview-image", id: request.id, buffer }, [buffer]);
+}
+
+function handleRasterPreviewClose(request: RasterPreviewCloseRequest): void {
+  rasterPreviews.get(request.sessionId)?.free();
+  rasterPreviews.delete(request.sessionId);
+  scope.postMessage({ type: "raster-preview-closed", id: request.id });
+}
+
+async function handleRasterStart(request: RasterStartRequest): Promise<void> {
+  const { id, file, options } = request;
   activeConvertId = id;
   convertCancelRequested = false;
-
-  const outputName = opfs.toolOutputName();
-  let scratchDirName: string | null = null;
-  let scratchHandles: FileSystemSyncAccessHandle[] = [];
-  let outputHandle: FileSystemSyncAccessHandle | null = null;
   let rasterizer: WasmRasterizer | null = null;
-  let succeeded = false;
-  const cancelled = () => scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
-
   try {
-    try {
-      await opfs.cleanupStaleScratchDirs();
-    } catch {
-      // Carry on even if cleanup fails (same as conversion).
-    }
-    const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
-    scratchDirName = pool.dirName;
-    scratchHandles = pool.handles;
-    outputHandle = await opfs.createOutputHandle(outputName);
-
     // The constructor refuses a grid over the cell cap before any point is read.
-    rasterizer = new WasmRasterizer(file, options, scratchHandles, outputHandle, outputName, DEFAULT_MAX_POINTS_PER_NODE);
-
+    rasterizer = new WasmRasterizer(file, options);
     for (;;) {
       if (convertCancelRequested) {
-        cancelled();
+        scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
         return;
       }
       const result = rasterizer.feed(CONVERT_BATCH_SIZE) as {
@@ -1266,52 +1284,16 @@ async function runRaster(id: number, file: File, options: RasterStartRequest["op
       if (result.done) break;
       await yieldToEventLoop();
     }
-    if (convertCancelRequested) {
-      cancelled();
-      return;
-    }
-
     const geotiff = rasterizer.geotiff();
-    // `finish()` consumes the Rust-side object when called (same as runExtract).
-    let finishResult: { point_count: number; width: number; height: number; warnings: string[] };
-    try {
-      finishResult = rasterizer.finish() as typeof finishResult;
-    } finally {
-      rasterizer = null;
-    }
-    if (convertCancelRequested) {
-      cancelled();
-      return;
-    }
-
-    await opfs.writeToolOutputMeta(outputName, label);
-    succeeded = true;
+    const info = rasterizer.info() as { width: number; height: number; warnings: string[] };
     scope.postMessage(
-      {
-        type: "tool-done",
-        id,
-        outputName,
-        pointCount: finishResult.point_count,
-        warnings: finishResult.warnings,
-        raster: { geotiff, width: finishResult.width, height: finishResult.height },
-      },
+      { type: "raster-done", id, geotiff, width: info.width, height: info.height, warnings: info.warnings },
       [geotiff.buffer],
     );
   } catch (err) {
-    scope.postMessage({
-      type: "tool-failed",
-      id,
-      message: describeConversionFailure(err),
-      cancelled: false,
-    });
+    scope.postMessage({ type: "tool-failed", id, message: describeConversionFailure(err), cancelled: false });
   } finally {
     rasterizer?.free();
-    opfs.closeHandles(scratchHandles);
-    if (outputHandle) opfs.closeHandles([outputHandle]);
-    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
-    if (!succeeded) {
-      await opfs.removeOutputFile(outputName);
-    }
     if (activeConvertId === id) activeConvertId = null;
   }
 }

@@ -4,7 +4,6 @@ import { coordinateUnitLabel, formatCoordinate, lengthUnitsFor } from "../../sta
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { formatCrsLong } from "../common/crs-format";
 import { ConversionBreakdownPanel } from "./ConversionBreakdownPanel";
-import { RasterInfoSection } from "./RasterInfoSection";
 
 // 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
 /**
@@ -80,8 +79,6 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
         </p>
       )}
 
-      {/* G1: ラスタ化したレイヤーのセル・GeoTIFF。 */}
-      {layer && <RasterInfoSection viewer={viewer} layer={layer} />}
 
       {/* M4-6b: Web版のダウンロード導線。 */}
       {viewer.isBrowser && layer?.download && (

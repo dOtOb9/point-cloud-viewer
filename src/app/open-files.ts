@@ -15,12 +15,11 @@ import { formatConversionBreakdown } from "../datasource/conversion-breakdown";
 import { detectSourceFormatByName } from "../datasource/source-format";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import type { DataSource } from "../datasource/DataSource";
-import type { RasterLayerInfo } from "../datasource/tools";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX } from "../renderer/layer-focus";
-import { initialColorModeFor, initialColorModeForRaster, type LayerDownload, type SectionInfo, type ViewerLayer } from "../state/layers";
+import { initialColorModeFor, type LayerDownload, type SectionInfo, type ViewerLayer } from "../state/layers";
 import { currentDeviceMeta } from "../state/device-meta";
 import type { ViewerStatus } from "../state/viewer-status";
 
@@ -204,7 +203,6 @@ export async function addOpenedLayer(
   attachment: ConversionAttachment | null,
   // --- G2: cross-section view ---
   section?: SectionInfo,
-  raster?: RasterLayerInfo,
 ): Promise<{ layerId: string; pointCount: number; nodeCount: number }> {
   const renderer = ctx.getRenderer();
   const source = ctx.getSource();
@@ -216,8 +214,7 @@ export async function addOpenedLayer(
   // The renderer does not know cloudId: each layer gets a readNode that closes over its own cloudId.
   // The elevation range is CloudInfo.min/max (real data range), not the node bounds (which are cubes).
   const layerId = ctx.nextLayerId();
-  // G1: a raster layer starts with the colouring that shows what its cells hold.
-  const colorMode = raster ? initialColorModeForRaster(raster.value) : initialColorModeFor(opened.info);
+  const colorMode = initialColorModeFor(opened.info);
   renderer.addLayer(layerId, {
     hierarchy: opened.nodes,
     readNode: (key) => source.readNode(opened.cloudId, key),
@@ -242,8 +239,6 @@ export async function addOpenedLayer(
     conversionBreakdownText: attachment?.breakdownText ?? null,
     download: attachment?.download ?? null,
     ...(section ? { section } : {}),
-    // G1: only the Rasterize tool passes this.
-    ...(raster ? { raster } : {}),
   });
   // A CRS read failure does not stop the file from opening (ADR-0015). The text goes to the error log.
   if (opened.info.crs.error) {

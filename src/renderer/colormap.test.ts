@@ -214,3 +214,25 @@ describe("resolveColorMode", () => {
     expect(resolveColorMode("elevation", false)).toBe("elevation");
   });
 });
+
+// G1-R1: the Rust raster ramp (crates/pcv-core/src/raster/color.rs) is a copy of ELEVATION_INTENSITY_RAMP.
+// The same table is in `ramp_matches_colormap_ts` there; if the stops change here, both tests must be updated together.
+describe("the Rust raster ramp", () => {
+  const RUST_RAMP_SAMPLES: [number, [number, number, number]][] = [
+    [0.0, [0, 0, 255]],
+    [0.05, [0, 38, 217]],
+    [0.25, [0, 191, 64]],
+    [0.4, [51, 255, 0]],
+    [0.55, [166, 255, 0]],
+    [0.8, [255, 153, 0]],
+    [0.95, [255, 38, 0]],
+    [1.0, [255, 0, 0]],
+  ];
+
+  it("gives the same 8-bit colours as the table in color.rs", () => {
+    for (const [t, expected] of RUST_RAMP_SAMPLES) {
+      const [r, g, b] = sampleRamp(ELEVATION_INTENSITY_RAMP, t);
+      expect([Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)]).toEqual(expected);
+    }
+  });
+});

@@ -5,7 +5,6 @@
 // 「選択中を消したら先頭を選ぶ」のような規則を直接テストできないため。
 
 import type { CloudInfo } from "../datasource/DataSource";
-import type { RasterLayerInfo, RasterValueKind } from "../datasource/tools";
 import type { SectionGroundLine, SectionLinePreset } from "../datasource/section-line";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
@@ -72,10 +71,6 @@ export interface ViewerLayer {
   measurement?: Measurement;
   /** G2: present only on a layer made by the cross-section tool ("断面"). */
   section?: SectionInfo;
-  // --- G1: rasterize ---
-  /** Present only on the display layer a Rasterize run made: cell size, value kind, grid size and the GeoTIFF. */
-  raster?: RasterLayerInfo;
-  // ---
 }
 
 /** 追加・削除の結果。一覧と選択中の id をひとまとめに返す（選択は常に一覧の中の id か null）。 */
@@ -91,18 +86,6 @@ export function initialColorModeFor(info: CloudInfo): ColorMode {
   return resolveColorMode("rgb", info.hasColor);
 }
 
-// --- G1: rasterize ---
-/**
- * The colouring a raster layer starts with, chosen by what its cells hold: RGB shows the colours, the height
- * kinds show the height, count / intensity show the intensity (the display points carry the value there).
- * Without this the display points of a height raster would all show the same grey.
- */
-export function initialColorModeForRaster(value: RasterValueKind): ColorMode {
-  if (value === "rgbMean") return "rgb";
-  if (value === "count" || value === "intensityMean") return "intensity";
-  return "elevation";
-}
-// ---
 
 /** 末尾に足し、足したレイヤーを選択にする。 */
 export function addLayerToState(state: LayersState, layer: ViewerLayer): LayersState {

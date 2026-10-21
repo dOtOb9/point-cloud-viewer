@@ -37,6 +37,11 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+/** The current display unit, for plain functions that are not React (src/app/). */
+export function getDisplayUnit(): DisplayUnit {
+  return read();
+}
+
 /** The current display unit and its setter. */
 export function useDisplayUnit(): [DisplayUnit, (unit: DisplayUnit) => void] {
   const unit = useSyncExternalStore(subscribe, read, () => DEFAULT_DISPLAY_UNIT);
