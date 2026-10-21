@@ -57,8 +57,11 @@ renderer は `cloudId` を知りません。`src/app/open-files.ts` の `addOpen
 - `extractToCopc(path, filter, options)` — フィルターに合う点だけを新しい COPC にする。点が 0 なら「選んだ範囲に点がありません」で失敗（Rust 側のエラー文をそのまま画面に出す）。
   デスクトップは `tauri.ts` の関数（Tauri コマンド `extract_copc`）、Web は `WebSource.extractToCopc`（Worker + OPFS）。
 - `mergeCopcs(paths, options)` — 開いている複数の COPC を一つにする（デスクトップ `merge_copcs`、Web `WebSource.mergeCopcs`）。CRS が無いファイルは通し、理由を `warnings` で返す。CRS が違えば失敗。
-- `rasterizeToCopc(path, request, options)` — 選んだレイヤーをラスタ化する（G1）。`request` は `{ cellSize（ファイルの単位）, value, groundOnly }`。表示用の COPC（1セル1点）を作り、`ToolResult.raster` に
-  セルの大きさ・格子の大きさ・GeoTIFF（デスクトップはファイルのパス、Web はダウンロード用の URL）を載せる。デスクトップは `tauri.ts`（Tauri コマンド `rasterize_copc`。保存は `saveGeoTiff`＝保存ダイアログ＋`save_tool_file`）、Web は `WebSource.rasterizeToCopc`（Worker の `rasterStart`）。
+- ラスタ化のウィンドウ用（G1。型とバッファの読み方は `src/datasource/raster.ts`。結果はレイヤーにしない）:
+  - `openRasterPreview(path)` / `renderRasterPreview(sessionId, request)` / `closeRasterPreview(sessionId)` — 上のほうのレベルだけを読んで Rust 側に持ち、設定ごとにプレビューの絵（RGBA）を返し、閉じるときに捨てる。`request` は `{ cellSize（ファイルの単位）, value, groundOnly }`。
+    デスクトップは `tauri.ts`（Tauri コマンド `raster_preview_open` / `_render` / `_close`）、Web は `WebSource` の同名のメソッド（Worker の `rasterPreviewOpen` / `Render` / `Close`）。
+  - `exportRasterGeoTiff(path, request, options)` — 全点を読んで GeoTIFF を書く。`request` に `tiff`（`colored` / `values`）と `range`（プレビューの色の範囲）が付く。デスクトップは Tauri コマンド `rasterize_copc`（結果はテンポラリのファイル。`chooseGeoTiffDestination` で先に聞いた場所へ `saveToolFile`＝`save_tool_file` でコピー）、
+    Web は Worker の `rasterStart`（結果は `raster-done` で転送した GeoTIFF のバイト列をダウンロード用の URL に）。
 - `ToolResult` — `outputPath`（そのまま `DataSource.open()` に渡せる）・`pointCount`・`warnings`（エラーログへ）。`ToolOptions` — 進捗コールバックと一時フォルダ。
 
 これらを呼ぶのは `src/app/point-cloud-tools.ts` です。デスクトップでは変換と同じ `conversion-progress` イベントで進捗が来るため、

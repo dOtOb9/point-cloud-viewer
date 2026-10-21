@@ -89,10 +89,12 @@ impl WasmCopcFile {
 
 ### `WasmRasterizer`: ラスタ化(G1)
 
-[`src/raster.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/raster.rs) の `WasmRasterizer` は、デスクトップの `pcv-convert/src/raster.rs` と同じ仕事です。
-`feed` が2段階で、前半は点を読んで格子に足し、後半は空でないセルを spill に書きます(どちらもバッチごとに Worker がイベントループへ戻るので、キャンセルが効く)。
-`geotiff()` が GeoTIFF のバイト列を返し(Worker が `tool-done` で本体に**転送**する)、`finish()` が表示用 COPC を OPFS に書きます(この間はキャンセルできない)。
-セル数の上限は `MAX_CELLS_WEB`。コンストラクタが、点を1つも読む前に断ります。
+[`src/raster.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/raster.rs) の2つのクラスは、デスクトップの `pcv-convert/src/raster.rs` と同じ仕事です(OPFS には何も書きません。結果はレイヤーにしない)。
+
+- `WasmRasterPreview`: ラスタ化のウィンドウを開いたときに、上のほうのレベルだけを `feed` で読んで間引いた点として持ちます(点数に上限がある)。
+  `render` が設定ごとに絵を作り、`PreviewImage::to_bytes` のバッファを返します(Worker が本体に**転送**する)。ウィンドウを閉じたら `free` します。
+- `WasmRasterizer`(書き出し): `feed` が点を読んで格子に足し(バッチごとに Worker がイベントループへ戻るので、キャンセルが効く)、
+  `geotiff()` が GeoTIFF のバイト列を返します(Worker が `raster-done` で**転送**する)。セル数の上限は `MAX_CELLS_WEB`。コンストラクタが、点を1つも読む前に断ります。
 
 ### `WasmPointFileConverter`: PLY・PCD・E57 の取り込みと、形式をまたぐ結合(R7・M4-17)
 

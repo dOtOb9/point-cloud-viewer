@@ -122,10 +122,12 @@ M4-14 でアプリ（`src-tauri` の `start_multi_las_conversion`）からも呼
 
 ## `raster.rs`: COPC をラスタ化する(G1)
 
-[`src/raster.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/raster.rs) の `rasterize_path_and_timings` は、
-元の COPC の**全点を1回だけ**流し読みして(`ExtractPoints::all`。1ノードずつ)格子に足し、GeoTIFF と「1セル1点」の表示用 COPC の2つを書きます。
-格子の大きさはヘッダーの範囲とセルの大きさで決まり、上限(`src-tauri` の `RASTER_MAX_CELLS_DESKTOP`)を超えると**点を1つも読む前に**断ります。
-途中で失敗・キャンセルしたら GeoTIFF も消します。色(RGB)のラスタは、レイヤーが色を持つときだけ作れます。
+[`src/raster.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/raster.rs) には2つの入口があります(どちらもラスタ化のウィンドウ用。結果はレイヤーにしません)。
+
+- `read_coarse_path`: ウィンドウを開いたときに、COPC の上のほうのレベルだけ(`ExtractPoints::coarse`)を間引いた点として読みます(`CoarseReader`、点数の上限つき)。キャンセルはバッチの合間に効きます。
+- `rasterize_path`(書き出し): 元の COPC の**全点を1回だけ**流し読みして(`ExtractPoints::all`。1ノードずつ)格子に足し、GeoTIFF を1つ書きます(色付き/値のまま。`RasterOptions::tiff`)。
+  格子の大きさはヘッダーの範囲とセルの大きさで決まり、上限(`src-tauri` の `RASTER_MAX_CELLS_DESKTOP`)を超えると**点を1つも読む前に**断ります。
+  途中で失敗・キャンセルしたら GeoTIFF も消します。色(RGB)のラスタは、レイヤーが色を持つときだけ作れます。
 
 ## `import/`: E57・PLY・PCD の取り込み
 

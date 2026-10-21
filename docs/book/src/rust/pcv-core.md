@@ -83,7 +83,9 @@ impl<R: Read + Seek + Send> CopcFile<R> {
 
 - [`grid.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/grid.rs) — `GridSpec`(原点をセルの大きさの倍数にそろえた格子。**行 0 は北**。セル数の上限を超えると日本語で断る)と、`CellAccumulator`(点を1つずつ足す。選んだ値に要る分だけセルごとに持つので、メモリはセル数に比例し点数には比例しない)。
 - [`geotiff.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/geotiff.rs) — 手書きの GeoTIFF(無圧縮・ストリップ・リトルエンディアン)。1バンドの float32(NoData あり)と、**RGB + アルファの4バンド u16**(空のセルはアルファ 0 で透明。黒にはしない)。EPSG が無いときは座標系のキーを書かない。
-- [`output.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/output.rs) — `RasterOptions`(ダイアログの設定。JSON から読む)、`write_geotiff`、`DisplayPoints` / `DisplayCursor`(空でないセルの中心に1点ずつ置く表示用の点。高さの値なら Z=値、点数・強度・色なら Z=セルの平均の Z で、値は強度か色に入れる)。
+- [`output.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/output.rs) — `RasterOptions`(ウィンドウの設定。JSON から読む。`tiff` は色付き/値のまま、`range` はプレビューの色の範囲)と `write_geotiff`。結果はレイヤーにしないので、表示用の点群は作りません。
+- [`color.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/color.rs) — セルの色(`CellColorizer`)。プレビューと色付きの GeoTIFF が**同じ関数**を使います。標高・点数・強度は最小〜最大を `colormap.ts` と同じ段(青→緑→黄→赤。写したもので、両側に同じ値のテストがある)で色に、RGB は u16→u8、空のセルはアルファ 0。
+- [`preview.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/preview.rs) — ウィンドウのプレビュー。`CoarseReader` が上のほうのレベルだけ(`ExtractPoints::coarse`)を読み、`CoarsePoints` が間引いた点を**上限つきで**持つ(1点32バイト。メモリは点数に比例しない)。`render` が持っている点を長辺 約 1024 セルの格子に足して色を付け、`PreviewImage::to_bytes` が両側共通の1つのバッファにする。
 
 ## `crs/`: 座標参照系
 
