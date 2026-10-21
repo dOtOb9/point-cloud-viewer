@@ -154,7 +154,7 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
           />
         )}
         {groundProfile && (
-          <p className="absolute bottom-1 left-2 text-[11px] opacity-70" data-testid="section-gl-hint">
+          <p className="absolute left-2 top-1 text-[11px] opacity-70" data-testid="section-gl-hint">
             右クリック（長押し）で GL と傾斜角
           </p>
         )}
