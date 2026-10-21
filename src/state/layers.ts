@@ -5,7 +5,7 @@
 // 「選択中を消したら先頭を選ぶ」のような規則を直接テストできないため。
 
 import type { CloudInfo } from "../datasource/DataSource";
-import type { RasterLayerInfo } from "../datasource/tools";
+import type { RasterLayerInfo, RasterValueKind } from "../datasource/tools";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX, sanitizePointSize } from "../renderer/layer-focus";
@@ -73,6 +73,19 @@ export const EMPTY_LAYERS: LayersState = { layers: [], selectedLayerId: null };
 export function initialColorModeFor(info: CloudInfo): ColorMode {
   return resolveColorMode("rgb", info.hasColor);
 }
+
+// --- G1: rasterize ---
+/**
+ * The colouring a raster layer starts with, chosen by what its cells hold: RGB shows the colours, the height
+ * kinds show the height, count / intensity show the intensity (the display points carry the value there).
+ * Without this the display points of a height raster would all show the same grey.
+ */
+export function initialColorModeForRaster(value: RasterValueKind): ColorMode {
+  if (value === "rgbMean") return "rgb";
+  if (value === "count" || value === "intensityMean") return "intensity";
+  return "elevation";
+}
+// ---
 
 /** 末尾に足し、足したレイヤーを選択にする。 */
 export function addLayerToState(state: LayersState, layer: ViewerLayer): LayersState {

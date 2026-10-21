@@ -138,7 +138,9 @@ impl DisplayCursor {
             }
             _ => 0,
         };
-        let [red, green, blue] = acc.rgb_at(i).unwrap_or([0, 0, 0]);
+        // Only the RGB kind has a colour. The others get the mid grey a point without colour gets
+        // everywhere else (black would be invisible on the dark background).
+        let [red, green, blue] = acc.rgb_at(i).unwrap_or([32_768, 32_768, 32_768]);
         Some(LasPointRecord {
             x,
             y,
@@ -205,6 +207,11 @@ mod tests {
         assert_eq!((points[0].x, points[0].y, points[0].z), (11.5, 21.5, 1.0));
         assert_eq!((points[1].x, points[1].y, points[1].z), (10.5, 20.5, 6.0));
         assert_eq!(filled_cells(&a), 2);
+        // No colour of its own: mid grey, not black.
+        assert_eq!(
+            (points[0].red, points[0].green, points[0].blue),
+            (32_768, 32_768, 32_768)
+        );
     }
 
     #[test]

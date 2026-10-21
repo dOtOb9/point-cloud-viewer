@@ -1033,9 +1033,9 @@ pub async fn merge_copcs(
 
 // --- G1: rasterize ---
 
-/// The largest raster the desktop accepts (cells). The grid holds up to about 28 bytes per
-/// cell (RGB), so this is about 1.8 GB at most. See `TaskSheets/G1-T6-rasterize-tool.md` for
-/// how the value was chosen.
+/// The largest raster the desktop accepts (cells). The grid holds up to 36 bytes per cell (RGB),
+/// so this is about 2.3 GB of grid at most (an estimate; the measured case was 30.7M RGB cells at
+/// 1.29 GiB peak). See `TaskSheets/G1-T6-rasterize-tool.md` for how the value was chosen.
 const RASTER_MAX_CELLS_DESKTOP: u64 = 64_000_000;
 
 /// Result of a rasterisation. Matches the frontend `RasterToolResultDto` in `tauri.ts`.

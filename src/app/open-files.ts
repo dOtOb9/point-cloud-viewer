@@ -20,7 +20,7 @@ import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX } from "../renderer/layer-focus";
-import { initialColorModeFor, type LayerDownload, type SectionInfo, type ViewerLayer } from "../state/layers";
+import { initialColorModeFor, initialColorModeForRaster, type LayerDownload, type SectionInfo, type ViewerLayer } from "../state/layers";
 import { currentDeviceMeta } from "../state/device-meta";
 import type { ViewerStatus } from "../state/viewer-status";
 
@@ -216,7 +216,8 @@ export async function addOpenedLayer(
   // The renderer does not know cloudId: each layer gets a readNode that closes over its own cloudId.
   // The elevation range is CloudInfo.min/max (real data range), not the node bounds (which are cubes).
   const layerId = ctx.nextLayerId();
-  const colorMode = initialColorModeFor(opened.info);
+  // G1: a raster layer starts with the colouring that shows what its cells hold.
+  const colorMode = raster ? initialColorModeForRaster(raster.value) : initialColorModeFor(opened.info);
   renderer.addLayer(layerId, {
     hierarchy: opened.nodes,
     readNode: (key) => source.readNode(opened.cloudId, key),
