@@ -231,6 +231,18 @@ impl HasPosition for GroundVertex {
     }
 }
 
+/// A kept ground point for diagnosis (`SectionLineJob::debug_vertices`): corridor coordinates, absolute height,
+/// the cloth's height there and what `is_ground` says.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct DebugVertex {
+    pub s: f64,
+    pub t: f64,
+    pub z: f64,
+    pub cloth_z: f64,
+    pub is_ground: bool,
+}
+
 /// A section-line computation that runs in small steps. See the module documentation.
 pub struct SectionLineJob {
     frame: Frame,
@@ -371,6 +383,62 @@ impl SectionLineJob {
     /// Number of cells that hold a ground point so far.
     pub fn ground_point_count(&self) -> usize {
         self.best.iter().filter(|c| c.dist2.is_finite()).count()
+    }
+
+    /// For diagnosis only (examples): every kept ground point, with its cloth height. Valid after `advance` reported `done`.
+    /// Heights are absolute (along `up`), like the result buffer. It changes nothing in the job.
+    #[doc(hidden)]
+    pub fn debug_vertices(&self) -> Vec<DebugVertex> {
+        self.best
+            .iter()
+            .filter(|c| c.dist2.is_finite())
+            .map(|c| self.debug_vertex(f64::from(c.s), f64::from(c.t), f64::from(c.h)))
+            .collect()
+    }
+
+    /// For diagnosis only: the cloth's absolute height at `(s, t)`.
+    #[doc(hidden)]
+    pub fn debug_cloth_height(&self, s: f64, t: f64) -> f64 {
+        f64::from(self.cloth.height_at(s, t)) + self.frame.h_base
+    }
+
+    fn debug_vertex(&self, s: f64, t: f64, h: f64) -> DebugVertex {
+        DebugVertex {
+            s,
+            t,
+            z: h + self.frame.h_base,
+            cloth_z: f64::from(self.cloth.height_at(s, t)) + self.frame.h_base,
+            is_ground: self.cloth.is_ground(s, t, h),
+        }
+    }
+
+    /// For diagnosis only: the three TIN vertices of the triangle that contains `(s, t)` (None outside the hull
+    /// or on an edge or vertex). Builds the same TIN `finish` builds.
+    #[doc(hidden)]
+    pub fn debug_triangle_at(&self, s: f64, t: f64) -> Option<[DebugVertex; 3]> {
+        use spade::PositionInTriangulation;
+        let vertices: Vec<GroundVertex> = self
+            .best
+            .iter()
+            .filter(|c| c.dist2.is_finite())
+            .map(|c| GroundVertex {
+                s: f64::from(c.s),
+                t: f64::from(c.t),
+                h: f64::from(c.h),
+            })
+            .collect();
+        let tin = DelaunayTriangulation::<GroundVertex>::bulk_load(vertices).ok()?;
+        match tin.locate(Point2::new(s, t)) {
+            PositionInTriangulation::OnFace(face) => {
+                let [a, b, c] = tin.face(face).vertices();
+                let make = |v: spade::handles::VertexHandle<'_, GroundVertex, (), (), ()>| {
+                    let d = v.data();
+                    self.debug_vertex(d.s, d.t, d.h)
+                };
+                Some([make(a), make(b), make(c)])
+            }
+            _ => None,
+        }
     }
 
     /// Does one small piece of work. Call until `done`, then `finish`.
