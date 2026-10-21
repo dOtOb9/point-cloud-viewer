@@ -116,9 +116,10 @@ impl CsfParams {
         }
     }
 
-    /// Owner's "steep terrain" preset: softer cloth, more iterations.
+    /// Owner's "steep terrain" preset: finer, softer cloth and more iterations (plan 2.2, 8.6).
     pub fn steep() -> Self {
         Self {
+            cloth_resolution: 0.25,
             rigidness: 1,
             iterations: 1500,
             ..Self::standard()

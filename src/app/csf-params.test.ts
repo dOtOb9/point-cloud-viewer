@@ -29,7 +29,7 @@ describe("csfParamsInFileUnits", () => {
 
   it("uses different factors for the two axes", () => {
     const r = csfParamsInFileUnits(CSF_PRESETS_METRES.steep, { horizontalToMeter: 0.5, verticalToMeter: 2 });
-    expect(r.params.clothResolution).toBe(1);
+    expect(r.params.clothResolution).toBe(0.5);
     expect(r.params.classThresholdLower).toBe(0.5);
     expect(r.params.rigidness).toBe(1);
     expect(r.params.iterations).toBe(1500);
@@ -50,7 +50,7 @@ describe("sectionLineRequestFor", () => {
   it("gives the 20 m corridor and the converted preset in the file's unit", () => {
     const { request, warning } = sectionLineRequestFor("steep", { horizontalToMeter: 0.3048, verticalToMeter: 0.3048 });
     expect(request.corridorHalfWidth).toBeCloseTo(20 / 0.3048, 9);
-    expect(request.csf.clothResolution).toBeCloseTo(0.5 / 0.3048, 9);
+    expect(request.csf.clothResolution).toBeCloseTo(0.25 / 0.3048, 9);
     expect(request.csf.rigidness).toBe(1);
     expect(warning).toBeNull();
   });

@@ -21,7 +21,7 @@ export const CSF_PRESETS_METRES: Record<SectionLinePreset, CsfParamsInMetres> = 
     convergenceThreshold: 0.005,
   },
   steep: {
-    clothResolution: 0.5,
+    clothResolution: 0.25,
     rigidness: 1,
     timeStep: 0.65,
     classThresholdUpper: 0.1,
