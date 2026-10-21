@@ -16,6 +16,7 @@ mod node_format;
 pub mod outlier;
 pub mod profile;
 pub mod raster;
+pub mod section_line;
 #[cfg(test)]
 mod test_support;
 pub mod thin;

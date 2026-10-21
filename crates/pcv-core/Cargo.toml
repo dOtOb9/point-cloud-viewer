@@ -28,6 +28,7 @@ las = "0.10"
 # L2-C: 抽出の条件(ExtractFilter)をフロントのJSONから受け取るためのDeserialize。
 # wasm32でもビルドできる(pcv-wasmも同じものを使っている)。
 serde = { version = "1", features = ["derive"] }
+spade = "2.15.1"
 
 [dev-dependencies]
 # テスト用に極小のCOPCファイルをその場で生成するためだけに使う（M1-point-rendering.md の

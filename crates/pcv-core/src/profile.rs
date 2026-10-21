@@ -127,6 +127,16 @@ impl SectionAxes {
         })
     }
 
+    /// Horizontal unit vector from A towards B.
+    pub(crate) fn along(&self) -> [f64; 3] {
+        self.along
+    }
+
+    /// Unit vector of the height axis.
+    pub(crate) fn up(&self) -> [f64; 3] {
+        self.up
+    }
+
     /// `(s, z)` of a point: `s` = horizontal distance from A along A->B (negative behind A), `z` = height along `up`.
     pub fn project(&self, p: [f64; 3]) -> (f64, f64) {
         let d = [
@@ -138,7 +148,7 @@ impl SectionAxes {
     }
 
     /// Ranges of `s` and `z` over the 8 corners of an axis-aligned box.
-    fn ranges_of_box(&self, min: [f64; 3], max: [f64; 3]) -> ((f64, f64), (f64, f64)) {
+    pub(crate) fn ranges_of_box(&self, min: [f64; 3], max: [f64; 3]) -> ((f64, f64), (f64, f64)) {
         let mut s_range = (f64::INFINITY, f64::NEG_INFINITY);
         let mut z_range = (f64::INFINITY, f64::NEG_INFINITY);
         for i in 0..8 {
