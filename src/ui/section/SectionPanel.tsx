@@ -4,6 +4,7 @@ import {
   effectiveSectionView,
   resetSectionView,
   sectionPointerCancel,
+  sectionPointerLeave,
   sectionPointerDown,
   sectionPointerMove,
   sectionPointerUp,
@@ -11,6 +12,8 @@ import {
   zoomSectionWheel,
   type SectionPointer,
 } from "../../app/section-view";
+import { groundLevelLabel, groundLineToProfile, type GroundLevelReading } from "../../app/section-3d";
+import { interpolateZ, sectionToScreen, type ProfileLine, type SectionView } from "../../app/section-math";
 import { drawSection } from "../../renderer/section-2d";
 import { convertLength, lengthUnitsFor, unitSymbol, UNKNOWN_UNIT_NOTE } from "../../state/units";
 import type { CopcViewerState } from "../../state/useCopcViewer";
@@ -85,6 +88,7 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
   const { scale, offsetX, offsetY } = drawView;
   // G2-4: the ground line of the layer (absent until computed, and when computing failed).
   const groundLine = layer?.section?.line?.current.points ?? null;
+  const groundProfile = (groundLine ? groundLineToProfile(groundLine) : null);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!open || !canvas || panelSize.width === 0 || panelSize.height === 0) return;
@@ -134,9 +138,26 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
         onPointerMove={(e) => sectionPointerMove(ctx, toSectionPointer(e))}
         onPointerUp={(e) => sectionPointerUp(ctx, toSectionPointer(e))}
         onPointerCancel={(e) => sectionPointerCancel(ctx, toSectionPointer(e))}
+        onPointerLeave={() => sectionPointerLeave(ctx)}
         onContextMenu={(e) => e.preventDefault()}
       >
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" data-testid="section-canvas" />
+        {groundProfile && (
+          <SectionMarks
+            width={panelSize.width}
+            height={panelSize.height}
+            view={drawView}
+            line={groundProfile}
+            cursorS={state.cursorS}
+            reading={state.groundLevel}
+            label={state.groundLevel ? groundLevelLabel(state.groundLevel, units) : null}
+          />
+        )}
+        {groundProfile && (
+          <p className="absolute bottom-1 left-2 text-[11px] opacity-70" data-testid="section-gl-hint">
+            右クリック（長押し）で GL と傾斜角
+          </p>
+        )}
         {state.loading && <p className="absolute left-3 top-2 text-xs opacity-70">断面の点を読み込み中…</p>}
         {!state.loading && points.count === 0 && <p className="absolute left-3 top-2 text-xs opacity-70">断面に点がありません</p>}
         {points.thinned && (
@@ -146,5 +167,60 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
         )}
       </div>
     </div>
+  );
+}
+
+/** G2-6 / G2-8: the mouse cursor's `s` (a thin line and a dot on the ground line) and the GL / slope reading, as SVG over the canvas. */
+function SectionMarks({
+  width,
+  height,
+  view,
+  line,
+  cursorS,
+  reading,
+  label,
+}: {
+  width: number;
+  height: number;
+  view: SectionView;
+  line: ProfileLine;
+  cursorS: number | null;
+  reading: GroundLevelReading | null;
+  label: string | null;
+}) {
+  const cursorZ = cursorS === null ? null : interpolateZ(line, cursorS);
+  const cursor = cursorS !== null && cursorZ !== null ? sectionToScreen(view, cursorS, cursorZ) : null;
+  const gl = reading ? sectionToScreen(view, reading.s, reading.z) : null;
+  // Keep the text inside the panel: right-align it when the marker is near the right edge.
+  const alignEnd = gl !== null && gl.x > width - 230;
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" width={width} height={height}>
+      {cursor && (
+        <g data-testid="section-cursor-mark">
+          <line x1={cursor.x} x2={cursor.x} y1={0} y2={height} style={{ stroke: "var(--secondary)" }} strokeWidth={1} strokeDasharray="4 4" opacity={0.6} />
+          <circle cx={cursor.x} cy={cursor.y} r={4} style={{ stroke: "var(--secondary)" }} fill="#fff" strokeWidth={2} />
+        </g>
+      )}
+      {gl && label && (
+        <g data-testid="section-gl-mark">
+          <circle cx={gl.x} cy={gl.y} r={5} fill="#facc15" stroke="#000" strokeWidth={1.5} />
+          <text
+            x={alignEnd ? gl.x - 9 : gl.x + 9}
+            y={Math.max(14, gl.y - 9)}
+            textAnchor={alignEnd ? "end" : "start"}
+            fontSize={12}
+            fontWeight={600}
+            fill="#fff"
+            stroke="#000"
+            strokeWidth={3}
+            strokeLinejoin="round"
+            paintOrder="stroke"
+            data-testid="section-gl-label"
+          >
+            {label}
+          </text>
+        </g>
+      )}
+    </svg>
   );
 }

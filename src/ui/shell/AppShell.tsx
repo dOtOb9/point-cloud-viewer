@@ -10,6 +10,7 @@ import { useMeasureTool } from "../../state/useMeasureTool";
 import { useLayerTool } from "../../state/useLayerTool";
 import { MeasureHud } from "../tools/MeasureHud";
 import { MeasureOverlay } from "../tools/MeasureOverlay";
+import { SectionLineOverlay } from "../section/SectionLineOverlay";
 import { LayerToolOverlay } from "../tools/LayerToolOverlay";
 import { SectionDialog } from "../tools/SectionDialog";
 import { SectionPanel } from "../section/SectionPanel";
@@ -116,6 +117,7 @@ export function AppShell() {
     <div className="fixed inset-0 overflow-hidden bg-black">
       <ViewerPanel canvasRef={canvasRef} />
       <MeasureOverlay viewer={viewer} measure={measure} canvasRef={canvasRef} />
+      <SectionLineOverlay viewer={viewer} canvasRef={canvasRef} />
       <MeasureHud measure={measure} glassEnabled={glassEnabled} />
       <LayerToolOverlay viewer={viewer} tool={layerTool} canvasRef={canvasRef} glassEnabled={glassEnabled} />
 
