@@ -32,9 +32,7 @@ use copc_core::LasPointRecord;
 use copc_reader::CopcReader;
 use serde::Deserialize;
 
-use crate::outlier::{
-    ror_keep, sor_accumulate, sor_keep, RorSettings, RunningStats, SorSettings,
-};
+use crate::outlier::{ror_keep, sor_accumulate, sor_keep, RorSettings, RunningStats, SorSettings};
 use crate::thin::{thin_tile, GridKeep, ThinKind, ThinSettings};
 use crate::tiles::{TileData, TileReader, TileRect};
 

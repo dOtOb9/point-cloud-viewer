@@ -18,9 +18,7 @@ use copc_core::{NeverCancel, StreamingLayout};
 use copc_reader::CopcReader;
 use copc_writer::{write_copc_from_spill_with_fs_and_timings, CopcWriterParams, SpillWriter};
 use js_sys::Array;
-use pcv_core::thin_filter_job::{
-    FilterRequest, JobMode, ThinFilterJob, ThinRequest,
-};
+use pcv_core::thin_filter_job::{FilterRequest, JobMode, ThinFilterJob, ThinRequest};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use web_sys::{File, FileSystemSyncAccessHandle};

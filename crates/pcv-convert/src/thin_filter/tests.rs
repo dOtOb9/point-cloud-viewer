@@ -442,18 +442,23 @@ fn run_job(
         calls += 1;
         largest_batch = largest_batch.max(step.kept.len());
         for record in &step.kept {
-            assert!(
-                ids.insert(record.gps_time.to_bits()),
-                "twice"
-            );
+            assert!(ids.insert(record.gps_time.to_bits()), "twice");
         }
         if step.done {
-            assert_eq!(step.points_read, step.total_points, "progress reaches the total");
+            assert_eq!(
+                step.points_read, step.total_points,
+                "progress reaches the total"
+            );
             break;
         }
     }
     assert_eq!(job.counters().kept_points as usize, ids.len());
-    (ids, calls, largest_batch, job.counters().largest_tile_points)
+    (
+        ids,
+        calls,
+        largest_batch,
+        job.counters().largest_tile_points,
+    )
 }
 
 #[test]
