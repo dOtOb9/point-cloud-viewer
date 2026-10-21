@@ -76,7 +76,6 @@ function makeHarness(layer: ViewerLayer, display: DisplayUnit = "meter"): Harnes
     tempDir: null,
     isMobile: false,
     addOpenedLayer: async () => ({ layerId: "x" }),
-    openSectionView: () => {},
     setSectionLine: () => {},
     focusLayer: () => {},
     setLayerVisible: () => {},

@@ -1,7 +1,7 @@
 // G2-3: the state of the 2D cross-section panel, and the `SectionViewContext` the functions of src/app/section-view.ts
 // are called with. Only `useState` here: the steps (open, close, zoom, pan, pointer input) are plain functions in
 // src/app/section-view.ts that change this state through the setters in the context (TaskSheets/ADR-0021-thin-react.md).
-// Used by: useCopcViewer.ts (which passes `openSectionView` to the tool functions) and src/ui/section/SectionPanel.tsx.
+// Used by: useCopcViewer.ts (which opens and closes the panel with the selection) and src/ui/section/SectionPanel.tsx.
 import { useState, type RefObject } from "react";
 import { newSectionGesture, type SectionViewContext, type SectionViewState } from "../app/section-view";
 import { NO_SECTION_POINTS, type SectionPoints } from "../datasource/section-profile";
@@ -30,12 +30,13 @@ export function useSectionView(inputs: SectionViewInputs): SectionViewHook {
   const [cursorS, setCursorS] = useState<number | null>(null);
   const [groundLevel, setGroundLevel] = useState<GroundLevelReading | null>(null);
   const [trace, setTrace] = useState<ProfilePoint[] | null>(null);
+  const [enlarged, setEnlarged] = useState(false);
   // Plain objects that live as long as the app, like `toolLock`: a load counter (so an old load cannot overwrite a
   // newer one) and the pointer tracking of the gesture in progress (it changes at pointer speed, so not React state).
   const [token] = useState(() => ({ generation: 0 }));
   const [gesture] = useState(newSectionGesture);
 
-  const sectionView: SectionViewState = { openLayerId, points, loading, view, panelSize, cursorS, groundLevel, trace };
+  const sectionView: SectionViewState = { openLayerId, points, loading, view, panelSize, cursorS, groundLevel, trace, enlarged };
   // Rebuilt on every render, so the plain values are the ones the user sees when an event handler picks it up.
   const sectionContext: SectionViewContext = {
     ...sectionView,
@@ -50,6 +51,7 @@ export function useSectionView(inputs: SectionViewInputs): SectionViewHook {
     setCursorS,
     setGroundLevel,
     setTrace,
+    setEnlarged,
     setSectionLineHistory: inputs.setSectionLineHistory,
     token,
     gesture,

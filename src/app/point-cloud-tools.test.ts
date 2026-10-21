@@ -43,7 +43,6 @@ interface Harness {
   opened: Array<[string, string]>;
   focused: string[];
   hidden: string[];
-  sectionViews: string[];
   sectionLines: Array<[string, SectionGroundLine]>;
 }
 
@@ -54,7 +53,6 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
   const opened: Array<[string, string]> = [];
   const focused: string[] = [];
   const hidden: string[] = [];
-  const sectionViews: string[] = [];
   const sectionLines: Array<[string, SectionGroundLine]> = [];
   const source = {} as DataSource;
   const ctx: PointCloudToolsContext = {
@@ -68,7 +66,6 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
       opened.push([path, name]);
       return { layerId: "new-layer" };
     },
-    openSectionView: (id) => sectionViews.push(id),
     setSectionLine: (id, line) => sectionLines.push([id, line]),
     focusLayer: (id) => focused.push(id),
     setLayerVisible: (id, visible) => {
@@ -79,7 +76,7 @@ function makeHarness(layers: ViewerLayer[], selectedLayerId: string | null, extr
     reportError: (message, src) => errors.push([message, src]),
     toolLock: { running: false },
   };
-  return { ctx, statuses, errors, progresses, opened, focused, hidden, sectionViews, sectionLines };
+  return { ctx, statuses, errors, progresses, opened, focused, hidden, sectionLines };
 }
 
 function result(warnings: string[] = []): ToolResult {
@@ -144,23 +141,11 @@ describe("extractFromLayer", () => {
     expect(h.errors).toEqual([["点群のレイヤーを選んでください", "tool"]]);
   });
 
-  it("opens the section panel for a cross section, not for a cut", async () => {
-    const section = SECTION;
-    tauri.extractToCopc.mockResolvedValue(result());
-    const cut = makeHarness([pointCloudLayer("a", "地形")], "a");
-    await extractFromLayer(cut.ctx, "a", FILTER, "カット");
-    expect(cut.sectionViews).toEqual([]);
-    const cross = makeHarness([pointCloudLayer("a", "地形")], "a");
-    await extractFromLayer(cross.ctx, "a", FILTER, "断面", [0, 1, 0], section);
-    expect(cross.sectionViews).toEqual(["new-layer"]);
-  });
-
-  it("does not open the section panel when the tool fails", async () => {
+  it("does not compute a section line when the tool fails", async () => {
     const section = SECTION;
     tauri.extractToCopc.mockRejectedValueOnce(new Error("失敗"));
     const h = makeHarness([pointCloudLayer("a", "地形")], "a");
     await extractFromLayer(h.ctx, "a", FILTER, "断面", [0, 1, 0], section);
-    expect(h.sectionViews).toEqual([]);
     expect(tauri.computeSectionLine).not.toHaveBeenCalled();
   });
 });
@@ -230,7 +215,6 @@ describe("the section line after a cross section", () => {
     await extractFromLayer(h.ctx, "a", FILTER, "断面", [0, 1, 0], SECTION);
     expect(h.errors).toEqual([["断面線の範囲に点がありません", "tool"]]);
     expect(h.sectionLines).toEqual([]);
-    expect(h.sectionViews).toEqual(["new-layer"]);
     expect(h.ctx.toolLock.running).toBe(false);
   });
 

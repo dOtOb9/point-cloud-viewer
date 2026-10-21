@@ -65,6 +65,8 @@ export interface SectionViewState {
   groundLevel: GroundLevelReading | null;
   /** G2-5: the path being traced right now (the preview line), or null when nothing is being traced. */
   trace: ProfilePoint[] | null;
+  /** G2-T14: the panel is shown large in the centre of the screen instead of at the bottom right. */
+  enlarged: boolean;
 }
 
 /** One pointer (a mouse button press or a finger) that is down. */
@@ -108,6 +110,7 @@ export interface SectionViewContext extends SectionViewState {
   setCursorS: (s: number | null) => void;
   setGroundLevel: (reading: GroundLevelReading | null) => void;
   setTrace: (points: ProfilePoint[] | null) => void;
+  setEnlarged: (enlarged: boolean) => void;
   /** G2-5: store a new edit history for the section line of a layer (the layers state lives in React). */
   setSectionLineHistory: (layerId: string, history: History<SectionGroundLine>) => void;
   /** Counts opens/closes: a read that finishes after a newer open or a close is dropped. */
@@ -155,12 +158,37 @@ export async function openSectionPanel(ctx: SectionViewContext, layerId: string)
   }
 }
 
+/**
+ * G2-T14: make the panel follow the selected layer. A cross-section layer opens its panel (switching from another
+ * section layer's panel); no selection or a layer that is not a cross section closes it. The panel already open for
+ * this layer is left alone, so its points are not read again.
+ * Called from one effect on `selectedLayerId` (src/state/useCopcViewer.ts), not from every place that changes the
+ * selection (list click, multi-select, a tool selecting its new layer, removing a layer): there are many such places,
+ * and watching the value in one place cannot miss one. Reads the layer through the getter, so the layers state is the
+ * latest one.
+ */
+export function followSelectedLayer(ctx: SectionViewContext, selectedLayerId: string | null): void {
+  const layer = selectedLayerId === null ? undefined : findLayer(ctx.getLayersState().layers, selectedLayerId);
+  if (!layer || !layer.section) {
+    if (ctx.openLayerId !== null) closeSectionPanel(ctx);
+    return;
+  }
+  if (ctx.openLayerId === layer.id) return;
+  void openSectionPanel(ctx, layer.id);
+}
+
+/** "Enlarge" / "Shrink" button: the panel in the centre of the screen, or back at the bottom right. */
+export function toggleSectionEnlarged(ctx: SectionViewContext): void {
+  ctx.setEnlarged(!ctx.enlarged);
+}
+
 export function closeSectionPanel(ctx: SectionViewContext): void {
   ctx.token.generation += 1; // drop a read that is still running
   ctx.gesture.pointers.clear();
   ctx.gesture.multiTouch = false;
   ctx.gesture.trace = null;
   ctx.setTrace(null);
+  ctx.setEnlarged(false);
   ctx.setOpenLayerId(null);
   ctx.setCursorS(null);
   ctx.setGroundLevel(null);

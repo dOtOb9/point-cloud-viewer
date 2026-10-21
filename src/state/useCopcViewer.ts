@@ -15,9 +15,9 @@
 // The mouse tools on the 3D view (useLayerTool.ts, useMeasureTool.ts) and the unit setting (useDisplayUnit.ts)
 // are separate hooks that take this state as input; they are not part of it.
 // The type re-exports below exist because src/ui must reach the renderer / datasource types through state (ARCHITECTURE.md rule 3).
-import { useCallback, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { addOpenedLayer } from "../app/open-files";
-import { openSectionPanel } from "../app/section-view";
+import { followSelectedLayer } from "../app/section-view";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
@@ -104,6 +104,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       layers.commitLayers({ ...current, layers: setLayerSectionLineHistoryInList(current.layers, layerId, history) });
     },
   });
+  // G2-T14: the section panel follows the selected layer. Only the selection is watched; the steps are in section-view.ts.
+  const sectionContext = sectionViewHook.sectionContext;
+  useEffect(() => {
+    followSelectedLayer(sectionContext, layers.selectedLayerId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run when the selection changes, not on every render
+  }, [layers.selectedLayerId]);
   const tools = usePointCloudTools({
     rendererRef,
     sourceRef,
@@ -113,8 +119,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     tempDir: tempDirSetting.tempDir,
     isMobile: display.deviceProfileDefaults.isMobile,
     addOpenedLayer: (path, name, section) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null, section),
-    // --- G2: cross-section view ---
-    openSectionView: (layerId) => void openSectionPanel(sectionViewHook.sectionContext, layerId),
     // --- G2: section line ---
     setSectionLine: (layerId, line) => {
       const current = layers.layersStateRef.current;

@@ -6,6 +6,7 @@ import { canRedo, canUndo, fitView, newHistory, type SectionView } from "./secti
 import {
   closeSectionPanel,
   effectiveSectionView,
+  followSelectedLayer,
   newSectionGesture,
   openSectionPanel,
   redoSectionLine,
@@ -18,6 +19,7 @@ import {
   sectionPointerUp,
   setSectionPanelSize,
   showGroundLevelAt,
+  toggleSectionEnlarged,
   undoSectionLine,
   wheelZoomFactor,
   zoomSectionWheel,
@@ -70,6 +72,7 @@ function makeHarness(initialLayers: ViewerLayer[] = [sectionLayer()], source: Da
     cursorS: null,
     groundLevel: null,
     trace: null,
+    enlarged: false,
     getSource: () => source,
     getLayersState: () => ({ layers, selectedLayerId: null }),
     reportError: (message, src) => errors.push([message, src]),
@@ -81,6 +84,7 @@ function makeHarness(initialLayers: ViewerLayer[] = [sectionLayer()], source: Da
     setCursorS: (s) => void (ctx.cursorS = s),
     setGroundLevel: (g) => void (ctx.groundLevel = g),
     setTrace: (points) => void (ctx.trace = points),
+    setEnlarged: (e) => void (ctx.enlarged = e),
     setSectionLineHistory: (id, history) => void (layers = setLayerSectionLineHistoryInList(layers, id, history)),
     token: { generation: 0 },
     gesture: newSectionGesture(),
@@ -493,5 +497,89 @@ describe("tracing the section line (G2-5)", () => {
     dragMouse(closed.ctx, 0, [[40, 70], [60, 70]]);
     undoSectionLine(closed.ctx);
     expect(closed.line()!.history).toBe(before);
+  });
+});
+
+describe("the panel follows the selected layer (G2-T14)", () => {
+  const plain = { id: "p", name: "p", sourcePath: "p.copc.laz", cloudId: 1 } as unknown as ViewerLayer;
+  const second = { ...sectionLayer(), id: "sec2", cloudId: 8 };
+  const layers = () => [plain, sectionLayer(), second];
+
+  it("(a) selecting a cross-section layer opens its panel", async () => {
+    tauri.readSectionProfile.mockResolvedValue(POINTS);
+    const { ctx } = makeHarness(layers());
+    followSelectedLayer(ctx, "sec");
+    expect(ctx.openLayerId).toBe("sec");
+    await vi.waitFor(() => expect(ctx.points).toBe(POINTS));
+    expect(tauri.readSectionProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it("(b) a layer that is not a cross section, no selection, or an unknown id closes it (and shrinks it)", async () => {
+    tauri.readSectionProfile.mockResolvedValue(POINTS);
+    for (const next of ["p", null, "gone"]) {
+      const { ctx } = makeHarness(layers());
+      followSelectedLayer(ctx, "sec");
+      await vi.waitFor(() => expect(ctx.points).toBe(POINTS));
+      toggleSectionEnlarged(ctx);
+      followSelectedLayer(ctx, next);
+      expect(ctx.openLayerId).toBeNull();
+      expect(ctx.enlarged).toBe(false);
+      expect(ctx.points).toBe(NO_SECTION_POINTS);
+    }
+  });
+
+  it("(b) with nothing open, a non-section selection does nothing", () => {
+    const { ctx } = makeHarness(layers());
+    ctx.view = { scale: 2, offsetX: 1, offsetY: 1 };
+    followSelectedLayer(ctx, "p");
+    expect(ctx.openLayerId).toBeNull();
+    expect(ctx.view).toEqual({ scale: 2, offsetX: 1, offsetY: 1 }); // not reset by a needless close
+  });
+
+  it("(c) moving from one section layer to another opens the other", async () => {
+    tauri.readSectionProfile.mockResolvedValue(POINTS);
+    const { ctx } = makeHarness(layers());
+    followSelectedLayer(ctx, "sec");
+    await vi.waitFor(() => expect(ctx.points).toBe(POINTS));
+    followSelectedLayer(ctx, "sec2");
+    expect(ctx.openLayerId).toBe("sec2");
+    await vi.waitFor(() => expect(tauri.readSectionProfile).toHaveBeenCalledTimes(2));
+    expect(tauri.readSectionProfile.mock.calls[1][0]).toBe(8);
+  });
+
+  it("(d) the same layer again does not read its points again", async () => {
+    tauri.readSectionProfile.mockResolvedValue(POINTS);
+    const { ctx } = makeHarness(layers());
+    followSelectedLayer(ctx, "sec");
+    followSelectedLayer(ctx, "sec"); // while still loading
+    await vi.waitFor(() => expect(ctx.points).toBe(POINTS));
+    followSelectedLayer(ctx, "sec"); // after loading
+    expect(tauri.readSectionProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it("(e) enlarge toggles, and closing the panel shrinks it", async () => {
+    tauri.readSectionProfile.mockResolvedValue(POINTS);
+    const { ctx } = makeHarness(layers());
+    followSelectedLayer(ctx, "sec");
+    await vi.waitFor(() => expect(ctx.points).toBe(POINTS));
+    expect(ctx.enlarged).toBe(false);
+    toggleSectionEnlarged(ctx);
+    expect(ctx.enlarged).toBe(true);
+    toggleSectionEnlarged(ctx);
+    expect(ctx.enlarged).toBe(false);
+    toggleSectionEnlarged(ctx);
+    closeSectionPanel(ctx);
+    expect(ctx.enlarged).toBe(false);
+  });
+
+  it("(e) a section layer opened again after a close starts shrunk", async () => {
+    tauri.readSectionProfile.mockResolvedValue(POINTS);
+    const { ctx } = makeHarness(layers());
+    followSelectedLayer(ctx, "sec");
+    toggleSectionEnlarged(ctx);
+    followSelectedLayer(ctx, null);
+    followSelectedLayer(ctx, "sec");
+    expect(ctx.enlarged).toBe(false);
+    await vi.waitFor(() => expect(ctx.points).toBe(POINTS));
   });
 });

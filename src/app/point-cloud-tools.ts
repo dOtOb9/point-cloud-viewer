@@ -42,9 +42,6 @@ export interface PointCloudToolsContext {
   isMobile: boolean;
   /** Open `path` as a new layer called `name`; returns its id (this is `addOpenedLayer` of src/app/open-files.ts). */
   addOpenedLayer: (path: string, name: string, section?: SectionInfo) => Promise<{ layerId: string }>;
-  // --- G2: cross-section view ---
-  /** Open the 2D section panel for a layer the cross-section tool has just made (`openSectionPanel`, src/app/section-view.ts). */
-  openSectionView: (layerId: string) => void;
   /** Store the computed ground line on the cross-section layer (what `setLayerSectionLineInList` of src/state/layers.ts does). */
   setSectionLine: (layerId: string, line: SectionGroundLine) => void;
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
@@ -114,9 +111,6 @@ async function runTool(
       const { right, forward } = horizontalBasis(ctx.getViewUp());
       ctx.focusLayer(layerId, { yaw: sectionYaw(viewNormal, right, forward), pitch: 0 });
     }
-    // --- G2: cross-section view ---
-    // A cross section also opens the 2D panel. Its own failure is reported by the panel, so it does not fail the tool.
-    if (section) ctx.openSectionView(layerId);
     return layerId;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

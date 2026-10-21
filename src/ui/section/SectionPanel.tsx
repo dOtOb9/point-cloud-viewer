@@ -1,6 +1,5 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import {
-  closeSectionPanel,
   effectiveSectionView,
   redoSectionLine,
   resetSectionLineToComputed,
@@ -12,6 +11,7 @@ import {
   sectionPointerMove,
   sectionPointerUp,
   setSectionPanelSize,
+  toggleSectionEnlarged,
   zoomSectionWheel,
   type SectionPointer,
 } from "../../app/section-view";
@@ -122,9 +122,13 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
 
   // Narrow: sit above the layer drawer's toggle button (bottom-16, 44 px tall, so its top is at 6.75rem) and below the
   // drawer itself (z-10), so both stay usable. The wide panel has no such neighbour.
-  const placement = narrow
-    ? "inset-x-2 bottom-28 z-[5] h-[38vh] rounded-xl"
-    : "bottom-14 right-3 z-20 h-[340px] w-[min(640px,calc(100%-1.5rem))] rounded-xl";
+  // Enlarged: centred and large on any screen, above the drawer (z-10), its toggle and the toolbars, below the progress
+  // overlay (z-30) and the dialogs (z-40, z-50).
+  const placement = state.enlarged
+    ? "left-1/2 top-1/2 z-[25] h-[85%] w-[90%] -translate-x-1/2 -translate-y-1/2 rounded-xl"
+    : narrow
+      ? "inset-x-2 bottom-28 z-[5] h-[38vh] rounded-xl"
+      : "bottom-14 right-3 z-20 h-[340px] w-[min(640px,calc(100%-1.5rem))] rounded-xl";
   return (
     <div
       data-testid="section-panel"
@@ -166,10 +170,10 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
           </>
         )}
         <button type="button" onClick={() => resetSectionView(ctx)} className={TEXT_BUTTON_CLASS}>
-          全体表示
+          全体を表示
         </button>
-        <button type="button" onClick={() => closeSectionPanel(ctx)} className={TEXT_BUTTON_CLASS} data-testid="section-panel-close">
-          閉じる
+        <button type="button" onClick={() => toggleSectionEnlarged(ctx)} className={TEXT_BUTTON_CLASS} data-testid="section-panel-enlarge">
+          {state.enlarged ? "縮小" : "拡大"}
         </button>
       </div>
       <div
