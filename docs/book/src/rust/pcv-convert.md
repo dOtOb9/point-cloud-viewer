@@ -120,6 +120,13 @@ M4-14 でアプリ（`src-tauri` の `start_multi_las_conversion`）からも呼
 0点なら出力を作らず `ExtractError::EmptySelection` です。読み側は1ノードぶんしか抱えないので、
 メモリは点数に比例しません（テスト `buffer_is_bounded_by_largest_node`）。
 
+## `raster.rs`: COPC をラスタ化する(G1)
+
+[`src/raster.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/raster.rs) の `rasterize_path_and_timings` は、
+元の COPC の**全点を1回だけ**流し読みして(`ExtractPoints::all`。1ノードずつ)格子に足し、GeoTIFF と「1セル1点」の表示用 COPC の2つを書きます。
+格子の大きさはヘッダーの範囲とセルの大きさで決まり、上限(`src-tauri` の `RASTER_MAX_CELLS_DESKTOP`)を超えると**点を1つも読む前に**断ります。
+途中で失敗・キャンセルしたら GeoTIFF も消します。色(RGB)のラスタは、レイヤーが色を持つときだけ作れます。
+
 ## `import/`: E57・PLY・PCD の取り込み
 
 [`src/import/`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/import) は [ADR-0008](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md) が対応すると決めた3形式の取り込みです。

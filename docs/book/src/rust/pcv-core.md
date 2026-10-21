@@ -76,6 +76,15 @@ impl<R: Read + Seek + Send> CopcFile<R> {
 
 流れは[点の選択・断面・結合](../flows/point-cloud-tools.md)の章を見てください。
 
+## `raster/`: ラスタ化の部品(G1)
+
+ラスタ化ツール(カット・断面・合成と同じ並びのボタン「ラスタ化」)の、ファイルを持たない純粋な部分です。
+読む(`ExtractPoints::all`)と書く(COPC)はデスクトップ(`pcv-convert/src/raster.rs`)と Web(`pcv-wasm/src/raster.rs`)にあり、ここの部品を共有します。
+
+- [`grid.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/grid.rs) — `GridSpec`(原点をセルの大きさの倍数にそろえた格子。**行 0 は北**。セル数の上限を超えると日本語で断る)と、`CellAccumulator`(点を1つずつ足す。選んだ値に要る分だけセルごとに持つので、メモリはセル数に比例し点数には比例しない)。
+- [`geotiff.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/geotiff.rs) — 手書きの GeoTIFF(無圧縮・ストリップ・リトルエンディアン)。1バンドの float32(NoData あり)と、**RGB + アルファの4バンド u16**(空のセルはアルファ 0 で透明。黒にはしない)。EPSG が無いときは座標系のキーを書かない。
+- [`output.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/raster/output.rs) — `RasterOptions`(ダイアログの設定。JSON から読む)、`write_geotiff`、`DisplayPoints` / `DisplayCursor`(空でないセルの中心に1点ずつ置く表示用の点。高さの値なら Z=値、点数・強度・色なら Z=セルの平均の Z で、値は強度か色に入れる)。
+
 ## `crs/`: 座標参照系
 
 [`src/crs/`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-core/src/crs) は横メルカトル図法ベースの座標変換です。[ADR-0008](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md) の決定により、

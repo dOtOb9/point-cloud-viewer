@@ -87,6 +87,13 @@ impl WasmCopcFile {
 `write_copc_from_spill_with_fs_and_timings`(書き側、OPFS)をつなぎます。`new`(条件の JSON を `ExtractFilter` に読む)→ `feed` を繰り返す → `finish` で、`WasmConverter` と同じ形です。
 0点のときは `finish` が「選んだ範囲に点がありません」で失敗します。`finish` の間はキャンセルできません。
 
+### `WasmRasterizer`: ラスタ化(G1)
+
+[`src/raster.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/raster.rs) の `WasmRasterizer` は、デスクトップの `pcv-convert/src/raster.rs` と同じ仕事です。
+`feed` が2段階で、前半は点を読んで格子に足し、後半は空でないセルを spill に書きます(どちらもバッチごとに Worker がイベントループへ戻るので、キャンセルが効く)。
+`geotiff()` が GeoTIFF のバイト列を返し(Worker が `tool-done` で本体に**転送**する)、`finish()` が表示用 COPC を OPFS に書きます(この間はキャンセルできない)。
+セル数の上限は `MAX_CELLS_WEB`。コンストラクタが、点を1つも読む前に断ります。
+
 ### `WasmPointFileConverter`: PLY・PCD・E57 の取り込みと、形式をまたぐ結合(R7・M4-17)
 
 [`src/point_file_import.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-wasm/src/point_file_import.rs) の `WasmPointFileConverter` は、

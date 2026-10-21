@@ -15,7 +15,7 @@
   - [毎フレームの描画](./flows/render-frame.md)
   - [レイヤー操作](./flows/layers.md)
   - [計測](./flows/measure.md)
-  - [点の選択・断面・結合](./flows/point-cloud-tools.md)
+  - [カット・断面・合成・ラスタ化](./flows/point-cloud-tools.md)
   - [エラーの流れ](./flows/errors.md)
   - [設定と単位](./flows/settings.md)
 - [Rust 側]()
