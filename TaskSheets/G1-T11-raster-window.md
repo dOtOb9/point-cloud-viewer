@@ -88,6 +88,16 @@ render zMean ground: 25.71ms
 
 どちらも `max buffered points` は 100,000（1ノード分）で、点数に比例しない。**時間は G1-T6 の測定（178〜185 秒）より大幅に長い**。この計測の間、ほかの作業（Chromium・vitest・他のセッション）が同時に動いていたので、同じ条件の比較ではない。原因の切り分け（読みの処理が遅くなったのか、機械が混んでいたのか）は**していない**（未検証）。メモリは G1-T6 の 1,285 MiB（RGB・Z の合計と表示用の点を含む版）より小さい（表示用の Z の合計をやめたため。ただし格子の形が同じ測定ではないので、推定）。
 
+**切り分け（コーディネーター、2026-10-22）**: 同じ渋谷・1 m・標高 平均で、新旧の example を続けて1回ずつ走らせた（他の重い処理は無し。測り方は同じ200 ms ごとの private bytes）。
+
+| 版 | 時間 | ピーク private |
+|---|---|---|
+| 新（`origin/main` = `370d409` 時点。`rasterize_copc export … 1 zMean`） | 754.93 秒 | 124 MiB |
+| 旧（`d033d67~1`。表示用 COPC も書く版。`rasterize_copc <in> <tif> <copc> 1 zMean`） | 736.50 秒 | 302 MiB |
+
+旧版も今は同じくらい遅いので、**遅くなったのはコードの変更ではなく、この PC の状態**（G1-T6 の 178 秒を測った時と比べて）。
+PC の何が違うか（電源の設定・温度・ディスク・ウイルス対策の検査など）は**調べていない**。新しい版はメモリが少ない（124 MiB 対 302 MiB）。
+
 ### Web（実ブラウザ・実 GPU）
 
 ヘッドあり Chromium、`adapter.info` = `{"vendor":"nvidia","architecture":"lovelace"}`（SwiftShader ではない）、`data\autzen-classified.copc.laz`、表示単位 m（ファイルは ft）。スクリプトは `scratchpad\r3\check.mjs`。2 回の実行:
