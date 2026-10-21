@@ -31,6 +31,23 @@
   --error: #f87171;
   --on-error: #450a0a;
 }
+/* Native form controls (the open list of a <select>, number spinners, scrollbars) are drawn by the browser.
+   Tell it which theme we are in, otherwise a dark-theme <select> opens a light list with the inherited light text
+   (white on white). The explicit <option> colors cover browsers that ignore color-scheme for the list. */
+:root {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+:root[data-theme="dark"] option {
+  background-color: #0f172a;
+  color: #f1f5f9;
+}
 /* Tailwindのユーティリティ名(bg-primary, text-on-primary, border-tertiary など)にする。 */
 @theme inline {
   --color-primary: var(--primary);
