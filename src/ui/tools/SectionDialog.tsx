@@ -3,7 +3,7 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import type { LayerToolState } from "../../state/useLayerTool";
 import { convertLength, lengthUnitsFor, unitSymbol, UNKNOWN_UNIT_NOTE } from "../../state/units";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
-import { displayLengthToFile, heightRange, sectionLineRequestFor } from "../../state/tool-math";
+import { displayLengthToFile, heightRange } from "../../state/tool-math";
 import type { SectionLinePreset } from "../../datasource/section-line";
 import { OptionRow } from "../dialogs/OptionRow";
 import { Dialog } from "../dialogs/Dialog";
@@ -59,7 +59,7 @@ function SectionDialogBody({ viewer, tool }: { viewer: CopcViewerState; tool: La
       displayLengthToFile(t, units.horizontalToMeter, display),
       displayLengthToFile(lo, units.verticalToMeter, display),
       displayLengthToFile(hi, units.verticalToMeter, display),
-      sectionLineRequestFor(preset, units.horizontalToMeter),
+      preset,
     );
   };
 

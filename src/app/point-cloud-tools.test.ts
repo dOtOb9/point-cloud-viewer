@@ -5,6 +5,7 @@ import type { SectionGroundLine } from "../datasource/section-line";
 import type { ExtractFilter, RasterLayerInfo, RasterRequest, ToolResult } from "../datasource/tools";
 import type { ViewerStatus } from "../state/viewer-status";
 import type { ToolProgressState } from "../state/viewer-types";
+import { sectionLineRequestFor, UNKNOWN_UNIT_CSF_WARNING } from "./csf-params";
 import { cancelTool, extractFromLayer, hideSourceLayers, mergeSelectedLayers, rasterizeLayer, type PointCloudToolsContext } from "./point-cloud-tools";
 
 // The Tauri commands are what a fake (non-Web) source reaches; each test decides what they answer.
@@ -28,11 +29,11 @@ const SECTION: SectionInfo = {
   up: [0, 0, 1],
   thickness: 1,
   sourceLayerId: "a",
-  lineRequest: { preset: "standard", corridorHalfWidth: 20, clothResolution: 0.5 },
+  linePreset: "standard",
 };
 
 function pointCloudLayer(id: string, name: string, cloudId = 0): ViewerLayer {
-  return { id, name, cloudId, sourcePath: `${id}.copc.laz`, visible: true } as unknown as ViewerLayer;
+  return { id, name, cloudId, sourcePath: `${id}.copc.laz`, visible: true, info: { crs: { horizontalUnitToMeter: 1, verticalUnitToMeter: 1 } } } as unknown as ViewerLayer;
 }
 
 interface Harness {
@@ -180,13 +181,34 @@ describe("the section line after a cross section", () => {
     expect(tauri.computeSectionLine).toHaveBeenCalledWith(
       7,
       { a: [0, 0, 0], b: [10, 0, 0], up: [0, 0, 1] },
-      SECTION.lineRequest,
+      sectionLineRequestFor("standard", { horizontalToMeter: 1, verticalToMeter: 1 }).request,
       expect.anything(),
     );
     expect(h.sectionLines).toEqual([["new-layer", LINE]]);
     expect(h.errors).toEqual([]);
     expect(h.ctx.toolLock.running).toBe(false);
     expect(h.progresses[h.progresses.length - 1]).toBeNull();
+  });
+
+  it("sends the owner's metre values converted to the source layer's unit, and warns for an unknown unit", async () => {
+    tauri.extractToCopc.mockResolvedValue(result());
+    tauri.computeSectionLine.mockResolvedValue(LINE);
+    const feet = pointCloudLayer("a", "地形", 7);
+    (feet as unknown as { info: unknown }).info = { crs: { horizontalUnitToMeter: 0.3048, verticalUnitToMeter: 0.3048 } };
+    const h = makeHarness([feet], "a");
+    await extractFromLayer(h.ctx, "a", FILTER, "断面", [0, 1, 0], SECTION);
+    const sent = tauri.computeSectionLine.mock.calls[0][2];
+    expect(sent.csf.clothResolution).toBeCloseTo(0.5 / 0.3048, 9);
+    expect(sent.csf.classThresholdLower).toBeCloseTo(1 / 0.3048, 9);
+    expect(h.errors).toEqual([]);
+
+    tauri.computeSectionLine.mockClear();
+    const unknown = pointCloudLayer("a", "地形", 7);
+    (unknown as unknown as { info: unknown }).info = { crs: { horizontalUnitToMeter: null, verticalUnitToMeter: null } };
+    const h2 = makeHarness([unknown], "a");
+    await extractFromLayer(h2.ctx, "a", FILTER, "断面", [0, 1, 0], SECTION);
+    expect(tauri.computeSectionLine.mock.calls[0][2].csf.clothResolution).toBe(0.5);
+    expect(h2.errors).toEqual([[UNKNOWN_UNIT_CSF_WARNING, "tool"]]);
   });
 
   it("shows the progress as a percentage in the tool progress state", async () => {

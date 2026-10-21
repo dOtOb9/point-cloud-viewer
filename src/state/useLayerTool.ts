@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { extractFromLayer } from "../app/point-cloud-tools";
-import type { SectionLineRequest } from "../datasource/section-line";
+import type { SectionLinePreset } from "../datasource/section-line";
 import type { CopcViewerState } from "./useCopcViewer";
 import { isMeasureLayer } from "./layers";
 import { pixelToNdc, sectionBox, type Vec3 } from "./tool-math";
@@ -45,7 +45,7 @@ export interface LayerToolState {
   /** "select": close the polygon and extract (same as Enter or double click). */
   finishPolygon: () => void;
   /** "section": run the extraction with the values from the dialog (thickness and height range in file units). */
-  confirmSection: (thickness: number, heightMin: number, heightMax: number, lineRequest: SectionLineRequest) => void;
+  confirmSection: (thickness: number, heightMin: number, heightMax: number, linePreset: SectionLinePreset) => void;
   /** "section": close the dialog and forget the two points (the tool stays on). */
   cancelSection: () => void;
 }
@@ -174,7 +174,7 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
   );
 
   const confirmSection = useCallback(
-    (thickness: number, heightMin: number, heightMax: number, lineRequest: SectionLineRequest) => {
+    (thickness: number, heightMin: number, heightMax: number, linePreset: SectionLinePreset) => {
       const points = sectionRef.current;
       if (modeRef.current !== "section" || points.length < 2) return;
       const layer = targetLayer();
@@ -194,7 +194,7 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
         up: [up[0], up[1], up[2]] as [number, number, number],
         thickness,
         sourceLayerId: layer.id, // G2-4
-        lineRequest, // G2-4
+        linePreset, // G2-4
       };
       void extractFromLayer(viewerRef.current.toolContext, layer.id, box.filter, "断面", box.normal, section);
     },

@@ -6,7 +6,7 @@
 
 import type { CloudInfo } from "../datasource/DataSource";
 import type { RasterLayerInfo, RasterValueKind } from "../datasource/tools";
-import type { SectionGroundLine, SectionLineRequest } from "../datasource/section-line";
+import type { SectionGroundLine, SectionLinePreset } from "../datasource/section-line";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX, sanitizePointSize } from "../renderer/layer-focus";
@@ -33,8 +33,8 @@ export interface SectionInfo {
   // --- G2: section line (G2-4) ---
   /** The layer the slab was cut from. The section line is computed from this layer, because a thin slab has no context. */
   sourceLayerId: string;
-  /** What to ask Rust for when computing the section line (preset, corridor width and cloth resolution in file units). */
-  lineRequest: SectionLineRequest;
+  /** The CSF preset picked in the dialog; `computeSectionLine` turns it into parameters in the file's unit. */
+  linePreset: SectionLinePreset;
   /** The ground line. Absent until it has been computed, and when computing failed or was cancelled. */
   line?: SectionLineState;
 }

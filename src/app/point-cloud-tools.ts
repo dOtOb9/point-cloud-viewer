@@ -23,6 +23,8 @@ import type { SectionGroundLine } from "../datasource/section-line";
 import { findLayer, isMeasureLayer, type LayersState, type SectionInfo } from "../state/layers";
 import { effectiveSelectedIds, toolSourceLayers } from "../state/layer-selection";
 import { sectionYaw } from "../state/tool-math";
+import { lengthUnitsFor } from "../state/units";
+import { sectionLineRequestFor } from "./csf-params";
 import type { ToolProgressState } from "../state/viewer-types";
 import type { ViewerStatus } from "../state/viewer-status";
 
@@ -184,14 +186,17 @@ export async function computeSectionLine(ctx: PointCloudToolsContext, sectionLay
   ctx.setToolProgress({ title, pointsRead: 0, totalPoints: 0, showAsPercent: true });
   try {
     const line = { a: section.a, b: section.b, up: section.up };
+    // The owner's CSF values are in metres; Rust takes the file's unit (src/app/csf-params.ts).
+    const { request, warning } = sectionLineRequestFor(section.linePreset, lengthUnitsFor(sourceLayer.info.crs, "meter"));
+    if (warning) reportToolMessage(ctx, warning);
     const options: ToolOptions = {
       tempDir: ctx.tempDir,
       onProgress: (p) => ctx.setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints, showAsPercent: true }),
     };
     const result =
       source instanceof WebSource
-        ? await source.computeSectionLine(sourceLayer.cloudId, line, section.lineRequest, options)
-        : await tauriComputeSectionLine(sourceLayer.cloudId, line, section.lineRequest, options);
+        ? await source.computeSectionLine(sourceLayer.cloudId, line, request, options)
+        : await tauriComputeSectionLine(sourceLayer.cloudId, line, request, options);
     ctx.setSectionLine(sectionLayerId, result);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

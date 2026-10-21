@@ -6,25 +6,31 @@
 //
 // Desktop gets the buffer from a Tauri command, the Web build from the Worker; both go through `decodeSectionLine`.
 
-/** The CSF presets of the section dialog (plan 2.2). The values behind them are in Rust (`CsfParams::standard` / `steep`). */
+/** The CSF presets of the section dialog (plan 2.2). Their numbers (in metres) are in `src/app/csf-params.ts`. */
 export type SectionLinePreset = "standard" | "steep";
 
-/**
- * What the section tool asks for. Lengths are in the file's unit (the dialog converts metres with the layer's CRS
- * factor). The Rust type is `SectionLineRequest` in `crates/pcv-core/src/section_line.rs`.
- */
-export interface SectionLineRequest {
-  preset: SectionLinePreset;
-  /** Half width of the corridor read around the line on each side. */
-  corridorHalfWidth: number;
-  /** Grid spacing of the cloth, also the spacing of the samples of the line. */
+/** CSF parameters with every length in the file's unit. The Rust type is `CsfParamsInput` in `crates/pcv-core/src/section_line.rs`. */
+export interface CsfParamsInFileUnits {
   clothResolution: number;
+  rigidness: number;
+  timeStep: number;
+  classThresholdUpper: number;
+  classThresholdLower: number;
+  iterations: number;
+  slopeSmooth: boolean;
+  hdiff: number;
+  convergenceThreshold: number;
 }
 
-/** The corridor half width the section tool uses by default, in metres (plan 8.3: 20 m on each side). */
-export const DEFAULT_CORRIDOR_HALF_WIDTH_M = 20;
-/** The cloth resolution of both presets, in metres. */
-export const DEFAULT_CLOTH_RESOLUTION_M = 0.5;
+/**
+ * What the section tool asks for. Lengths are in the file's unit (`src/app/csf-params.ts` converts the owner's metres
+ * with the layer's CRS factors). The Rust type is `SectionLineRequest` in `crates/pcv-core/src/section_line.rs`.
+ */
+export interface SectionLineRequest {
+  /** Half width of the corridor read around the line on each side. */
+  corridorHalfWidth: number;
+  csf: CsfParamsInFileUnits;
+}
 
 /** A polyline along the section: point i is `(s, z)` = `points[i * 2]`, `points[i * 2 + 1]`, in the file's unit. */
 export interface SectionGroundLine {

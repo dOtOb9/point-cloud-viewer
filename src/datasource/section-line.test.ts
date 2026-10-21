@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSectionLineStartRequest } from "./web-protocol";
+import { sectionLineRequestFor } from "../app/csf-params";
 import { decodeSectionLine } from "./section-line";
 import type { SectionLineInput } from "./section-profile";
 
@@ -49,7 +50,7 @@ describe("decodeSectionLine", () => {
 
 describe("buildSectionLineStartRequest", () => {
   it("carries the layer, the line and the request", () => {
-    const request = { preset: "steep", corridorHalfWidth: 20, clothResolution: 0.5 } as const;
+    const request = sectionLineRequestFor("steep", { horizontalToMeter: 1, verticalToMeter: 1 }).request;
     const line: SectionLineInput = { a: [0, 0, 0], b: [10, 0, 0], up: [0, 0, 1] };
     expect(buildSectionLineStartRequest(5, 3, line, request)).toEqual({
       type: "sectionLineStart",
