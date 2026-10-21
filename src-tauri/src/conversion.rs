@@ -1370,6 +1370,98 @@ pub async fn filter_copc(
     .await
 }
 
+// --- G1: DTM ---
+
+/// Result of the DTM tool. Matches the frontend `DtmResult` (camelCase conversion is in `tauri.ts`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DtmOutput {
+    /// The COPC with the ground classified (open it as a new layer).
+    pub output_path: String,
+    pub point_count: u64,
+    pub warnings: Vec<String>,
+    /// The files, in the `pcv-tools` temp folder (`save_tool_file` copies them where the user chose). `None`: not asked for.
+    pub geotiff_path: Option<String>,
+    pub landxml_path: Option<String>,
+    pub width: u32,
+    pub height: u32,
+    pub cell_size: f64,
+    pub tin_points: u64,
+    pub tin_triangles: u64,
+    pub ground_points: u64,
+}
+
+/// Classifies the ground of `path` (an open COPC) with CSF and makes a DTM from it (GeoTIFF and/or LandXML, as
+/// `request.output` says). `request` lengths are in the file's unit. Progress is per mille (0..1000).
+#[tauri::command]
+pub async fn dtm_copc(
+    app: AppHandle,
+    path: String,
+    request: pcv_core::dtm::DtmRequest,
+    temp_dir: Option<String>,
+    state: State<'_, ConversionState>,
+) -> Result<DtmOutput, String> {
+    if FilePath::from_str(&path).is_ok_and(|p| matches!(p, FilePath::Url(_))) {
+        return Err("この環境(content:// URI)では未対応です".to_string());
+    }
+    let stem = tool_stem(&path, "dtm");
+    let copc = tool_output_path(&app, temp_dir.as_deref(), &format!("{stem}-dtm"))?;
+    // `tool_output_path` makes `<name>.copc.laz`; the other files are `<name>.tif` and `<name>.xml` beside it.
+    let beside = |extension: &str| {
+        copc.with_file_name(
+            copc.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| format!("{}.{extension}", n.trim_end_matches(".copc.laz")))
+                .unwrap_or_else(|| format!("dtm.{extension}")),
+        )
+    };
+    let outputs = pcv_convert::dtm::DtmOutputs {
+        geotiff: beside("tif"),
+        landxml: beside("xml"),
+        copc,
+    };
+    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
+    redirect_os_temp_dir(&spill_dir);
+    let on_progress = tool_progress(&app);
+    // The clock is read here: `pcv-core` is also built for the browser, where it must not read it.
+    let unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    run_tool(&state, move |cancel| {
+        let summary = pcv_convert::dtm::dtm_path_desktop(
+            Path::new(&path),
+            request,
+            &outputs,
+            &spill_dir,
+            unix_seconds,
+            &cancel,
+            on_progress,
+        )
+        .map_err(|e| {
+            if e.is_cancelled() {
+                "キャンセルされた".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+        let path_if = |wanted: bool, p: &Path| wanted.then(|| p.to_string_lossy().into_owned());
+        Ok(DtmOutput {
+            output_path: outputs.copc.to_string_lossy().into_owned(),
+            point_count: summary.point_count,
+            warnings: summary.warnings,
+            geotiff_path: path_if(request.output.geotiff, &outputs.geotiff),
+            landxml_path: path_if(request.output.landxml, &outputs.landxml),
+            width: summary.width,
+            height: summary.height,
+            cell_size: summary.cell_size,
+            tin_points: summary.tin_points as u64,
+            tin_triangles: summary.tin_triangles as u64,
+            ground_points: summary.ground_points,
+        })
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

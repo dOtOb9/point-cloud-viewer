@@ -319,7 +319,9 @@ pub fn run() {
             conversion::compute_section_line,
             // --- G3: thinning and outlier filters ---
             conversion::thin_copc,
-            conversion::filter_copc
+            conversion::filter_copc,
+            // --- G1: DTM ---
+            conversion::dtm_copc
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
