@@ -11,10 +11,13 @@ import {
   mergeCopcs as tauriMergeCopcs,
   computeSectionLine as tauriComputeSectionLine, // G2
   cancelLasConversion,
+  thinCopc as tauriThinCopc, // G3
+  filterCopc as tauriFilterCopc, // G3
 } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
 import type { DataSource } from "../datasource/DataSource";
 import type { ExtractFilter, ToolOptions, ToolResult } from "../datasource/tools";
+import type { FilterRequest, ThinRequest } from "../datasource/thin-filter"; // G3
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { horizontalBasis } from "../renderer/up-axis";
 import type { SectionGroundLine } from "../datasource/section-line";
@@ -229,4 +232,46 @@ export function cancelTool(ctx: PointCloudToolsContext): void {
     return;
   }
   cancelLasConversion().catch((e: unknown) => console.error("cancelLasConversion failed", e));
+}
+
+// --- G3: thinning and outlier filters ---
+
+/**
+ * Make a new layer from `layerId` by thinning it (G3-5, ADR-0018). `request` lengths are already in the file's unit
+ * (`thinRequestFor` in src/app/thin-filter.ts). The source layer is hidden only when the tool worked. Zero kept points,
+ * a failure and a cancel go to the error log and leave the source visible.
+ */
+export async function thinLayer(ctx: PointCloudToolsContext, layerId: string, request: ThinRequest): Promise<void> {
+  const layer = findLayer(ctx.getLayersState().layers, layerId);
+  if (!layer || isMeasureLayer(layer) || layer.sourcePath === undefined) {
+    reportToolMessage(ctx, "点群のレイヤーを選んでください");
+    return;
+  }
+  const path = layer.sourcePath;
+  await runTool(
+    ctx,
+    `間引き（${layer.name}）`,
+    `間引き - ${layer.name}`,
+    [layer.id],
+    (source, options) =>
+      source instanceof WebSource ? source.thinCopc(path, request, options) : tauriThinCopc(path, request, options),
+  );
+}
+
+/** Make a new layer from `layerId` by removing outliers (ROR or SOR). Same rules as `thinLayer`; SOR reads the file twice. */
+export async function filterLayer(ctx: PointCloudToolsContext, layerId: string, request: FilterRequest): Promise<void> {
+  const layer = findLayer(ctx.getLayersState().layers, layerId);
+  if (!layer || isMeasureLayer(layer) || layer.sourcePath === undefined) {
+    reportToolMessage(ctx, "点群のレイヤーを選んでください");
+    return;
+  }
+  const path = layer.sourcePath;
+  await runTool(
+    ctx,
+    `フィルタ（${layer.name}）`,
+    `フィルタ - ${layer.name}`,
+    [layer.id],
+    (source, options) =>
+      source instanceof WebSource ? source.filterCopc(path, request, options) : tauriFilterCopc(path, request, options),
+  );
 }
