@@ -2,7 +2,10 @@ import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react
 import {
   closeSectionPanel,
   effectiveSectionView,
+  redoSectionLine,
+  resetSectionLineToComputed,
   resetSectionView,
+  undoSectionLine,
   sectionPointerCancel,
   sectionPointerLeave,
   sectionPointerDown,
@@ -13,7 +16,15 @@ import {
   type SectionPointer,
 } from "../../app/section-view";
 import { groundLevelLabel, groundLineToProfile, type GroundLevelReading } from "../../app/section-3d";
-import { interpolateZ, sectionToScreen, type ProfileLine, type SectionView } from "../../app/section-math";
+import {
+  canRedo,
+  canUndo,
+  interpolateZ,
+  sectionToScreen,
+  type ProfileLine,
+  type ProfilePoint,
+  type SectionView,
+} from "../../app/section-math";
 import { drawSection } from "../../renderer/section-2d";
 import { convertLength, lengthUnitsFor, unitSymbol, UNKNOWN_UNIT_NOTE } from "../../state/units";
 import type { CopcViewerState } from "../../state/useCopcViewer";
@@ -24,7 +35,8 @@ import { glassSurfaceClass } from "../common/glass";
 // G2-3: the 2D cross-section panel (bottom right; full width at the bottom on narrow screens).
 // It only shows the state in `viewer.sectionView` and passes the mouse / touch / wheel input to the functions of
 // src/app/section-view.ts. The drawing is src/renderer/section-2d.ts.
-// Not here yet: editing the section line (G2-5), the ground level and slope (G2-6).
+// G2-5: left-drag (mouse) or one-finger trace (touch) edits the section line; the three buttons undo, redo and go back
+// to the computed line. The path being traced is drawn by `SectionMarks`.
 
 /** Small text buttons of the panel header, in the tertiary grey (no ✕ icon: UI rule). */
 const TEXT_BUTTON_CLASS = "min-h-9 rounded bg-tertiary px-3 text-xs text-on-tertiary hover:opacity-90";
@@ -87,8 +99,9 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
   const drawView = effectiveSectionView(state);
   const { scale, offsetX, offsetY } = drawView;
   // G2-4: the ground line of the layer (absent until computed, and when computing failed).
-  const groundLine = layer?.section?.line?.current.points ?? null;
+  const groundLine = layer?.section?.line?.history.present.points ?? null;
   const groundProfile = (groundLine ? groundLineToProfile(groundLine) : null);
+  const lineState = layer?.section?.line;
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!open || !canvas || panelSize.width === 0 || panelSize.height === 0) return;
@@ -121,6 +134,37 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={layer.name}>
           {layer.name}
         </h2>
+        {lineState && (
+          <>
+            <button
+              type="button"
+              onClick={() => undoSectionLine(ctx)}
+              disabled={!canUndo(lineState.history)}
+              className={`${TEXT_BUTTON_CLASS} disabled:opacity-40`}
+              data-testid="section-undo"
+            >
+              元に戻す
+            </button>
+            <button
+              type="button"
+              onClick={() => redoSectionLine(ctx)}
+              disabled={!canRedo(lineState.history)}
+              className={`${TEXT_BUTTON_CLASS} disabled:opacity-40`}
+              data-testid="section-redo"
+            >
+              やり直す
+            </button>
+            <button
+              type="button"
+              onClick={() => resetSectionLineToComputed(ctx)}
+              disabled={lineState.history.present === lineState.original}
+              className={`${TEXT_BUTTON_CLASS} disabled:opacity-40`}
+              data-testid="section-reset-line"
+            >
+              計算した線に戻す
+            </button>
+          </>
+        )}
         <button type="button" onClick={() => resetSectionView(ctx)} className={TEXT_BUTTON_CLASS}>
           全体表示
         </button>
@@ -150,12 +194,13 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
             line={groundProfile}
             cursorS={state.cursorS}
             reading={state.groundLevel}
+            trace={state.trace}
             label={state.groundLevel ? groundLevelLabel(state.groundLevel, units) : null}
           />
         )}
         {groundProfile && (
           <p className="absolute left-2 top-1 text-[11px] opacity-70" data-testid="section-gl-hint">
-            右クリック（長押し）で GL と傾斜角
+            左ドラッグ（1本指）でなぞって線を直す／右クリック（長押し）で GL と傾斜角
           </p>
         )}
         {state.loading && <p className="absolute left-3 top-2 text-xs opacity-70">断面の点を読み込み中…</p>}
@@ -181,6 +226,7 @@ function SectionMarks({
   line,
   cursorS,
   reading,
+  trace,
   label,
 }: {
   width: number;
@@ -189,6 +235,7 @@ function SectionMarks({
   line: ProfileLine;
   cursorS: number | null;
   reading: GroundLevelReading | null;
+  trace: ProfilePoint[] | null;
   label: [string, string] | null;
 }) {
   const cursorZ = cursorS === null ? null : interpolateZ(line, cursorS);
@@ -199,6 +246,20 @@ function SectionMarks({
   const labelX = gl === null ? 0 : alignEnd ? gl.x - 9 : gl.x + 9;
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" width={width} height={height}>
+      {trace && trace.length >= 2 && (
+        <polyline
+          data-testid="section-trace"
+          points={trace.map((p) => {
+            const q = sectionToScreen(view, p.s, p.z);
+            return `${q.x},${q.y}`;
+          }).join(" ")}
+          fill="none"
+          stroke="#facc15"
+          strokeWidth={2.5}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+      )}
       {cursor && (
         <g data-testid="section-cursor-mark">
           <line x1={cursor.x} x2={cursor.x} y1={0} y2={height} style={{ stroke: "var(--secondary)" }} strokeWidth={1} strokeDasharray="4 4" opacity={0.6} />

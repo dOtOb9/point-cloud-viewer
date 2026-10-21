@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataSource } from "../datasource/DataSource";
 import { NO_SECTION_POINTS, type SectionPoints } from "../datasource/section-profile";
-import type { ViewerLayer } from "../state/layers";
-import { fitView, type SectionView } from "./section-math";
+import { setLayerSectionLineHistoryInList, type ViewerLayer } from "../state/layers";
+import { canRedo, canUndo, fitView, newHistory, type SectionView } from "./section-math";
 import {
   closeSectionPanel,
   effectiveSectionView,
   newSectionGesture,
   openSectionPanel,
+  redoSectionLine,
+  resetSectionLineToComputed,
   resetSectionView,
   sectionPointerCancel,
   sectionPointerDown,
@@ -16,6 +18,7 @@ import {
   sectionPointerUp,
   setSectionPanelSize,
   showGroundLevelAt,
+  undoSectionLine,
   wheelZoomFactor,
   zoomSectionWheel,
   type SectionPointer,
@@ -54,7 +57,9 @@ interface Harness {
 }
 
 /** A context whose setters write into the same object, so the state can be read back (like React would, a render later). */
-function makeHarness(layers: ViewerLayer[] = [sectionLayer()], source: DataSource | null = {} as DataSource): Harness {
+function makeHarness(initialLayers: ViewerLayer[] = [sectionLayer()], source: DataSource | null = {} as DataSource): Harness {
+  // The layers state changes when the history of a section line is set, as the React state would a render later.
+  let layers = initialLayers;
   const errors: Array<[string, string | undefined]> = [];
   const ctx: SectionViewContext = {
     openLayerId: null,
@@ -64,6 +69,7 @@ function makeHarness(layers: ViewerLayer[] = [sectionLayer()], source: DataSourc
     panelSize: { width: 400, height: 300 },
     cursorS: null,
     groundLevel: null,
+    trace: null,
     getSource: () => source,
     getLayersState: () => ({ layers, selectedLayerId: null }),
     reportError: (message, src) => errors.push([message, src]),
@@ -74,6 +80,8 @@ function makeHarness(layers: ViewerLayer[] = [sectionLayer()], source: DataSourc
     setPanelSize: (s) => void (ctx.panelSize = s),
     setCursorS: (s) => void (ctx.cursorS = s),
     setGroundLevel: (g) => void (ctx.groundLevel = g),
+    setTrace: (points) => void (ctx.trace = points),
+    setSectionLineHistory: (id, history) => void (layers = setLayerSectionLineHistoryInList(layers, id, history)),
     token: { generation: 0 },
     gesture: newSectionGesture(),
   };
@@ -233,7 +241,7 @@ describe("touch", () => {
     expect(Math.abs((250 - view.offsetX) / view.scale - 200)).toBeLessThan(5);
   });
 
-  it("does nothing with one moving finger yet (line editing is G2-5)", () => {
+  it("does not move the view with one moving finger (that is the trace of G2-5)", () => {
     const { ctx } = makeHarness();
     ctx.view = { scale: 1, offsetX: 0, offsetY: 0 };
     sectionPointerDown(ctx, pointer(1, "touch", 0, 100, 100, 0));
@@ -258,7 +266,7 @@ describe("ground level (G2-6) and cursor (G2-8)", () => {
     return {
       ...base,
       info: { crs } as ViewerLayer["info"],
-      section: { ...base.section!, line: { original: LINE, current: LINE } },
+      section: { ...base.section!, line: { original: LINE, history: newHistory(LINE) } },
     } as ViewerLayer;
   }
   const LINE = { points: new Float32Array([0, 10, 50, 10, 100, 60]), groundPoints: 3, cells: 3 };
@@ -317,5 +325,173 @@ describe("ground level (G2-6) and cursor (G2-8)", () => {
     closeSectionPanel(ctx);
     expect(ctx.cursorS).toBeNull();
     expect(ctx.groundLevel).toBeNull();
+  });
+});
+
+describe("tracing the section line (G2-5)", () => {
+  const LINE = { points: new Float32Array([0, 10, 50, 10, 100, 60]), groundPoints: 3, cells: 3 };
+
+  /** The open layer "sec" with LINE; the view maps screen (x, y) to s = x and z = 100 - y. */
+  function traceHarness(withLine = true) {
+    const base = sectionLayer();
+    const section = withLine ? { ...base.section!, line: { original: LINE, history: newHistory(LINE) } } : base.section!;
+    const h = makeHarness([{ ...base, info: { crs: null }, section } as unknown as ViewerLayer]);
+    h.ctx.openLayerId = "sec";
+    h.ctx.view = { scale: 1, offsetX: 0, offsetY: 100 };
+    // Read the line back through the context (the harness keeps the layers state).
+    const line = () => h.ctx.getLayersState().layers[0].section!.line;
+    return { ...h, line };
+  }
+  const pairs = (a: Float32Array) => [...a];
+
+  /** Press at (x0, y0), move to each point, release at the last one. */
+  function dragMouse(ctx: SectionViewContext, button: number, points: Array<[number, number]>) {
+    sectionPointerDown(ctx, pointer(1, "mouse", button, points[0][0], points[0][1], 0));
+    points.slice(1).forEach(([x, y], i) => sectionPointerMove(ctx, pointer(1, "mouse", button, x, y, 10 * (i + 1))));
+    const [x, y] = points[points.length - 1];
+    sectionPointerUp(ctx, pointer(1, "mouse", button, x, y, 100));
+  }
+
+  it("(a) a left drag replaces the covered range and pushes the result on the history", () => {
+    const { ctx, line } = traceHarness();
+    // z = 100 - y: the trace is s 40..60 at z 30.
+    dragMouse(ctx, 0, [[40, 70], [50, 70], [60, 70]]);
+    const history = line()!.history;
+    expect(history.past).toHaveLength(1);
+    expect(history.past[0]).toBe(LINE);
+    expect(pairs(history.present.points)).toEqual([0, 10, 40, 30, 50, 30, 60, 30, 100, 60]);
+    expect(history.present.edited).toBe(true);
+    expect(history.present.groundPoints).toBe(3);
+    expect(line()!.original).toBe(LINE); // the original is never changed
+  });
+
+  it("(a) shows the path while tracing and clears it on release", () => {
+    const { ctx } = traceHarness();
+    sectionPointerDown(ctx, pointer(1, "mouse", 0, 40, 70, 0));
+    sectionPointerMove(ctx, pointer(1, "mouse", 0, 50, 70, 10));
+    sectionPointerMove(ctx, pointer(1, "mouse", 0, 60, 80, 20));
+    expect(ctx.trace).toEqual([
+      { s: 40, z: 30 },
+      { s: 50, z: 30 },
+      { s: 60, z: 20 },
+    ]);
+    sectionPointerUp(ctx, pointer(1, "mouse", 0, 60, 80, 30));
+    expect(ctx.trace).toBeNull();
+  });
+
+  it("(b) a left click that does not move leaves the history alone", () => {
+    const { ctx, line } = traceHarness();
+    const before = line()!.history;
+    dragMouse(ctx, 0, [[40, 70], [42, 71]]); // 2.2 px: under the drag threshold
+    expect(line()!.history).toBe(before);
+    expect(ctx.trace).toBeNull();
+    dragMouse(ctx, 0, [[40, 70]]);
+    expect(line()!.history).toBe(before);
+  });
+
+  it("(c) the right button still pans and reads the GL, and does not trace", () => {
+    const { ctx, line } = traceHarness();
+    const before = line()!.history;
+    dragMouse(ctx, 2, [[100, 100], [110, 95], [120, 95]]);
+    expect(ctx.view).toEqual({ scale: 1, offsetX: 20, offsetY: 95 });
+    expect(ctx.trace).toBeNull();
+    expect(line()!.history).toBe(before);
+    ctx.view = { scale: 1, offsetX: 0, offsetY: 100 };
+    sectionPointerDown(ctx, pointer(2, "mouse", 2, 25, 50, 200));
+    sectionPointerUp(ctx, pointer(2, "mouse", 2, 25, 50, 250));
+    expect(ctx.groundLevel!.z).toBeCloseTo(10);
+    expect(line()!.history).toBe(before);
+  });
+
+  it("(d) a one-finger trace is pushed on the history", () => {
+    const { ctx, line } = traceHarness();
+    sectionPointerDown(ctx, pointer(1, "touch", 0, 40, 70, 0));
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 50, 70, 10));
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 60, 70, 20));
+    expect(ctx.trace).toHaveLength(3);
+    sectionPointerUp(ctx, pointer(1, "touch", 0, 60, 70, 30));
+    expect(pairs(line()!.history.present.points)).toEqual([0, 10, 40, 30, 50, 30, 60, 30, 100, 60]);
+    expect(ctx.trace).toBeNull();
+  });
+
+  it("(d) a second finger throws the trace away, and lifting the fingers pushes nothing", () => {
+    const { ctx, line } = traceHarness();
+    const before = line()!.history;
+    sectionPointerDown(ctx, pointer(1, "touch", 0, 40, 70, 0));
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 50, 70, 10));
+    expect(ctx.trace).not.toBeNull();
+    sectionPointerDown(ctx, pointer(2, "touch", 0, 200, 70, 20));
+    expect(ctx.trace).toBeNull();
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 60, 70, 30)); // pinch / pan now, no new trace
+    expect(ctx.trace).toBeNull();
+    sectionPointerUp(ctx, pointer(2, "touch", 0, 200, 70, 40));
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 70, 70, 50)); // the remaining finger must not start a trace
+    expect(ctx.trace).toBeNull();
+    sectionPointerUp(ctx, pointer(1, "touch", 0, 70, 70, 60));
+    expect(line()!.history).toBe(before);
+  });
+
+  it("(d) a cancelled trace is dropped", () => {
+    const { ctx, line } = traceHarness();
+    const before = line()!.history;
+    sectionPointerDown(ctx, pointer(1, "touch", 0, 40, 70, 0));
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 60, 70, 10));
+    sectionPointerCancel(ctx, pointer(1, "touch", 0, 60, 70, 20));
+    expect(ctx.trace).toBeNull();
+    expect(line()!.history).toBe(before);
+  });
+
+  it("(e) undo, redo and back to the computed line (which can itself be undone)", () => {
+    const { ctx, line } = traceHarness();
+    dragMouse(ctx, 0, [[40, 70], [60, 70]]);
+    const edited = line()!.history.present;
+    dragMouse(ctx, 0, [[10, 90], [20, 90]]);
+    const edited2 = line()!.history.present;
+    expect(line()!.history.past).toHaveLength(2);
+
+    undoSectionLine(ctx);
+    expect(line()!.history.present).toBe(edited);
+    expect(canRedo(line()!.history)).toBe(true);
+    redoSectionLine(ctx);
+    expect(line()!.history.present).toBe(edited2);
+
+    resetSectionLineToComputed(ctx);
+    expect(line()!.history.present).toBe(LINE);
+    expect(canUndo(line()!.history)).toBe(true);
+    undoSectionLine(ctx);
+    expect(line()!.history.present).toBe(edited2);
+
+    // Nothing to redo any more after a new edit; undo past the start does nothing.
+    undoSectionLine(ctx);
+    undoSectionLine(ctx);
+    undoSectionLine(ctx);
+    expect(line()!.history.present).toBe(LINE);
+    const start = line()!.history;
+    undoSectionLine(ctx);
+    expect(line()!.history).toBe(start);
+  });
+
+  it("(e) back to the computed line does nothing when the line is not edited", () => {
+    const { ctx, line } = traceHarness();
+    const before = line()!.history;
+    resetSectionLineToComputed(ctx);
+    expect(line()!.history).toBe(before);
+  });
+
+  it("(f) without a line, tracing and the buttons do nothing", () => {
+    const { ctx, line } = traceHarness(false);
+    dragMouse(ctx, 0, [[40, 70], [60, 70]]);
+    expect(ctx.trace).toBeNull();
+    undoSectionLine(ctx);
+    redoSectionLine(ctx);
+    resetSectionLineToComputed(ctx);
+    expect(line()).toBeUndefined();
+    // With no panel open at all too.
+    const closed = traceHarness();
+    closed.ctx.openLayerId = null;
+    const before = closed.line()!.history;
+    dragMouse(closed.ctx, 0, [[40, 70], [60, 70]]);
+    undoSectionLine(closed.ctx);
+    expect(closed.line()!.history).toBe(before);
   });
 });

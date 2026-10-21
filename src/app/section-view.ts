@@ -16,15 +16,31 @@ import {
 } from "../datasource/section-profile";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { findLayer, type LayersState } from "../state/layers";
-import { groundLevelAt, groundLineToProfile, SLOPE_HALF_WINDOW_M, type GroundLevelReading } from "./section-3d";
+import type { SectionGroundLine } from "../datasource/section-line";
 import {
+  groundLevelAt,
+  groundLineToProfile,
+  profileToGroundLine,
+  SLOPE_HALF_WINDOW_M,
+  type GroundLevelReading,
+} from "./section-3d";
+import {
+  canRedo,
+  canUndo,
   classifyOneFinger,
   classifyRightPress,
+  DRAG_THRESHOLD_PX,
   fitView,
   panBy,
+  pushEdit,
+  redo,
+  replaceRange,
   screenToSection,
   twoFingerStep,
+  undo,
   zoomAt,
+  type History,
+  type ProfilePoint,
   type ScreenPoint,
   type SectionView,
   type Size,
@@ -47,6 +63,8 @@ export interface SectionViewState {
   cursorS: number | null;
   /** The GL and slope read by the last right click / long press (G2-6), or null. Shown in the panel and in 3D. */
   groundLevel: GroundLevelReading | null;
+  /** G2-5: the path being traced right now (the preview line), or null when nothing is being traced. */
+  trace: ProfilePoint[] | null;
 }
 
 /** One pointer (a mouse button press or a finger) that is down. */
@@ -70,10 +88,12 @@ export interface SectionGesture {
   pointers: Map<number, TrackedPointer>;
   /** Two fingers have been down since the last time no finger was: lifting one is not a tap or a long press. */
   multiTouch: boolean;
+  /** G2-5: the trace in progress (which pointer draws it, and the `(s, z)` points so far), or null. */
+  trace: { pointerId: number; points: ProfilePoint[] } | null;
 }
 
 export function newSectionGesture(): SectionGesture {
-  return { pointers: new Map(), multiTouch: false };
+  return { pointers: new Map(), multiTouch: false, trace: null };
 }
 
 export interface SectionViewContext extends SectionViewState {
@@ -87,6 +107,9 @@ export interface SectionViewContext extends SectionViewState {
   setPanelSize: (size: Size) => void;
   setCursorS: (s: number | null) => void;
   setGroundLevel: (reading: GroundLevelReading | null) => void;
+  setTrace: (points: ProfilePoint[] | null) => void;
+  /** G2-5: store a new edit history for the section line of a layer (the layers state lives in React). */
+  setSectionLineHistory: (layerId: string, history: History<SectionGroundLine>) => void;
   /** Counts opens/closes: a read that finishes after a newer open or a close is dropped. */
   token: { generation: number };
   gesture: SectionGesture;
@@ -136,6 +159,8 @@ export function closeSectionPanel(ctx: SectionViewContext): void {
   ctx.token.generation += 1; // drop a read that is still running
   ctx.gesture.pointers.clear();
   ctx.gesture.multiTouch = false;
+  ctx.gesture.trace = null;
+  ctx.setTrace(null);
   ctx.setOpenLayerId(null);
   ctx.setCursorS(null);
   ctx.setGroundLevel(null);
@@ -192,6 +217,7 @@ export interface SectionPointer {
   timeMs: number;
 }
 
+const LEFT_BUTTON = 0;
 const RIGHT_BUTTON = 2;
 
 export function sectionPointerDown(ctx: SectionViewContext, p: SectionPointer): void {
@@ -208,7 +234,11 @@ export function sectionPointerDown(ctx: SectionViewContext, p: SectionPointer): 
     anchorX: p.x,
     anchorY: p.y,
   });
-  if (touchPointers(gesture).length >= 2) gesture.multiTouch = true;
+  if (touchPointers(gesture).length >= 2) {
+    gesture.multiTouch = true;
+    // A second finger means zoom / pan: the trace of the first finger is thrown away (G2-5).
+    discardTrace(ctx);
+  }
 }
 
 export function sectionPointerMove(ctx: SectionViewContext, p: SectionPointer): void {
@@ -222,7 +252,14 @@ export function sectionPointerMove(ctx: SectionViewContext, p: SectionPointer): 
   tracked.movedPx = Math.max(tracked.movedPx, Math.hypot(p.x - tracked.startX, p.y - tracked.startY));
 
   if (tracked.type === "touch") {
-    // Two fingers: pinch (zoom about the midpoint) and drag (pan), together. One finger does nothing yet (G2-5, G2-6).
+    // One finger that moved: trace the line (G2-5), unless a second finger has been down in this gesture.
+    if (touches.length === 1 && !ctx.gesture.multiTouch) {
+      if (classifyOneFinger({ durationMs: p.timeMs - tracked.startTimeMs, movedPx: tracked.movedPx }) === "trace") {
+        extendTrace(ctx, p.pointerId, tracked);
+      }
+      return;
+    }
+    // Two fingers: pinch (zoom about the midpoint) and drag (pan), together.
     if (touches.length !== 2) return;
     const step = twoFingerStep([before[0], before[1]], [
       { x: touches[0].x, y: touches[0].y },
@@ -233,7 +270,12 @@ export function sectionPointerMove(ctx: SectionViewContext, p: SectionPointer): 
     return;
   }
 
-  // Mouse: the right button pans once it is a drag or a long press; the left button is the line editing of G2-5.
+  // Mouse: the left button traces the line (G2-5) once it has moved beyond the drag threshold.
+  if (tracked.button === LEFT_BUTTON) {
+    if (tracked.movedPx > DRAG_THRESHOLD_PX) extendTrace(ctx, p.pointerId, tracked);
+    return;
+  }
+  // The right button pans once it is a drag or a long press.
   if (tracked.button !== RIGHT_BUTTON) return;
   const kind = classifyRightPress({ durationMs: p.timeMs - tracked.startTimeMs, movedPx: tracked.movedPx });
   if (kind !== "pan") return;
@@ -247,6 +289,11 @@ export function sectionPointerUp(ctx: SectionViewContext, p: SectionPointer): vo
   const tracked = ctx.gesture.pointers.get(p.pointerId);
   if (!tracked) return;
   ctx.gesture.pointers.delete(p.pointerId);
+  // Finish a trace this pointer was drawing (a touch trace only if no second finger came in meanwhile).
+  if (ctx.gesture.trace?.pointerId === p.pointerId) {
+    if (tracked.type !== "touch" || !ctx.gesture.multiTouch) commitTrace(ctx);
+    else discardTrace(ctx);
+  }
   const press = { durationMs: p.timeMs - tracked.startTimeMs, movedPx: tracked.movedPx };
   if (tracked.type === "touch") {
     // A long press of one finger that did not move shows the ground level (G2-6). Not after a two-finger gesture.
@@ -262,7 +309,75 @@ export function sectionPointerUp(ctx: SectionViewContext, p: SectionPointer): vo
 /** The pointer was taken away (the system cancelled it): forget it without a click. */
 export function sectionPointerCancel(ctx: SectionViewContext, p: SectionPointer): void {
   ctx.gesture.pointers.delete(p.pointerId);
+  if (ctx.gesture.trace?.pointerId === p.pointerId) discardTrace(ctx);
   if (ctx.gesture.pointers.size === 0) ctx.gesture.multiTouch = false;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tracing the section line (G2-5), and its buttons
+// ---------------------------------------------------------------------------------------------
+
+/** The section line of the open layer with its history, or null when no panel is open or the layer has no line. */
+function openLineState(ctx: SectionViewContext) {
+  if (ctx.openLayerId === null) return null;
+  const layer = findLayer(ctx.getLayersState().layers, ctx.openLayerId);
+  const line = layer?.section?.line;
+  if (!layer || !line) return null;
+  return { layerId: layer.id, line };
+}
+
+/** Add the pointer's position to the trace (starting it with the press position), and show the preview. */
+function extendTrace(ctx: SectionViewContext, pointerId: number, tracked: TrackedPointer): void {
+  const gesture = ctx.gesture;
+  if (gesture.trace && gesture.trace.pointerId !== pointerId) return; // another pointer is tracing
+  if (!gesture.trace) {
+    if (!openLineState(ctx)) return; // no line (still computing, or failed): nothing to edit
+    const view = effectiveSectionView(ctx);
+    gesture.trace = { pointerId, points: [screenToSection(view, tracked.startX, tracked.startY)] };
+  }
+  gesture.trace.points.push(screenToSection(effectiveSectionView(ctx), tracked.x, tracked.y));
+  ctx.setTrace([...gesture.trace.points]);
+}
+
+/** Throw the trace in progress away (a second finger came, or the pointer was cancelled). */
+function discardTrace(ctx: SectionViewContext): void {
+  if (!ctx.gesture.trace) return;
+  ctx.gesture.trace = null;
+  ctx.setTrace(null);
+}
+
+/** The pointer was lifted: replace the covered part of the line with the trace and put the result in the history. */
+function commitTrace(ctx: SectionViewContext): void {
+  const trace = ctx.gesture.trace;
+  ctx.gesture.trace = null;
+  ctx.setTrace(null);
+  const found = openLineState(ctx);
+  if (!trace || !found) return;
+  const present = found.line.history.present;
+  const replaced = replaceRange(groundLineToProfile(present.points), trace.points);
+  const next = profileToGroundLine(replaced, present);
+  ctx.setSectionLineHistory(found.layerId, pushEdit(found.line.history, next));
+}
+
+/** "Undo" button: back one edit. Does nothing without a line or without an edit to undo. */
+export function undoSectionLine(ctx: SectionViewContext): void {
+  const found = openLineState(ctx);
+  if (!found || !canUndo(found.line.history)) return;
+  ctx.setSectionLineHistory(found.layerId, undo(found.line.history));
+}
+
+/** "Redo" button: forward one edit. */
+export function redoSectionLine(ctx: SectionViewContext): void {
+  const found = openLineState(ctx);
+  if (!found || !canRedo(found.line.history)) return;
+  ctx.setSectionLineHistory(found.layerId, redo(found.line.history));
+}
+
+/** "Back to the computed line" button: the original line becomes the present, as an edit (so it can be undone). */
+export function resetSectionLineToComputed(ctx: SectionViewContext): void {
+  const found = openLineState(ctx);
+  if (!found || found.line.history.present === found.line.original) return;
+  ctx.setSectionLineHistory(found.layerId, pushEdit(found.line.history, found.line.original));
 }
 
 function touchPointers(gesture: SectionGesture): TrackedPointer[] {
@@ -286,7 +401,7 @@ function setCursorFromScreen(ctx: SectionViewContext, x: number): void {
 function openGroundLine(ctx: SectionViewContext) {
   if (ctx.openLayerId === null) return null;
   const layer = findLayer(ctx.getLayersState().layers, ctx.openLayerId);
-  const pairs = layer?.section?.line?.current.points;
+  const pairs = layer?.section?.line?.history.present.points;
   if (!layer || !pairs) return null;
   return { line: groundLineToProfile(pairs), crs: layer.info.crs };
 }
