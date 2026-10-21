@@ -499,6 +499,77 @@ export class WasmPointFileConverter {
 }
 if (Symbol.dispose) WasmPointFileConverter.prototype[Symbol.dispose] = WasmPointFileConverter.prototype.free;
 
+/**
+ * The upper levels of a COPC, kept while the Rasterize window is open.
+ */
+export class WasmRasterPreview {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmRasterPreviewFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmrasterpreview_free(ptr, 0);
+    }
+    /**
+     * Reads up to `batch_size` points. `done` is true once the store is ready.
+     * @param {number} batch_size
+     * @returns {any}
+     */
+    feed(batch_size) {
+        const ret = wasm.wasmrasterpreview_feed(this.__wbg_ptr, batch_size);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * `{ heldPoints, depth, truncated }`. Call after `feed` reported `done`.
+     * @returns {any}
+     */
+    info() {
+        const ret = wasm.wasmrasterpreview_info(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * `file` is the source COPC. Nothing is read until `feed`.
+     * @param {File} file
+     */
+    constructor(file) {
+        const ret = wasm.wasmrasterpreview_new(file);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmRasterPreviewFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Draws the preview for `options` (a `PreviewOptions` JSON) from the held points.
+     * The bytes are `PreviewImage::to_bytes` (layout in `pcv_core::raster::preview`).
+     * @param {any} options
+     * @returns {Uint8Array}
+     */
+    render(options) {
+        const ret = wasm.wasmrasterpreview_render(this.__wbg_ptr, options);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+}
+if (Symbol.dispose) WasmRasterPreview.prototype[Symbol.dispose] = WasmRasterPreview.prototype.free;
+
+/**
+ * The export: every point into the grid, then the GeoTIFF bytes.
+ */
 export class WasmRasterizer {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -511,8 +582,7 @@ export class WasmRasterizer {
         wasm.__wbg_wasmrasterizer_free(ptr, 0);
     }
     /**
-     * Does up to `batch_size` units of work: points read into the grid, or cells written
-     * to the spill. Go to `geotiff` / `finish` when `done`.
+     * Reads up to `batch_size` points into the grid. Go to `geotiff` when `done`.
      * @param {number} batch_size
      * @returns {any}
      */
@@ -524,19 +594,7 @@ export class WasmRasterizer {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * Builds the octree and writes the display COPC on OPFS.
-     * @returns {any}
-     */
-    finish() {
-        const ptr = this.__destroy_into_raw();
-        const ret = wasm.wasmrasterizer_finish(ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * The GeoTIFF bytes. Call after `feed` reported `done` and before `finish`.
+     * The GeoTIFF bytes. Call after `feed` reported `done`.
      * @returns {Uint8Array}
      */
     geotiff() {
@@ -549,19 +607,24 @@ export class WasmRasterizer {
         return v1;
     }
     /**
+     * `{ width, height, warnings }`.
+     * @returns {any}
+     */
+    info() {
+        const ret = wasm.wasmrasterizer_info(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * `file` is the source COPC; `options` is the `RasterOptions` JSON (`src/datasource/tools.ts`).
      * Fails before reading any point when the grid is over `MAX_CELLS_WEB`.
      * @param {File} file
      * @param {any} options
-     * @param {Array<any>} scratch_handles
-     * @param {FileSystemSyncAccessHandle} output_handle
-     * @param {string} output_name
-     * @param {number} max_points_per_node
      */
-    constructor(file, options, scratch_handles, output_handle, output_name, max_points_per_node) {
-        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.wasmrasterizer_new(file, options, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
+    constructor(file, options) {
+        const ret = wasm.wasmrasterizer_new(file, options);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1085,6 +1148,9 @@ const WasmExtractorFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmPointFileConverterFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmpointfileconverter_free(ptr, 1));
+const WasmRasterPreviewFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmrasterpreview_free(ptr, 1));
 const WasmRasterizerFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmrasterizer_free(ptr, 1));

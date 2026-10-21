@@ -241,27 +241,54 @@ export class WasmPointFileConverter {
     totalPoints(): number;
 }
 
+/**
+ * The upper levels of a COPC, kept while the Rasterize window is open.
+ */
+export class WasmRasterPreview {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Reads up to `batch_size` points. `done` is true once the store is ready.
+     */
+    feed(batch_size: number): any;
+    /**
+     * `{ heldPoints, depth, truncated }`. Call after `feed` reported `done`.
+     */
+    info(): any;
+    /**
+     * `file` is the source COPC. Nothing is read until `feed`.
+     */
+    constructor(file: File);
+    /**
+     * Draws the preview for `options` (a `PreviewOptions` JSON) from the held points.
+     * The bytes are `PreviewImage::to_bytes` (layout in `pcv_core::raster::preview`).
+     */
+    render(options: any): Uint8Array;
+}
+
+/**
+ * The export: every point into the grid, then the GeoTIFF bytes.
+ */
 export class WasmRasterizer {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Does up to `batch_size` units of work: points read into the grid, or cells written
-     * to the spill. Go to `geotiff` / `finish` when `done`.
+     * Reads up to `batch_size` points into the grid. Go to `geotiff` when `done`.
      */
     feed(batch_size: number): any;
     /**
-     * Builds the octree and writes the display COPC on OPFS.
-     */
-    finish(): any;
-    /**
-     * The GeoTIFF bytes. Call after `feed` reported `done` and before `finish`.
+     * The GeoTIFF bytes. Call after `feed` reported `done`.
      */
     geotiff(): Uint8Array;
+    /**
+     * `{ width, height, warnings }`.
+     */
+    info(): any;
     /**
      * `file` is the source COPC; `options` is the `RasterOptions` JSON (`src/datasource/tools.ts`).
      * Fails before reading any point when the grid is over `MAX_CELLS_WEB`.
      */
-    constructor(file: File, options: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+    constructor(file: File, options: any);
 }
 
 export class WasmSectionLine {
@@ -341,6 +368,7 @@ export interface InitOutput {
     readonly __wbg_wasmextractor_free: (a: number, b: number) => void;
     readonly __wbg_wasmpointfileconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmrasterizer_free: (a: number, b: number) => void;
+    readonly __wbg_wasmrasterpreview_free: (a: number, b: number) => void;
     readonly __wbg_wasmsectionline_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
     readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
@@ -372,9 +400,13 @@ export interface InitOutput {
     readonly wasmpointfileconverter_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly wasmpointfileconverter_totalPoints: (a: number) => number;
     readonly wasmrasterizer_feed: (a: number, b: number) => [number, number, number];
-    readonly wasmrasterizer_finish: (a: number) => [number, number, number];
     readonly wasmrasterizer_geotiff: (a: number) => [number, number, number, number];
-    readonly wasmrasterizer_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmrasterizer_info: (a: number) => [number, number, number];
+    readonly wasmrasterizer_new: (a: any, b: any) => [number, number, number];
+    readonly wasmrasterpreview_feed: (a: number, b: number) => [number, number, number];
+    readonly wasmrasterpreview_info: (a: number) => [number, number, number];
+    readonly wasmrasterpreview_new: (a: any) => [number, number, number];
+    readonly wasmrasterpreview_render: (a: number, b: any) => [number, number, number, number];
     readonly wasmsectionline_advance: (a: number, b: number) => [number, number, number];
     readonly wasmsectionline_finish: (a: number) => [number, number, number, number];
     readonly wasmsectionline_isDone: (a: number) => number;
