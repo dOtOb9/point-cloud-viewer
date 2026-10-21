@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { changeRasterSettings, closeRasterWindow, exportRaster, fileCellSizeOf } from "../../app/raster-window";
 import type { RasterPreviewImage, RasterValueKind, TiffKind } from "../../datasource/raster";
 import { ELEVATION_INTENSITY_RAMP } from "../../renderer/colormap";
@@ -24,8 +24,16 @@ const VALUE_BUTTONS: { value: RasterValueKind; label: string }[] = [
   { value: "intensityMean", label: "強度" },
 ];
 
-/** The tallest the preview picture may be, so a tall layer does not push the legend out of the window. */
-const PREVIEW_MAX_HEIGHT = "55vh";
+// Sizes of the preview column (wide screens). The dialog is as wide as its content, so the column's width is
+// decided here: the picture is as tall as the dialog body allows, and the column is that tall x the aspect ratio,
+// but never wider than the room next to the settings.
+/** Dialog panel max height (`max-h-[85vh]` in Dialog.tsx) minus what is not the picture: title, footer, body padding,
+ *  intro line, legend and a note of about 4 lines. Measured at 1400 x 900 (about 300 px) plus some room. */
+const PREVIEW_CHROME_PX = 320;
+/** Widest the column may be: `max-w-5xl` (1024) minus the panel padding (32), the settings column (288) and the gap (16). */
+const PREVIEW_MAX_WIDTH_PX = 688;
+/** Never smaller than this, so a very short window scrolls instead of showing a thumbnail. */
+const PREVIEW_MIN_HEIGHT_PX = 160;
 
 const CHECKERBOARD =
   "repeating-conic-gradient(#8884 0% 25%, transparent 0% 50%) 50% / 16px 16px";
@@ -131,12 +139,12 @@ export function RasterWindow({ viewer, holder }: { viewer: CopcViewerState; hold
   );
 
   return (
-    <Dialog open={state.open} title="ラスタ化" onClose={() => void closeRasterWindow(context)} footer={footer} widthClass="max-w-5xl">
+    <Dialog open={state.open} title="ラスタ化" onClose={() => void closeRasterWindow(context)} footer={footer} widthClass="max-w-5xl" fitContent>
       <p className="text-xs opacity-70">
         対象のレイヤー: <span className="font-semibold">{layer?.name ?? "（なし）"}</span>
         。セルごとの値を画像（GeoTIFF）にします。元のレイヤーは変わりません。
       </p>
-      <div className="flex flex-col gap-4 md:flex-row">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start">
         <div className="flex w-full shrink-0 flex-col gap-3 md:w-72">
           <ToggleRow
             title="セルの値"
@@ -203,12 +211,15 @@ export function RasterWindow({ viewer, holder }: { viewer: CopcViewerState; hold
             </p>
           )}
           {image && (
-            // One column as wide as the picture: the whole preview area, but the picture is never taller than
-            // PREVIEW_MAX_HEIGHT (max width = that height x the aspect ratio). Picture, legend and note share
-            // this width and the column is centred.
+            // One column as wide as the picture; picture, legend and note share its width. On a narrow screen
+            // (stacked layout) it is the full width; from `md` up its width is `--preview-width`.
             <div
-              className="mx-auto flex w-full flex-col gap-2"
-              style={{ maxWidth: `calc(${PREVIEW_MAX_HEIGHT} * ${image.width / image.height})` }}
+              className="flex w-full flex-col gap-2 md:w-[var(--preview-width)]"
+              style={
+                {
+                  "--preview-width": `min(${PREVIEW_MAX_WIDTH_PX}px, calc(max(85vh - ${PREVIEW_CHROME_PX}px, ${PREVIEW_MIN_HEIGHT_PX}px) * ${image.width / image.height}))`,
+                } as CSSProperties
+              }
               data-testid="raster-preview-column"
             >
               <PreviewCanvas image={image} />

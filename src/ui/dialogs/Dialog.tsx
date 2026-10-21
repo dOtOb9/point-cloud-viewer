@@ -12,6 +12,8 @@ interface Props {
   footer?: ReactNode;
   /** パネルの最大幅のTailwindクラス。既定は`max-w-lg`(設定画面は広めに指定する)。 */
   widthClass?: string;
+  /** true: from `md` up the panel is as wide as its content (up to `widthClass`) instead of filling it. */
+  fitContent?: boolean;
   /** "top"は他のダイアログ(設定など)より前面に出す(エラー用)。 */
   layer?: "normal" | "top";
   /** "error"はタイトルバーを警告色にする(エラー用)。 */
@@ -53,7 +55,7 @@ const FOCUSABLE =
  *   暗幕の要素は残るので、外側クリックで閉じる動きとEscは変わらない(開いている間、点群への操作は暗幕が受け止める)。
  * - **狭幅(<768px):** 外枠の余白を小さくして、ほぼ全幅の中央ダイアログにする。
  */
-export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", layer = "normal", tone = "normal", accent = "primary" }: Props) {
+export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", fitContent = false, layer = "normal", tone = "normal", accent = "primary" }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   // 暗幕クリックで閉じる判定用: mousedownが暗幕自身の上で始まったか(refなので再描画しない)。
@@ -141,7 +143,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className={`flex max-h-[85vh] w-full ${widthClass} flex-col overflow-hidden rounded-2xl ${glassSurfaceClass(blurEnabled)} border-t-[3px] ${ACCENT_BORDER[accent]} shadow-2xl outline-none`}
+        className={`flex max-h-[85vh] w-full ${fitContent ? "md:w-fit" : ""} ${widthClass} flex-col overflow-hidden rounded-2xl ${glassSurfaceClass(blurEnabled)} border-t-[3px] ${ACCENT_BORDER[accent]} shadow-2xl outline-none`}
       >
         <div className={`px-4 py-3 text-center ${headerTone}`}>
           <h2 id={titleId} className="text-base font-semibold">
