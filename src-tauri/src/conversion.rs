@@ -1257,6 +1257,119 @@ pub async fn compute_section_line(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+// --- G3: thinning and outlier filters ---
+
+/// The source file's name without `.laz` / `.copc`, for the output file name.
+fn tool_stem(path: &str, fallback: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| {
+            n.trim_end_matches(".laz")
+                .trim_end_matches(".copc")
+                .to_string()
+        })
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Turns a thinning / filtering error into the text shown on screen.
+fn thin_filter_error_text(e: pcv_convert::thin_filter::ThinFilterError) -> String {
+    if e.is_cancelled() {
+        "キャンセルされた".to_string()
+    } else {
+        e.to_string()
+    }
+}
+
+/// Thins `path` (an open COPC) into a new COPC (grid or voxel). `request` lengths are in the file's unit.
+/// With zero points left it returns the text of `ThinFilterError::EmptyResult` and writes no file.
+#[tauri::command]
+pub async fn thin_copc(
+    app: AppHandle,
+    path: String,
+    request: pcv_core::thin_filter_job::ThinRequest,
+    temp_dir: Option<String>,
+    state: State<'_, ConversionState>,
+) -> Result<ToolOutput, String> {
+    if FilePath::from_str(&path).is_ok_and(|p| matches!(p, FilePath::Url(_))) {
+        return Err("この環境(content:// URI)では未対応です".to_string());
+    }
+    let stem = tool_stem(&path, "thin");
+    let output = tool_output_path(&app, temp_dir.as_deref(), &format!("{stem}-thin"))?;
+    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
+    redirect_os_temp_dir(&spill_dir);
+    let on_progress = tool_progress(&app);
+    run_tool(&state, move |cancel| {
+        let mut timings = ConversionStageTimings::default();
+        let summary = pcv_convert::thin_filter::thin_path(
+            Path::new(&path),
+            &request.settings(),
+            &pcv_convert::thin_filter::TilingParams::default(),
+            &output,
+            &spill_dir,
+            &CopcWriterParams::default(),
+            &cancel,
+            on_progress,
+            &mut timings,
+        )
+        .map_err(thin_filter_error_text)?;
+        Ok(ToolOutput {
+            output_path: output.to_string_lossy().into_owned(),
+            point_count: summary.kept_points,
+            warnings: Vec::new(),
+        })
+    })
+    .await
+}
+
+/// Removes outliers (ROR or SOR) from `path` (an open COPC) into a new COPC. SOR reads the file twice;
+/// the progress covers both passes as one. Same errors as `thin_copc`.
+#[tauri::command]
+pub async fn filter_copc(
+    app: AppHandle,
+    path: String,
+    request: pcv_core::thin_filter_job::FilterRequest,
+    temp_dir: Option<String>,
+    state: State<'_, ConversionState>,
+) -> Result<ToolOutput, String> {
+    use pcv_convert::thin_filter::OutlierFilter;
+    use pcv_core::thin_filter_job::JobMode;
+    if FilePath::from_str(&path).is_ok_and(|p| matches!(p, FilePath::Url(_))) {
+        return Err("この環境(content:// URI)では未対応です".to_string());
+    }
+    let filter = match JobMode::from(request) {
+        JobMode::Ror(s) => OutlierFilter::Ror(s),
+        JobMode::Sor(s) => OutlierFilter::Sor(s),
+        JobMode::Thin(_) => return Err("フィルタの指定が正しくありません".to_string()),
+    };
+    let stem = tool_stem(&path, "filter");
+    let output = tool_output_path(&app, temp_dir.as_deref(), &format!("{stem}-filter"))?;
+    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
+    redirect_os_temp_dir(&spill_dir);
+    let on_progress = tool_progress(&app);
+    run_tool(&state, move |cancel| {
+        let mut timings = ConversionStageTimings::default();
+        let summary = pcv_convert::thin_filter::filter_path(
+            Path::new(&path),
+            &filter,
+            &pcv_convert::thin_filter::TilingParams::default(),
+            &output,
+            &spill_dir,
+            &CopcWriterParams::default(),
+            &cancel,
+            on_progress,
+            &mut timings,
+        )
+        .map_err(thin_filter_error_text)?;
+        Ok(ToolOutput {
+            output_path: output.to_string_lossy().into_owned(),
+            point_count: summary.kept_points,
+            warnings: Vec::new(),
+        })
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

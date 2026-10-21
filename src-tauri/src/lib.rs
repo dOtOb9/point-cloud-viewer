@@ -316,7 +316,10 @@ pub fn run() {
             // --- G2: cross-section view ---
             copc_state::read_section_profile,
             // --- G2: section line ---
-            conversion::compute_section_line
+            conversion::compute_section_line,
+            // --- G3: thinning and outlier filters ---
+            conversion::thin_copc,
+            conversion::filter_copc
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
