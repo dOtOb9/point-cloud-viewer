@@ -8,6 +8,8 @@ import {
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
+  buildFilterStartRequest,
+  buildThinStartRequest,
   buildRasterPreviewCloseRequest,
   buildRasterPreviewOpenRequest,
   buildRasterPreviewRenderRequest,
@@ -182,6 +184,26 @@ describe("点群ツールのリクエスト(L2-C)", () => {
       file,
       filter,
       label: "抽出: a",
+    });
+  });
+
+  it("thinStart / filterStartに指定とラベルを載せる (G3)", () => {
+    const file = new File([new Uint8Array([1])], "a.copc.laz");
+    const thin = { kind: "grid", size: 1, keep: "lowest" } as const;
+    expect(buildThinStartRequest(6, file, thin, "間引き: a")).toEqual({
+      type: "thinStart",
+      id: 6,
+      file,
+      request: thin,
+      label: "間引き: a",
+    });
+    const filter = { kind: "sor", k: 8, nSigma: 2, searchRadius: 5 } as const;
+    expect(buildFilterStartRequest(7, file, filter, "フィルタ: a")).toEqual({
+      type: "filterStart",
+      id: 7,
+      file,
+      request: filter,
+      label: "フィルタ: a",
     });
   });
 

@@ -40,6 +40,8 @@ import {
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
+  buildFilterStartRequest,
+  buildThinStartRequest,
   buildRasterPreviewCloseRequest,
   buildRasterPreviewOpenRequest,
   buildRasterPreviewRenderRequest,
@@ -60,6 +62,7 @@ import {
 } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
 import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
+import type { FilterRequest, ThinRequest } from "./thin-filter";
 import {
   decodePreviewImage,
   type RasterExportRequest,
@@ -612,6 +615,37 @@ export class WebSource implements DataSource {
       options,
     );
   }
+
+  // --- G3: thinning and outlier filters ---
+
+  /**
+   * Thins an open COPC (`path` = the key passed to `open()`) into a new COPC on OPFS. `request` lengths are in the
+   * file's unit. Zero kept points throws ("残る点がありません"). Cancel with `cancelConversion()`.
+   */
+  async thinCopc(path: string, request: ThinRequest, options?: ToolOptions): Promise<ToolResult> {
+    const file = await this.checkedToolInput(path);
+    const id = this.nextRequestId++;
+    return await this.runTool(id, buildThinStartRequest(id, file, request, `間引き: ${file.name}`), options);
+  }
+
+  /** Removes outliers (ROR or SOR) from an open COPC into a new COPC on OPFS. SOR reads the file twice. Same errors as `thinCopc`. */
+  async filterCopc(path: string, request: FilterRequest, options?: ToolOptions): Promise<ToolResult> {
+    const file = await this.checkedToolInput(path);
+    const id = this.nextRequestId++;
+    return await this.runTool(id, buildFilterStartRequest(id, file, request, `フィルタ: ${file.name}`), options);
+  }
+
+  /** The input file of a thinning / filter run, after the OPFS and free-space checks (the output is at most as large as the source). */
+  private async checkedToolInput(path: string): Promise<File> {
+    const file = this.fileForToolInput(path);
+    if (!(await opfs.isOpfsAvailable())) {
+      throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
+    }
+    const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
+    if (insufficient) throw new Error("空き容量が足りないため、点群ツールを実行できません");
+    return file;
+  }
+  // ---
 
   // --- G1: rasterize ---
 

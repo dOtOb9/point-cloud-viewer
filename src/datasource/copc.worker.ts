@@ -38,6 +38,7 @@ import init, {
   WasmSectionLine,
   WasmCopcFile,
   WasmPointFileConverter,
+  WasmThinFilter, // G3
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { RasterPreviewInfo } from "./raster";
@@ -56,6 +57,8 @@ import { DEFAULT_MAX_POINTS_PER_NODE } from "./web-protocol";
 import type {
   ConvertMultiStartRequest,
   ExtractStartRequest,
+  FilterStartRequest, // G3
+  ThinStartRequest, // G3
   OpenSource,
   PointFileConvertStartRequest,
   PointFileFormat,
@@ -245,6 +248,13 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         return;
       case "extractStart":
         await handleExtractStart(request);
+        return;
+      // --- G3: thinning and outlier filters ---
+      case "thinStart":
+        await handleThinStart(request);
+        return;
+      case "filterStart":
+        await handleFilterStart(request);
         return;
       case "rasterPreviewOpen":
         await handleRasterPreviewOpen(request);
@@ -1216,9 +1226,139 @@ async function runExtract(
   }
 }
 
+// --- G3: thinning and outlier filters ---
+//
+// Same sequence as `runExtract` (lock -> scratch-file pool -> loop -> finish -> cleanup). The loop calls
+// `WasmThinFilter.advance()`, which handles ONE tile of the source, and yields to the event loop after each
+// call, so a cancel message is handled between tiles (no effect during finish). Progress is the core points
+// handled so far; for SOR it covers both passes. The result is `tool-done`, like extraction.
+
+async function handleThinStart(request: ThinStartRequest): Promise<void> {
+  const { id, file, label } = request;
+  await handleThinFilter(id, label, (scratchHandles, outputHandle, outputName) =>
+    WasmThinFilter.forThin(file, request.request, scratchHandles, outputHandle, outputName, DEFAULT_MAX_POINTS_PER_NODE),
+  );
+}
+
+async function handleFilterStart(request: FilterStartRequest): Promise<void> {
+  const { id, file, label } = request;
+  await handleThinFilter(id, label, (scratchHandles, outputHandle, outputName) =>
+    WasmThinFilter.forFilter(file, request.request, scratchHandles, outputHandle, outputName, DEFAULT_MAX_POINTS_PER_NODE),
+  );
+}
+
+async function handleThinFilter(
+  id: number,
+  label: string,
+  create: (
+    scratchHandles: FileSystemSyncAccessHandle[],
+    outputHandle: FileSystemSyncAccessHandle,
+    outputName: string,
+  ) => WasmThinFilter,
+): Promise<void> {
+  const outcome = await opfs.withConversionLock(navigator.locks, () => runThinFilter(id, label, create));
+  if (outcome.kind === "busy") {
+    scope.postMessage({
+      type: "tool-failed",
+      id,
+      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
+      cancelled: false,
+    });
+  }
+}
+
+async function runThinFilter(
+  id: number,
+  label: string,
+  create: (
+    scratchHandles: FileSystemSyncAccessHandle[],
+    outputHandle: FileSystemSyncAccessHandle,
+    outputName: string,
+  ) => WasmThinFilter,
+): Promise<void> {
+  activeConvertId = id;
+  convertCancelRequested = false;
+
+  const outputName = opfs.toolOutputName();
+  let scratchDirName: string | null = null;
+  let scratchHandles: FileSystemSyncAccessHandle[] = [];
+  let outputHandle: FileSystemSyncAccessHandle | null = null;
+  let job: WasmThinFilter | null = null;
+  let succeeded = false;
+  const cancelled = () =>
+    scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
+
+  try {
+    try {
+      await opfs.cleanupStaleScratchDirs();
+    } catch {
+      // Carry on even if cleanup fails (same as conversion).
+    }
+    const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
+    scratchDirName = pool.dirName;
+    scratchHandles = pool.handles;
+    outputHandle = await opfs.createOutputHandle(outputName);
+
+    job = create(scratchHandles, outputHandle, outputName);
+
+    for (;;) {
+      if (convertCancelRequested) {
+        cancelled();
+        return;
+      }
+      const step = job.advance() as { points_read: number; total_points: number; points_kept: number; done: boolean };
+      scope.postMessage({ type: "tool-progress", id, pointsRead: step.points_read, totalPoints: step.total_points });
+      if (step.done) break;
+      await yieldToEventLoop();
+    }
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+
+    // `finish()` consumes the Rust-side object when called (same as runExtract).
+    let finishResult: FinishResultDto;
+    try {
+      finishResult = job.finish() as FinishResultDto;
+    } finally {
+      job = null;
+    }
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+
+    await opfs.writeToolOutputMeta(outputName, label);
+    succeeded = true;
+    scope.postMessage({
+      type: "tool-done",
+      id,
+      outputName,
+      pointCount: finishResult.point_count,
+      warnings: finishResult.warnings ?? [],
+    });
+  } catch (err) {
+    scope.postMessage({
+      type: "tool-failed",
+      id,
+      message: describeConversionFailure(err),
+      cancelled: false,
+    });
+  } finally {
+    job?.free();
+    opfs.closeHandles(scratchHandles);
+    if (outputHandle) opfs.closeHandles([outputHandle]);
+    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
+    if (!succeeded) {
+      await opfs.removeOutputFile(outputName);
+    }
+    if (activeConvertId === id) activeConvertId = null;
+  }
+}
+
 // --- G1: rasterize ---
 //
-// Preview: `WasmRasterPreview` keeps the thinned points of the open Rasterize window (bounded in Rust), keyed by the
+// Preview:`WasmRasterPreview` keeps the thinned points of the open Rasterize window (bounded in Rust), keyed by the
 // request id of `rasterPreviewOpen`. Render and close use that id. Errors go out through the generic "error" reply.
 // Export: `WasmRasterizer` reads every point in batches (so the cancel message gets through between batches), then the
 // GeoTIFF bytes are transferred in `raster-done`. Nothing is written to OPFS: the raster is not a layer.

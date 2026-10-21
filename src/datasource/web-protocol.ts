@@ -11,6 +11,7 @@
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
 import type { ExtractFilter } from "./tools";
+import type { FilterRequest, ThinRequest } from "./thin-filter";
 import type { RasterExportRequest, RasterPreviewInfo, RasterRequest } from "./raster";
 import type { SectionLineInput } from "./section-profile";
 import type { SectionLineRequest } from "./section-line";
@@ -150,6 +151,8 @@ export type WorkerRequest =
   | RasterPreviewRenderRequest
   | RasterPreviewCloseRequest
   | ExtractStartRequest
+  | ThinStartRequest
+  | FilterStartRequest
   | ToolMergeStartRequest
   | OpenRequest
   | ReadNodeRequest
@@ -389,6 +392,42 @@ export function buildExtractStartRequest(
 ): ExtractStartRequest {
   return { type: "extractStart", id, file, filter, label };
 }
+
+// --- G3: thinning and outlier filters ---
+// Progress, result and failure use the same `tool-*` responses as extraction.
+
+/** Thins the open COPC (`file`) into a new COPC (on OPFS). Lengths in `request` are in the file's unit. */
+export interface ThinStartRequest {
+  type: "thinStart";
+  id: number;
+  file: File;
+  request: ThinRequest;
+  /** Name shown in the usage breakdown (settings). */
+  label: string;
+}
+
+/** Removes outliers (ROR or SOR) from the open COPC (`file`) into a new COPC (on OPFS). */
+export interface FilterStartRequest {
+  type: "filterStart";
+  id: number;
+  file: File;
+  request: FilterRequest;
+  label: string;
+}
+
+export function buildThinStartRequest(id: number, file: File, request: ThinRequest, label: string): ThinStartRequest {
+  return { type: "thinStart", id, file, request, label };
+}
+
+export function buildFilterStartRequest(
+  id: number,
+  file: File,
+  request: FilterRequest,
+  label: string,
+): FilterStartRequest {
+  return { type: "filterStart", id, file, request, label };
+}
+// ---
 
 // --- G1: rasterize ---
 

@@ -28,6 +28,7 @@ import {
 } from "./conversion-dto";
 import { isTauriEnvironment } from "./environment";
 import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
+import type { FilterRequest, ThinRequest } from "./thin-filter";
 import {
   decodePreviewImage,
   type RasterExportRequest,
@@ -445,6 +446,28 @@ export async function extractToCopc(
     return toToolResult(dto);
   });
 }
+
+// --- G3: thinning and outlier filters ---
+
+/**
+ * Thins an open COPC (`path` = the path passed to `open()`) into a new COPC. `request` lengths are in the file's unit.
+ * Zero kept points throws ("残る点がありません"). Cancel with `cancelLasConversion()` (error text "キャンセルされた").
+ */
+export async function thinCopc(path: string, request: ThinRequest, options?: ToolOptions): Promise<ToolResult> {
+  return await withToolProgress(options, async () => {
+    const dto = await invoke<ToolResultDto>("thin_copc", { path, request, tempDir: options?.tempDir ?? null });
+    return toToolResult(dto);
+  });
+}
+
+/** Removes outliers (ROR or SOR) from an open COPC into a new COPC. SOR reads the file twice. Same errors as `thinCopc`. */
+export async function filterCopc(path: string, request: FilterRequest, options?: ToolOptions): Promise<ToolResult> {
+  return await withToolProgress(options, async () => {
+    const dto = await invoke<ToolResultDto>("filter_copc", { path, request, tempDir: options?.tempDir ?? null });
+    return toToolResult(dto);
+  });
+}
+// ---
 
 /**
  * Merges several open COPC files (paths passed to `open()`) into one COPC.
