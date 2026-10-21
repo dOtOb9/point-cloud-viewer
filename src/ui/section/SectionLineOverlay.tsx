@@ -94,7 +94,8 @@ export function SectionLineOverlay({
           <circle cx={gl.x} cy={gl.y} r={6} fill="#facc15" stroke="#000" strokeWidth={1.5} />
           <text
             x={gl.x + 10}
-            y={gl.y - 10}
+            // Two lines (GL, then slope, 15 px apart): the second line ends just above the marker.
+            y={gl.y - 10 - 15}
             fontSize={12}
             fontWeight={600}
             fill="#fff"
@@ -104,7 +105,10 @@ export function SectionLineOverlay({
             paintOrder="stroke"
             data-testid="section-line-gl-label"
           >
-            {label}
+            <tspan x={gl.x + 10}>{label[0]}</tspan>
+            <tspan x={gl.x + 10} dy={15}>
+              {label[1]}
+            </tspan>
           </text>
         </g>
       )}

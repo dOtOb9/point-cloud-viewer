@@ -170,6 +170,9 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
   );
 }
 
+/** Line height (px) of the two-line GL / slope label. */
+const LABEL_LINE_HEIGHT = 15;
+
 /** G2-6 / G2-8: the mouse cursor's `s` (a thin line and a dot on the ground line) and the GL / slope reading, as SVG over the canvas. */
 function SectionMarks({
   width,
@@ -186,13 +189,14 @@ function SectionMarks({
   line: ProfileLine;
   cursorS: number | null;
   reading: GroundLevelReading | null;
-  label: string | null;
+  label: [string, string] | null;
 }) {
   const cursorZ = cursorS === null ? null : interpolateZ(line, cursorS);
   const cursor = cursorS !== null && cursorZ !== null ? sectionToScreen(view, cursorS, cursorZ) : null;
   const gl = reading ? sectionToScreen(view, reading.s, reading.z) : null;
   // Keep the text inside the panel: right-align it when the marker is near the right edge.
   const alignEnd = gl !== null && gl.x > width - 230;
+  const labelX = gl === null ? 0 : alignEnd ? gl.x - 9 : gl.x + 9;
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" width={width} height={height}>
       {cursor && (
@@ -205,8 +209,9 @@ function SectionMarks({
         <g data-testid="section-gl-mark">
           <circle cx={gl.x} cy={gl.y} r={5} fill="#facc15" stroke="#000" strokeWidth={1.5} />
           <text
-            x={alignEnd ? gl.x - 9 : gl.x + 9}
-            y={Math.max(14, gl.y - 9)}
+            x={labelX}
+            // Two lines (GL, then slope): the second line ends just above the marker.
+            y={Math.max(14, gl.y - 9 - LABEL_LINE_HEIGHT)}
             textAnchor={alignEnd ? "end" : "start"}
             fontSize={12}
             fontWeight={600}
@@ -217,7 +222,10 @@ function SectionMarks({
             paintOrder="stroke"
             data-testid="section-gl-label"
           >
-            {label}
+            <tspan x={labelX}>{label[0]}</tspan>
+            <tspan x={labelX} dy={LABEL_LINE_HEIGHT}>
+              {label[1]}
+            </tspan>
           </text>
         </g>
       )}

@@ -96,9 +96,9 @@ export function groundLevelAt(
   return { s, z, slopeDegrees: (Math.atan(ratio) * 180) / Math.PI, slopePercent: ratio * 100 };
 }
 
-/** The text shown with the reading in both views: "GL 35.42 m / 傾斜 +12.3° (+21.9%)". */
-export function groundLevelLabel(reading: GroundLevelReading, units: LengthUnits): string {
+/** The text shown with the reading in both views, as two lines: ["GL 35.42 m", "傾斜 +12.3° (+21.9%)"]. */
+export function groundLevelLabel(reading: GroundLevelReading, units: LengthUnits): [string, string] {
   const gl = formatLength(reading.z, units.verticalToMeter, units.display);
   const sign = reading.slopeDegrees > 0 ? "+" : "";
-  return `GL ${gl} / 傾斜 ${sign}${reading.slopeDegrees.toFixed(1)}° (${sign}${reading.slopePercent.toFixed(1)}%)`;
+  return [`GL ${gl}`, `傾斜 ${sign}${reading.slopeDegrees.toFixed(1)}° (${sign}${reading.slopePercent.toFixed(1)}%)`];
 }

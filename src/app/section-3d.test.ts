@@ -94,9 +94,10 @@ describe("groundLevelAt", () => {
 describe("groundLevelLabel", () => {
   it("shows metres and feet", () => {
     const reading = { s: 0, z: 35.4234, slopeDegrees: 12.34, slopePercent: 21.9 };
-    expect(groundLevelLabel(reading, { horizontalToMeter: 1, verticalToMeter: 1, display: "meter" })).toBe(
-      "GL 35.42 m / 傾斜 +12.3° (+21.9%)",
-    );
-    expect(groundLevelLabel(reading, { horizontalToMeter: 1, verticalToMeter: 1, display: "foot" })).toContain("ft");
+    expect(groundLevelLabel(reading, { horizontalToMeter: 1, verticalToMeter: 1, display: "meter" })).toEqual([
+      "GL 35.42 m",
+      "傾斜 +12.3° (+21.9%)",
+    ]);
+    expect(groundLevelLabel(reading, { horizontalToMeter: 1, verticalToMeter: 1, display: "foot" })[0]).toContain("ft");
   });
 });
