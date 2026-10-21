@@ -189,6 +189,42 @@ enum Phase {
     Done,
 }
 
+/// How CSF and the source file agree on "ground" (class 2), counted over pass 2. It is only a rough guide: a source
+/// classification is not the truth either.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GroundAgreement {
+    /// Ground in the source and by CSF.
+    pub both: u64,
+    /// Ground by CSF only.
+    pub csf_only: u64,
+    /// Ground in the source only.
+    pub source_only: u64,
+    pub neither: u64,
+}
+
+impl GroundAgreement {
+    fn add(&mut self, source_ground: bool, csf_ground: bool) {
+        match (source_ground, csf_ground) {
+            (true, true) => self.both += 1,
+            (false, true) => self.csf_only += 1,
+            (true, false) => self.source_only += 1,
+            (false, false) => self.neither += 1,
+        }
+    }
+
+    /// Of the points CSF calls ground, the share the source calls ground too (`None` when CSF found none).
+    pub fn precision(&self) -> Option<f64> {
+        let csf = self.both + self.csf_only;
+        (csf > 0).then(|| self.both as f64 / csf as f64)
+    }
+
+    /// Of the points the source calls ground, the share CSF finds (`None` when the source has none).
+    pub fn recall(&self) -> Option<f64> {
+        let source = self.both + self.source_only;
+        (source > 0).then(|| self.both as f64 / source as f64)
+    }
+}
+
 /// A vertex of the TIN.
 struct GroundVertex {
     x: f64,
@@ -223,6 +259,8 @@ pub struct DtmJob {
     points_total: u64,
     points_read: u64,
     points_ground: u64,
+    /// How CSF and the source agree on "ground" (see `GroundAgreement`).
+    agreement: GroundAgreement,
     max_buffered_points: usize,
     /// A pass reads whole nodes until this many points were scanned in one `advance` call.
     points_per_advance: u64,
@@ -285,6 +323,7 @@ impl DtmJob {
             points_total,
             points_read: 0,
             points_ground: 0,
+            agreement: GroundAgreement::default(),
             max_buffered_points: 0,
             points_per_advance: POINTS_PER_ADVANCE,
         })
@@ -308,6 +347,11 @@ impl DtmJob {
     /// Points classified as ground so far (pass 2).
     pub fn points_ground(&self) -> u64 {
         self.points_ground
+    }
+
+    /// CSF against the source classification, over the points classified so far.
+    pub fn ground_agreement(&self) -> GroundAgreement {
+        self.agreement
     }
 
     /// Bytes held by the cloth and the best-point grid. They follow the area and the two cell sizes; no point is
@@ -405,6 +449,8 @@ impl DtmJob {
                 }
                 let mut record = LasPointRecord::from_las_point(p);
                 let ground = self.cloth.is_ground(p.x, p.y, z);
+                self.agreement
+                    .add(record.classification == CLASS_GROUND, ground);
                 if ground {
                     record.classification = CLASS_GROUND;
                     self.points_ground += 1;

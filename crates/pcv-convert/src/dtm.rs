@@ -22,8 +22,8 @@ use copc_reader::CopcReader;
 use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriterParams};
 use pcv_core::crs::{crs_id_from_las_header, CrsId};
 use pcv_core::dtm::{
-    DtmError, DtmJob, DtmParams, DtmRequest, LandXmlOptions, DTM_MAX_CELLS_DESKTOP,
-    DTM_MAX_PARTICLES_DESKTOP,
+    DtmError, DtmJob, DtmParams, DtmRequest, GroundAgreement, LandXmlOptions,
+    DTM_MAX_CELLS_DESKTOP, DTM_MAX_PARTICLES_DESKTOP,
 };
 use pcv_core::raster::output::missing_crs_warning;
 
@@ -81,6 +81,8 @@ pub struct DtmOutputs {
 pub struct DtmSummary {
     pub point_count: u64,
     pub ground_points: u64,
+    /// CSF against the source classification (a rough guide, not a truth).
+    pub agreement: GroundAgreement,
     pub width: u32,
     pub height: u32,
     pub cell_size: f64,
@@ -268,6 +270,7 @@ fn dtm_inner(
         .map_err(|_| DtmRunError::Dtm(DtmError::Cancelled))?;
 
     let ground_points = job.points_ground();
+    let agreement = job.ground_agreement();
     let surface = job.finish()?;
     let mut warnings = Vec::new();
     if let Some(w) = missing_crs_warning(epsg) {
@@ -313,6 +316,7 @@ fn dtm_inner(
     Ok(DtmSummary {
         point_count: total_points,
         ground_points,
+        agreement,
         width: surface.grid().width,
         height: surface.grid().height,
         cell_size: surface.grid().cell_size,

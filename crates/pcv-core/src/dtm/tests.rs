@@ -452,3 +452,19 @@ fn a_request_without_an_output_is_refused() {
     assert_eq!(request.output.unit, LandXmlUnit::Unknown);
     assert_eq!(request.output.tiff, TiffKind::Colored);
 }
+
+#[test]
+fn ground_agreement_precision_and_recall() {
+    let mut a = GroundAgreement::default();
+    assert_eq!((a.precision(), a.recall()), (None, None));
+    for _ in 0..8 {
+        a.add(true, true);
+    }
+    a.add(false, true);
+    a.add(false, true);
+    a.add(true, false);
+    a.add(false, false);
+    // CSF ground: 10, of which 8 agree. Source ground: 9, of which 8 are found.
+    assert_eq!(a.precision(), Some(0.8));
+    assert_eq!(a.recall(), Some(8.0 / 9.0));
+}
