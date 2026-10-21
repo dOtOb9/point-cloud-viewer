@@ -24,6 +24,9 @@ const VALUE_BUTTONS: { value: RasterValueKind; label: string }[] = [
   { value: "intensityMean", label: "強度" },
 ];
 
+/** The tallest the preview picture may be, so a tall layer does not push the legend out of the window. */
+const PREVIEW_MAX_HEIGHT = "55vh";
+
 const CHECKERBOARD =
   "repeating-conic-gradient(#8884 0% 25%, transparent 0% 50%) 50% / 16px 16px";
 
@@ -87,11 +90,12 @@ function PreviewCanvas({ image }: { image: RasterPreviewImage }) {
     context.putImageData(new ImageData(image.rgba, image.width, image.height), 0, 0);
   }, [image]);
   return (
-    <div className="max-h-[55vh] w-fit max-w-full overflow-hidden rounded border border-black/10 dark:border-white/10" style={{ background: CHECKERBOARD }}>
+    <div className="overflow-hidden rounded border border-black/10 dark:border-white/10" style={{ background: CHECKERBOARD }}>
+      {/* The parent column is sized to the picture, so the canvas is scaled up or down to it with CSS. */}
       <canvas
         ref={ref}
         data-testid="raster-canvas"
-        className="block max-h-[55vh] max-w-full object-contain"
+        className="block w-full"
         style={{ imageRendering: "pixelated", aspectRatio: `${image.width} / ${image.height}` }}
       />
     </div>
@@ -198,23 +202,32 @@ export function RasterWindow({ viewer, holder }: { viewer: CopcViewerState; hold
               {state.error}
             </p>
           )}
-          {image && <PreviewCanvas image={image} />}
-          {image && image.range && (
-            <div className="flex flex-col gap-1" data-testid="raster-legend">
-              <div className="h-3 w-full rounded" style={{ background: LEGEND_GRADIENT }} />
-              <div className="flex justify-between text-xs">
-                <span>{legendValue(image.range.min, settings.value, units)}</span>
-                <span>{legendValue(image.range.max, settings.value, units)}</span>
-              </div>
-            </div>
-          )}
           {image && (
-            <p className="text-xs opacity-70">
-              プレビューは間引いた点から作っています（セルの大きさ {formatLength(image.cellSize, units.horizontalToMeter, display)}、
-              {image.width.toLocaleString()} x {image.height.toLocaleString()} セル、{image.points.toLocaleString()} 点）。
-              最小・最大は書き出し結果と少し違うことがあります。
-              {state.session?.info.truncated ? " 点の上限に達したため、一部の層は読んでいません。" : ""}
-            </p>
+            // One column as wide as the picture: the whole preview area, but the picture is never taller than
+            // PREVIEW_MAX_HEIGHT (max width = that height x the aspect ratio). Picture, legend and note share
+            // this width and the column is centred.
+            <div
+              className="mx-auto flex w-full flex-col gap-2"
+              style={{ maxWidth: `calc(${PREVIEW_MAX_HEIGHT} * ${image.width / image.height})` }}
+              data-testid="raster-preview-column"
+            >
+              <PreviewCanvas image={image} />
+              {image.range && (
+                <div className="flex flex-col gap-1" data-testid="raster-legend">
+                  <div className="h-3 w-full rounded" style={{ background: LEGEND_GRADIENT }} />
+                  <div className="flex justify-between text-xs">
+                    <span>{legendValue(image.range.min, settings.value, units)}</span>
+                    <span>{legendValue(image.range.max, settings.value, units)}</span>
+                  </div>
+                </div>
+              )}
+              <p className="text-xs opacity-70">
+                プレビューは間引いた点から作っています（セルの大きさ {formatLength(image.cellSize, units.horizontalToMeter, display)}、
+                {image.width.toLocaleString()} x {image.height.toLocaleString()} セル、{image.points.toLocaleString()} 点）。
+                最小・最大は書き出し結果と少し違うことがあります。
+                {state.session?.info.truncated ? " 点の上限に達したため、一部の層は読んでいません。" : ""}
+              </p>
+            </div>
           )}
           {state.busy === "rendering" && <p className="text-xs opacity-70">描き直しています…</p>}
         </div>
