@@ -88,6 +88,8 @@ UIを作り直すときも、同じ役割の要素にこれらの`data-testid`�
   push の前に `git diff origin/main --stat` で自分の差分だけか確かめる
 - **`git stash` は使わない**（他のセッションと共有されている）。退避は一時コミットで
 - 10分以上かかりうるコマンド（大きなビルド、数億点の変換、CI の完了待ち）は `run_in_background` で走らせる。返らないと中断される
+- 時間を測る計測は、プロセスを **P コアに固定して**走らせる（`ProcessorAffinity = 0xFFF`。この PC の i5-14600K の値）。
+  そのままだと Windows が E コアに回し、同じ処理が3〜4倍遅くなる（`TaskSheets/BENCH-measurement-cores.md`）
 - E2E/画面確認で preview サーバーを立てるときは `PCV_E2E_PORT` で空いているポートを使い、終わったら自分が立てたプロセスだけを止める（コマンドラインを確かめてから）。全 node/cmd/chrome の一括終了は禁止（理由と使い方は ADR-0016）
 - 点群データは worktree に無い（gitignore）。`C:\rust\point-cloud-viewer\data\` を絶対パスで読む
 - コミットメッセージの1行目は「絵文字 + 種類 + 本文」にする（所有者の決定 2026-10-17。それより前のコミットは書き換えない）。
