@@ -30,6 +30,9 @@ mod point_merge;
 mod raster;
 // ---
 mod range_math;
+// --- G2: section line ---
+mod section_line;
+// ---
 mod stats;
 mod util;
 mod write_metadata;
@@ -51,6 +54,9 @@ pub use raster::WasmRasterizer;
 // ---
 // R7 / M4-17: Web PLY / PCD / E57 (and mixed LAS) to COPC conversion, one or several files. Used by `src/datasource/copc.worker.ts`.
 pub use point_file_import::WasmPointFileConverter;
+// --- G2: section line --- Web version of the section line. Used by `src/datasource/copc.worker.ts`.
+pub use section_line::WasmSectionLine;
+// ---
 
 /// 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば
 /// そのメッセージを返す。`src/datasource/copc.worker.ts`が変換失敗の
