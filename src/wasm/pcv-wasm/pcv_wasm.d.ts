@@ -241,6 +241,29 @@ export class WasmPointFileConverter {
     totalPoints(): number;
 }
 
+export class WasmRasterizer {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Does up to `batch_size` units of work: points read into the grid, or cells written
+     * to the spill. Go to `geotiff` / `finish` when `done`.
+     */
+    feed(batch_size: number): any;
+    /**
+     * Builds the octree and writes the display COPC on OPFS.
+     */
+    finish(): any;
+    /**
+     * The GeoTIFF bytes. Call after `feed` reported `done` and before `finish`.
+     */
+    geotiff(): Uint8Array;
+    /**
+     * `file` is the source COPC; `options` is the `RasterOptions` JSON (`src/datasource/tools.ts`).
+     * Fails before reading any point when the grid is over `MAX_CELLS_WEB`.
+     */
+    constructor(file: File, options: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+}
+
 /**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
@@ -298,6 +321,7 @@ export interface InitOutput {
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
     readonly __wbg_wasmextractor_free: (a: number, b: number) => void;
     readonly __wbg_wasmpointfileconverter_free: (a: number, b: number) => void;
+    readonly __wbg_wasmrasterizer_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
     readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
     readonly lastAllocationFailureMessage: () => [number, number];
@@ -327,6 +351,10 @@ export interface InitOutput {
     readonly wasmpointfileconverter_finish: (a: number) => [number, number, number];
     readonly wasmpointfileconverter_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly wasmpointfileconverter_totalPoints: (a: number) => number;
+    readonly wasmrasterizer_feed: (a: number, b: number) => [number, number, number];
+    readonly wasmrasterizer_finish: (a: number) => [number, number, number];
+    readonly wasmrasterizer_geotiff: (a: number) => [number, number, number, number];
+    readonly wasmrasterizer_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

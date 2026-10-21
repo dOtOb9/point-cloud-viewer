@@ -499,6 +499,79 @@ export class WasmPointFileConverter {
 }
 if (Symbol.dispose) WasmPointFileConverter.prototype[Symbol.dispose] = WasmPointFileConverter.prototype.free;
 
+export class WasmRasterizer {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmRasterizerFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmrasterizer_free(ptr, 0);
+    }
+    /**
+     * Does up to `batch_size` units of work: points read into the grid, or cells written
+     * to the spill. Go to `geotiff` / `finish` when `done`.
+     * @param {number} batch_size
+     * @returns {any}
+     */
+    feed(batch_size) {
+        const ret = wasm.wasmrasterizer_feed(this.__wbg_ptr, batch_size);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Builds the octree and writes the display COPC on OPFS.
+     * @returns {any}
+     */
+    finish() {
+        const ptr = this.__destroy_into_raw();
+        const ret = wasm.wasmrasterizer_finish(ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * The GeoTIFF bytes. Call after `feed` reported `done` and before `finish`.
+     * @returns {Uint8Array}
+     */
+    geotiff() {
+        const ret = wasm.wasmrasterizer_geotiff(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * `file` is the source COPC; `options` is the `RasterOptions` JSON (`src/datasource/tools.ts`).
+     * Fails before reading any point when the grid is over `MAX_CELLS_WEB`.
+     * @param {File} file
+     * @param {any} options
+     * @param {Array<any>} scratch_handles
+     * @param {FileSystemSyncAccessHandle} output_handle
+     * @param {string} output_name
+     * @param {number} max_points_per_node
+     */
+    constructor(file, options, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmrasterizer_new(file, options, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmRasterizerFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) WasmRasterizer.prototype[Symbol.dispose] = WasmRasterizer.prototype.free;
+
 /**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
@@ -616,6 +689,10 @@ function __wbg_get_imports() {
         __wbg___wbindgen_is_object_edb6b15aa3afe12e: function(arg0) {
             const val = arg0;
             const ret = typeof(val) === 'object' && val !== null;
+            return ret;
+        },
+        __wbg___wbindgen_is_string_c4f7cb494a2a21f1: function(arg0) {
+            const ret = typeof(arg0) === 'string';
             return ret;
         },
         __wbg___wbindgen_is_undefined_8c687d0b90d5b524: function(arg0) {
@@ -940,6 +1017,9 @@ const WasmExtractorFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmPointFileConverterFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmpointfileconverter_free(ptr, 1));
+const WasmRasterizerFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmrasterizer_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
