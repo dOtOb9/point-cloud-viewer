@@ -87,7 +87,7 @@ function PreviewCanvas({ image }: { image: RasterPreviewImage }) {
     context.putImageData(new ImageData(image.rgba, image.width, image.height), 0, 0);
   }, [image]);
   return (
-    <div className="max-h-[55vh] max-w-full overflow-hidden rounded border border-black/10 dark:border-white/10" style={{ background: CHECKERBOARD }}>
+    <div className="max-h-[55vh] w-fit max-w-full overflow-hidden rounded border border-black/10 dark:border-white/10" style={{ background: CHECKERBOARD }}>
       <canvas
         ref={ref}
         data-testid="raster-canvas"
