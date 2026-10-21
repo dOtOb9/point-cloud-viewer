@@ -77,17 +77,22 @@
 3. 状態は `src/state/useSectionView.ts`(`useState` だけ。開いているレイヤー・点・表示(拡大と位置)・パネルの大きさ)。表示が `null` の間は「全部が入るように自動で合わせる」(`effectiveSectionView`)。
 4. 描画は `src/renderer/section-2d.ts`(React を使わない)。点を `ImageData` に直接書き(`fillSectionPixels`)、軸・目盛り・単位(m / ft。計測と同じ換算)を Canvas 2D で重ねる。縦と横の倍率は同じ(縦の強調は無い)。
 5. 操作は `src/ui/section/SectionPanel.tsx` が `section-view.ts` の関数に渡すだけ。ホイールとピンチは `zoomAt`、右ボタンのドラッグ・右ボタンの長押し・2本指のドラッグは `panBy`(計算は `src/app/section-math.ts`)。ブラウザの右クリックメニューは出さない。
-   右クリック(動かさず短く)・1本指の長押しは GL と傾斜角を出します(下の 7)。線の編集は G2-5 です。
+   右クリック(動かさず短く)・1本指の長押しは GL と傾斜角を出します(下の 7)。線のなぞり修正は下の 8 です。
 6. **断面線(地表の線。G2-4)**。断面のレイヤーが開いたあと、`extractFromLayer` が続けて `src/app/point-cloud-tools.ts` の `computeSectionLine` を呼びます。
    - なぜ元のレイヤーから読むか: 断面の板は薄く、CSF の布を落とすには周りの地形が要るから。`SectionInfo.sourceLayerId` の元レイヤー（非表示のまま開いている）から、A→B の左右 20 m(ファイルの単位に換算)の帯だけを読みます。
    - 断面ダイアログに CSF のプリセット(標準 / 急勾配。既定は標準)の選択がある(`SectionDialog.tsx`。`sectionLineRequestFor` が m をファイルの単位に換算)。
    - Rust の本体は `crates/pcv-core/src/section_line.rs` の `SectionLineJob`。帯の座標系 `(s, t, 高さ)`(`t` は線の左右)に布を置き(布の格子が断面に揃う)、1回目の読みで IHV、`Cloth::step` を10回ずつ、2回目の読みで `is_ground`。**各セルについてセルの中心に最も近い地表の点だけ**を残し(メモリは点数でなくセル数。上限 200 万粒子を超える帯は断る)、その点で Delaunay の TIN(クレート `spade`)を作って、`t = 0` に沿って布の解像度ごとに高さを読みます。建物の下は三角形がつなぎます(辺の長さの上限なし)。凸包の外は線が出ません(凸包は直線を1区間でしか切らないので、途中で切れることはなく、端が短くなるだけです)。
    - 小さな手順(`advance`)に分けてあり、デスクトップは Tauri コマンド `compute_section_line`(`conversion.rs`。進捗は千分率、キャンセルは既存のツールのキャンセルと同じ旗)、Web は `WasmSectionLine` を Worker の `sectionLineStart` から `advance` で回し、30 ms ごとにイベントループへ戻ってキャンセルを受けます。進捗は既存の `ToolProgressDialog`(`showAsPercent`)。
-   - 結果は `ViewerLayer.section.line`(`original` と `current`。G2-5 の「元に戻す」のため元の線は別に持つ)に入り、`section-2d.ts` の `drawGroundLine` が二次色(オレンジ)の 2 px の線で点の上に描きます。計算に失敗・キャンセルしたら、エラーログに出し、パネルは点だけのままです。
+   - 結果は `ViewerLayer.section.line`(`original` と `history`。`history` は編集履歴で、`history.present` が今の線。G2-5 の「計算した線に戻す」のため `original` は変えずに持つ)に入り、`section-2d.ts` の `drawGroundLine` が二次色(オレンジ)の 2 px の線で点の上に描きます。計算に失敗・キャンセルしたら、エラーログに出し、パネルは点だけのままです。
 7. **GL・傾斜角と 3D の断面線(G2-6・G2-8)**。
-   - 右クリック(動かさず短く)・1本指の長押しは `section-view.ts` の `showGroundLevelAt(ctx, x)` に届きます。クリックした位置の `s` で、レイヤーの状態(`section.line.current`)から線を読み(コピーを持たないので、G2-5 の編集・元に戻すもそのまま反映される)、`section-3d.ts` の `groundLevelAt` で **GL**(線の高さの線形補間)と **傾斜角**(`s − 1 m` と `s + 1 m` の線の高さを結んだ傾き。範囲の端では窓を端で止める。幅は定数 `SLOPE_HALF_WINDOW_M`、ファイルの単位への換算は `csf-params.ts` と同じくレイヤーの CRS の係数)を出して `groundLevel` の状態に入れます。線の範囲外・線が無いときは何も出しません。
+   - 右クリック(動かさず短く)・1本指の長押しは `section-view.ts` の `showGroundLevelAt(ctx, x)` に届きます。クリックした位置の `s` で、レイヤーの状態(`section.line.history.present`)から線を読み(コピーを持たないので、G2-5 の編集・元に戻すもそのまま反映される)、`section-3d.ts` の `groundLevelAt` で **GL**(線の高さの線形補間)と **傾斜角**(`s − 1 m` と `s + 1 m` の線の高さを結んだ傾き。範囲の端では窓を端で止める。幅は定数 `SLOPE_HALF_WINDOW_M`、ファイルの単位への換算は `csf-params.ts` と同じくレイヤーの CRS の係数)を出して `groundLevel` の状態に入れます。線の範囲外・線が無いときは何も出しません。
    - 断面図のパネルの上に「右クリック（長押し）で GL と傾斜角」の案内と、GL の点・文字(`GL 128.15 m / 傾斜 +0.2° (+0.4%)`。m / ft は表示の単位)が出ます。マウスの位置の `s` は `cursorS` の状態に入り、パネルに細い縦線と線上の点を出します。
    - 3D の画面には `src/ui/section/SectionLineOverlay.tsx` が、断面線を二次色(オレンジ)の折れ線として描きます。`(s, z)` を `sectionToWorld`(Rust の `SectionAxes` と同じ式。点 = A + s×向き、高さは上向き)で 3D に戻し、計測の線(`MeasureOverlay`)と同じく毎フレーム画面に投影して SVG で描くので、WebGPU の線のパイプラインは足していません。そのため線は点群に隠れず、いつも手前に出ます(受け入れ済み)。同じ `s` の所のカーソルの点と、GL の印・文字も出ます。開いている断面のレイヤーが表示中で、線があるときだけです。
+8. **なぞって断面線を直す(G2-5)**。断面図の上で、マウスの左ボタンを押したままなぞる、またはタッチで1本指でなぞると、なぞった範囲の断面線がなぞった形に置き換わります。
+   - 処理は `section-view.ts` の普通の関数です。`sectionPointerMove` が、左ボタンが `DRAG_THRESHOLD_PX`(5 px)を超えて動いた、または1本指で `classifyOneFinger` が `"trace"` になったら `extendTrace` を呼び、動いた点を `screenToSection` で `(s, z)` にして `gesture.trace` に溜めます(押した位置が最初の点)。溜めている間の点は `SectionViewState.trace` にも入れ、`SectionPanel.tsx` の `SectionMarks` が黄色の折れ線で描きます(離したら `null`)。
+   - 離すと `commitTrace` が `section-math.ts` の `replaceRange`(なぞった点の `s` の範囲 [最小, 最大] にある線の点を捨て、なぞった点を入れる)で新しい線を作り、`section-3d.ts` の `profileToGroundLine` で `SectionGroundLine` に戻して(`edited: true` を付け、`groundPoints`・`cells` は元のまま)、`pushEdit` で履歴に積みます。履歴はレイヤーの状態(`section.line.history`)にあり、`setLayerSectionLineHistoryInList` で書き換えます。3D の断面線も同じ状態を読むので一緒に変わります。
+   - 動かずに離した左クリックは何もしません。右ボタン(平行移動・GL)、ホイールの拡大縮小、2本指の操作、長押しの GL は変わりません。2本指目が付いたら、1本目のなぞりは捨てます(その指だけが残っても、そのジェスチャーの間は新しく始めません)。線がまだ無い(計算中・失敗)ときは、なぞりを始めません。
+   - 断面図のヘッダーの3つのボタン(線があるときだけ出る)。「元に戻す」(`undoSectionLine`。`data-testid="section-undo"`)・「やり直す」(`redoSectionLine`。`section-redo`)は `canUndo`・`canRedo` で押せるかを決めます。「計算した線に戻す」(`resetSectionLineToComputed`。`section-reset-line`)は `pushEdit(history, original)` なので、これも元に戻せます。Ctrl+Z は付けていません。
 
 ### 3-E. ラスタ化のウィンドウ(G1。他のツールと違い、新しいレイヤーを作らない)
 

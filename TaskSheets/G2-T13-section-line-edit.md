@@ -52,3 +52,41 @@
 3. 「元に戻す」→ 元の形、「やり直す」→ なぞった形、「計算した線に戻す」→ 計算した線
 4. 右クリックの GL・右ドラッグの平行移動・スクロールの拡大縮小が、前と同じに動く
 5. スマホ: 1本指でなぞる、2本指で拡大・平行移動、長押しで GL
+
+## 実施記録（実装エージェント）
+
+### 実行したコマンド（実際の出力）
+
+- `npm ci`: 成功（終了コード 0）
+- `npm run typecheck`: エラー無し
+- `npm run lint`: エラー無し
+- `npx vitest run`: `Test Files 77 passed (77)` / `Tests 760 passed (760)`（section-view.test.ts は、G2-5 のテストを足したあと 30 件）
+
+### 触ったファイル
+
+- `src/datasource/section-line.ts`: `SectionGroundLine` に `edited?: boolean`（なぞって直した印）
+- `src/state/layers.ts`: `SectionLineState` を `{ original, history }` にした。`setLayerSectionLineInList` は `newHistory(line)` で始める。`setLayerSectionLineHistoryInList` を追加
+- `src/app/section-3d.ts`: `profileToGroundLine`（`groundLineToProfile` の逆。`edited: true`、`groundPoints`・`cells` は元のまま）
+- `src/app/section-view.ts`: なぞり（`extendTrace`・`commitTrace`・`discardTrace`）、`undoSectionLine`・`redoSectionLine`・`resetSectionLineToComputed`。`SectionViewState.trace`、コンテキストに `setTrace`・`setSectionLineHistory`、`SectionGesture.trace`
+- `src/state/useSectionView.ts`・`src/state/useCopcViewer.ts`: `trace` の state と、履歴をレイヤーの状態に書く setter の配線
+- `src/ui/section/SectionPanel.tsx`: 3つのボタン、`SectionMarks` のなぞり中の折れ線、案内文
+- `src/ui/section/SectionLineOverlay.tsx`: `current` を `history.present` に
+- テスト: `src/app/section-view.test.ts`（(a)-(f)）、`src/app/section-3d.test.ts`（(g)）
+- 設計書: `docs/book/src/flows/point-cloud-tools.md`（3-D の 8 を追加）、`docs/book/src/frontend/state.md`
+
+### なぜこの方法か
+
+- 履歴は計画どおりレイヤーの状態（React）に置き、setter はコンテキストで渡した。関数の中に状態を隠さない（ADR-0021）。
+- なぞっている最中の点は、ポインターの速さで変わるので `gesture.trace`（普通のオブジェクト）に溜め、表示用に同じ点を `trace` の state にも入れる。
+- なぞりの点は画面座標ではなく `(s, z)` で溜める。なぞっている間にホイールで拡大しても、置き換える位置がずれないため。
+- 「編集した」印は `SectionGroundLine.edited` にした（計算した線には付かない）。
+- 「計算した線に戻す」は、今がすでに `original` と同じ物のときは何もしない（履歴を増やさない）。ボタンも押せなくしてある。
+- ペンの入力は、マウスと同じ扱い（`pointerType !== "touch"`）にした。
+
+### 確かめていないこと（未確認）
+
+- 実際の画面（デスクトップ・Web・スマホ）での、なぞり・プレビューの折れ線・3つのボタン・3D の断面線の更新は未確認。単体テストは座標の数値までしか見ていない。
+- 2本指から1本指に戻したときの実機での挙動、ペン入力、`setPointerCapture` 越しのなぞりは未確認。
+- 長いなぞり（数千点）での描き直しの速さは未測定（move ごとに点の配列をコピーして state に入れている）。
+
+所有者の確認手順は上の「所有者の確認手順」のとおり。

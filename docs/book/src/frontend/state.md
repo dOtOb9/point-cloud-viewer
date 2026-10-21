@@ -67,7 +67,7 @@ R11 で変換の購読の effect が無くなり、R12 で `useConversionSession
 | `useDisplaySettings.ts` | 点予算・自動調整・背景・グリッド・EDL・アニメーション・レンダースケール・点の形・中央優先度・`stats`・端末の既定値 | `useDisplaySettings(rendererRef)` |
 | `useLayers.ts` | レイヤー一覧と選択、レイヤーごとの操作（表示・着色・形・大きさ・移動・削除）、計測レイヤー | `useLayers(deps)` |
 | `useFileOpen.ts` | 変換の進捗・変換元の名前の `useState`、`openLock`、`src/app/open-files.ts` の関数に渡す `OpenFilesContext` を作って返すだけ（約50行） | `useFileOpen(inputs)` |
-| `useSectionView.ts` | 2D の断面図パネルの state（開いているレイヤー・点・表示・パネルの大きさ）と `SectionViewContext`（手順は `src/app/section-view.ts`。[カット・断面・合成](../flows/point-cloud-tools.md)の 3-D） | `useSectionView(inputs)` |
+| `useSectionView.ts` | 2D の断面図パネルの state（開いているレイヤー・点・表示・パネルの大きさ・なぞっている線 `trace`）と `SectionViewContext`（手順は `src/app/section-view.ts`。[カット・断面・合成](../flows/point-cloud-tools.md)の 3-D） | `useSectionView(inputs)` |
 | `usePointCloudTools.ts` | ツールの進捗の state と `PointCloudToolsContext`（手順は `src/app/point-cloud-tools.ts`。カット・断面・合成を「新しいレイヤーを作る」形で実行。ADR-0018） | `usePointCloudTools(inputs)` |
 | `useOpfsStorage.ts` | Web の保存領域の使用量と掃除（設定ページ用） | `useOpfsStorage()` |
 | `useTempDir.ts` | デスクトップの一時フォルダ設定（localStorage）と `supportsCustomTempDir` | `useTempDir()` |
