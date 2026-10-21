@@ -77,7 +77,13 @@
 3. 状態は `src/state/useSectionView.ts`(`useState` だけ。開いているレイヤー・点・表示(拡大と位置)・パネルの大きさ)。表示が `null` の間は「全部が入るように自動で合わせる」(`effectiveSectionView`)。
 4. 描画は `src/renderer/section-2d.ts`(React を使わない)。点を `ImageData` に直接書き(`fillSectionPixels`)、軸・目盛り・単位(m / ft。計測と同じ換算)を Canvas 2D で重ねる。縦と横の倍率は同じ(縦の強調は無い)。
 5. 操作は `src/ui/section/SectionPanel.tsx` が `section-view.ts` の関数に渡すだけ。ホイールとピンチは `zoomAt`、右ボタンのドラッグ・右ボタンの長押し・2本指のドラッグは `panBy`(計算は `src/app/section-math.ts`)。ブラウザの右クリックメニューは出さない。
-   右クリック(動かさず短く)・1本指の長押しは GL と傾斜角を出す予定の場所(G2-6)で、今は何もしません。断面線・線の編集は G2-4 / G2-5 です。
+   右クリック(動かさず短く)・1本指の長押しは GL と傾斜角を出す予定の場所(G2-6)で、今は何もしません。線の編集は G2-5 です。
+6. **断面線(地表の線。G2-4)**。断面のレイヤーが開いたあと、`extractFromLayer` が続けて `src/app/point-cloud-tools.ts` の `computeSectionLine` を呼びます。
+   - なぜ元のレイヤーから読むか: 断面の板は薄く、CSF の布を落とすには周りの地形が要るから。`SectionInfo.sourceLayerId` の元レイヤー（非表示のまま開いている）から、A→B の左右 20 m(ファイルの単位に換算)の帯だけを読みます。
+   - 断面ダイアログに CSF のプリセット(標準 / 急勾配。既定は標準)の選択がある(`SectionDialog.tsx`。`sectionLineRequestFor` が m をファイルの単位に換算)。
+   - Rust の本体は `crates/pcv-core/src/section_line.rs` の `SectionLineJob`。帯の座標系 `(s, t, 高さ)`(`t` は線の左右)に布を置き(布の格子が断面に揃う)、1回目の読みで IHV、`Cloth::step` を10回ずつ、2回目の読みで `is_ground`。**各セルについてセルの中心に最も近い地表の点だけ**を残し(メモリは点数でなくセル数。上限 200 万粒子を超える帯は断る)、その点で Delaunay の TIN(クレート `spade`)を作って、`t = 0` に沿って布の解像度ごとに高さを読みます。建物の下は三角形がつなぎます(辺の長さの上限なし)。凸包の外は線が出ません(凸包は直線を1区間でしか切らないので、途中で切れることはなく、端が短くなるだけです)。
+   - 小さな手順(`advance`)に分けてあり、デスクトップは Tauri コマンド `compute_section_line`(`conversion.rs`。進捗は千分率、キャンセルは既存のツールのキャンセルと同じ旗)、Web は `WasmSectionLine` を Worker の `sectionLineStart` から `advance` で回し、30 ms ごとにイベントループへ戻ってキャンセルを受けます。進捗は既存の `ToolProgressDialog`(`showAsPercent`)。
+   - 結果は `ViewerLayer.section.line`(`original` と `current`。G2-5 の「元に戻す」のため元の線は別に持つ)に入り、`section-2d.ts` の `drawGroundLine` が二次色(オレンジ)の 2 px の線で点の上に描きます。計算に失敗・キャンセルしたら、エラーログに出し、パネルは点だけのままです。
 
 ### 読み側の中身(`ExtractPoints`)
 
