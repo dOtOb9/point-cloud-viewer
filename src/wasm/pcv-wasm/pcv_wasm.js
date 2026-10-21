@@ -699,6 +699,89 @@ export class WasmSectionLine {
 }
 if (Symbol.dispose) WasmSectionLine.prototype[Symbol.dispose] = WasmSectionLine.prototype.free;
 
+export class WasmThinFilter {
+    static __wrap(ptr) {
+        const obj = Object.create(WasmThinFilter.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmThinFilterFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmThinFilterFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmthinfilter_free(ptr, 0);
+    }
+    /**
+     * Handles one tile of the source and writes its kept points to the spill. Go to `finish` when `done`.
+     * @returns {any}
+     */
+    advance() {
+        const ret = wasm.wasmthinfilter_advance(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Builds the octree and writes the OPFS output. Fails (writing nothing) for zero points.
+     * @returns {any}
+     */
+    finish() {
+        const ptr = this.__destroy_into_raw();
+        const ret = wasm.wasmthinfilter_finish(ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Outlier filter (ROR or SOR). `request` is the `FilterRequest` JSON. Otherwise like `forThin`.
+     * @param {File} file
+     * @param {any} request
+     * @param {Array<any>} scratch_handles
+     * @param {FileSystemSyncAccessHandle} output_handle
+     * @param {string} output_name
+     * @param {number} max_points_per_node
+     * @returns {WasmThinFilter}
+     */
+    static forFilter(file, request, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmthinfilter_forFilter(file, request, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return WasmThinFilter.__wrap(ret[0]);
+    }
+    /**
+     * Thinning. `file` is the source COPC; `request` is the `ThinRequest` JSON (shape in
+     * `src/datasource/thin-filter.ts`, lengths in the file's unit). The scratch-file pool and output handle
+     * are the same ones the conversion uses.
+     * @param {File} file
+     * @param {any} request
+     * @param {Array<any>} scratch_handles
+     * @param {FileSystemSyncAccessHandle} output_handle
+     * @param {string} output_name
+     * @param {number} max_points_per_node
+     * @returns {WasmThinFilter}
+     */
+    static forThin(file, request, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmthinfilter_forThin(file, request, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return WasmThinFilter.__wrap(ret[0]);
+    }
+}
+if (Symbol.dispose) WasmThinFilter.prototype[Symbol.dispose] = WasmThinFilter.prototype.free;
+
 /**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
@@ -1157,6 +1240,9 @@ const WasmRasterizerFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmSectionLineFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmsectionline_free(ptr, 1));
+const WasmThinFilterFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmthinfilter_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

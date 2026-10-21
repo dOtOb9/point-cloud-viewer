@@ -310,6 +310,30 @@ export class WasmSectionLine {
     constructor(file: WasmCopcFile, line: any, request: any);
 }
 
+export class WasmThinFilter {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Handles one tile of the source and writes its kept points to the spill. Go to `finish` when `done`.
+     */
+    advance(): any;
+    /**
+     * Builds the octree and writes the OPFS output. Fails (writing nothing) for zero points.
+     */
+    finish(): any;
+    /**
+     * Outlier filter (ROR or SOR). `request` is the `FilterRequest` JSON. Otherwise like `forThin`.
+     */
+    static forFilter(file: File, request: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number): WasmThinFilter;
+    /**
+     * Thinning. `file` is the source COPC; `request` is the `ThinRequest` JSON (shape in
+     * `src/datasource/thin-filter.ts`, lengths in the file's unit). The scratch-file pool and output handle
+     * are the same ones the conversion uses.
+     */
+    static forThin(file: File, request: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number): WasmThinFilter;
+}
+
 /**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
@@ -370,6 +394,7 @@ export interface InitOutput {
     readonly __wbg_wasmrasterizer_free: (a: number, b: number) => void;
     readonly __wbg_wasmrasterpreview_free: (a: number, b: number) => void;
     readonly __wbg_wasmsectionline_free: (a: number, b: number) => void;
+    readonly __wbg_wasmthinfilter_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
     readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
     readonly lastAllocationFailureMessage: () => [number, number];
@@ -411,6 +436,10 @@ export interface InitOutput {
     readonly wasmsectionline_finish: (a: number) => [number, number, number, number];
     readonly wasmsectionline_isDone: (a: number) => number;
     readonly wasmsectionline_new: (a: number, b: any, c: any) => [number, number, number];
+    readonly wasmthinfilter_advance: (a: number) => [number, number, number];
+    readonly wasmthinfilter_finish: (a: number) => [number, number, number];
+    readonly wasmthinfilter_forFilter: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmthinfilter_forThin: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
