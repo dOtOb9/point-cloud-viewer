@@ -22,7 +22,7 @@ import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import { useDisplaySettings } from "./useDisplaySettings";
-import { addLayerToState, setLayerSectionLineInList } from "./layers";
+import { addLayerToState, setLayerSectionLineHistoryInList, setLayerSectionLineInList } from "./layers";
 import { useErrorLog } from "./useErrorLog";
 import { useFileOpen } from "./useFileOpen";
 import { useLayers } from "./useLayers";
@@ -97,7 +97,13 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     }
   }, [selectedBreakdownText]);
   // --- G2: cross-section view --- the 2D panel's state; the section tool opens it when it has made a layer.
-  const sectionViewHook = useSectionView({ sourceRef, layersStateRef: layers.layersStateRef, reportError: errorLog.reportError });
+  const sectionViewHook = useSectionView({ sourceRef, layersStateRef: layers.layersStateRef, reportError: errorLog.reportError,
+    // G2-5: the edit history of a section line lives in the layers state.
+    setSectionLineHistory: (layerId, history) => {
+      const current = layers.layersStateRef.current;
+      layers.commitLayers({ ...current, layers: setLayerSectionLineHistoryInList(current.layers, layerId, history) });
+    },
+  });
   const tools = usePointCloudTools({
     rendererRef,
     sourceRef,

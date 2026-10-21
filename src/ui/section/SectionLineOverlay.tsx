@@ -27,7 +27,7 @@ export function SectionLineOverlay({
   const state = viewer.sectionView;
   const layer = state.openLayerId === null ? undefined : viewer.layers.find((l) => l.id === state.openLayerId);
   const section = layer?.section;
-  const pairs = section?.line?.current.points ?? null;
+  const pairs = section?.line?.history.present.points ?? null;
   const active = layer !== undefined && layer.visible && pairs !== null && section !== undefined;
   const [frame, setFrame] = useState<Frame | null>(null);
   const [displayUnit] = useDisplayUnit();

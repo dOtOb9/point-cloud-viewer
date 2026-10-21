@@ -5,6 +5,7 @@
 // 「選択中を消したら先頭を選ぶ」のような規則を直接テストできないため。
 
 import type { CloudInfo } from "../datasource/DataSource";
+import { newHistory, type History } from "../app/section-math";
 import type { SectionGroundLine, SectionLinePreset } from "../datasource/section-line";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
@@ -39,12 +40,13 @@ export interface SectionInfo {
 }
 
 /**
- * The ground line of a cross section. `original` is what the computation made and is never changed; `current` is what
- * the panel draws and the editing of G2-5 will change, so "reset" can go back to `original`.
+ * The ground line of a cross section. `original` is what the computation made and is never changed; `history.present`
+ * is what the panel draws and what the tracing of G2-5 changes, so "reset" can go back to `original`.
  */
 export interface SectionLineState {
   original: SectionGroundLine;
-  current: SectionGroundLine;
+  /** The edit history of the line; `history.present` is what is drawn. Starts as `newHistory(original)`. */
+  history: History<SectionGroundLine>;
 }
 
 /** 画面の「レイヤー」1件。ADR-0018 の「選んだレイヤーから新しいレイヤーを作る」の元になる単位。 */
@@ -114,9 +116,22 @@ export function setLayerVisibleInList(layers: ViewerLayer[], id: string, visible
 }
 
 // --- G2: section line ---
-/** Store the computed section line on a cross-section layer (both `original` and `current`). Other layers are left as they are. */
+/** Store the computed section line on a cross-section layer (as `original` and as the start of a new history). Other layers are left as they are. */
 export function setLayerSectionLineInList(layers: ViewerLayer[], id: string, line: SectionGroundLine): ViewerLayer[] {
-  return layers.map((l) => (l.id === id && l.section ? { ...l, section: { ...l.section, line: { original: line, current: line } } } : l));
+  return layers.map((l) =>
+    l.id === id && l.section ? { ...l, section: { ...l.section, line: { original: line, history: newHistory(line) } } } : l,
+  );
+}
+
+/** G2-5: replace the edit history of the section line of a layer. Layers without a line (and other layers) are left as they are. */
+export function setLayerSectionLineHistoryInList(
+  layers: ViewerLayer[],
+  id: string,
+  history: History<SectionGroundLine>,
+): ViewerLayer[] {
+  return layers.map((l) =>
+    l.id === id && l.section?.line ? { ...l, section: { ...l.section, line: { ...l.section.line, history } } } : l,
+  );
 }
 
 /** 選んだ着色をそのレイヤーに当てはめたときの実際の値（RGB が無ければ標高）。無いレイヤーは null。 */

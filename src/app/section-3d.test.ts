@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { groundLevelAt, groundLevelLabel, groundLineToWorld, sectionAxes, sectionToWorld } from "./section-3d";
+import {
+  groundLevelAt,
+  groundLevelLabel,
+  groundLineToProfile,
+  groundLineToWorld,
+  profileToGroundLine,
+  sectionAxes,
+  sectionToWorld,
+} from "./section-3d";
 import type { ProfileLine } from "./section-math";
 
 describe("sectionToWorld", () => {
@@ -99,5 +107,23 @@ describe("groundLevelLabel", () => {
       "傾斜 +12.3° (+21.9%)",
     ]);
     expect(groundLevelLabel(reading, { horizontalToMeter: 1, verticalToMeter: 1, display: "foot" })[0]).toContain("ft");
+  });
+});
+
+describe("profileToGroundLine (G2-5)", () => {
+  it("(g) goes back and forth without changing a value, and marks the line as edited", () => {
+    const base = { points: new Float32Array([0, 10.5, 12.25, -3, 100, 60.125]), groundPoints: 7, cells: 9 };
+    const back = profileToGroundLine(groundLineToProfile(base.points), base);
+    expect([...back.points]).toEqual([...base.points]);
+    expect(back.points).toBeInstanceOf(Float32Array);
+    expect(back.groundPoints).toBe(7);
+    expect(back.cells).toBe(9);
+    expect(back.edited).toBe(true);
+    expect(base).not.toHaveProperty("edited");
+    expect(groundLineToProfile(back.points)).toEqual(groundLineToProfile(base.points));
+  });
+
+  it("(g) an empty profile gives an empty line", () => {
+    expect(profileToGroundLine([], { points: new Float32Array(0), groundPoints: 0, cells: 0 }).points).toHaveLength(0);
   });
 });

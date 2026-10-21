@@ -2,6 +2,7 @@
 // Pure functions, no React (TaskSheets/ADR-0021-thin-react.md). Tests: src/app/section-3d.test.ts.
 // `sectionAxes` is the TypeScript twin of `SectionAxes` in crates/pcv-core/src/profile.rs (and of `sectionBox` in
 // src/state/tool-math.ts): the same construction, so `(s, z)` of the panel and the 3D coordinates agree.
+import type { SectionGroundLine } from "../datasource/section-line";
 import { formatLength, type LengthUnits } from "../state/units";
 import { interpolateZ, type ProfileLine } from "./section-math";
 
@@ -60,6 +61,19 @@ export function groundLineToProfile(pairs: Float32Array): ProfileLine {
   const out: { s: number; z: number }[] = [];
   for (let i = 0; i + 1 < pairs.length; i += 2) out.push({ s: pairs[i], z: pairs[i + 1] });
   return out;
+}
+
+/**
+ * The reverse of `groundLineToProfile`, for a line the user edited (G2-5). `base` is the line it came from: its
+ * `groundPoints` and `cells` (facts about the computation) are kept, and the result is marked `edited`.
+ */
+export function profileToGroundLine(profile: ProfileLine, base: SectionGroundLine): SectionGroundLine {
+  const points = new Float32Array(profile.length * 2);
+  profile.forEach((p, i) => {
+    points[i * 2] = p.s;
+    points[i * 2 + 1] = p.z;
+  });
+  return { points, groundPoints: base.groundPoints, cells: base.cells, edited: true };
 }
 
 /** What a right click (long press) at `s` reads from the ground line. Lengths are in the file's units. */

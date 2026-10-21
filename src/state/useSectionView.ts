@@ -6,11 +6,11 @@ import { useState, type RefObject } from "react";
 import { newSectionGesture, type SectionViewContext, type SectionViewState } from "../app/section-view";
 import { NO_SECTION_POINTS, type SectionPoints } from "../datasource/section-profile";
 import type { DataSource } from "../datasource/DataSource";
-import type { SectionView, Size } from "../app/section-math";
+import type { ProfilePoint, SectionView, Size } from "../app/section-math";
 import type { GroundLevelReading } from "../app/section-3d";
 import type { LayersState } from "./layers";
 
-export type SectionViewInputs = Pick<SectionViewContext, "reportError"> & {
+export type SectionViewInputs = Pick<SectionViewContext, "reportError" | "setSectionLineHistory"> & {
   sourceRef: RefObject<DataSource | null>;
   layersStateRef: RefObject<LayersState>;
 };
@@ -29,12 +29,13 @@ export function useSectionView(inputs: SectionViewInputs): SectionViewHook {
   const [panelSize, setPanelSize] = useState<Size>({ width: 0, height: 0 });
   const [cursorS, setCursorS] = useState<number | null>(null);
   const [groundLevel, setGroundLevel] = useState<GroundLevelReading | null>(null);
+  const [trace, setTrace] = useState<ProfilePoint[] | null>(null);
   // Plain objects that live as long as the app, like `toolLock`: a load counter (so an old load cannot overwrite a
   // newer one) and the pointer tracking of the gesture in progress (it changes at pointer speed, so not React state).
   const [token] = useState(() => ({ generation: 0 }));
   const [gesture] = useState(newSectionGesture);
 
-  const sectionView: SectionViewState = { openLayerId, points, loading, view, panelSize, cursorS, groundLevel };
+  const sectionView: SectionViewState = { openLayerId, points, loading, view, panelSize, cursorS, groundLevel, trace };
   // Rebuilt on every render, so the plain values are the ones the user sees when an event handler picks it up.
   const sectionContext: SectionViewContext = {
     ...sectionView,
@@ -48,6 +49,8 @@ export function useSectionView(inputs: SectionViewInputs): SectionViewHook {
     setPanelSize,
     setCursorS,
     setGroundLevel,
+    setTrace,
+    setSectionLineHistory: inputs.setSectionLineHistory,
     token,
     gesture,
   };

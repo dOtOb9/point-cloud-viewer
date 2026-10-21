@@ -35,6 +35,8 @@ export interface SectionLineRequest {
 /** A polyline along the section: point i is `(s, z)` = `points[i * 2]`, `points[i * 2 + 1]`, in the file's unit. */
 export interface SectionGroundLine {
   points: Float32Array;
+  /** True once the user has changed the line by tracing (G2-5). Absent on a line straight from the computation. */
+  edited?: boolean;
   /** Ground points the TIN was built from (at most `cells`). */
   groundPoints: number;
   /** Cells of the grid the ground points were chosen on. */
