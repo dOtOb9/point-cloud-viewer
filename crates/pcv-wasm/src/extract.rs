@@ -42,7 +42,7 @@ const READ_BUFFER_BYTES: usize = 256 * 1024;
 /// Same text as the desktop `ExtractError::EmptySelection`.
 const EMPTY_SELECTION_MESSAGE: &str = "選んだ範囲に点がありません";
 
-type Source = BufReader<FileRangeReader>;
+pub(crate) type Source = BufReader<FileRangeReader>;
 
 fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
     JsValue::from_str(&err.to_string())
@@ -75,7 +75,7 @@ pub struct WasmExtractor {
     file_size_bytes: u64,
 }
 
-fn open_source(file: File) -> Source {
+pub(crate) fn open_source(file: File) -> Source {
     BufReader::with_capacity(READ_BUFFER_BYTES, FileRangeReader::new(file, Stats::new()))
 }
 

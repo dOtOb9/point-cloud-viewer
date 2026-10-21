@@ -34,6 +34,9 @@ mod range_math;
 mod section_line;
 // ---
 mod stats;
+// --- G3: thinning and outlier filters ---
+mod thin_filter;
+// ---
 mod util;
 mod write_metadata;
 
@@ -56,6 +59,9 @@ pub use raster::{WasmRasterPreview, WasmRasterizer};
 pub use point_file_import::WasmPointFileConverter;
 // --- G2: section line --- Web version of the section line. Used by `src/datasource/copc.worker.ts`.
 pub use section_line::WasmSectionLine;
+// ---
+// --- G3: thinning and outlier filters --- Web thinning / ROR / SOR. Used by `src/datasource/copc.worker.ts`.
+pub use thin_filter::WasmThinFilter;
 // ---
 
 /// 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば

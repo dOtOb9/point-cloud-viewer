@@ -26,6 +26,7 @@
 //! file's unit). The desktop Tauri commands take the same shapes.
 
 use std::io::{Read, Seek};
+use std::rc::Rc;
 
 use copc_core::LasPointRecord;
 use copc_reader::CopcReader;
@@ -181,16 +182,22 @@ pub struct JobCounters {
     pub largest_tile_points: u64,
 }
 
-pub struct ThinFilterJob<R, F>
+/// Opens a fresh reader of the source. Shared (`Rc`) because pass 2 of SOR opens the file again. It is a
+/// `dyn` so that the job has one type parameter (the reader) and the Web layer can name the job's type.
+type OpenFn<R> = Rc<dyn Fn() -> copc_core::Result<CopcReader<R>>>;
+
+/// The `TileReader` the job reads with: a boxed closure that calls `OpenFn`.
+type JobTiles<R> = TileReader<R, Box<dyn FnMut() -> copc_core::Result<CopcReader<R>>>>;
+
+pub struct ThinFilterJob<R>
 where
-    R: Read + Seek + Send,
-    F: FnMut() -> copc_core::Result<CopcReader<R>> + Clone,
+    R: Read + Seek + Send + 'static,
 {
-    open: F,
+    open: OpenFn<R>,
     mode: JobMode,
     cap_points: u64,
     min_tile_size: f64,
-    tiles: TileReader<R, F>,
+    tiles: JobTiles<R>,
     extent: TileRect,
     phase: Phase,
     stats: RunningStats,
@@ -202,14 +209,18 @@ where
     done: bool,
 }
 
-impl<R, F> ThinFilterJob<R, F>
+impl<R> ThinFilterJob<R>
 where
-    R: Read + Seek + Send,
-    F: FnMut() -> copc_core::Result<CopcReader<R>> + Clone,
+    R: Read + Seek + Send + 'static,
 {
-    /// `open` opens a fresh reader of the source each time it is called (the same closure the
+    /// `open` opens a fresh reader of the source each time it is called (the same function the
     /// desktop path gives `TileReader`). `cap_points` is the target maximum of points per tile core.
-    pub fn new(mode: JobMode, mut open: F, cap_points: u64) -> Result<Self, JobError> {
+    pub fn new(
+        mode: JobMode,
+        open: impl Fn() -> copc_core::Result<CopcReader<R>> + 'static,
+        cap_points: u64,
+    ) -> Result<Self, JobError> {
+        let open: OpenFn<R> = Rc::new(open);
         mode.validate().map_err(JobError::Settings)?;
         let (header_points, max_abs) = {
             let reader = open()?;
@@ -225,7 +236,7 @@ where
         // The tile side is at least twice the margin, so the margin is never wider than a tile.
         let min_tile_size = 2.0 * mode.margin();
         let cap_points = cap_points.max(1);
-        let tiles = TileReader::new(open.clone(), cap_points, min_tile_size, mode.margin())?;
+        let tiles = Self::tile_reader(&open, cap_points, min_tile_size, mode.margin())?;
         let extent = tiles.extent();
         let (phase, passes) = match mode {
             JobMode::Sor(_) => (Phase::Statistics, 2),
@@ -249,6 +260,17 @@ where
         })
     }
 
+    fn tile_reader(
+        open: &OpenFn<R>,
+        cap_points: u64,
+        min_tile_size: f64,
+        margin: f64,
+    ) -> copc_core::Result<JobTiles<R>> {
+        let open = Rc::clone(open);
+        let open: Box<dyn FnMut() -> copc_core::Result<CopcReader<R>>> = Box::new(move || open());
+        TileReader::new(open, cap_points, min_tile_size, margin)
+    }
+
     pub fn counters(&self) -> JobCounters {
         self.counters
     }
@@ -267,8 +289,8 @@ where
                     if let JobMode::Sor(s) = &self.mode {
                         self.threshold = self.stats.threshold(s.n_sigma);
                     }
-                    self.tiles = TileReader::new(
-                        self.open.clone(),
+                    self.tiles = Self::tile_reader(
+                        &self.open,
                         self.cap_points,
                         self.min_tile_size,
                         self.mode.margin(),
