@@ -29,6 +29,7 @@ import {
 import { isTauriEnvironment } from "./environment";
 import type { ExtractFilter, RasterRequest, ToolOptions, ToolResult } from "./tools";
 import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
+import { decodeSectionLine, type SectionGroundLine, type SectionLineRequest } from "./section-line";
 import { StaleNodeRequestError } from "./stale-node-error";
 import { buildNodeRequestPath } from "./tauri-protocol";
 import { OPENABLE_EXTENSIONS } from "./source-format";
@@ -509,4 +510,23 @@ export async function saveGeoTiff(sourcePath: string, suggestedName: string): Pr
   if (!destination) return false;
   await invoke("save_tool_file", { source: sourcePath, destination });
   return true;
+}
+
+// --- G2: section line ---
+
+/**
+ * Computes the ground line of a cross section from the SOURCE layer (`cloudId` of the layer the section was cut
+ * from). Progress comes through `options.onProgress` as per mille (`totalPoints` is 1000), and the tool cancel
+ * (`cancelLasConversion()`) stops it; the error text is then "キャンセルされた".
+ */
+export async function computeSectionLine(
+  cloudId: number,
+  line: SectionLineInput,
+  request: SectionLineRequest,
+  options?: ToolOptions,
+): Promise<SectionGroundLine> {
+  return await withToolProgress(options, async () => {
+    const buffer = await invoke<ArrayBuffer>("compute_section_line", { generation: cloudId, line, request });
+    return decodeSectionLine(buffer);
+  });
 }

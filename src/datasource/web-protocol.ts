@@ -12,6 +12,7 @@ import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
 import type { ExtractFilter, RasterRequest } from "./tools";
 import type { SectionLineInput } from "./section-profile";
+import type { SectionLineRequest } from "./section-line";
 
 /** ローカルファイルかURLか。`WebSource.open(path)`の`path`から組み立てる。 */
 export type OpenSource = { kind: "file"; file: File } | { kind: "url"; url: string };
@@ -142,6 +143,7 @@ export function buildSectionProfileRequest(
 
 export type WorkerRequest =
   | SectionProfileRequest
+  | SectionLineStartRequest
   | RasterStartRequest
   | ExtractStartRequest
   | ToolMergeStartRequest
@@ -238,6 +240,9 @@ export interface ConvertFailedResponse {
 
 export type WorkerResponse =
   | SectionProfileResponse
+  | SectionLineProgressResponse
+  | SectionLineDoneResponse
+  | SectionLineFailedResponse
   | ToolProgressResponse
   | ToolDoneResponse
   | ToolFailedResponse
@@ -403,4 +408,49 @@ export function buildToolMergeStartRequest(
   label: string,
 ): ToolMergeStartRequest {
   return { type: "toolMergeStart", id, files, isMobile, label };
+}
+
+// --- G2: section line ---
+//
+// The ground line of a cross section, computed in small steps by `WasmSectionLine`. Own response types, like the
+// tools above, so an app-wide listener never mistakes them for a conversion or a tool that makes a layer.
+// Cancel with `ConvertCancelRequest` (the Worker checks the flag between steps).
+
+/** Compute the section line from the open source layer `cloudId`. Answered by progress responses and one done/failed. */
+export interface SectionLineStartRequest {
+  type: "sectionLineStart";
+  id: number;
+  cloudId: number;
+  line: SectionLineInput;
+  request: SectionLineRequest;
+}
+
+export interface SectionLineProgressResponse {
+  type: "section-line-progress";
+  id: number;
+  /** 0 to 1. */
+  fraction: number;
+}
+
+export interface SectionLineDoneResponse {
+  type: "section-line-done";
+  id: number;
+  /** Transferred, not copied. Layout: `section-line.ts`. */
+  buffer: ArrayBuffer;
+}
+
+export interface SectionLineFailedResponse {
+  type: "section-line-failed";
+  id: number;
+  message: string;
+  cancelled: boolean;
+}
+
+export function buildSectionLineStartRequest(
+  id: number,
+  cloudId: number,
+  line: SectionLineInput,
+  request: SectionLineRequest,
+): SectionLineStartRequest {
+  return { type: "sectionLineStart", id, cloudId, line, request };
 }

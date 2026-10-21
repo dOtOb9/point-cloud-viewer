@@ -34,6 +34,7 @@ import init, {
   WasmConverter,
   WasmExtractor,
   WasmRasterizer,
+  WasmSectionLine,
   WasmCopcFile,
   WasmPointFileConverter,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
@@ -58,6 +59,7 @@ import type {
   PointFileFormat,
   SectionProfileRequest,
   RasterStartRequest,
+  SectionLineStartRequest,
   WorkerRequest,
   WorkerResponse,
 } from "./web-protocol";
@@ -221,6 +223,9 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         handleClose(request.id, request.cloudId);
         return;
       // --- G2: cross-section view ---
+      case "sectionLineStart":
+        await handleSectionLineStart(request);
+        return;
       case "sectionProfile":
         handleSectionProfile(request);
         return;
@@ -324,6 +329,59 @@ function handleSectionProfile(request: SectionProfileRequest): void {
   // Same as handleReadNode: wasm-bindgen already copied the bytes out of wasm memory, so the buffer is ours.
   const buffer = bytes.buffer as ArrayBuffer;
   scope.postMessage({ type: "section-profile-result", id: request.id, ok: true, buffer }, [buffer]);
+}
+
+// --- G2: section line ---
+/** Run at most this long (ms) between two yields to the event loop (a cancel message is handled at the yield). */
+const SECTION_LINE_SLICE_MS = 30;
+
+/**
+ * Compute the ground line of a cross section from the source layer with `WasmSectionLine`. Each `advance` is a small
+ * piece of work; they run back to back for a slice of time, then progress is posted and the loop yields so that a
+ * `convertCancel` message can set `convertCancelRequested`. The answer is always one `section-line-done` or
+ * `section-line-failed` (this function does not throw).
+ */
+async function handleSectionLineStart(request: SectionLineStartRequest): Promise<void> {
+  const { id } = request;
+  const fail = (message: string, cancelled: boolean) =>
+    scope.postMessage({ type: "section-line-failed", id, message, cancelled });
+  const openFile = openFiles.get(request.cloudId);
+  if (!openFile) {
+    fail("断面線の元になるレイヤーが閉じられています", false);
+    return;
+  }
+  activeConvertId = id;
+  convertCancelRequested = false;
+  let job: WasmSectionLine | null = null;
+  try {
+    job = new WasmSectionLine(openFile, request.line, request.request);
+    while (!job.isDone()) {
+      const sliceStart = performance.now();
+      let fraction = 0;
+      while (!job.isDone() && performance.now() - sliceStart < SECTION_LINE_SLICE_MS) {
+        fraction = job.advance(openFile);
+      }
+      scope.postMessage({ type: "section-line-progress", id, fraction });
+      if (convertCancelRequested) {
+        fail("キャンセルされました", true);
+        return;
+      }
+      await yieldToEventLoop();
+      if (convertCancelRequested) {
+        fail("キャンセルされました", true);
+        return;
+      }
+    }
+    const bytes = job.finish();
+    // Same as handleReadNode: wasm-bindgen already copied the bytes out of wasm memory, so the buffer is ours.
+    const buffer = bytes.buffer as ArrayBuffer;
+    scope.postMessage({ type: "section-line-done", id, buffer }, [buffer]);
+  } catch (err) {
+    fail(describeConversionFailure(err), false);
+  } finally {
+    job?.free();
+    if (activeConvertId === id) activeConvertId = null;
+  }
 }
 
 /** L1-B: そのファイルを閉じる。wasm側のリーダーを`free()`で手放す。知らない世代は何もしない。 */

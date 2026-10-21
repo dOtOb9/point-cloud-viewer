@@ -46,6 +46,7 @@ import {
   buildOpenUrlRequest,
   buildPointFileConvertStartRequest,
   buildReadNodeRequest,
+  buildSectionLineStartRequest,
   buildSectionProfileRequest,
   classifyOpenPath,
   makeFileKey,
@@ -56,6 +57,7 @@ import {
 import { StaleNodeRequestError } from "./stale-node-error";
 import type { ExtractFilter, RasterRequest, ToolOptions, ToolProgress, ToolResult } from "./tools";
 import { decodeSectionProfile, type SectionLineInput, type SectionPoints } from "./section-profile";
+import { decodeSectionLine, type SectionGroundLine, type SectionLineRequest } from "./section-line";
 
 type InsufficientSpaceWeb = Extract<ConversionOutcome, { kind: "insufficientSpaceWeb" }>;
 
@@ -353,6 +355,40 @@ export class WebSource implements DataSource {
       throw new Error(`readSectionProfile()に対して予期しない応答: ${response.type}`);
     }
     return decodeSectionProfile(response.buffer);
+  }
+
+  // --- G2: section line ---
+  /** Waiters per section-line request id (own responses, see `web-protocol.ts`). */
+  private readonly sectionLinePending = new Map<
+    number,
+    {
+      resolve: (buffer: ArrayBuffer) => void;
+      reject: (error: Error) => void;
+      onProgress?: (progress: ToolProgress) => void;
+    }
+  >();
+
+  /**
+   * Computes the ground line of a cross section from the SOURCE layer (`cloudId`). Progress is reported as per mille
+   * (`totalPoints` is 1000); `cancelConversion()` stops it (the error text is "キャンセルされました").
+   */
+  async computeSectionLine(
+    cloudId: number,
+    line: SectionLineInput,
+    request: SectionLineRequest,
+    options?: ToolOptions,
+  ): Promise<SectionGroundLine> {
+    const id = this.nextRequestId++;
+    this.activeConvertId = id;
+    try {
+      const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+        this.sectionLinePending.set(id, { resolve, reject, onProgress: options?.onProgress });
+        this.worker.postMessage(buildSectionLineStartRequest(id, cloudId, line, request));
+      });
+      return decodeSectionLine(buffer);
+    } finally {
+      if (this.activeConvertId === id) this.activeConvertId = null;
+    }
   }
 
   async close(cloudId: number): Promise<void> {
@@ -657,6 +693,26 @@ export class WebSource implements DataSource {
         stageTimings: toConversionStageBreakdown(response.stageTimings),
         warnings: response.warnings ?? [],
       });
+      return;
+    }
+    // --- G2: section line ---
+    if (response.type === "section-line-progress") {
+      this.sectionLinePending.get(response.id)?.onProgress?.({
+        pointsRead: Math.round(response.fraction * 1000),
+        totalPoints: 1000,
+      });
+      return;
+    }
+    if (response.type === "section-line-done") {
+      const waiting = this.sectionLinePending.get(response.id);
+      this.sectionLinePending.delete(response.id);
+      waiting?.resolve(response.buffer);
+      return;
+    }
+    if (response.type === "section-line-failed") {
+      const waiting = this.sectionLinePending.get(response.id);
+      this.sectionLinePending.delete(response.id);
+      waiting?.reject(new Error(response.message));
       return;
     }
     if (response.type === "tool-progress") {
