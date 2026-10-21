@@ -421,3 +421,92 @@ fn cancel_stops_the_run() {
     assert!(err.is_cancelled(), "{err}");
     assert!(!output.exists());
 }
+
+// ---- G3-5: the step-by-step job used by the Web build gives the same points ----
+
+/// Runs `ThinFilterJob` to the end. Returns the ids (gps_time bits) of the kept points, the
+/// number of `advance` calls, the largest batch one call returned and the largest tile held.
+fn run_job(
+    source: &Path,
+    mode: pcv_core::thin_filter_job::JobMode,
+    cap: u64,
+) -> (BTreeSet<u64>, u64, usize, u64) {
+    let path = source.to_path_buf();
+    let open = move || CopcReader::from_path(&path);
+    let mut job = pcv_core::thin_filter_job::ThinFilterJob::new(mode, open, cap).expect("job");
+    let mut ids = BTreeSet::new();
+    let mut calls = 0u64;
+    let mut largest_batch = 0usize;
+    loop {
+        let step = job.advance().expect("advance");
+        calls += 1;
+        largest_batch = largest_batch.max(step.kept.len());
+        for record in &step.kept {
+            assert!(
+                ids.insert(record.gps_time.to_bits()),
+                "twice"
+            );
+        }
+        if step.done {
+            assert_eq!(step.points_read, step.total_points, "progress reaches the total");
+            break;
+        }
+    }
+    assert_eq!(job.counters().kept_points as usize, ids.len());
+    (ids, calls, largest_batch, job.counters().largest_tile_points)
+}
+
+#[test]
+fn the_step_job_keeps_the_same_points_as_thin_path_and_filter_path() {
+    use pcv_core::thin_filter_job::JobMode;
+    let dir = tempfile::tempdir().expect("dir");
+    let source = write_copc(dir.path(), cluster_points());
+    let cap = 1200;
+
+    for kind in [ThinKind::Grid(GridKeep::Lowest), ThinKind::Voxel] {
+        let settings = ThinSettings { size: 1.5, kind };
+        let reference = run_thin(&source, &settings, cap);
+        let (kept, calls, batch, largest_tile) = run_job(&source, JobMode::Thin(settings), cap);
+        assert_eq!(kept, ids(&reference), "{kind:?}");
+        assert!(calls > 5, "the work is split in steps: {calls}");
+        assert!(batch as u64 <= 2 * cap, "batch {batch}");
+        assert_eq!(largest_tile, reference.summary.largest_tile_points);
+    }
+
+    let ror = RorSettings {
+        radius: 1.5,
+        min_neighbors: 4,
+    };
+    let reference = run_filter(&source, &OutlierFilter::Ror(ror), cap).expect("ror");
+    let (kept, _, _, _) = run_job(&source, JobMode::Ror(ror), cap);
+    assert_eq!(kept, ids(&reference));
+
+    let sor = SorSettings {
+        k: 8,
+        n_sigma: 1.0,
+        search_radius: 12.0,
+    };
+    let reference = run_filter(&source, &OutlierFilter::Sor(sor), cap).expect("sor");
+    let (kept, _, _, largest_tile) = run_job(&source, JobMode::Sor(sor), cap);
+    assert_eq!(kept, ids(&reference));
+    assert!(
+        largest_tile < u64::from(TOTAL_POINTS) / 2,
+        "memory is one tile: {largest_tile}"
+    );
+}
+
+#[test]
+fn the_step_job_rejects_bad_settings() {
+    use pcv_core::thin_filter_job::{JobError, JobMode, ThinFilterJob};
+    let dir = tempfile::tempdir().expect("dir");
+    let source = write_copc(dir.path(), cluster_points());
+    let bad = JobMode::Sor(SorSettings {
+        k: 0,
+        n_sigma: 1.0,
+        search_radius: 5.0,
+    });
+    let err = ThinFilterJob::new(bad, move || CopcReader::from_path(&source), 1500)
+        .err()
+        .expect("error");
+    assert!(matches!(err, JobError::Settings(_)), "{err}");
+}

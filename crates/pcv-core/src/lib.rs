@@ -20,6 +20,7 @@ pub mod section_line;
 #[cfg(test)]
 mod test_support;
 pub mod thin;
+pub mod thin_filter_job;
 pub mod tiles;
 
 pub use copc::{CloudInfo, CopcError, CopcFile, Hierarchy, HierarchyNode, NodeKey, Result};
