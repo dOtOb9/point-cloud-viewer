@@ -3,6 +3,8 @@ import type { MeasureToolState } from "../../state/useMeasureTool";
 import type { LayerToolState } from "../../state/useLayerTool";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
 import { glassSurfaceClass } from "../common/glass";
+import { FilterButton } from "./buttons/FilterButton"; // G3
+import { ThinButton } from "./buttons/ThinButton"; // G3
 import { MeasureButton } from "./buttons/MeasureButton";
 import { MergeLayersButton } from "./buttons/MergeLayersButton";
 import { OpenFileButton } from "./buttons/OpenFileButton";
@@ -23,6 +25,10 @@ interface Props {
   layerTool: LayerToolState;
   /** G1: opens the rasterize window. */
   onOpenRaster: () => void;
+  /** G3: opens the thinning dialog. */
+  onOpenThin: () => void;
+  /** G3: opens the outlier filter dialog. */
+  onOpenFilter: () => void;
 }
 
 /**
@@ -44,7 +50,7 @@ interface Props {
  * Below 768px (`useNarrowViewport`) it only stretches to the edges and drops the rounded
  * corners. Touch targets are 44px or more (buttons are `min-h-14` = 56px).
  */
-export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster }: Props) {
+export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter }: Props) {
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useToolbarDragScroll();
   // Narrow screens: stretched to the edges, no rounded corners. Wide: floats a little, rounded.
@@ -67,6 +73,9 @@ export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTo
       <SectionButton viewer={viewer} layerTool={layerTool} />
       <MergeLayersButton viewer={viewer} />
       <RasterizeButton viewer={viewer} onOpen={onOpenRaster} />
+      {/* G3: thinning and outlier filter */}
+      <ThinButton viewer={viewer} onOpen={onOpenThin} />
+      <FilterButton viewer={viewer} onOpen={onOpenFilter} />
       <ToolbarSeparator />
       <SettingsButton onOpenSettings={onOpenSettings} />
     </div>

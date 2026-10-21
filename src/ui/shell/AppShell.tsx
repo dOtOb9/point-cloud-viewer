@@ -15,6 +15,8 @@ import { LayerToolOverlay } from "../tools/LayerToolOverlay";
 import { SectionDialog } from "../tools/SectionDialog";
 import { SectionPanel } from "../section/SectionPanel";
 import { RasterWindow } from "../tools/RasterWindow";
+import { ThinDialog } from "../tools/ThinDialog"; // G3
+import { FilterDialog } from "../tools/FilterDialog"; // G3
 import { openRasterWindow } from "../../app/raster-window";
 import { useRasterWindow } from "../../state/useRasterWindow";
 import { selectedPointCloudLayer } from "../toolbar/toolbar-state";
@@ -58,6 +60,8 @@ export function AppShell() {
   // デスクトップ幅では開いていることが必要)。
   const [layerOpen, setLayerOpen] = useState(() => !(typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // G3: which of the thinning / filter dialogs is open.
+  const [thinFilterDialog, setThinFilterDialog] = useState<"thin" | "filter" | null>(null);
   // G1: the Rasterize window (state in the hook, steps in src/app/raster-window.ts).
   const raster = useRasterWindow(viewer.toolContext);
   // ファイルのドラッグ&ドロップで開く(ADR-0017)。ドラッグ中は案内を重ねて出す。
@@ -134,6 +138,8 @@ export function AppShell() {
           const layer = selectedPointCloudLayer(viewer);
           if (layer) void openRasterWindow(raster.context, layer.id);
         }}
+        onOpenThin={() => setThinFilterDialog("thin")}
+        onOpenFilter={() => setThinFilterDialog("filter")}
       />
 
       <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
@@ -170,6 +176,9 @@ export function AppShell() {
       <SectionPanel viewer={viewer} glassEnabled={glassEnabled} />
       {/* G1: the Rasterize window (opened from the toolbar button). */}
       <RasterWindow viewer={viewer} holder={raster} />
+      {/* G3: the thinning / filter dialogs (mounted only while open, so the fields start from the presets). */}
+      {thinFilterDialog === "thin" && <ThinDialog viewer={viewer} onClose={() => setThinFilterDialog(null)} />}
+      {thinFilterDialog === "filter" && <FilterDialog viewer={viewer} onClose={() => setThinFilterDialog(null)} />}
       <ToolProgressDialog viewer={viewer} open={toolDialogOpen} onCollapse={() => setToolDialogOpen(false)} />
 
       <ConversionDialog viewer={viewer} open={conversionDialogVisible} onClose={() => setConversionDialogOpen(false)} />
