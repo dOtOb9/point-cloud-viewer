@@ -55,7 +55,7 @@ export function presetOf(values: CsfParamsInMetres, display: DisplayUnit): DtmPr
 /** The `Units` of LandXML for the file's horizontal unit (metres per unit). `unknown` writes no `Units` element. */
 export function landXmlUnitFor(horizontalToMeter: number | null): LandXmlUnit {
   if (horizontalToMeter === null) return "unknown";
-  const near = (target: number) => Math.abs(horizontalToMeter - target) < 1e-6;
+  const near = (target: number) => Math.abs(horizontalToMeter - target) < 1e-8; // the two feet differ by 6e-7
   if (near(1)) return "meter";
   if (near(INTERNATIONAL_FOOT_IN_METERS)) return "foot";
   if (near(1200 / 3937)) return "usSurveyFoot";
