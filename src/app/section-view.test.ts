@@ -11,9 +11,11 @@ import {
   resetSectionView,
   sectionPointerCancel,
   sectionPointerDown,
+  sectionPointerLeave,
   sectionPointerMove,
   sectionPointerUp,
   setSectionPanelSize,
+  showGroundLevelAt,
   wheelZoomFactor,
   zoomSectionWheel,
   type SectionPointer,
@@ -60,6 +62,8 @@ function makeHarness(layers: ViewerLayer[] = [sectionLayer()], source: DataSourc
     loading: false,
     view: null,
     panelSize: { width: 400, height: 300 },
+    cursorS: null,
+    groundLevel: null,
     getSource: () => source,
     getLayersState: () => ({ layers, selectedLayerId: null }),
     reportError: (message, src) => errors.push([message, src]),
@@ -68,6 +72,8 @@ function makeHarness(layers: ViewerLayer[] = [sectionLayer()], source: DataSourc
     setLoading: (l) => void (ctx.loading = l),
     setView: (v) => void (ctx.view = v),
     setPanelSize: (s) => void (ctx.panelSize = s),
+    setCursorS: (s) => void (ctx.cursorS = s),
+    setGroundLevel: (g) => void (ctx.groundLevel = g),
     token: { generation: 0 },
     gesture: newSectionGesture(),
   };
@@ -241,5 +247,75 @@ describe("touch", () => {
     sectionPointerCancel(ctx, pointer(1, "touch", 0, 100, 100, 5));
     expect(ctx.gesture.pointers.size).toBe(0);
     expect(ctx.gesture.multiTouch).toBe(false);
+  });
+});
+
+describe("ground level (G2-6) and cursor (G2-8)", () => {
+  /** Layer with a line z = 10 (s 0..50) then rising 1:1 (s 50..100), in a CRS of the given unit factors. */
+  function layerWithLine(unit: number | null): ViewerLayer {
+    const base = sectionLayer();
+    const crs = unit === null ? null : { horizontalUnitToMeter: unit, verticalUnitToMeter: unit };
+    return {
+      ...base,
+      info: { crs } as ViewerLayer["info"],
+      section: { ...base.section!, line: { original: LINE, current: LINE } },
+    } as ViewerLayer;
+  }
+  const LINE = { points: new Float32Array([0, 10, 50, 10, 100, 60]), groundPoints: 3, cells: 3 };
+
+  function openedHarness(unit: number | null, withLine = true) {
+    const layer = withLine ? layerWithLine(unit) : { ...layerWithLine(unit), section: { ...sectionLayer().section! } };
+    const h = makeHarness([layer]);
+    h.ctx.openLayerId = "sec";
+    h.ctx.view = { scale: 1, offsetX: 0, offsetY: 100 }; // screen x = s
+    return h;
+  }
+
+  it("a right click reads GL and the +-1 m slope at the clicked s", () => {
+    const { ctx } = openedHarness(1);
+    sectionPointerDown(ctx, pointer(1, "mouse", 2, 75, 50, 0));
+    sectionPointerUp(ctx, pointer(1, "mouse", 2, 75, 50, 50));
+    expect(ctx.groundLevel!.z).toBeCloseTo(35);
+    expect(ctx.groundLevel!.slopeDegrees).toBeCloseTo(45);
+  });
+
+  it("a one-finger long press does the same", () => {
+    const { ctx } = openedHarness(1);
+    sectionPointerDown(ctx, pointer(1, "touch", 0, 25, 50, 0));
+    sectionPointerUp(ctx, pointer(1, "touch", 0, 25, 50, 700));
+    expect(ctx.groundLevel!.z).toBeCloseTo(10);
+    expect(ctx.groundLevel!.slopeDegrees).toBeCloseTo(0);
+  });
+
+  it("uses a 1 m window in a feet file (1 ft = 0.3048 m)", () => {
+    const { ctx } = openedHarness(0.3048);
+    showGroundLevelAt(ctx, 50); // exactly at the bend: window 1 / 0.3048 ft on each side
+    const half = 1 / 0.3048;
+    // z(s - half) = 10, z(s + half) = 10 + half, over 2 * half: slope 0.5
+    expect(ctx.groundLevel!.slopePercent).toBeCloseTo(50);
+    expect(half).toBeGreaterThan(3);
+  });
+
+  it("clears the reading outside the line and when the layer has no line", () => {
+    const { ctx } = openedHarness(1);
+    ctx.groundLevel = { s: 1, z: 1, slopeDegrees: 0, slopePercent: 0 };
+    showGroundLevelAt(ctx, 150);
+    expect(ctx.groundLevel).toBeNull();
+    const none = openedHarness(1, false);
+    none.ctx.groundLevel = { s: 1, z: 1, slopeDegrees: 0, slopePercent: 0 };
+    showGroundLevelAt(none.ctx, 20);
+    expect(none.ctx.groundLevel).toBeNull();
+  });
+
+  it("follows the mouse with cursorS and forgets it on leave and close", () => {
+    const { ctx } = openedHarness(1);
+    sectionPointerMove(ctx, pointer(1, "mouse", 0, 42, 10, 0));
+    expect(ctx.cursorS).toBeCloseTo(42);
+    sectionPointerLeave(ctx);
+    expect(ctx.cursorS).toBeNull();
+    sectionPointerMove(ctx, pointer(1, "mouse", 0, 42, 10, 0));
+    closeSectionPanel(ctx);
+    expect(ctx.cursorS).toBeNull();
+    expect(ctx.groundLevel).toBeNull();
   });
 });

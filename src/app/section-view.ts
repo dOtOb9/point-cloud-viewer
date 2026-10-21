@@ -16,11 +16,13 @@ import {
 } from "../datasource/section-profile";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { findLayer, type LayersState } from "../state/layers";
+import { groundLevelAt, groundLineToProfile, SLOPE_HALF_WINDOW_M, type GroundLevelReading } from "./section-3d";
 import {
   classifyOneFinger,
   classifyRightPress,
   fitView,
   panBy,
+  screenToSection,
   twoFingerStep,
   zoomAt,
   type ScreenPoint,
@@ -41,6 +43,10 @@ export interface SectionViewState {
   view: SectionView | null;
   /** Size of the drawing area in CSS pixels; 0 x 0 until the panel has been laid out. */
   panelSize: Size;
+  /** `s` under the mouse pointer in the panel, or null when it is not over the panel (G2-8: shown as a dot in 3D too). */
+  cursorS: number | null;
+  /** The GL and slope read by the last right click / long press (G2-6), or null. Shown in the panel and in 3D. */
+  groundLevel: GroundLevelReading | null;
 }
 
 /** One pointer (a mouse button press or a finger) that is down. */
@@ -79,6 +85,8 @@ export interface SectionViewContext extends SectionViewState {
   setLoading: (loading: boolean) => void;
   setView: (view: SectionView | null) => void;
   setPanelSize: (size: Size) => void;
+  setCursorS: (s: number | null) => void;
+  setGroundLevel: (reading: GroundLevelReading | null) => void;
   /** Counts opens/closes: a read that finishes after a newer open or a close is dropped. */
   token: { generation: number };
   gesture: SectionGesture;
@@ -102,6 +110,8 @@ export async function openSectionPanel(ctx: SectionViewContext, layerId: string)
   }
   const generation = ++ctx.token.generation;
   ctx.setOpenLayerId(layerId);
+  ctx.setCursorS(null);
+  ctx.setGroundLevel(null);
   ctx.setPoints(NO_SECTION_POINTS);
   ctx.setView(null);
   ctx.setLoading(true);
@@ -127,6 +137,8 @@ export function closeSectionPanel(ctx: SectionViewContext): void {
   ctx.gesture.pointers.clear();
   ctx.gesture.multiTouch = false;
   ctx.setOpenLayerId(null);
+  ctx.setCursorS(null);
+  ctx.setGroundLevel(null);
   ctx.setPoints(NO_SECTION_POINTS);
   ctx.setView(null);
   ctx.setLoading(false);
@@ -200,6 +212,7 @@ export function sectionPointerDown(ctx: SectionViewContext, p: SectionPointer): 
 }
 
 export function sectionPointerMove(ctx: SectionViewContext, p: SectionPointer): void {
+  if (p.pointerType !== "touch") setCursorFromScreen(ctx, p.x);
   const tracked = ctx.gesture.pointers.get(p.pointerId);
   if (!tracked) return;
   const touches = touchPointers(ctx.gesture);
@@ -238,10 +251,10 @@ export function sectionPointerUp(ctx: SectionViewContext, p: SectionPointer): vo
   if (tracked.type === "touch") {
     // A long press of one finger that did not move shows the ground level (G2-6). Not after a two-finger gesture.
     if (!ctx.gesture.multiTouch && classifyOneFinger(press) === "longpress") {
-      showGroundLevelAt();
+      showGroundLevelAt(ctx, p.x);
     }
   } else if (tracked.button === RIGHT_BUTTON && classifyRightPress(press) === "click") {
-    showGroundLevelAt();
+    showGroundLevelAt(ctx, p.x);
   }
   if (ctx.gesture.pointers.size === 0) ctx.gesture.multiTouch = false;
 }
@@ -256,13 +269,45 @@ function touchPointers(gesture: SectionGesture): TrackedPointer[] {
   return [...gesture.pointers.values()].filter((t) => t.type === "touch");
 }
 
+/** The mouse left the panel: the cursor dot in 3D goes away. */
+export function sectionPointerLeave(ctx: SectionViewContext): void {
+  ctx.setCursorS(null);
+}
+
+/** The mouse is at panel x `x` (CSS px): remember the `s` under it. The height does not matter here. */
+function setCursorFromScreen(ctx: SectionViewContext, x: number): void {
+  ctx.setCursorS(screenToSection(effectiveSectionView(ctx), x, 0).s);
+}
+
 /**
- * Right click (mouse) or long press (touch) at a point of the panel: show the ground level (GL) and the slope of the
- * section line there.
- * TODO(G2-6): not implemented yet. It needs the section line (G2-4) and `nearestOnLine` / `slopeAt` of section-math.ts.
- * It is a separate function so the pointer code above does not change when G2-6 fills it in; G2-6 will give it
- * `(ctx, screen)` (the position of the click, which the two call sites above already have in `p.x`, `p.y`).
+ * The ground line of the open section layer as it is now, read from the layers state (so edits and undo of G2-5 show up
+ * without a copy), with the layer's CRS. null when no panel is open or the layer has no line.
  */
-function showGroundLevelAt(): void {
-  // Intentionally empty until G2-6.
+function openGroundLine(ctx: SectionViewContext) {
+  if (ctx.openLayerId === null) return null;
+  const layer = findLayer(ctx.getLayersState().layers, ctx.openLayerId);
+  const pairs = layer?.section?.line?.current.points;
+  if (!layer || !pairs) return null;
+  return { line: groundLineToProfile(pairs), crs: layer.info.crs };
+}
+
+/**
+ * Right click (mouse) or long press (touch) at panel x `x`: read the ground level (GL) and the slope of the section
+ * line at that `s` and keep it in the state; both views draw it. Outside the line, or with no line, the old reading is
+ * cleared (the panel keeps showing its hint).
+ * The slope window is `SLOPE_HALF_WINDOW_M` metres on each side, converted to the file's horizontal unit with the layer's
+ * CRS factors like src/app/csf-params.ts does (an unknown unit is used as it is).
+ */
+export function showGroundLevelAt(ctx: SectionViewContext, x: number): void {
+  const found = openGroundLine(ctx);
+  if (!found) {
+    ctx.setGroundLevel(null);
+    return;
+  }
+  const horizontal = found.crs?.horizontalUnitToMeter ?? null;
+  const vertical = found.crs?.verticalUnitToMeter ?? null;
+  const halfWindow = horizontal === null ? SLOPE_HALF_WINDOW_M : SLOPE_HALF_WINDOW_M / horizontal;
+  const verticalPerHorizontal = horizontal === null || vertical === null ? 1 : vertical / horizontal;
+  const s = screenToSection(effectiveSectionView(ctx), x, 0).s;
+  ctx.setGroundLevel(groundLevelAt(found.line, s, halfWindow, verticalPerHorizontal));
 }
