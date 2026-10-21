@@ -23,6 +23,25 @@ use pcv_convert::thin_filter::{
 use pcv_core::outlier::{RorSettings, SorSettings};
 use pcv_core::thin::{GridKeep, ThinKind, ThinSettings};
 
+/// Prints progress to stderr whenever it advances by 2 percent, so a run that has to be
+/// stopped early still leaves partial numbers.
+fn progress_printer(started: Instant) -> impl FnMut(pcv_convert::streaming::ReadProgress) + Send {
+    let mut last_step = 0u64;
+    move |p| {
+        let step = p.points_read * 50 / p.total_points.max(1);
+        if step > last_step {
+            last_step = step;
+            eprintln!(
+                "progress {} / {} core points ({:.1} %) after {:.0?}",
+                p.points_read,
+                p.total_points,
+                100.0 * p.points_read as f64 / p.total_points.max(1) as f64,
+                started.elapsed()
+            );
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 4 {
@@ -83,7 +102,7 @@ fn main() {
                 &spill_dir,
                 &params,
                 &NeverCancel,
-                |_| {},
+                progress_printer(started),
                 &mut timings,
             )
             .map_err(|e| e.to_string())
@@ -109,7 +128,7 @@ fn main() {
                 &spill_dir,
                 &params,
                 &NeverCancel,
-                |_| {},
+                progress_printer(started),
                 &mut timings,
             )
             .map_err(|e| e.to_string())
