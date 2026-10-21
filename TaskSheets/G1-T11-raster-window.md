@@ -125,3 +125,61 @@ PC の何が違うか（電源の設定・温度・ディスク・ウイルス�
 - 渋谷の Web での実行（autzen だけ）。
 - 色のずれ: 8bit/16bit の判定は、プレビューと書き出しでそれぞれのセルの平均色から行う（極端に暗いファイルでは食い違いうる。未検証）。
 - 64M セル（デスクトップ）・16M セル（Web）の上限は G1-T6 のまま（今回は測り直していない）。
+
+## 追記（2026-10-22）: プレビューの穴埋めと、プレビュー領域の使い方
+
+### 1. プレビューの空セル（穴）を埋める（`✨ feat(raster)`）
+
+**何を**: プレビューだけ、空のセルの周りの8セルのうち 5 セル以上に値があれば、値のある隣の平均でそのセルを埋める。
+RGB はチャンネルごとの平均（四捨五入）。1 回だけ、**元の（埋める前の）格子**から判定するので、埋めた値が次のセルに広がらない（連鎖しない）。
+色を付ける前の値で行う。凡例の最小・最大は埋める前の格子から取る。埋めたセルは周りの平均なので最小・最大の中に収まり、範囲は変わらない（コメントにも書いた）。
+閾値 `FILL_MIN_NEIGHBOURS = 5` は名前付きの定数。角のセルは隣が 3 つ、辺のセルは 5 つしかないので、角は決して埋まらない（辺は 5 つ全部に値があれば埋まる）。
+
+**なぜ**: プレビューは間引いた点（1 セルに平均 2〜3 点）から作るので、点が 0 のセルが散らばって、透明（市松模様）が白・灰色の点々に見える。全点を使う書き出しにはそれが無く、プレビューのほうが悪く見えていた。
+
+**採らなかった案（所有者の判断）**: (a) 点の密度に合わせてプレビューのセルを粗くする（セルの大きさを選ぶ意味が薄れる）。(c) そのままにする。
+8 セル中 5 セルとしたのは、川の縁のような本当の隙間は隣の空セルが多いので埋まりにくく、サンプリングの偶然でできた穴だけが埋まるため。
+
+**書き出しは変えていない**: `fill_isolated_holes` は `CoarsePoints::render`（`crates/pcv-core/src/raster/preview.rs`）からだけ呼ぶ。書き出し（`output.rs`）は `CellColorizer` を直接使い、呼ばない。
+`grep fill_isolated` で、preview.rs と color.rs の doc コメント以外に使用箇所が無いことを確かめた。書き出し側の色付けが穴を空のままにすることはテスト `export_colouring_leaves_holes_empty_while_the_preview_fills_them` で固定した。
+
+**触ったファイル**: `crates/pcv-core/src/raster/preview.rs`（`fill_isolated_holes`・平均の関数・テスト）、`crates/pcv-core/src/raster/color.rs`（`CellColorizer::rgba` を `rgba_of_rgb` と `rgba_of_value` に分けた。振る舞いは同じ）、`src/wasm/pcv-wasm/pcv_wasm_bg.wasm`（`📦 build(wasm)` で作り直し）。
+
+追加したテスト: 穴の周り 8 セルが埋まっていると平均が入る／隣 4 つでは空のまま・5 つで埋まる／辺は存在する隣だけを数え、角は埋まらない／隣り合う 2 つの穴で連鎖しない／RGB はチャンネルごと／書き出し側の色付けは穴を空のままにする。
+
+### 2. プレビューを領域いっぱいに（縦横比のまま）広げる（`🐛 fix(ui)`）
+
+**何を**: `src/ui/tools/RasterWindow.tsx`。以前は画像（キャンバス）が元のピクセルの大きさのまま左に寄り、右が空いていて、凡例だけが全幅に広がっていた。
+今は「画像・凡例・注記」を 1 つの列にまとめ、列の幅の上限を `55vh x 縦横比` にして中央に置き、キャンバスはその幅に CSS で拡大・縮小する（`image-rendering: pixelated` のまま）。凡例と注記は画像と同じ幅になる。縦長のレイヤーは高さ 55vh が上限（凡例が窓の外に出ないように）。
+`data-testid` は残した（`raster-canvas`・`raster-legend`・`raster-preview` ほか。`raster-preview-column` を追加）。
+
+### 実行したコマンドと出力
+
+- `cargo test -p pcv-core`: `test result: ok. 170 passed; 0 failed; 1 ignored`
+- `cargo clippy --workspace --all-targets -- -D warnings`: 警告なしで `Finished`
+- `cargo fmt --all`: 実行済み
+- `npm run build:wasm`: `Finished release`（`.js`・`.d.ts` は行末だけの差だったのでコミットせず戻した）
+- `npx tsc --noEmit`: 出力なし（通った）
+- `npx vitest run`: `Test Files 77 passed (77)`、`Tests 748 passed (748)`
+
+### Web（実ブラウザ・実 GPU）
+
+ヘッドあり Chromium、`adapter.info` = `{"vendor":"nvidia","architecture":"lovelace"}`（SwiftShader ではない）。`npm run build` のあと `vite preview --port 4631`（自分で立て、終わりに自分のプロセスだけ止めた）。スクリプトは `scratchpad\r4\check.mjs`。
+ディレクトリ: `C:\Users\Masa1\AppData\Local\Temp\claude\c--rust-point-cloud-viewer\9abf0cdc-f427-4eff-bf22-b8839bdd7c27\scratchpad\r4\`
+
+- 縦長（autzen、1400 x 900）: `autzen-rgb.png`・`autzen-elevation.png`。キャンバス 362 x 492 px、列 364 px、凡例 364 px（画像と同じ幅）。以前の `r3\2-elevation.png` にあった白・灰色の点々が、ほぼ無くなっている（目で見た比較）。
+- 横長（合成 LAS 1000 m x 200 m、`wide.las`。点はまばらな乱数）: `wide-rgb.png`・`wide-elevation.png`。キャンバス 684 x 137 px、列 686 px。領域の幅いっぱいで、凡例・注記も同じ幅。
+- 狭い画面（390 x 844、設定の下にプレビュー）: `autzen-narrow-rgb.png`・`autzen-narrow-elevation.png`、`wide-narrow-rgb.png`・`wide-narrow-elevation.png`。ダイアログ内を下へスクロールして見る形（`viewer-error` なし、`pageerror` なし）。
+
+## 所有者の確認手順（追記分）
+
+1. 点群を開いてラスタ化。プレビューの透明な点々（散らばった空セル）が以前より少ないこと。川の縁や点群の外側は透明のまま。
+2. 書き出した TIFF が、これまでと同じ（穴埋めされていない）こと。
+3. プレビューが領域の幅（縦長は高さ 55vh）いっぱいに出て、画像・凡例・注記の左右がそろうこと。画面を狭くしても崩れないこと。
+
+## 確かめていないこと（追記分）
+
+- 穴埋めを入れたプレビューの実行時間（コーディネーターが別に測る）。
+- 渋谷など大きな点群のプレビューの見た目（autzen と合成データだけ）。
+- デスクトップ（Tauri）の画面。Rust は同じコードだが、画面では見ていない。
+- 横長の実データ（合成データだけ）。
