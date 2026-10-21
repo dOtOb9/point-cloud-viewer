@@ -281,6 +281,8 @@ pub struct ExtractPoints<'a, R: Read + Seek + Send> {
     /// Called after each node is read (progress and cancellation checks). Returning
     /// `Err` aborts the extraction.
     on_node: Option<NodeCallback<'a>>,
+    /// Deepest COPC level that was selected (`coarse` only; `None` = no depth limit).
+    depth_limit: Option<i32>,
 }
 
 impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
@@ -312,6 +314,7 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
             current: VecDeque::new(),
             stats,
             on_node: None,
+            depth_limit: None,
         })
     }
 
@@ -341,7 +344,62 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
             current: VecDeque::new(),
             stats,
             on_node: None,
+            depth_limit: None,
         }
+    }
+
+    /// Selects only the upper levels of the octree: levels `0..=d` where `d` is the
+    /// deepest level for which the nodes of levels `0..=d` hold at most `max_points`
+    /// points in total (level 0 is always taken, even when it alone is larger). The
+    /// points of the upper levels are a thinned copy of the whole cloud that covers
+    /// all of it, which is what a quick preview needs. Reading is node at a time,
+    /// like `all`. The point count comes from the hierarchy, so nothing is read here.
+    pub fn coarse(reader: CopcReader<R>, max_points: u64) -> Self {
+        // Points per level, from the hierarchy only.
+        let mut per_level: std::collections::BTreeMap<i32, u64> =
+            std::collections::BTreeMap::new();
+        for entry in reader.file().hierarchy_entries() {
+            if entry.has_point_data() {
+                *per_level.entry(entry.key.level).or_insert(0) +=
+                    u64::try_from(entry.point_count).unwrap_or(0);
+            }
+        }
+        let mut depth = 0;
+        let mut total = 0u64;
+        for (&level, &count) in &per_level {
+            total += count;
+            if level > 0 && total > max_points {
+                break;
+            }
+            depth = level;
+        }
+        let mut stats = ExtractStats::default();
+        let mut pending = VecDeque::new();
+        for entry in reader.file().hierarchy_entries() {
+            if !entry.has_point_data() {
+                continue;
+            }
+            stats.nodes_total += 1;
+            if entry.key.level <= depth {
+                stats.nodes_selected += 1;
+                stats.candidate_points += u64::try_from(entry.point_count).unwrap_or(0);
+                pending.push_back(entry.key);
+            }
+        }
+        Self {
+            reader,
+            filter: None,
+            pending,
+            current: VecDeque::new(),
+            stats,
+            on_node: None,
+            depth_limit: Some(depth),
+        }
+    }
+
+    /// The deepest level `coarse` selected (`None` for the other constructors).
+    pub fn depth_limit(&self) -> Option<i32> {
+        self.depth_limit
     }
 
     pub fn stats(&self) -> ExtractStats {

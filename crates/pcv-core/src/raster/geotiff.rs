@@ -166,6 +166,29 @@ pub fn write_rgb_u16<W: Write>(
     })
 }
 
+/// Writes a 4-band u8 GeoTIFF: red, green, blue and an alpha band (`ExtraSamples` = 2,
+/// unassociated alpha). This is the "picture as seen" form (G1-R1): Windows Photos shows
+/// it as a normal image, and GIS software places it with the same geo tags as the others.
+/// `pixels` is every cell in image order, already coloured (see `raster::color`);
+/// alpha 0 is an empty cell.
+pub fn write_rgba_u8<W: Write>(
+    out: &mut W,
+    spec: &GridSpec,
+    epsg: Option<u32>,
+    pixels: impl Iterator<Item = [u8; 4]>,
+) -> Result<(), RasterError> {
+    let format = PixelFormat {
+        samples_per_pixel: 4,
+        bits_per_sample: 8,
+        sample_format: 1,
+        photometric: 2,
+        has_alpha: true,
+    };
+    write_tiff(out, spec, epsg, &format, None, pixels, |p, buf| {
+        buf.extend_from_slice(p)
+    })
+}
+
 /// The tag table. `strip_offsets` / `strip_counts` are one entry per strip.
 fn build_entries(
     spec: &GridSpec,
@@ -468,6 +491,52 @@ mod tests {
             vec![2]
         );
         assert_eq!(d.get_tag_u32(Tag::SamplesPerPixel).expect("spp"), 4);
+    }
+
+    #[test]
+    fn rgba_u8_roundtrip_with_geo_tags() {
+        let s = spec(3, 2);
+        // Pixel 4 is an empty cell (transparent).
+        let pixels = (0..6u8).map(|i| {
+            if i == 4 {
+                [0, 0, 0, 0]
+            } else {
+                [i * 10, 255 - i, i, 255]
+            }
+        });
+        let mut out = Vec::new();
+        write_rgba_u8(&mut out, &s, Some(6677), pixels).expect("write");
+        let mut d = Decoder::new(Cursor::new(out)).expect("decoder");
+        assert_eq!(d.dimensions().expect("dims"), (3, 2));
+        match d.read_image().expect("image") {
+            DecodingResult::U8(v) => {
+                assert_eq!(v.len(), 24);
+                assert_eq!(&v[0..4], &[0, 255, 0, 255]);
+                assert_eq!(&v[16..20], &[0, 0, 0, 0]);
+                assert_eq!(&v[20..24], &[50, 250, 5, 255]);
+            }
+            other => panic!("unexpected sample type: {other:?}"),
+        }
+        assert_eq!(d.get_tag_u32(Tag::SamplesPerPixel).expect("spp"), 4);
+        assert_eq!(
+            d.get_tag_u32_vec(Tag::ExtraSamples).expect("extra"),
+            vec![2]
+        );
+        // The geo tags are the same as for the other forms: scale, tiepoint (top-left
+        // corner) and the EPSG key.
+        assert_eq!(
+            d.get_tag_f64_vec(Tag::ModelPixelScaleTag).expect("scale"),
+            vec![0.5, 0.5, 0.0]
+        );
+        assert_eq!(
+            d.get_tag_f64_vec(Tag::ModelTiepointTag).expect("tie"),
+            vec![0.0, 0.0, 0.0, 1000.0, 2001.0, 0.0]
+        );
+        let keys = d
+            .get_tag_u32_vec(Tag::GeoKeyDirectoryTag)
+            .expect("geo keys");
+        assert_eq!(keys[keys.len() - 1], 6677);
+        assert!(d.find_tag(Tag::GdalNodata).expect("find").is_none());
     }
 
     #[test]

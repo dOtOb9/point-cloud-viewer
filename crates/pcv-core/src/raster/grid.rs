@@ -209,10 +209,6 @@ pub struct CellAccumulator {
     value: RasterValue,
     classes: ClassFilter,
     cells: Cells,
-    /// Sum of Z per cell. Kept only for the kinds whose value is not a height
-    /// (count, intensity, RGB): the display layer puts the cell's mean Z on its
-    /// point. Empty for the Z kinds (their value already is the height).
-    z_sum: Vec<f64>,
     /// Points that were accepted by the class filter and fell inside the grid.
     accepted: u64,
 }
@@ -233,18 +229,11 @@ impl CellAccumulator {
                 count: vec![0; n],
             },
         };
-        let z_sum = match value {
-            RasterValue::Count | RasterValue::IntensityMean | RasterValue::RgbMean => {
-                vec![0.0; n]
-            }
-            _ => Vec::new(),
-        };
         Self {
             spec,
             value,
             classes,
             cells,
-            z_sum,
             accepted: 0,
         }
     }
@@ -281,9 +270,6 @@ impl CellAccumulator {
             return;
         };
         self.accepted += 1;
-        if let Some(sum) = self.z_sum.get_mut(i) {
-            *sum += z;
-        }
         match &mut self.cells {
             Cells::Min(v) => v[i] = v[i].min(z as f32),
             Cells::Max(v) => v[i] = v[i].max(z as f32),
@@ -327,24 +313,6 @@ impl CellAccumulator {
             Cells::Count(c) => Some(c[i] as f32),
             Cells::Mean { sum, count } => Some((sum[i] / f64::from(count[i])) as f32),
             Cells::Rgb { .. } => None,
-        }
-    }
-
-    /// Height to put on the cell's display point: the value itself for the Z kinds,
-    /// the mean Z of the cell's points for count / intensity / RGB. `None` when empty.
-    pub fn display_z_at(&self, i: usize) -> Option<f64> {
-        if !self.is_filled(i) {
-            return None;
-        }
-        match &self.cells {
-            Cells::Min(v) | Cells::Max(v) => Some(f64::from(v[i])),
-            Cells::Mean { sum, count } if self.value == RasterValue::ZMean => {
-                Some(sum[i] / f64::from(count[i]))
-            }
-            Cells::Count(c) => Some(self.z_sum[i] / f64::from(c[i])),
-            Cells::Mean { count, .. } | Cells::Rgb { count, .. } => {
-                Some(self.z_sum[i] / f64::from(count[i]))
-            }
         }
     }
 
@@ -521,21 +489,6 @@ mod tests {
         assert_eq!(count.value_at(0), None);
         assert_eq!(inten.value_at(2), Some(200.0));
         assert_eq!(inten.value_at(1), Some(65_535.0));
-    }
-
-    #[test]
-    fn display_z_is_value_for_z_kinds_and_mean_z_otherwise() {
-        let mut max = acc(RasterValue::ZMax, ClassFilter::all());
-        let mut count = acc(RasterValue::Count, ClassFilter::all());
-        let mut rgb = acc(RasterValue::RgbMean, ClassFilter::all());
-        for a in [&mut max, &mut count, &mut rgb] {
-            a.add(0.5, 0.5, 2.0, 0, 1, [1; 3]); // SW
-            a.add(0.5, 0.5, 6.0, 0, 1, [1; 3]); // SW
-        }
-        assert_eq!(max.display_z_at(2), Some(6.0));
-        assert_eq!(count.display_z_at(2), Some(4.0));
-        assert_eq!(rgb.display_z_at(2), Some(4.0));
-        assert_eq!(count.display_z_at(0), None);
     }
 
     #[test]

@@ -288,6 +288,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(CopcState::default())
         .manage(ConversionState::default())
+        // --- G1: rasterize ---
+        .manage(conversion::RasterPreviewState::default())
+        // ---
         .setup(|app| {
             setup_android_temp_dir(app);
             Ok(())
@@ -304,6 +307,9 @@ pub fn run() {
             conversion::merge_copcs,
             // --- G1: rasterize ---
             conversion::rasterize_copc,
+            conversion::raster_preview_open,
+            conversion::raster_preview_render,
+            conversion::raster_preview_close,
             conversion::save_tool_file,
             // ---
             conversion::supports_custom_temp_dir,

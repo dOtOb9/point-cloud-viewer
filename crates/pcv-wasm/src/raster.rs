@@ -1,60 +1,49 @@
-//! G1-4: Web version of the Rasterize tool.
+//! G1-4 / G1-R2: Web version of the Rasterize window.
 //!
-//! The same job as the desktop `crates/pcv-convert/src/raster.rs`: stream every point of
-//! a COPC into a grid (`pcv_core::raster`), then make a GeoTIFF and a display COPC with
-//! one point per non-empty cell. The shared parts (grid, accumulators, GeoTIFF, display
-//! points) live in `pcv-core`; only the reading (`FileRangeReader`) and the writing
-//! (`SpillWriter` on OPFS) differ, exactly as for `extract.rs`.
+//! The same two jobs as the desktop `crates/pcv-convert/src/raster.rs`, on top of the
+//! shared code in `pcv_core::raster`; only the reading (`FileRangeReader`) differs.
+//!
+//! - `WasmRasterPreview`: reads the upper levels of the COPC into a bounded store when
+//!   the window opens, then `render` draws a picture from it for every setting change.
+//! - `WasmRasterizer`: the export. Streams every point into the grid, then `geotiff`
+//!   gives the bytes. There is no other output (the raster is not a layer).
 //!
 //! # Calls
 //!
 //! The TypeScript Worker calls `feed` repeatedly with small batches and yields to the
-//! event loop in between, so cancelling works. `feed` has two phases:
-//!
-//! 1. reading: points go into the grid (`points_scanned` grows);
-//! 2. emitting: the non-empty cells go to the spill (`done` is true after the last one).
-//!
-//! Then `geotiff()` gives the GeoTIFF bytes and `finish()` builds the octree and writes
-//! the display COPC (that last step cannot be cancelled, like the other tools).
+//! event loop in between, so cancelling works.
 //!
 //! # Memory
 //!
-//! The grid holds a few bytes per cell (the Worker refuses a raster over
-//! `MAX_CELLS_WEB` before reading), the reader holds one node, the GeoTIFF is built in
-//! one `Vec` (cells x 4 bytes, or x 8 for RGB). Nothing grows with the point count.
+//! Preview: at most `PREVIEW_POINT_BUDGET` points (32 bytes each) plus a grid of about
+//! 1M cells. Export: the grid holds a few bytes per cell (the constructor refuses a
+//! raster over `MAX_CELLS_WEB` before reading), the reader holds one node, and the
+//! GeoTIFF is built in one `Vec` (cells x 4 bytes, x 8 for 16-bit RGB). Nothing grows
+//! with the point count.
 
 use std::io::BufReader;
-use std::path::Path;
 
-use copc_core::{NeverCancel, StreamingLayout};
 use copc_reader::CopcReader;
-use copc_writer::{write_copc_from_spill_with_fs_and_timings, CopcWriterParams, SpillWriter};
-use js_sys::Array;
 use pcv_core::crs::{crs_id_from_las_header, CrsId};
 use pcv_core::extract::ExtractPoints;
 use pcv_core::raster::output::{missing_crs_warning, write_geotiff};
-use pcv_core::raster::{CellAccumulator, DisplayCursor, GridSpec, RasterOptions, RasterValue};
+use pcv_core::raster::preview::{
+    CoarsePoints, CoarseReader, PreviewOptions, XyBounds, PREVIEW_POINT_BUDGET,
+};
+use pcv_core::raster::{CellAccumulator, GridSpec, RasterError, RasterOptions, RasterValue};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
-use web_sys::{File, FileSystemSyncAccessHandle};
+use web_sys::File;
 
-use crate::convert::handles_from_js_array;
 use crate::file_reader::FileRangeReader;
-use crate::opfs::OpfsScratchFs;
 use crate::stats::Stats;
-use crate::write_metadata::copc_write_metadata_from_source_header;
 
 /// The largest raster the Web build accepts (cells). Everything is in the Worker's wasm
-/// memory (4 GiB at most, shared with the spill buffers), so it is a quarter of the
-/// desktop's. See `TaskSheets/G1-T6-rasterize-tool.md` for how it was chosen.
+/// memory (4 GiB at most), so it is a quarter of the desktop's. See
+/// `TaskSheets/G1-T6-rasterize-tool.md` for how it was chosen.
 pub const MAX_CELLS_WEB: u64 = 16_000_000;
 
 const READ_BUFFER_BYTES: usize = 256 * 1024;
-
-/// Same text as the desktop `RasterRunError::NoPoints`.
-const NO_POINTS_MESSAGE: &str = "ラスタにできる点がありません";
-/// Same text as the desktop `RasterRunError::NoColor`.
-const NO_COLOR_MESSAGE: &str = "このレイヤーは色を持たないため、色(RGB)のラスタは作れません";
 
 type Source = BufReader<FileRangeReader>;
 
@@ -66,41 +55,127 @@ fn open_source(file: File) -> Source {
     BufReader::with_capacity(READ_BUFFER_BYTES, FileRangeReader::new(file, Stats::new()))
 }
 
-/// Progress returned by `feed`.
+/// What the headers say that both classes need: layout facts, extent and CRS.
+struct HeaderFacts {
+    has_color: bool,
+    bounds: XyBounds,
+    epsg: Option<u32>,
+}
+
+fn read_header(file: &File) -> Result<HeaderFacts, JsValue> {
+    let header_reader = las::Reader::new(open_source(file.clone()))
+        .map_err(|e| JsValue::from_str(&format!("ヘッダーを読めませんでした: {e}")))?;
+    let header = header_reader.header();
+    let b = header.bounds();
+    let epsg = match crs_id_from_las_header(header) {
+        CrsId::Epsg(code) => Some(code),
+        _ => None,
+    };
+    Ok(HeaderFacts {
+        has_color: copc_core::StreamingLayout::from_las_header(header).has_color,
+        bounds: XyBounds {
+            min_x: b.min.x,
+            min_y: b.min.y,
+            max_x: b.max.x,
+            max_y: b.max.y,
+        },
+        epsg,
+    })
+}
+
+/// Progress returned by `feed` (both classes).
 #[derive(Serialize)]
 pub struct RasterFeedDto {
     pub points_scanned: u64,
     pub candidate_points: u64,
-    /// Both phases are finished (go on to `geotiff` and `finish`).
     pub done: bool,
 }
 
-/// Returned by `finish`.
+/// Returned by `WasmRasterizer::info`.
 #[derive(Serialize)]
-pub struct RasterFinishDto {
-    /// Points of the display COPC (= non-empty cells).
-    pub point_count: u64,
+pub struct RasterInfoDto {
     pub width: u32,
     pub height: u32,
     pub warnings: Vec<String>,
 }
 
+/// The upper levels of a COPC, kept while the Rasterize window is open.
+#[wasm_bindgen]
+pub struct WasmRasterPreview {
+    reader: Option<CoarseReader<Source>>,
+    store: Option<CoarsePoints>,
+}
+
+#[wasm_bindgen]
+impl WasmRasterPreview {
+    /// `file` is the source COPC. Nothing is read until `feed`.
+    #[wasm_bindgen(constructor)]
+    pub fn new(file: File) -> Result<WasmRasterPreview, JsValue> {
+        let facts = read_header(&file)?;
+        let copc_reader = CopcReader::open(open_source(file))
+            .map_err(|e| JsValue::from_str(&format!("点群(COPC)として開けませんでした: {e}")))?;
+        let reader = CoarseReader::new(
+            copc_reader,
+            facts.bounds,
+            facts.has_color,
+            PREVIEW_POINT_BUDGET as usize,
+        );
+        Ok(Self {
+            reader: Some(reader),
+            store: None,
+        })
+    }
+
+    /// Reads up to `batch_size` points. `done` is true once the store is ready.
+    pub fn feed(&mut self, batch_size: u32) -> Result<JsValue, JsValue> {
+        let Some(reader) = self.reader.as_mut() else {
+            return Err(JsValue::from_str("feedはもう終わっている"));
+        };
+        let done = reader.feed(batch_size as usize).map_err(to_js_error)?;
+        let (points_scanned, candidate_points) = reader.progress();
+        if done {
+            if let Some(reader) = self.reader.take() {
+                self.store = Some(reader.finish());
+            }
+        }
+        serde_wasm_bindgen::to_value(&RasterFeedDto {
+            points_scanned,
+            candidate_points,
+            done,
+        })
+        .map_err(to_js_error)
+    }
+
+    /// `{ heldPoints, depth, truncated }`. Call after `feed` reported `done`.
+    pub fn info(&self) -> Result<JsValue, JsValue> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("プレビューの点がまだ読めていません"))?;
+        serde_wasm_bindgen::to_value(&store.open_info()).map_err(to_js_error)
+    }
+
+    /// Draws the preview for `options` (a `PreviewOptions` JSON) from the held points.
+    /// The bytes are `PreviewImage::to_bytes` (layout in `pcv_core::raster::preview`).
+    pub fn render(&self, options: JsValue) -> Result<Vec<u8>, JsValue> {
+        let options: PreviewOptions = serde_wasm_bindgen::from_value(options)
+            .map_err(|e| JsValue::from_str(&format!("プレビューの設定が正しくありません: {e}")))?;
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("プレビューの点がまだ読めていません"))?;
+        let image = store.render(&options).map_err(to_js_error)?;
+        Ok(image.to_bytes())
+    }
+}
+
+/// The export: every point into the grid, then the GeoTIFF bytes.
 #[wasm_bindgen]
 pub struct WasmRasterizer {
     points: ExtractPoints<'static, Source>,
     acc: CellAccumulator,
-    /// `Some` once reading has finished (the emit phase).
-    cursor: Option<DisplayCursor>,
-    extra_bytes_len: usize,
-    spill: Option<SpillWriter>,
-    fs: OpfsScratchFs,
-    output_name: String,
-    metadata: copc_writer::CopcWriteMetadata,
-    params: CopcWriterParams,
+    options: RasterOptions,
     epsg: Option<u32>,
-    display_points: u64,
-    /// The emit phase has run out of cells.
-    emit_done: bool,
 }
 
 #[wasm_bindgen]
@@ -108,154 +183,73 @@ impl WasmRasterizer {
     /// `file` is the source COPC; `options` is the `RasterOptions` JSON (`src/datasource/tools.ts`).
     /// Fails before reading any point when the grid is over `MAX_CELLS_WEB`.
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        file: File,
-        options: JsValue,
-        scratch_handles: Array,
-        output_handle: FileSystemSyncAccessHandle,
-        output_name: String,
-        max_points_per_node: u32,
-    ) -> Result<WasmRasterizer, JsValue> {
+    pub fn new(file: File, options: JsValue) -> Result<WasmRasterizer, JsValue> {
         let options: RasterOptions = serde_wasm_bindgen::from_value(options)
             .map_err(|e| JsValue::from_str(&format!("ラスタ化の設定が正しくありません: {e}")))?;
-
-        // Header only: layout, metadata, extent and CRS (no point data is read).
-        let header_reader = las::Reader::new(open_source(file.clone()))
-            .map_err(|e| JsValue::from_str(&format!("ヘッダーを読めませんでした: {e}")))?;
-        let header = header_reader.header();
-        let layout = StreamingLayout::from_las_header(header);
-        let metadata = copc_write_metadata_from_source_header(header);
-        let bounds = header.bounds();
-        let epsg = match crs_id_from_las_header(header) {
-            CrsId::Epsg(code) => Some(code),
-            _ => None,
-        };
-        drop(header_reader);
-
-        if options.value == RasterValue::RgbMean && !layout.has_color {
-            return Err(JsValue::from_str(NO_COLOR_MESSAGE));
+        let facts = read_header(&file)?;
+        if options.value == RasterValue::RgbMean && !facts.has_color {
+            return Err(to_js_error(RasterError::NoColor));
         }
+        let b = facts.bounds;
         let spec = GridSpec::from_bounds(
-            bounds.min.x,
-            bounds.min.y,
-            bounds.max.x,
-            bounds.max.y,
+            b.min_x,
+            b.min_y,
+            b.max_x,
+            b.max_y,
             options.cell_size,
             MAX_CELLS_WEB,
         )
         .map_err(to_js_error)?;
         let acc = CellAccumulator::new(spec, options.value, options.class_filter());
-
         let copc_reader = CopcReader::open(open_source(file))
             .map_err(|e| JsValue::from_str(&format!("点群(COPC)として開けませんでした: {e}")))?;
-        let points = ExtractPoints::all(copc_reader);
-
-        let handles = handles_from_js_array(&scratch_handles)?;
-        let fs = OpfsScratchFs::new(handles, output_handle);
-        let extra_bytes_len = usize::from(layout.extra_bytes);
-        let spill = SpillWriter::create(&fs, layout, metadata.transform()).map_err(to_js_error)?;
-
         Ok(Self {
-            points,
+            points: ExtractPoints::all(copc_reader),
             acc,
-            cursor: None,
-            extra_bytes_len,
-            spill: Some(spill),
-            fs,
-            output_name,
-            metadata,
-            params: CopcWriterParams::new(max_points_per_node),
-            epsg,
-            display_points: 0,
-            emit_done: false,
+            options,
+            epsg: facts.epsg,
         })
     }
 
-    /// Does up to `batch_size` units of work: points read into the grid, or cells written
-    /// to the spill. Go to `geotiff` / `finish` when `done`.
+    /// Reads up to `batch_size` points into the grid. Go to `geotiff` when `done`.
     pub fn feed(&mut self, batch_size: u32) -> Result<JsValue, JsValue> {
-        let batch = batch_size as usize;
-        match self.cursor.as_mut() {
-            None => {
-                let mut taken = 0;
-                let mut exhausted = false;
-                while taken < batch {
-                    match self.points.next() {
-                        Some(Ok(record)) => self.acc.add_record(&record),
-                        Some(Err(e)) => return Err(to_js_error(e)),
-                        None => {
-                            exhausted = true;
-                            break;
-                        }
-                    }
-                    taken += 1;
-                }
-                if exhausted {
-                    if self.acc.accepted_points() == 0 {
-                        return Err(JsValue::from_str(NO_POINTS_MESSAGE));
-                    }
-                    self.cursor = Some(DisplayCursor::new(&self.acc, self.extra_bytes_len));
-                }
-            }
-            Some(cursor) => {
-                let spill = self
-                    .spill
-                    .as_mut()
-                    .ok_or_else(|| JsValue::from_str("feedはfinishの後には呼べない"))?;
-                let mut taken = 0;
-                while taken < batch {
-                    let Some(record) = cursor.next_record(&self.acc) else {
-                        // The cursor has passed the last cell.
-                        self.emit_done = true;
-                        break;
-                    };
-                    spill.push(&record).map_err(to_js_error)?;
-                    self.display_points += 1;
-                    taken += 1;
+        let mut done = false;
+        for _ in 0..batch_size {
+            match self.points.next() {
+                Some(Ok(record)) => self.acc.add_record(&record),
+                Some(Err(e)) => return Err(to_js_error(e)),
+                None => {
+                    done = true;
+                    break;
                 }
             }
         }
+        if done && self.acc.accepted_points() == 0 {
+            return Err(to_js_error(RasterError::NoPoints));
+        }
         let stats = self.points.stats();
-        let dto = RasterFeedDto {
+        serde_wasm_bindgen::to_value(&RasterFeedDto {
             points_scanned: stats.points_scanned,
             candidate_points: stats.candidate_points,
-            done: self.emit_done,
-        };
-        serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
+            done,
+        })
+        .map_err(to_js_error)
     }
 
-    /// The GeoTIFF bytes. Call after `feed` reported `done` and before `finish`.
+    /// The GeoTIFF bytes. Call after `feed` reported `done`.
     pub fn geotiff(&self) -> Result<Vec<u8>, JsValue> {
         let mut bytes = Vec::new();
-        write_geotiff(&self.acc, self.epsg, &mut bytes).map_err(to_js_error)?;
+        write_geotiff(&self.acc, self.epsg, &self.options, &mut bytes).map_err(to_js_error)?;
         Ok(bytes)
     }
 
-    /// Builds the octree and writes the display COPC on OPFS.
-    pub fn finish(mut self) -> Result<JsValue, JsValue> {
-        let spill = self
-            .spill
-            .take()
-            .ok_or_else(|| JsValue::from_str("finishは既に呼ばれている"))?;
-        if self.display_points == 0 {
-            return Err(JsValue::from_str(NO_POINTS_MESSAGE));
-        }
-        let reader = spill.finalize().map_err(to_js_error)?;
-        write_copc_from_spill_with_fs_and_timings(
-            &self.fs,
-            Path::new(&self.output_name),
-            reader,
-            &self.params,
-            &NeverCancel,
-            &self.metadata,
-        )
-        .map_err(to_js_error)?;
-        let dto = RasterFinishDto {
-            point_count: self.display_points,
+    /// `{ width, height, warnings }`.
+    pub fn info(&self) -> Result<JsValue, JsValue> {
+        serde_wasm_bindgen::to_value(&RasterInfoDto {
             width: self.acc.spec().width,
             height: self.acc.spec().height,
             warnings: missing_crs_warning(self.epsg).into_iter().collect(),
-        };
-        serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
+        })
+        .map_err(to_js_error)
     }
 }

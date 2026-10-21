@@ -1,18 +1,21 @@
-//! G1-3: rasterise a COPC file (desktop and Android).
+//! G1-3 / G1-R2: rasterise a COPC file (desktop and Android).
 //!
-//! Streams every point of the source once into a grid of cells, then writes two
-//! things:
+//! Two jobs, both for the Rasterize window:
 //!
-//! 1. a GeoTIFF (the deliverable), and
-//! 2. a display COPC with one point per non-empty cell (so the viewer can show the
-//!    raster as an ordinary layer; see `pcv_core::raster::output`).
+//! 1. `read_coarse_path`: read the upper levels of the octree into a `CoarsePoints`
+//!    store. The window keeps it while it is open and draws the live preview from it
+//!    (`pcv_core::raster::preview`).
+//! 2. `rasterize_path`: the export. Streams every point of the source once into a grid
+//!    of cells and writes a GeoTIFF (colored or values, `RasterOptions::tiff`). There is
+//!    no second output: the raster is not a layer (plan `G1-raster-and-dtm.md` section 13).
 //!
 //! # Memory
 //!
-//! The reader is `ExtractPoints::all`: one node of points at a time. The grid holds
-//! a few bytes per cell, so memory follows the **area / cell size**, never the point
-//! count. The caller passes the largest number of cells it accepts, and a bigger grid
-//! is refused before any point is read (`GridSpec::from_bounds`).
+//! Both readers hold one node of points at a time. The export's grid holds a few bytes
+//! per cell, so memory follows the **area / cell size**, never the point count. The
+//! caller passes the largest number of cells it accepts, and a bigger grid is refused
+//! before any point is read (`GridSpec::from_bounds`). The preview store holds at most
+//! `cap` points (`CoarsePoints`).
 //!
 //! # Zero points
 //!
@@ -25,17 +28,12 @@ use std::path::{Path, PathBuf};
 
 use copc_core::{CancelCheck, StreamingLayout};
 use copc_reader::CopcReader;
-use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriterParams};
 use pcv_core::crs::{crs_id_from_las_header, CrsId};
 use pcv_core::extract::{ExtractPoints, ExtractStats};
 use pcv_core::raster::output::{missing_crs_warning, write_geotiff};
-use pcv_core::raster::{
-    filled_cells, CellAccumulator, DisplayPoints, GridSpec, RasterError, RasterOptions, RasterValue,
-};
-
-use crate::stage_timings::ConversionStageTimings;
+use pcv_core::raster::preview::{CoarsePoints, CoarseReader, XyBounds};
+use pcv_core::raster::{CellAccumulator, GridSpec, RasterError, RasterOptions, RasterValue};
 use crate::streaming::ReadProgress;
-use crate::write_metadata::copc_write_metadata_from_source_header;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RasterRunError {
@@ -60,8 +58,6 @@ pub enum RasterRunError {
     },
     #[error("点を読めませんでした: {0}")]
     Read(#[source] copc_core::Error),
-    #[error("COPCの書き出しに失敗しました: {0}")]
-    Write(#[source] copc_core::Error),
     #[error("GeoTIFFを書き出せませんでした: {0}")]
     GeoTiffFile(#[source] std::io::Error),
 }
@@ -69,47 +65,100 @@ pub enum RasterRunError {
 impl RasterRunError {
     /// Whether it stopped because of cancellation (shown as "cancelled" on screen).
     pub fn is_cancelled(&self) -> bool {
-        matches!(
-            self,
-            RasterRunError::Read(copc_core::Error::Cancelled)
-                | RasterRunError::Write(copc_core::Error::Cancelled)
-        )
+        matches!(self, RasterRunError::Read(copc_core::Error::Cancelled))
     }
 }
 
-/// Result of a rasterisation.
+/// Result of an export.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RasterSummary {
     pub width: u32,
     pub height: u32,
     /// Points that were counted (class filter applied).
     pub points_counted: u64,
-    /// Points of the display COPC (= non-empty cells).
-    pub display_points: u64,
     /// For the error log (for example: no CRS in the GeoTIFF).
     pub warnings: Vec<String>,
     pub stats: ExtractStats,
 }
 
-/// Rasterises `source` (COPC) into `geotiff_output` and `display_output` (COPC).
+/// What the header says that both jobs need.
+struct HeaderFacts {
+    layout: StreamingLayout,
+    bounds: XyBounds,
+    epsg: Option<u32>,
+}
+
+fn read_header(source: &Path) -> Result<HeaderFacts, RasterRunError> {
+    let header_reader =
+        las::Reader::from_path(source).map_err(|source_err| RasterRunError::OpenHeader {
+            path: source.to_path_buf(),
+            source: source_err,
+        })?;
+    let header = header_reader.header();
+    let b = header.bounds();
+    let epsg = match crs_id_from_las_header(header) {
+        CrsId::Epsg(code) => Some(code),
+        _ => None,
+    };
+    Ok(HeaderFacts {
+        layout: StreamingLayout::from_las_header(header),
+        bounds: XyBounds {
+            min_x: b.min.x,
+            min_y: b.min.y,
+            max_x: b.max.x,
+            max_y: b.max.y,
+        },
+        epsg,
+    })
+}
+
+/// How many points one `CoarseReader::feed` call reads between cancel checks.
+const COARSE_BATCH_POINTS: usize = 50_000;
+
+/// Reads the upper levels of `source` (at most `cap` points) for the preview. `cancel` is
+/// checked between batches; `on_progress` after each batch.
+pub fn read_coarse_path<F>(
+    source: &Path,
+    cap: usize,
+    cancel: &(dyn CancelCheck + Sync),
+    mut on_progress: F,
+) -> Result<CoarsePoints, RasterRunError>
+where
+    F: FnMut(ReadProgress),
+{
+    let facts = read_header(source)?;
+    let copc_reader = CopcReader::from_path(source).map_err(|e| RasterRunError::Open {
+        path: source.to_path_buf(),
+        source: e,
+    })?;
+    let mut reader = CoarseReader::new(copc_reader, facts.bounds, facts.layout.has_color, cap);
+    loop {
+        cancel.check().map_err(RasterRunError::Read)?;
+        let done = reader.feed(COARSE_BATCH_POINTS).map_err(RasterRunError::Read)?;
+        let (points_read, total_points) = reader.progress();
+        on_progress(ReadProgress {
+            points_read,
+            total_points,
+        });
+        if done {
+            return Ok(reader.finish());
+        }
+    }
+}
+
+/// Rasterises `source` (COPC) into the GeoTIFF `geotiff_output`.
 ///
 /// - `max_cells`: the largest grid accepted (more is refused before reading points).
 /// - `on_progress`: called after each node is read, like `extract_path_and_timings`.
-///   It is not called while the two files are written.
-/// - `cancel`: checked per node while reading and by the COPC writer. When it stops
-///   or fails, the GeoTIFF is removed too.
-#[allow(clippy::too_many_arguments)]
-pub fn rasterize_path_and_timings<F>(
+/// - `cancel`: checked per node while reading. When it stops or fails, the GeoTIFF is
+///   removed too.
+pub fn rasterize_path<F>(
     source: &Path,
     options: RasterOptions,
     max_cells: u64,
     geotiff_output: &Path,
-    display_output: &Path,
-    spill_dir: &Path,
-    params: &CopcWriterParams,
     cancel: &(dyn CancelCheck + Sync),
     on_progress: F,
-    timings: &mut ConversionStageTimings,
 ) -> Result<RasterSummary, RasterRunError>
 where
     F: FnMut(ReadProgress) + Send,
@@ -119,12 +168,8 @@ where
         options,
         max_cells,
         geotiff_output,
-        display_output,
-        spill_dir,
-        params,
         cancel,
         on_progress,
-        timings,
     );
     if result.is_err() {
         // Best effort: a half-written GeoTIFF must not stay behind.
@@ -133,46 +178,28 @@ where
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 fn rasterize_inner<F>(
     source: &Path,
     options: RasterOptions,
     max_cells: u64,
     geotiff_output: &Path,
-    display_output: &Path,
-    spill_dir: &Path,
-    params: &CopcWriterParams,
     cancel: &(dyn CancelCheck + Sync),
     on_progress: F,
-    timings: &mut ConversionStageTimings,
 ) -> Result<RasterSummary, RasterRunError>
 where
     F: FnMut(ReadProgress) + Send,
 {
-    // Layout, metadata, extent and CRS come from the header only (no point is read).
-    let header_reader =
-        las::Reader::from_path(source).map_err(|source_err| RasterRunError::OpenHeader {
-            path: source.to_path_buf(),
-            source: source_err,
-        })?;
-    let header = header_reader.header();
-    let layout = StreamingLayout::from_las_header(header);
-    let metadata = copc_write_metadata_from_source_header(header);
-    let bounds = header.bounds();
-    let epsg = match crs_id_from_las_header(header) {
-        CrsId::Epsg(code) => Some(code),
-        _ => None,
-    };
-    drop(header_reader);
-
-    if options.value == RasterValue::RgbMean && !layout.has_color {
+    // Layout, extent and CRS come from the header only (no point is read).
+    let facts = read_header(source)?;
+    if options.value == RasterValue::RgbMean && !facts.layout.has_color {
         return Err(RasterRunError::NoColor);
     }
+    let b = facts.bounds;
     let spec = GridSpec::from_bounds(
-        bounds.min.x,
-        bounds.min.y,
-        bounds.max.x,
-        bounds.max.y,
+        b.min_x,
+        b.min_y,
+        b.max_x,
+        b.max_y,
         options.cell_size,
         max_cells,
     )?;
@@ -203,38 +230,16 @@ where
     // The last node may have been read after the final callback check.
     cancel.check().map_err(RasterRunError::Read)?;
 
-    // 1. GeoTIFF.
     let file = File::create(geotiff_output).map_err(RasterRunError::GeoTiffFile)?;
     let mut out = BufWriter::new(file);
-    write_geotiff(&acc, epsg, &mut out)?;
+    write_geotiff(&acc, facts.epsg, &options, &mut out)?;
     std::io::Write::flush(&mut out).map_err(RasterRunError::GeoTiffFile)?;
-    drop(out);
-
-    // 2. Display COPC: one point per non-empty cell, handed to the writer lazily.
-    let display_points = filled_cells(&acc);
-    let records = DisplayPoints::new(&acc, usize::from(layout.extra_bytes)).map(Ok);
-    let mut ingest = copc_writer::IngestStageTimings::default();
-    let mut post = copc_writer::PostProcessStageTimings::default();
-    write_streaming_with_cancel_and_timings(
-        display_output,
-        layout,
-        records,
-        params,
-        &metadata,
-        spill_dir,
-        cancel,
-        Some(&mut ingest),
-        Some(&mut post),
-    )
-    .map_err(RasterRunError::Write)?;
-    *timings = ConversionStageTimings::from_parts(ingest, post);
 
     Ok(RasterSummary {
         width: acc.spec().width,
         height: acc.spec().height,
         points_counted: acc.accepted_points(),
-        display_points,
-        warnings: missing_crs_warning(epsg).into_iter().collect(),
+        warnings: missing_crs_warning(facts.epsg).into_iter().collect(),
         stats,
     })
 }
@@ -245,6 +250,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use copc_core::NeverCancel;
+    use copc_writer::CopcWriterParams;
+    use pcv_core::raster::preview::PreviewOptions;
+    use pcv_core::raster::TiffKind;
     use tiff::decoder::{Decoder, DecodingResult};
 
     /// Writes a LAS (PDRF7, with colour): 10 x 10 columns at 1 m spacing from
@@ -317,36 +325,15 @@ mod tests {
         copc_path
     }
 
-    struct Paths {
-        tif: PathBuf,
-        copc: PathBuf,
-    }
-
     fn run(
         source: &Path,
         dir: &Path,
         options: RasterOptions,
         max_cells: u64,
-    ) -> (Result<RasterSummary, RasterRunError>, Paths) {
-        let paths = Paths {
-            tif: dir.join("out.tif"),
-            copc: dir.join("out.copc.laz"),
-        };
-        let spill = tempfile::tempdir().expect("spill");
-        let mut timings = ConversionStageTimings::default();
-        let result = rasterize_path_and_timings(
-            source,
-            options,
-            max_cells,
-            &paths.tif,
-            &paths.copc,
-            spill.path(),
-            &CopcWriterParams::new(500),
-            &NeverCancel,
-            |_| {},
-            &mut timings,
-        );
-        (result, paths)
+    ) -> (Result<RasterSummary, RasterRunError>, PathBuf) {
+        let tif = dir.join("out.tif");
+        let result = rasterize_path(source, options, max_cells, &tif, &NeverCancel, |_| {});
+        (result, tif)
     }
 
     fn options(value: RasterValue, ground_only: bool) -> RasterOptions {
@@ -354,6 +341,8 @@ mod tests {
             cell_size: 2.0,
             value,
             ground_only,
+            tiff: TiffKind::Values,
+            range: None,
         }
     }
 
@@ -370,72 +359,64 @@ mod tests {
     /// 10 x 10 columns with a 2 m cell: 5 x 5 cells, each holding 2 x 2 columns x 3
     /// points = 12 points (z = 10, 20, 30).
     #[test]
-    fn z_mean_per_cell_and_one_display_point_per_cell() {
+    fn z_mean_per_cell() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 500, 2);
-        let (result, paths) = run(&source, dir.path(), options(RasterValue::ZMean, false), 100);
+        let (result, tif) = run(&source, dir.path(), options(RasterValue::ZMean, false), 100);
         let summary = result.expect("raster");
         assert_eq!((summary.width, summary.height), (5, 5));
         assert_eq!(summary.points_counted, 300);
-        assert_eq!(summary.display_points, 25);
         assert_eq!(
             summary.warnings.len(),
             1,
             "no CRS: the GeoTIFF has none and the result says so"
         );
 
-        let (w, h, values) = read_f32_tiff(&paths.tif);
+        let (w, h, values) = read_f32_tiff(&tif);
         assert_eq!((w, h), (5, 5));
         assert!(values.iter().all(|&v| v == 20.0), "{values:?}");
-
-        let reader = CopcReader::from_path(&paths.copc).expect("open display copc");
-        assert_eq!(reader.header().number_of_points(), 25);
+        // The raster is not a layer: nothing but the GeoTIFF is written.
+        let written: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("out"))
+            .collect();
+        assert_eq!(written, vec!["out.tif".to_string()]);
     }
 
     #[test]
     fn min_max_count_and_ground_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 500, 2);
-        let (min, _) = run(&source, dir.path(), options(RasterValue::ZMin, false), 100);
+        let (min, tif) = run(&source, dir.path(), options(RasterValue::ZMin, false), 100);
         min.expect("min");
-        assert!(read_f32_tiff(&dir.path().join("out.tif"))
-            .2
-            .iter()
-            .all(|&v| v == 10.0));
-        let (max, _) = run(&source, dir.path(), options(RasterValue::ZMax, false), 100);
+        assert!(read_f32_tiff(&tif).2.iter().all(|&v| v == 10.0));
+        let (max, tif) = run(&source, dir.path(), options(RasterValue::ZMax, false), 100);
         max.expect("max");
-        assert!(read_f32_tiff(&dir.path().join("out.tif"))
-            .2
-            .iter()
-            .all(|&v| v == 30.0));
-        let (count, _) = run(&source, dir.path(), options(RasterValue::Count, false), 100);
+        assert!(read_f32_tiff(&tif).2.iter().all(|&v| v == 30.0));
+        let (count, tif) = run(&source, dir.path(), options(RasterValue::Count, false), 100);
         count.expect("count");
-        assert!(read_f32_tiff(&dir.path().join("out.tif"))
-            .2
-            .iter()
-            .all(|&v| v == 12.0));
+        assert!(read_f32_tiff(&tif).2.iter().all(|&v| v == 12.0));
         // Ground only: class 2 is z = 10, 4 per cell.
-        let (ground, _) = run(&source, dir.path(), options(RasterValue::Count, true), 100);
+        let (ground, tif) = run(&source, dir.path(), options(RasterValue::Count, true), 100);
         let summary = ground.expect("ground");
         assert_eq!(summary.points_counted, 100);
-        assert!(read_f32_tiff(&dir.path().join("out.tif"))
-            .2
-            .iter()
-            .all(|&v| v == 4.0));
+        assert!(read_f32_tiff(&tif).2.iter().all(|&v| v == 4.0));
     }
 
     #[test]
-    fn rgb_geotiff_has_four_bands_with_colour_means() {
+    fn rgb_values_geotiff_has_four_u16_bands_with_colour_means() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 500, 2);
-        let (result, paths) = run(
+        let (result, tif) = run(
             &source,
             dir.path(),
             options(RasterValue::RgbMean, false),
             100,
         );
         result.expect("rgb");
-        let file = File::open(&paths.tif).expect("open tiff");
+        let file = File::open(&tif).expect("open tiff");
         let mut d = Decoder::new(std::io::BufReader::new(file)).expect("decoder");
         match d.read_image().expect("image") {
             DecodingResult::U16(v) => {
@@ -449,24 +430,43 @@ mod tests {
     }
 
     #[test]
+    fn colored_geotiff_is_rgba8_and_uses_the_range_it_is_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = make_copc(dir.path(), 500, 2);
+        // Every cell has z mean 20; a given range of 10..50 puts it at t = 0.25.
+        let mut o = options(RasterValue::ZMean, false);
+        o.tiff = TiffKind::Colored;
+        o.range = Some((10.0, 50.0));
+        let (result, tif) = run(&source, dir.path(), o, 100);
+        result.expect("colored");
+        let file = File::open(&tif).expect("open tiff");
+        let mut d = Decoder::new(std::io::BufReader::new(file)).expect("decoder");
+        match d.read_image().expect("image") {
+            DecodingResult::U8(v) => {
+                assert_eq!(v.len(), 5 * 5 * 4);
+                assert_eq!(&v[0..4], &[0, 191, 64, 255]);
+            }
+            other => panic!("unexpected sample type: {other:?}"),
+        }
+    }
+
+    #[test]
     fn too_many_cells_is_refused_with_the_grid_message_and_writes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 500, 2);
-        let (result, paths) = run(&source, dir.path(), options(RasterValue::ZMean, false), 24);
+        let (result, tif) = run(&source, dir.path(), options(RasterValue::ZMean, false), 24);
         let err = result.expect_err("5 x 5 cells > 24");
         assert!(err.to_string().contains("セルの大きさ"), "{err}");
-        assert!(!paths.tif.exists());
-        assert!(!paths.copc.exists());
+        assert!(!tif.exists());
     }
 
     #[test]
     fn ground_only_without_ground_is_an_error_and_writes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 500, 1); // class 1 only: no ground
-        let (result, paths) = run(&source, dir.path(), options(RasterValue::Count, true), 100);
+        let (result, tif) = run(&source, dir.path(), options(RasterValue::Count, true), 100);
         assert!(matches!(result, Err(RasterRunError::NoPoints)));
-        assert!(!paths.tif.exists());
-        assert!(!paths.copc.exists());
+        assert!(!tif.exists());
     }
 
     /// The reader holds one node at a time, however many points there are.
@@ -481,36 +481,29 @@ mod tests {
         assert_eq!(stats.points_scanned, 300);
     }
 
-    #[test]
-    fn cancel_stops_reading_and_leaves_no_files() {
-        struct CancelNow;
-        impl CancelCheck for CancelNow {
-            fn check(&self) -> copc_core::Result<()> {
-                Err(copc_core::Error::Cancelled)
-            }
+    struct CancelNow;
+    impl CancelCheck for CancelNow {
+        fn check(&self) -> copc_core::Result<()> {
+            Err(copc_core::Error::Cancelled)
         }
+    }
+
+    #[test]
+    fn cancel_stops_reading_and_leaves_no_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 50, 2);
         let tif = dir.path().join("out.tif");
-        let copc = dir.path().join("out.copc.laz");
-        let spill = tempfile::tempdir().expect("spill");
-        let mut timings = ConversionStageTimings::default();
-        let err = rasterize_path_and_timings(
+        let err = rasterize_path(
             &source,
             options(RasterValue::ZMean, false),
             100,
             &tif,
-            &copc,
-            spill.path(),
-            &CopcWriterParams::new(50),
             &CancelNow,
             |_| {},
-            &mut timings,
         )
         .expect_err("cancelled");
         assert!(err.is_cancelled(), "{err}");
         assert!(!tif.exists());
-        assert!(!copc.exists());
     }
 
     #[test]
@@ -519,24 +512,50 @@ mod tests {
         let source = make_copc(dir.path(), 50, 2);
         let calls: Arc<Mutex<Vec<ReadProgress>>> = Arc::new(Mutex::new(Vec::new()));
         let calls_in = Arc::clone(&calls);
-        let spill = tempfile::tempdir().expect("spill");
-        let mut timings = ConversionStageTimings::default();
-        rasterize_path_and_timings(
+        rasterize_path(
             &source,
             options(RasterValue::ZMean, false),
             100,
             &dir.path().join("out.tif"),
-            &dir.path().join("out.copc.laz"),
-            spill.path(),
-            &CopcWriterParams::new(50),
             &NeverCancel,
             move |p| calls_in.lock().expect("lock").push(p),
-            &mut timings,
         )
         .expect("raster");
         let calls = calls.lock().expect("lock");
         assert!(calls.len() > 1);
         let last = calls.last().expect("last");
         assert_eq!((last.points_read, last.total_points), (300, 300));
+    }
+
+    // --- the preview store (G1-R2) ---
+
+    #[test]
+    fn coarse_read_keeps_at_most_the_cap_and_renders_a_preview() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = make_copc(dir.path(), 50, 2); // 300 points in several nodes
+        let all = read_coarse_path(&source, 1_000_000, &NeverCancel, |_| {}).expect("all");
+        assert_eq!(all.len(), 300);
+        let cap = read_coarse_path(&source, 40, &NeverCancel, |_| {}).expect("capped");
+        assert!(cap.len() <= 40, "{}", cap.len());
+        assert!(cap.bytes_held() <= 40 * 32, "{}", cap.bytes_held());
+        let image = all
+            .render(&PreviewOptions {
+                cell_size: 2.0,
+                value: RasterValue::ZMean,
+                ground_only: false,
+            })
+            .expect("render");
+        assert_eq!((image.width, image.height), (5, 5));
+        assert_eq!(image.range, Some((20.0, 20.0)));
+    }
+
+    #[test]
+    fn coarse_read_can_be_cancelled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = make_copc(dir.path(), 50, 2);
+        let err = read_coarse_path(&source, 1000, &CancelNow, |_| {})
+            .err()
+            .expect("cancelled");
+        assert!(err.is_cancelled(), "{err}");
     }
 }

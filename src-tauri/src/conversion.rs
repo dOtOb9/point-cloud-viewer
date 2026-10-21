@@ -1038,20 +1038,111 @@ pub async fn merge_copcs(
 /// 1.29 GiB peak). See `TaskSheets/G1-T6-rasterize-tool.md` for how the value was chosen.
 const RASTER_MAX_CELLS_DESKTOP: u64 = 64_000_000;
 
-/// Result of a rasterisation. Matches the frontend `RasterToolResultDto` in `tauri.ts`.
+/// The thinned points of the open Rasterize windows (G1-R2). The key is the id `raster_preview_open`
+/// returned. Each store holds at most `PREVIEW_POINT_BUDGET` points (`CoarsePoints`), so the memory is
+/// bounded by the number of windows times that, whatever the size of the cloud. The window closes its
+/// store with `raster_preview_close`.
+#[derive(Default)]
+pub struct RasterPreviewState {
+    stores: Mutex<std::collections::HashMap<u64, Arc<pcv_core::raster::preview::CoarsePoints>>>,
+    next_id: AtomicU64,
+}
+
+/// What `raster_preview_open` returns. Matches the frontend `RasterPreviewOpenDto` in `tauri.ts`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RasterPreviewOpened {
+    pub id: u64,
+    #[serde(flatten)]
+    pub info: pcv_core::raster::preview::PreviewOpenInfo,
+}
+
+/// Reads the upper levels of an open COPC for the Rasterize window and keeps them (G1-R2).
+#[tauri::command]
+pub async fn raster_preview_open(
+    path: String,
+    state: State<'_, ConversionState>,
+    previews: State<'_, RasterPreviewState>,
+) -> Result<RasterPreviewOpened, String> {
+    if FilePath::from_str(&path).is_ok_and(|p| matches!(p, FilePath::Url(_))) {
+        return Err("この環境(content:// URI)では未対応です".to_string());
+    }
+    let store = run_tool(&state, move |cancel| {
+        pcv_convert::raster::read_coarse_path(
+            Path::new(&path),
+            pcv_core::raster::preview::PREVIEW_POINT_BUDGET as usize,
+            &cancel,
+            |_| {},
+        )
+        .map_err(|e| {
+            if e.is_cancelled() {
+                "キャンセルされた".to_string()
+            } else {
+                e.to_string()
+            }
+        })
+    })
+    .await?;
+    let info = store.open_info();
+    let id = previews.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    previews
+        .stores
+        .lock()
+        .map_err(|_| "内部状態が壊れています".to_string())?
+        .insert(id, Arc::new(store));
+    Ok(RasterPreviewOpened { id, info })
+}
+
+/// Draws the preview picture from the kept points. The bytes are `PreviewImage::to_bytes`.
+#[tauri::command]
+pub async fn raster_preview_render(
+    id: u64,
+    options: pcv_core::raster::preview::PreviewOptions,
+    previews: State<'_, RasterPreviewState>,
+) -> Result<tauri::ipc::Response, String> {
+    let store = previews
+        .stores
+        .lock()
+        .map_err(|_| "内部状態が壊れています".to_string())?
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| "ラスタ化のウィンドウが閉じられています".to_string())?;
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.render(&options).map(|image| image.to_bytes())
+        }))
+    })
+    .await;
+    match joined {
+        Ok(Ok(Ok(bytes))) => Ok(tauri::ipc::Response::new(bytes)),
+        Ok(Ok(Err(e))) => Err(e.to_string()),
+        Ok(Err(panic)) => Err(format!("内部エラー(panic): {}", panic_message(panic.as_ref()))),
+        Err(e) => Err(format!("プレビューを作れなかった: {e}")),
+    }
+}
+
+/// Frees the kept points of a closed Rasterize window.
+#[tauri::command]
+pub fn raster_preview_close(id: u64, previews: State<'_, RasterPreviewState>) -> Result<(), String> {
+    previews
+        .stores
+        .lock()
+        .map_err(|_| "内部状態が壊れています".to_string())?
+        .remove(&id);
+    Ok(())
+}
+
+/// Result of an export. Matches the frontend `RasterExportDto` in `tauri.ts`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RasterOutput {
-    /// The display COPC (one point per non-empty cell).
-    pub output_path: String,
-    pub point_count: u64,
     pub warnings: Vec<String>,
-    /// The GeoTIFF (in the same temp folder).
+    /// The GeoTIFF (in the `pcv-tools` temp folder; `save_tool_file` copies it where the user chose).
     pub geotiff_path: String,
     pub width: u32,
     pub height: u32,
 }
 
-/// Rasterises an open COPC: writes a GeoTIFF and a display COPC (G1-3).
+/// Rasterises an open COPC into a GeoTIFF (G1-3, export of the Rasterize window).
 #[tauri::command]
 pub async fn rasterize_copc(
     app: AppHandle,
@@ -1072,8 +1163,8 @@ pub async fn rasterize_copc(
                 .to_string()
         })
         .unwrap_or_else(|| "raster".to_string());
+    // `tool_output_path` makes `<name>.copc.laz`; the GeoTIFF is `<name>.tif`, in the same folder.
     let output = tool_output_path(&app, temp_dir.as_deref(), &format!("{stem}-raster"))?;
-    // `<name>.copc.laz` -> `<name>.tif`, next to it.
     let geotiff_output = output.with_file_name(
         output
             .file_name()
@@ -1081,22 +1172,15 @@ pub async fn rasterize_copc(
             .map(|n| format!("{}.tif", n.trim_end_matches(".copc.laz")))
             .unwrap_or_else(|| "raster.tif".to_string()),
     );
-    let spill_dir = resolve_spill_dir(&app, temp_dir.as_deref())?;
-    redirect_os_temp_dir(&spill_dir);
     let on_progress = tool_progress(&app);
     run_tool(&state, move |cancel| {
-        let mut timings = ConversionStageTimings::default();
-        let summary = pcv_convert::raster::rasterize_path_and_timings(
+        let summary = pcv_convert::raster::rasterize_path(
             Path::new(&path),
             options,
             RASTER_MAX_CELLS_DESKTOP,
             &geotiff_output,
-            &output,
-            &spill_dir,
-            &CopcWriterParams::default(),
             &cancel,
             on_progress,
-            &mut timings,
         )
         .map_err(|e| {
             if e.is_cancelled() {
@@ -1106,8 +1190,6 @@ pub async fn rasterize_copc(
             }
         })?;
         Ok(RasterOutput {
-            output_path: output.to_string_lossy().into_owned(),
-            point_count: summary.display_points,
             warnings: summary.warnings,
             geotiff_path: geotiff_output.to_string_lossy().into_owned(),
             width: summary.width,

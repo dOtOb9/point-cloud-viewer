@@ -50,7 +50,7 @@ pub use convert::WasmConverter;
 // L2-C: Web extraction (point selection, cross section). Used by `src/datasource/copc.worker.ts`.
 pub use extract::WasmExtractor;
 // --- G1: rasterize --- Web rasterization (the Rasterize tool). Used by `src/datasource/copc.worker.ts`.
-pub use raster::WasmRasterizer;
+pub use raster::{WasmRasterPreview, WasmRasterizer};
 // ---
 // R7 / M4-17: Web PLY / PCD / E57 (and mixed LAS) to COPC conversion, one or several files. Used by `src/datasource/copc.worker.ts`.
 pub use point_file_import::WasmPointFileConverter;
