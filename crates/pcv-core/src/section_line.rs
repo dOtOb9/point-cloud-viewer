@@ -97,35 +97,47 @@ pub struct SectionLineParams {
     pub max_cells: u64,
 }
 
-/// The CSF preset the user picks in the section dialog (plan 2.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+/// The CSF parameters as the frontend sends them (JSON). Every length is already in the file's unit: the frontend
+/// holds the owner's values in metres and converts them (`csfParamsInFileUnits` in `src/app/csf-params.ts`), so the
+/// presets (標準 / 急勾配) live in one place, the frontend. Field meanings: see `CsfParams`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum CsfPreset {
-    Standard,
-    Steep,
+pub struct CsfParamsInput {
+    pub cloth_resolution: f64,
+    pub rigidness: u32,
+    pub time_step: f32,
+    pub class_threshold_upper: f32,
+    pub class_threshold_lower: f32,
+    pub iterations: u32,
+    pub slope_smooth: bool,
+    pub hdiff: f32,
+    pub convergence_threshold: f32,
 }
 
-/// What the frontend sends (JSON). Lengths are in the file's unit: the frontend converts metres with the CRS factor.
+/// What the frontend sends (JSON). Lengths are in the file's unit.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SectionLineRequest {
-    pub preset: CsfPreset,
     pub corridor_half_width: f64,
-    pub cloth_resolution: f64,
+    pub csf: CsfParamsInput,
 }
 
 impl SectionLineRequest {
     /// The parameters for `SectionLineJob::new`. `max_cells` differs between desktop and Web.
     pub fn to_params(self, max_cells: u64) -> SectionLineParams {
-        let base = match self.preset {
-            CsfPreset::Standard => CsfParams::standard(),
-            CsfPreset::Steep => CsfParams::steep(),
-        };
+        let c = self.csf;
         SectionLineParams {
             corridor_half_width: self.corridor_half_width,
             csf: CsfParams {
-                cloth_resolution: self.cloth_resolution,
-                ..base
+                cloth_resolution: c.cloth_resolution,
+                rigidness: c.rigidness,
+                time_step: c.time_step,
+                class_threshold_upper: c.class_threshold_upper,
+                class_threshold_lower: c.class_threshold_lower,
+                iterations: c.iterations,
+                slope_smooth: c.slope_smooth,
+                hdiff: c.hdiff,
+                convergence_threshold: c.convergence_threshold,
             },
             max_cells,
         }

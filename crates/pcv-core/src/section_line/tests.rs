@@ -326,3 +326,19 @@ fn no_points_in_the_corridor_is_an_error() {
         result.err()
     );
 }
+
+#[test]
+fn request_json_becomes_params_without_changing_the_numbers() {
+    let json = r#"{"corridorHalfWidth":65.6,"csf":{"clothResolution":1.64,"rigidness":1,"timeStep":0.65,
+        "classThresholdUpper":0.33,"classThresholdLower":3.28,"iterations":1500,"slopeSmooth":true,
+        "hdiff":0.98,"convergenceThreshold":0.016}}"#;
+    let request: SectionLineRequest = serde_json::from_str(json).expect("request");
+    let params = request.to_params(123);
+    assert_eq!(params.max_cells, 123);
+    assert_eq!(params.corridor_half_width, 65.6);
+    assert_eq!(params.csf.cloth_resolution, 1.64);
+    assert_eq!(params.csf.rigidness, 1);
+    assert_eq!(params.csf.class_threshold_lower, 3.28);
+    assert_eq!(params.csf.iterations, 1500);
+    assert!(params.csf.slope_smooth);
+}

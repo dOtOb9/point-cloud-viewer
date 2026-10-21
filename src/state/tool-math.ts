@@ -5,12 +5,6 @@
 // so it can be sent to Rust as it is.
 
 import type { OrientedBoxFilter } from "../datasource/tools";
-import {
-  DEFAULT_CLOTH_RESOLUTION_M,
-  DEFAULT_CORRIDOR_HALF_WIDTH_M,
-  type SectionLinePreset,
-  type SectionLineRequest,
-} from "../datasource/section-line";
 import { transformPoint, type Mat4 } from "../renderer/mat4";
 import { INTERNATIONAL_FOOT_IN_METERS, type DisplayUnit } from "./units";
 
@@ -109,18 +103,4 @@ export function sectionBox(a: Vec3, b: Vec3, up: Vec3, thickness: number, height
  */
 export function sectionYaw(normal: Vec3, right: Vec3, forward: Vec3): number {
   return Math.atan2(dot(normal, right), dot(normal, forward));
-}
-
-// --- G2: section line ---
-/**
- * What the section line computation is asked for, in the file's unit: the preset the user picked, the corridor half
- * width (20 m) and the cloth resolution (0.5 m). `toMeter` is the file's horizontal unit in metres (null when unknown:
- * the numbers are then taken as the file's unit, never guessed, like every other length in the tools).
- */
-export function sectionLineRequestFor(preset: SectionLinePreset, toMeter: number | null): SectionLineRequest {
-  return {
-    preset,
-    corridorHalfWidth: displayLengthToFile(DEFAULT_CORRIDOR_HALF_WIDTH_M, toMeter, "meter"),
-    clothResolution: displayLengthToFile(DEFAULT_CLOTH_RESOLUTION_M, toMeter, "meter"),
-  };
 }

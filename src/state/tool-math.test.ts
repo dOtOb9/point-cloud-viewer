@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { lookAt, multiply, perspective } from "../renderer/mat4";
 import { OrbitCamera } from "../renderer/orbit-camera";
 import { horizontalBasis } from "../renderer/up-axis";
-import { displayLengthToFile, heightRange, pixelToNdc, projectToNdc, sectionBox, sectionLineRequestFor, sectionYaw } from "./tool-math";
+import { displayLengthToFile, heightRange, pixelToNdc, projectToNdc, sectionBox, sectionYaw } from "./tool-math";
 
 describe("pixelToNdc", () => {
   it("maps the canvas corners and the centre (y is flipped)", () => {
@@ -96,21 +96,6 @@ describe("sectionBox", () => {
     expect(inside([50, 1.1, 5])).toBe(false);
     expect(inside([50, 0, 11])).toBe(false);
     expect(inside([101, 0, 5])).toBe(false);
-  });
-});
-
-// --- G2: section line ---
-describe("sectionLineRequestFor", () => {
-  it("converts the 20 m corridor and the 0.5 m cloth to the file's unit", () => {
-    expect(sectionLineRequestFor("standard", 1)).toEqual({ preset: "standard", corridorHalfWidth: 20, clothResolution: 0.5 });
-    const feet = sectionLineRequestFor("steep", 0.3048);
-    expect(feet.preset).toBe("steep");
-    expect(feet.corridorHalfWidth).toBeCloseTo(20 / 0.3048, 9);
-    expect(feet.clothResolution).toBeCloseTo(0.5 / 0.3048, 9);
-  });
-
-  it("takes the numbers as they are when the file's unit is unknown", () => {
-    expect(sectionLineRequestFor("standard", null)).toEqual({ preset: "standard", corridorHalfWidth: 20, clothResolution: 0.5 });
   });
 });
 
