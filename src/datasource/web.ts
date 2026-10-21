@@ -41,6 +41,7 @@ import {
   buildConvertStartRequest,
   buildExtractStartRequest,
   buildFilterStartRequest,
+  buildDtmStartRequest, // G1-T15
   buildThinStartRequest,
   buildRasterPreviewCloseRequest,
   buildRasterPreviewOpenRequest,
@@ -55,6 +56,7 @@ import {
   buildSectionProfileRequest,
   classifyOpenPath,
   makeFileKey,
+  type DtmDoneFiles, // G1-T15
   type PointFileFormat,
   type RasterDoneResponse,
   type WorkerRequest,
@@ -63,6 +65,7 @@ import {
 import { StaleNodeRequestError } from "./stale-node-error";
 import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
 import type { FilterRequest, ThinRequest } from "./thin-filter";
+import type { DtmFile, DtmRequest, DtmResult } from "./dtm"; // G1-T15
 import {
   decodePreviewImage,
   type RasterExportRequest,
@@ -81,6 +84,7 @@ interface ToolDone {
   outputName: string;
   pointCount: number;
   warnings: string[];
+  dtm?: DtmDoneFiles; // G1-T15
 }
 
 /** How the free-space check gets the point count of each raw point-file format (from its header). */
@@ -569,7 +573,7 @@ export class WebSource implements DataSource {
     id: number,
     request: WorkerRequest,
     options: ToolOptions | undefined,
-  ): Promise<ToolResult> {
+  ): Promise<ToolResult & { dtm?: DtmDoneFiles }> {
     this.activeConvertId = id;
     try {
       const done = await new Promise<ToolDone>((resolve, reject) => {
@@ -584,6 +588,7 @@ export class WebSource implements DataSource {
         outputPath: this.registerFile(file),
         pointCount: done.pointCount,
         warnings: done.warnings,
+        dtm: done.dtm, // G1-T15
       };
     } finally {
       if (this.activeConvertId === id) this.activeConvertId = null;
@@ -644,6 +649,46 @@ export class WebSource implements DataSource {
     const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
     if (insufficient) throw new Error("空き容量が足りないため、点群ツールを実行できません");
     return file;
+  }
+  // ---
+
+  // --- G1: DTM ---
+
+  /**
+   * Classifies the ground of an open COPC (`path` = the key passed to `open()`) with CSF and makes a DTM from it: a new
+   * COPC on OPFS (`outputPath`, a registered key) and the DTM files as downloads. `request` lengths are in the file's
+   * unit. Progress is per mille. Cancel with `cancelConversion()`. Zero ground points throws.
+   */
+  async dtmCopc(path: string, request: DtmRequest, options?: ToolOptions): Promise<DtmResult> {
+    const file = await this.checkedToolInput(path);
+    const id = this.nextRequestId++;
+    const done = await this.runTool(id, buildDtmStartRequest(id, file, request, `DTM: ${file.name}`), options);
+    const files = done.dtm;
+    if (!files) throw new Error("DTM の結果が返りませんでした");
+    const baseName = file.name.replace(/\.laz$/i, "").replace(/\.copc$/i, "");
+    const download = (bytes: Uint8Array | null, type: string, extension: string): DtmFile | null =>
+      bytes === null
+        ? null
+        : {
+            fileName: `${baseName}-dtm.${extension}`,
+            path: null,
+            downloadUrl: URL.createObjectURL(new Blob([bytes as BlobPart], { type })),
+          };
+    return {
+      outputPath: done.outputPath,
+      pointCount: done.pointCount,
+      warnings: done.warnings,
+      dtm: {
+        cellSize: files.cellSize,
+        width: files.width,
+        height: files.height,
+        tinPoints: files.tinPoints,
+        tinTriangles: files.tinTriangles,
+        groundPoints: files.groundPoints,
+        geotiff: download(files.geotiff, "image/tiff", "tif"),
+        landxml: download(files.landxml, "application/xml", "xml"),
+      },
+    };
   }
   // ---
 
@@ -818,6 +863,7 @@ export class WebSource implements DataSource {
         outputName: response.outputName,
         pointCount: response.pointCount,
         warnings: response.warnings,
+        dtm: response.dtm, // G1-T15
       });
       return;
     }

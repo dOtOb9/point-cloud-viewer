@@ -29,6 +29,7 @@ import {
 import { isTauriEnvironment } from "./environment";
 import type { ExtractFilter, ToolOptions, ToolResult } from "./tools";
 import type { FilterRequest, ThinRequest } from "./thin-filter";
+import type { DtmFile, DtmRequest, DtmResult } from "./dtm"; // G1-T15
 import {
   decodePreviewImage,
   type RasterExportRequest,
@@ -585,5 +586,59 @@ export async function computeSectionLine(
   return await withToolProgress(options, async () => {
     const buffer = await invoke<ArrayBuffer>("compute_section_line", { generation: cloudId, line, request });
     return decodeSectionLine(buffer);
+  });
+}
+
+// --- G1: DTM ---
+
+interface DtmDto {
+  output_path: string;
+  point_count: number;
+  warnings: string[];
+  geotiff_path: string | null;
+  landxml_path: string | null;
+  width: number;
+  height: number;
+  cell_size: number;
+  tin_points: number;
+  tin_triangles: number;
+  ground_points: number;
+}
+
+/**
+ * Classifies the ground of an open COPC (`path` = the path passed to `open()`) with CSF and makes a DTM from it. The
+ * result is a new COPC (`outputPath`, open it as a layer) and the DTM files in the temp folder (copy them where the user
+ * chose with `saveToolFile`). Progress is per mille (`totalPoints` is 1000). Cancel with `cancelLasConversion()`; the error
+ * text is then "キャンセルされた".
+ */
+export async function dtmCopc(path: string, request: DtmRequest, options?: ToolOptions): Promise<DtmResult> {
+  return await withToolProgress(options, async () => {
+    const dto = await invoke<DtmDto>("dtm_copc", { path, request, tempDir: options?.tempDir ?? null });
+    const stem = basenameOfPath(path).replace(/(\.copc)?\.laz$/i, "");
+    const file = (savedPath: string | null, extension: string): DtmFile | null =>
+      savedPath === null ? null : { fileName: `${stem}-dtm.${extension}`, path: savedPath, downloadUrl: null };
+    return {
+      outputPath: dto.output_path,
+      pointCount: dto.point_count,
+      warnings: dto.warnings,
+      dtm: {
+        cellSize: dto.cell_size,
+        width: dto.width,
+        height: dto.height,
+        tinPoints: dto.tin_points,
+        tinTriangles: dto.tin_triangles,
+        groundPoints: dto.ground_points,
+        geotiff: file(dto.geotiff_path, "tif"),
+        landxml: file(dto.landxml_path, "xml"),
+      },
+    };
+  });
+}
+
+/** Asks where to save a LandXML file (the system save dialog). Null when the user closed the dialog without choosing. */
+export async function chooseLandXmlDestination(suggestedName: string): Promise<string | null> {
+  return await saveFileDialog({
+    defaultPath: suggestedName,
+    filters: [{ name: "LandXML", extensions: ["xml"] }],
   });
 }

@@ -48,6 +48,8 @@ function makeHarness(layers: ViewerLayer[]) {
       return { layerId: "new-layer" };
     },
     setSectionLine: () => {},
+    setLayerDtm: () => {},
+    setLayerColorMode: () => {},
     focusLayer: () => {},
     setLayerVisible: (id, visible) => {
       if (!visible) hidden.push(id);

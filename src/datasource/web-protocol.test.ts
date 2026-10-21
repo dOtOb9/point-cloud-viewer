@@ -8,6 +8,7 @@ import {
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
+  buildDtmStartRequest, // G1-T15
   buildFilterStartRequest,
   buildThinStartRequest,
   buildRasterPreviewCloseRequest,
@@ -224,6 +225,16 @@ describe("点群ツールのリクエスト(L2-C)", () => {
     expect(buildRasterPreviewOpenRequest(5, file)).toEqual({ type: "rasterPreviewOpen", id: 5, file });
     expect(buildRasterPreviewRenderRequest(6, 5, request)).toEqual({ type: "rasterPreviewRender", id: 6, sessionId: 5, options: request });
     expect(buildRasterPreviewCloseRequest(7, 5)).toEqual({ type: "rasterPreviewClose", id: 7, sessionId: 5 });
+  });
+
+  it("DTM の要求にファイル・設定・名前を載せる (G1-T15)", () => {
+    const file = new File([new Uint8Array([1])], "a.copc.laz");
+    const request = {
+      csf: { clothResolution: 0.5, rigidness: 3, timeStep: 0.65, classThresholdUpper: 0.1, classThresholdLower: 1, iterations: 500, slopeSmooth: true, hdiff: 0.3, convergenceThreshold: 0.005 },
+      cellSize: 0.5,
+      output: { geotiff: true, landxml: true, tiff: "colored", unit: "meter" },
+    } as const;
+    expect(buildDtmStartRequest(9, file, request, "DTM: a.copc.laz")).toEqual({ type: "dtmStart", id: 9, file, request, label: "DTM: a.copc.laz" });
   });
 
   it("toolMergeStartに複数ファイルを載せる", () => {

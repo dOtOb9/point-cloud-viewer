@@ -7,6 +7,7 @@
 import type { CloudInfo } from "../datasource/DataSource";
 import { newHistory, type History } from "../app/section-math";
 import type { SectionGroundLine, SectionLinePreset } from "../datasource/section-line";
+import type { DtmInfo } from "../datasource/dtm"; // G1-T15
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX, sanitizePointSize } from "../renderer/layer-focus";
@@ -73,6 +74,8 @@ export interface ViewerLayer {
   measurement?: Measurement;
   /** G2: present only on a layer made by the cross-section tool ("断面"). */
   section?: SectionInfo;
+  /** G1-T15: present only on a layer made by the DTM tool ("地表"): the DTM grid and its files. */
+  dtm?: DtmInfo;
 }
 
 /** 追加・削除の結果。一覧と選択中の id をひとまとめに返す（選択は常に一覧の中の id か null）。 */
@@ -132,6 +135,12 @@ export function setLayerSectionLineHistoryInList(
   return layers.map((l) =>
     l.id === id && l.section?.line ? { ...l, section: { ...l.section, line: { ...l.section.line, history } } } : l,
   );
+}
+
+// --- G1-T15: DTM ---
+/** Store the DTM grid and its files on the layer the DTM tool made. Other layers are left as they are. */
+export function setLayerDtmInList(layers: ViewerLayer[], id: string, dtm: DtmInfo): ViewerLayer[] {
+  return layers.map((l) => (l.id === id ? { ...l, dtm } : l));
 }
 
 /** 選んだ着色をそのレイヤーに当てはめたときの実際の値（RGB が無ければ標高）。無いレイヤーは null。 */

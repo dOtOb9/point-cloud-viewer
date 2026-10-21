@@ -22,7 +22,7 @@ import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import { useDisplaySettings } from "./useDisplaySettings";
-import { addLayerToState, setLayerSectionLineHistoryInList, setLayerSectionLineInList } from "./layers";
+import { addLayerToState, setLayerDtmInList, setLayerSectionLineHistoryInList, setLayerSectionLineInList } from "./layers";
 import { useErrorLog } from "./useErrorLog";
 import { useFileOpen } from "./useFileOpen";
 import { useLayers } from "./useLayers";
@@ -123,6 +123,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     setSectionLine: (layerId, line) => {
       const current = layers.layersStateRef.current;
       layers.commitLayers({ ...current, layers: setLayerSectionLineInList(current.layers, layerId, line) });
+    },
+    // --- G1-T15: DTM ---
+    setLayerColorMode: layers.setLayerColorMode,
+    setLayerDtm: (layerId, dtm) => {
+      const current = layers.layersStateRef.current;
+      layers.commitLayers({ ...current, layers: setLayerDtmInList(current.layers, layerId, dtm) });
     },
     focusLayer: layers.focusLayer,
     setLayerVisible: layers.setLayerVisible,

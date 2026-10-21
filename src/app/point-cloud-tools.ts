@@ -13,11 +13,17 @@ import {
   cancelLasConversion,
   thinCopc as tauriThinCopc, // G3
   filterCopc as tauriFilterCopc, // G3
+  dtmCopc as tauriDtmCopc, // G1-T15
+  chooseGeoTiffDestination, // G1-T15
+  chooseLandXmlDestination, // G1-T15
+  saveToolFile, // G1-T15
 } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
 import type { DataSource } from "../datasource/DataSource";
 import type { ExtractFilter, ToolOptions, ToolResult } from "../datasource/tools";
 import type { FilterRequest, ThinRequest } from "../datasource/thin-filter"; // G3
+import type { DtmFile, DtmInfo, DtmRequest } from "../datasource/dtm"; // G1-T15
+import type { ColorMode } from "../renderer/colormap"; // G1-T15
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { horizontalBasis } from "../renderer/up-axis";
 import type { SectionGroundLine } from "../datasource/section-line";
@@ -47,6 +53,10 @@ export interface PointCloudToolsContext {
   addOpenedLayer: (path: string, name: string, section?: SectionInfo) => Promise<{ layerId: string }>;
   /** Store the computed ground line on the cross-section layer (what `setLayerSectionLineInList` of src/state/layers.ts does). */
   setSectionLine: (layerId: string, line: SectionGroundLine) => void;
+  /** G1-T15: Store the DTM grid and files on the layer the DTM tool made (what `setLayerDtmInList` of src/state/layers.ts does). */
+  setLayerDtm: (layerId: string, dtm: DtmInfo) => void;
+  /** G1-T15: Change how a layer is coloured (the same function the colour dialog calls). */
+  setLayerColorMode: (id: string, mode: ColorMode) => void;
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
   /** Show or hide a layer, the same function the layer list's checkbox calls (React state and renderer). */
   setLayerVisible: (id: string, visible: boolean) => void;
@@ -89,6 +99,8 @@ async function runTool(
   viewNormal?: readonly [number, number, number],
   // --- G2: cross-section view ---
   section?: SectionInfo,
+  // --- G1-T15: DTM --- progress is a fraction (per mille), shown as a percent
+  showAsPercent = false,
 ): Promise<string | null> {
   const source = ctx.getSource();
   if (!source) return null;
@@ -97,11 +109,12 @@ async function runTool(
     return null;
   }
   ctx.toolLock.running = true;
-  ctx.setToolProgress({ title, pointsRead: 0, totalPoints: 0 });
+  ctx.setToolProgress({ title, pointsRead: 0, totalPoints: 0, ...(showAsPercent ? { showAsPercent } : {}) });
   try {
     const result = await run(source, {
       tempDir: ctx.tempDir,
-      onProgress: (p) => ctx.setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints }),
+      onProgress: (p) =>
+        ctx.setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints, ...(showAsPercent ? { showAsPercent } : {}) }),
     });
     for (const warning of result.warnings) reportToolMessage(ctx, warning);
     const { layerId } = await ctx.addOpenedLayer(result.outputPath, resultName, section);
@@ -274,4 +287,57 @@ export async function filterLayer(ctx: PointCloudToolsContext, layerId: string, 
     (source, options) =>
       source instanceof WebSource ? source.filterCopc(path, request, options) : tauriFilterCopc(path, request, options),
   );
+}
+
+// --- G1-T15: DTM ---
+
+/**
+ * Make a new layer "地表 - name" from `layerId` whose ground points are classified by CSF (class 2; ADR-0018, owner's rule
+ * Q7), and the DTM files (GeoTIFF and/or LandXML, as the settings say). `request` lengths are already in the file's unit
+ * (`dtmRequestFor` in src/app/dtm.ts). The source layer is hidden only when the tool worked. The new layer shows the
+ * classification first, and keeps the grid and the files in `ViewerLayer.dtm` (shown by the layer info). A failure or a
+ * cancel goes to the error log and leaves the source visible.
+ */
+export async function makeDtm(ctx: PointCloudToolsContext, layerId: string, request: DtmRequest): Promise<void> {
+  const layer = findLayer(ctx.getLayersState().layers, layerId);
+  if (!layer || isMeasureLayer(layer) || layer.sourcePath === undefined) {
+    reportToolMessage(ctx, "点群のレイヤーを選んでください");
+    return;
+  }
+  const path = layer.sourcePath;
+  // `run` only returns the part `runTool` needs (`ToolResult`); the DTM part is kept here until the layer exists.
+  const made: { dtm: DtmInfo | null } = { dtm: null };
+  const newLayerId = await runTool(
+    ctx,
+    `DTM（${layer.name}）`,
+    `地表 - ${layer.name}`,
+    [layer.id],
+    async (source, options) => {
+      const result = source instanceof WebSource ? await source.dtmCopc(path, request, options) : await tauriDtmCopc(path, request, options);
+      made.dtm = result.dtm;
+      return result;
+    },
+    undefined,
+    undefined,
+    true,
+  );
+  if (newLayerId === null || made.dtm === null) return;
+  ctx.setLayerDtm(newLayerId, made.dtm);
+  // The ground is the point of this layer, so it is first shown by class.
+  ctx.setLayerColorMode(newLayerId, "classification");
+}
+
+/**
+ * Desktop: ask where to save a DTM file the tool made (in the temp folder) and copy it there. The Web build has no such
+ * button (the layer info shows a download link). A failure goes to the error log; closing the dialog does nothing.
+ */
+export async function saveDtmFile(ctx: PointCloudToolsContext, file: DtmFile, kind: "geotiff" | "landxml"): Promise<void> {
+  if (file.path === null) return;
+  try {
+    const destination = kind === "geotiff" ? await chooseGeoTiffDestination(file.fileName) : await chooseLandXmlDestination(file.fileName);
+    if (destination === null) return;
+    await saveToolFile(file.path, destination);
+  } catch (e) {
+    reportToolMessage(ctx, e instanceof Error ? e.message : String(e));
+  }
 }

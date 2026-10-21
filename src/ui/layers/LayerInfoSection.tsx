@@ -4,6 +4,7 @@ import { coordinateUnitLabel, formatCoordinate, lengthUnitsFor } from "../../sta
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { formatCrsLong } from "../common/crs-format";
 import { ConversionBreakdownPanel } from "./ConversionBreakdownPanel";
+import { DtmInfoSection } from "./DtmInfoSection"; // G1-T15
 
 // 変換の進捗・キャンセルは中央の変換ダイアログ(ConversionDialog.tsx)へ移した(ADR-0017)。
 /**
@@ -96,6 +97,9 @@ export function LayerInfoSection({ viewer }: { viewer: CopcViewerState }) {
           </a>
         </div>
       )}
+
+      {/* G1-T15: DTM ツールが作ったレイヤーの、DTM の情報とファイル。 */}
+      {layer?.dtm && <DtmInfoSection viewer={viewer} dtm={layer.dtm} />}
 
       {/* M4-12: 変換完了後の内訳。 */}
       {layer?.conversionBreakdownText && (

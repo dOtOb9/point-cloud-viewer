@@ -12,6 +12,7 @@ import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
 import type { ExtractFilter } from "./tools";
 import type { FilterRequest, ThinRequest } from "./thin-filter";
+import type { DtmRequest } from "./dtm"; // G1-T15
 import type { RasterExportRequest, RasterPreviewInfo, RasterRequest } from "./raster";
 import type { SectionLineInput } from "./section-profile";
 import type { SectionLineRequest } from "./section-line";
@@ -153,6 +154,7 @@ export type WorkerRequest =
   | ExtractStartRequest
   | ThinStartRequest
   | FilterStartRequest
+  | DtmStartRequest // G1-T15
   | ToolMergeStartRequest
   | OpenRequest
   | ReadNodeRequest
@@ -375,6 +377,8 @@ export interface ToolDoneResponse {
   outputName: string;
   pointCount: number;
   warnings: string[];
+  /** G1-T15: only the DTM tool sets it. */
+  dtm?: DtmDoneFiles;
 }
 
 export interface ToolFailedResponse {
@@ -426,6 +430,36 @@ export function buildFilterStartRequest(
   label: string,
 ): FilterStartRequest {
   return { type: "filterStart", id, file, request, label };
+}
+// ---
+
+// --- G1: DTM ---
+// Progress, result and failure use the `tool-*` responses; `tool-done` carries the DTM files in `dtm`.
+
+/** Classifies the ground of the open COPC (`file`) into a new COPC (on OPFS) and makes the DTM files. */
+export interface DtmStartRequest {
+  type: "dtmStart";
+  id: number;
+  file: File;
+  request: DtmRequest;
+  /** Name shown in the usage breakdown (settings). */
+  label: string;
+}
+
+export function buildDtmStartRequest(id: number, file: File, request: DtmRequest, label: string): DtmStartRequest {
+  return { type: "dtmStart", id, file, request, label };
+}
+
+/** The DTM part of `tool-done`. The byte arrays are transferred, not copied; `null` when that file was not asked for. */
+export interface DtmDoneFiles {
+  geotiff: Uint8Array | null;
+  landxml: Uint8Array | null;
+  width: number;
+  height: number;
+  cellSize: number;
+  tinPoints: number;
+  tinTriangles: number;
+  groundPoints: number;
 }
 // ---
 

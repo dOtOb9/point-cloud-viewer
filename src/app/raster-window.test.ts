@@ -77,6 +77,8 @@ function makeHarness(layer: ViewerLayer, display: DisplayUnit = "meter"): Harnes
     isMobile: false,
     addOpenedLayer: async () => ({ layerId: "x" }),
     setSectionLine: () => {},
+    setLayerDtm: () => {},
+    setLayerColorMode: () => {},
     focusLayer: () => {},
     setLayerVisible: () => {},
     setStatus: () => {},

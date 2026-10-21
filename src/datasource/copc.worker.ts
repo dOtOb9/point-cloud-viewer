@@ -39,6 +39,7 @@ import init, {
   WasmCopcFile,
   WasmPointFileConverter,
   WasmThinFilter, // G3
+  WasmDtm, // G1-T15
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { RasterPreviewInfo } from "./raster";
@@ -58,6 +59,7 @@ import type {
   ConvertMultiStartRequest,
   ExtractStartRequest,
   FilterStartRequest, // G3
+  DtmStartRequest, // G1-T15
   ThinStartRequest, // G3
   OpenSource,
   PointFileConvertStartRequest,
@@ -255,6 +257,10 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
         return;
       case "filterStart":
         await handleFilterStart(request);
+        return;
+      // --- G1: DTM ---
+      case "dtmStart":
+        await handleDtmStart(request);
         return;
       case "rasterPreviewOpen":
         await handleRasterPreviewOpen(request);
@@ -1344,6 +1350,125 @@ async function runThinFilter(
       message: describeConversionFailure(err),
       cancelled: false,
     });
+  } finally {
+    job?.free();
+    opfs.closeHandles(scratchHandles);
+    if (outputHandle) opfs.closeHandles([outputHandle]);
+    if (scratchDirName) await opfs.removeScratchDir(scratchDirName);
+    if (!succeeded) {
+      await opfs.removeOutputFile(outputName);
+    }
+    if (activeConvertId === id) activeConvertId = null;
+  }
+}
+
+// --- G1: DTM ---
+//
+// Same sequence as `runThinFilter` (lock -> scratch-file pool -> loop -> finish -> cleanup). The loop calls
+// `WasmDtm.advance()`, which does a small piece of work (about 200 thousand points, or ten cloth steps) and returns
+// the fraction; it yields to the event loop after each call, so a cancel message is handled between calls (no effect
+// during finish). The classified COPC goes to OPFS like any tool output; the DTM files (GeoTIFF, LandXML) are
+// made after `finish` and transferred in `tool-done`.
+
+async function handleDtmStart(request: DtmStartRequest): Promise<void> {
+  const { id, file, label } = request;
+  const outcome = await opfs.withConversionLock(navigator.locks, () => runDtm(id, label, file, request));
+  if (outcome.kind === "busy") {
+    scope.postMessage({
+      type: "tool-failed",
+      id,
+      message: "別のタブ(またはウィンドウ)で変換が進行中です。そちらが終わるまでお待ちください。",
+      cancelled: false,
+    });
+  }
+}
+
+async function runDtm(id: number, label: string, file: File, request: DtmStartRequest): Promise<void> {
+  activeConvertId = id;
+  convertCancelRequested = false;
+
+  const outputName = opfs.toolOutputName();
+  let scratchDirName: string | null = null;
+  let scratchHandles: FileSystemSyncAccessHandle[] = [];
+  let outputHandle: FileSystemSyncAccessHandle | null = null;
+  let job: WasmDtm | null = null;
+  let succeeded = false;
+  const cancelled = () =>
+    scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
+
+  try {
+    try {
+      await opfs.cleanupStaleScratchDirs();
+    } catch {
+      // Carry on even if cleanup fails (same as conversion).
+    }
+    const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
+    scratchDirName = pool.dirName;
+    scratchHandles = pool.handles;
+    outputHandle = await opfs.createOutputHandle(outputName);
+
+    // The constructor refuses a cloth or a grid over the caps before any point is read.
+    job = new WasmDtm(file, request.request, scratchHandles, outputHandle, outputName, DEFAULT_MAX_POINTS_PER_NODE);
+
+    for (;;) {
+      if (convertCancelRequested) {
+        cancelled();
+        return;
+      }
+      const step = job.advance() as { fraction: number; done: boolean };
+      scope.postMessage({ type: "tool-progress", id, pointsRead: Math.round(step.fraction * 1000), totalPoints: 1000 });
+      if (step.done) break;
+      await yieldToEventLoop();
+    }
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+
+    const finishResult = job.finish() as FinishResultDto;
+    if (convertCancelRequested) {
+      cancelled();
+      return;
+    }
+    const info = job.info() as {
+      width: number;
+      height: number;
+      cell_size: number;
+      tin_points: number;
+      tin_triangles: number;
+      ground_points: number;
+      warnings: string[];
+    };
+    const geotiff = request.request.output.geotiff ? job.geotiff() : null;
+    const landxml = request.request.output.landxml ? job.landxml(Date.now() / 1000) : null;
+
+    await opfs.writeToolOutputMeta(outputName, label);
+    succeeded = true;
+    const transfer: ArrayBuffer[] = [];
+    if (geotiff) transfer.push(geotiff.buffer as ArrayBuffer);
+    if (landxml) transfer.push(landxml.buffer as ArrayBuffer);
+    scope.postMessage(
+      {
+        type: "tool-done",
+        id,
+        outputName,
+        pointCount: finishResult.point_count,
+        warnings: finishResult.warnings ?? [],
+        dtm: {
+          geotiff,
+          landxml,
+          width: info.width,
+          height: info.height,
+          cellSize: info.cell_size,
+          tinPoints: info.tin_points,
+          tinTriangles: info.tin_triangles,
+          groundPoints: info.ground_points,
+        },
+      },
+      transfer,
+    );
+  } catch (err) {
+    scope.postMessage({ type: "tool-failed", id, message: describeConversionFailure(err), cancelled: false });
   } finally {
     job?.free();
     opfs.closeHandles(scratchHandles);

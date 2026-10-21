@@ -13,7 +13,7 @@ import type { ToolProgressState } from "./viewer-types";
 /** What the context is made of: the newest React values (refs are stable, the rest may change every render). */
 export type PointCloudToolsInputs = Pick<
   PointCloudToolsContext,
-  "extraSelectedIds" | "tempDir" | "isMobile" | "addOpenedLayer" | "focusLayer" | "setLayerVisible" | "setStatus" | "reportError" | "toolLock" | "setSectionLine"
+  "extraSelectedIds" | "tempDir" | "isMobile" | "addOpenedLayer" | "focusLayer" | "setLayerVisible" | "setStatus" | "reportError" | "toolLock" | "setSectionLine" | "setLayerDtm" | "setLayerColorMode"
 > & {
   rendererRef: RefObject<PointCloudRenderer | null>;
   sourceRef: RefObject<DataSource | null>;
@@ -46,6 +46,8 @@ export function usePointCloudTools(inputs: PointCloudToolsInputs): PointCloudToo
     reportError: inputs.reportError,
     toolLock: inputs.toolLock,
     setSectionLine: inputs.setSectionLine, // G2
+    setLayerDtm: inputs.setLayerDtm, // G1-T15
+    setLayerColorMode: inputs.setLayerColorMode, // G1-T15
   };
   return { toolProgress, toolContext };
 }

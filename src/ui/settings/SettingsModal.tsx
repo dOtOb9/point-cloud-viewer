@@ -5,6 +5,7 @@ import {
   Target,
   HardDrive,
   Image,
+  Mountain,
   Monitor,
   Palette,
   RefreshCw,
@@ -31,6 +32,7 @@ import { StorageDialog } from "./pages/StorageDialog";
 import { TempDirDialog } from "./pages/TempDirDialog";
 import { ThemeDialog } from "./pages/ThemeDialog";
 import { UnitDialog } from "./pages/UnitDialog";
+import { DtmOutputDialog } from "./pages/DtmOutputDialog"; // G1-T15
 import { UpdateDialog } from "./pages/UpdateDialog";
 
 interface Props {
@@ -54,6 +56,7 @@ const PAGE_BUTTONS: Record<SettingsPageId, { icon: LucideIcon; label: string }> 
   loadPriority: { icon: Target, label: "読み込み優先" },
   edl: { icon: Sun, label: "陰影（EDL）" },
   unit: { icon: Ruler, label: "単位" },
+  dtmOutput: { icon: Mountain, label: "DTM の出力" }, // G1-T15
 };
 
 /**
@@ -125,6 +128,7 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
       <LoadPriorityDialog {...pageProps("loadPriority")} viewer={viewer} />
       <EdlDialog {...pageProps("edl")} viewer={viewer} />
       <UnitDialog {...pageProps("unit")} />
+      <DtmOutputDialog {...pageProps("dtmOutput")} />
     </>
   );
 }

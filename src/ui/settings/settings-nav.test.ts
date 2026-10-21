@@ -12,6 +12,11 @@ describe("settingsNavReducer", () => {
 });
 
 describe("visibleSettingsPages", () => {
+  it("DTM の出力の項目が出る (G1-T15)", () => {
+    for (const isBrowser of [false, true]) {
+      expect(visibleSettingsPages({ isBrowser, supportsCustomTempDir: true })).toContain("dtmOutput");
+    }
+  });
   it("単位の項目が出る", () => {
     expect(visibleSettingsPages({ isBrowser: false, supportsCustomTempDir: true })).toContain("unit");
   });
