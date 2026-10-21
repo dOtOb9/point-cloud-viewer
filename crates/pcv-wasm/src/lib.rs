@@ -16,6 +16,9 @@
 
 mod alloc_guard;
 mod convert;
+// --- G1: DTM ---
+mod dtm;
+// ---
 mod dto;
 mod e57_import;
 mod extract;
@@ -62,6 +65,9 @@ pub use section_line::WasmSectionLine;
 // ---
 // --- G3: thinning and outlier filters --- Web thinning / ROR / SOR. Used by `src/datasource/copc.worker.ts`.
 pub use thin_filter::WasmThinFilter;
+// ---
+// --- G1: DTM --- Web DTM tool. Used by `src/datasource/copc.worker.ts`.
+pub use dtm::WasmDtm;
 // ---
 
 /// 2026-10-07追記: 直前にメモリ確保の失敗(`alloc_guard.rs`)が起きていれば

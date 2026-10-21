@@ -134,12 +134,12 @@ pub(super) fn write<W: Write>(
     writeln!(w, "        <Pnts>")?;
     for (i, (x, y, z)) in points.enumerate() {
         // Northing, easting, elevation (see the module documentation).
-        writeln!(w, "          <P id=\"{}\">{y:.4} {x:.4} {z:.4}</P>", i + 1)?;
+        writeln!(w, "<P id=\"{}\">{y:.4} {x:.4} {z:.4}</P>", i + 1)?;
     }
     writeln!(w, "        </Pnts>")?;
     writeln!(w, "        <Faces>")?;
     for [a, b, c] in faces {
-        writeln!(w, "          <F>{} {} {}</F>", a + 1, b + 1, c + 1)?;
+        writeln!(w, "<F>{} {} {}</F>", a + 1, b + 1, c + 1)?;
     }
     writeln!(w, "        </Faces>")?;
     writeln!(w, "      </Definition>")?;

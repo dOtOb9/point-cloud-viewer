@@ -53,6 +53,9 @@ pub const DTM_MAX_PARTICLES_WEB: u64 = 16_000_000;
 pub const DTM_MAX_CELLS_DESKTOP: u64 = 40_000_000;
 /// Largest number of DTM cells on the Web.
 pub const DTM_MAX_CELLS_WEB: u64 = 8_000_000;
+/// Largest number of DTM cells on the Web when LandXML is asked for: the text is built in memory there (about 70 bytes
+/// per TIN vertex and face together, measured on desktop in `TaskSheets/G1-T15-dtm.md`).
+pub const DTM_MAX_CELLS_WEB_LANDXML: u64 = 2_000_000;
 
 /// Cloth steps per `advance` call in the simulation phase.
 const STEPS_PER_ADVANCE: u32 = 10;
