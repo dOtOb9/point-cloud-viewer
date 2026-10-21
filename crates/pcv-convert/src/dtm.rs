@@ -23,7 +23,7 @@ use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriterParams};
 use pcv_core::crs::{crs_id_from_las_header, CrsId};
 use pcv_core::dtm::{
     DtmError, DtmJob, DtmParams, DtmRequest, GroundAgreement, LandXmlOptions,
-    DTM_MAX_CELLS_DESKTOP, DTM_MAX_PARTICLES_DESKTOP,
+    DTM_MAX_CELLS_DESKTOP, DTM_MAX_CELLS_WEB, DTM_MAX_PARTICLES_DESKTOP, DTM_MAX_PARTICLES_WEB,
 };
 use pcv_core::raster::output::missing_crs_warning;
 
@@ -176,7 +176,8 @@ pub fn dtm_path(
     result
 }
 
-/// `dtm_path` with the caps of the desktop.
+/// `dtm_path` with the caps of this platform: the desktop caps, or on Android the (smaller) Web caps, because a phone has
+/// far less memory (the desktop caps are measured in `TaskSheets/G1-T15-dtm.md`; the Android ones are not).
 #[allow(clippy::too_many_arguments)]
 pub fn dtm_path_desktop(
     source: &Path,
@@ -190,8 +191,16 @@ pub fn dtm_path_desktop(
     dtm_path(
         source,
         request,
-        DTM_MAX_PARTICLES_DESKTOP,
-        DTM_MAX_CELLS_DESKTOP,
+        if cfg!(target_os = "android") {
+            DTM_MAX_PARTICLES_WEB
+        } else {
+            DTM_MAX_PARTICLES_DESKTOP
+        },
+        if cfg!(target_os = "android") {
+            DTM_MAX_CELLS_WEB
+        } else {
+            DTM_MAX_CELLS_DESKTOP
+        },
         outputs,
         spill_dir,
         unix_seconds,
