@@ -1,9 +1,9 @@
 //! Times the section line (G2-4) on a real COPC file and prints the result.
 //!
 //! ```text
-//! cargo run --release -p pcv-core --example section_line_bench -- <file.copc.laz>
+//! cargo run --release -p pcv-convert --example section_line_bench -- <file.copc.laz>
 //!     prints the bounding box and the CRS (to choose A and B)
-//! cargo run --release -p pcv-core --example section_line_bench -- <file> ax ay az bx by bz [standard|steep] [half_width] [resolution]
+//! cargo run --release -p pcv-convert --example section_line_bench -- <file> ax ay az bx by bz [standard|steep] [half_width] [resolution]
 //!     computes the line; lengths are in the file's unit (defaults: standard, 20, 0.5)
 //! ```
 //!

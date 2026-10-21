@@ -17,7 +17,7 @@
 | 状態: `SectionInfo.sourceLayerId / lineRequest / line`、`setLayerSectionLineInList` | `src/state/layers.ts` |
 | ダイアログのプリセット選択（標準 / 急勾配）、m → ファイルの単位の換算 `sectionLineRequestFor` | `src/ui/tools/SectionDialog.tsx`、`src/state/tool-math.ts` |
 | 進捗の表示（割合）、線の描画 | `ToolProgressDialog.tsx`、`src/renderer/section-2d.ts`（`drawGroundLine`）、`SectionPanel.tsx` |
-| 計測用の例 | `crates/pcv-core/examples/section_line_bench.rs` |
+| 計測用の例 | `crates/pcv-convert/examples/section_line_bench.rs` |
 
 追加した依存: `spade` 2.15.1（ライセンス MIT OR Apache-2.0、`Cargo.lock` で確認）。`robust`・`hashbrown`・`allocator-api2` も入る。
 
@@ -57,7 +57,7 @@ TS: `section-line.test.ts`（デコーダ）、`point-cloud-tools.test.ts`（線
 
 ## 測ったこと（実行したコマンドと出力）
 
-ネイティブ（release、`cargo run --release -p pcv-core --example section_line_bench -- <file> ax ay az bx by bz standard 20 0.5`、Windows、1回目の実行）:
+ネイティブ（release、`cargo run --release -p pcv-convert --example section_line_bench -- <file> ax ay az bx by bz standard 20 0.5`、Windows、1回目の実行）:
 
 | ファイル・断面 | セル数 | 読み1 | シミュレーション | 読み2 | TIN | 合計 | 地表の点 |
 |---|---|---|---|---|---|---|---|
