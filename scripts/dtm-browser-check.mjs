@@ -2,7 +2,7 @@
 // downloaded GeoTIFF. A developer tool, not part of CI. It needs a running `vite preview` of the Web build
 // (GITHUB_PAGES_BUILD=true npm run build, then npm run preview -- --port N --strictPort --host 127.0.0.1).
 //
-//   node scripts/dtm-browser-check.mjs <port> <copc-file> <out-dir> [cell-size-in-display-unit] [--headed]
+//   node scripts/dtm-browser-check.mjs <port> <copc-file> <out-dir> [cell-size-in-display-unit] [--headed] [--format=geotiff|landxml|both] [--tiff=colored|values]
 //
 // It prints the adapter info (to tell a real GPU from SwiftShader), the time from pressing "作る" to the new layer, the
 // layer rows, the text of the DTM info, and saves: dtm-dialog.png, dtm-result.png, dtm.tif (the downloaded file).
@@ -10,7 +10,10 @@ import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-const [port, file, outDir, cellSize = "1"] = process.argv.slice(2);
+const [port, file, outDir, cellSize = "1"] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const option = (name, fallback) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
+const format = option("format", "geotiff");
+const tiff = option("tiff", "colored");
 const headed = process.argv.includes("--headed");
 if (!port || !file || !outDir) {
   console.error("usage: node scripts/dtm-browser-check.mjs <port> <copc-file> <out-dir> [cell-size] [--headed]");
@@ -29,6 +32,11 @@ let crashed = false;
 page.on("crash", () => {
   crashed = true;
 });
+// The setting "DTM の出力形式" is kept in localStorage (src/state/dtm-setting.ts); set it before the page starts.
+await page.addInitScript(
+  ([f, t]) => localStorage.setItem("pcv-dtm-output", JSON.stringify({ format: f, tiff: t })),
+  [format, tiff],
+);
 const logs = [];
 page.on("console", (m) => logs.push(m.text()));
 page.on("pageerror", (e) => logs.push(`pageerror: ${e}`));
@@ -68,13 +76,18 @@ const info = await page.getByTestId("dtm-info").allInnerTexts();
 const errorText = await page.getByTestId("viewer-error").allInnerTexts();
 await page.screenshot({ path: join(outDir, "dtm-result.png") });
 
-let saved = null;
-if (info.length > 0) {
+const saved = [];
+for (const [kind, name] of [
+  ["geotiff", "dtm.tif"],
+  ["landxml", "dtm.xml"],
+]) {
+  const link = page.getByTestId(`dtm-download-${kind}`);
+  if ((await link.count()) === 0) continue;
   const downloading = page.waitForEvent("download");
-  await page.getByTestId("dtm-download-geotiff").click();
+  await link.click();
   const download = await downloading;
-  saved = join(outDir, "dtm.tif");
-  await download.saveAs(saved);
+  await download.saveAs(join(outDir, name));
+  saved.push(join(outDir, name));
 }
 console.log(JSON.stringify({ seconds, crashed, error, rows, info, errorText, saved, logsTail: logs.slice(-5) }));
 await browser.close();
