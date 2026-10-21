@@ -22,7 +22,7 @@ import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import { useDisplaySettings } from "./useDisplaySettings";
-import { addLayerToState } from "./layers";
+import { addLayerToState, setLayerSectionLineInList } from "./layers";
 import { useErrorLog } from "./useErrorLog";
 import { useFileOpen } from "./useFileOpen";
 import { useLayers } from "./useLayers";
@@ -109,6 +109,11 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     addOpenedLayer: (path, name, section, raster) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null, section, raster),
     // --- G2: cross-section view ---
     openSectionView: (layerId) => void openSectionPanel(sectionViewHook.sectionContext, layerId),
+    // --- G2: section line ---
+    setSectionLine: (layerId, line) => {
+      const current = layers.layersStateRef.current;
+      layers.commitLayers({ ...current, layers: setLayerSectionLineInList(current.layers, layerId, line) });
+    },
     focusLayer: layers.focusLayer,
     setLayerVisible: layers.setLayerVisible,
     setStatus,

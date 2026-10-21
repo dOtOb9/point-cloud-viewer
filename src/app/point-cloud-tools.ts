@@ -11,6 +11,7 @@ import {
   mergeCopcs as tauriMergeCopcs,
   rasterizeToCopc as tauriRasterizeToCopc,
   saveGeoTiff as tauriSaveGeoTiff,
+  computeSectionLine as tauriComputeSectionLine, // G2
   cancelLasConversion,
 } from "../datasource/tauri";
 import { WebSource } from "../datasource/web";
@@ -18,6 +19,7 @@ import type { DataSource } from "../datasource/DataSource";
 import type { ExtractFilter, RasterLayerInfo, RasterRequest, ToolOptions, ToolResult } from "../datasource/tools";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 import { horizontalBasis } from "../renderer/up-axis";
+import type { SectionGroundLine } from "../datasource/section-line";
 import { findLayer, isMeasureLayer, type LayersState, type SectionInfo } from "../state/layers";
 import { effectiveSelectedIds, toolSourceLayers } from "../state/layer-selection";
 import { sectionYaw } from "../state/tool-math";
@@ -43,6 +45,8 @@ export interface PointCloudToolsContext {
   // --- G2: cross-section view ---
   /** Open the 2D section panel for a layer the cross-section tool has just made (`openSectionPanel`, src/app/section-view.ts). */
   openSectionView: (layerId: string) => void;
+  /** Store the computed ground line on the cross-section layer (what `setLayerSectionLineInList` of src/state/layers.ts does). */
+  setSectionLine: (layerId: string, line: SectionGroundLine) => void;
   focusLayer: (id: string, orientation?: { yaw: number; pitch: number }) => void;
   /** Show or hide a layer, the same function the layer list's checkbox calls (React state and renderer). */
   setLayerVisible: (id: string, visible: boolean) => void;
@@ -85,12 +89,12 @@ async function runTool(
   viewNormal?: readonly [number, number, number],
   // --- G2: cross-section view ---
   section?: SectionInfo,
-): Promise<void> {
+): Promise<string | null> {
   const source = ctx.getSource();
-  if (!source) return;
+  if (!source) return null;
   if (ctx.toolLock.running) {
     reportToolMessage(ctx, "別の点群ツールを実行中です。終わってからやり直してください");
-    return;
+    return null;
   }
   ctx.toolLock.running = true;
   ctx.setToolProgress({ title, pointsRead: 0, totalPoints: 0 });
@@ -113,9 +117,11 @@ async function runTool(
     // --- G2: cross-section view ---
     // A cross section also opens the 2D panel. Its own failure is reported by the panel, so it does not fail the tool.
     if (section) ctx.openSectionView(layerId);
+    return layerId;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     reportToolMessage(ctx, message.includes("キャンセル") ? `${title}をキャンセルしました` : message);
+    return null;
   } finally {
     ctx.toolLock.running = false;
     ctx.setToolProgress(null);
@@ -138,7 +144,7 @@ export async function extractFromLayer(
     return;
   }
   const path = layer.sourcePath;
-  await runTool(
+  const newLayerId = await runTool(
     ctx,
     `${label}（${layer.name}）`,
     `${label} - ${layer.name}`,
@@ -148,6 +154,52 @@ export async function extractFromLayer(
     viewNormal,
     section,
   );
+  // --- G2: section line ---
+  // Once the section layer is open (with its panel), make the ground line in the background.
+  if (section && newLayerId !== null) await computeSectionLine(ctx, newLayerId, section);
+}
+
+// --- G2: section line ---
+
+/**
+ * Compute the ground line of the cross-section layer `sectionLayerId` and store it on the layer (G2-4). It is read
+ * from the SOURCE layer (`section.sourceLayerId`), not from the thin slab, because the cloth needs the points around
+ * the line. It shows progress in the tool progress dialog and can be cancelled like any tool. A failure or a
+ * cancel goes to the error log and the panel keeps showing the points only.
+ */
+export async function computeSectionLine(ctx: PointCloudToolsContext, sectionLayerId: string, section: SectionInfo): Promise<void> {
+  const source = ctx.getSource();
+  if (!source) return;
+  const sourceLayer = findLayer(ctx.getLayersState().layers, section.sourceLayerId);
+  if (!sourceLayer || isMeasureLayer(sourceLayer)) {
+    reportToolMessage(ctx, "断面線の元になるレイヤーが見つからないため、断面線は作れませんでした");
+    return;
+  }
+  if (ctx.toolLock.running) {
+    reportToolMessage(ctx, "別の点群ツールを実行中です。終わってからやり直してください");
+    return;
+  }
+  const title = `断面線の計算（${sourceLayer.name}）`;
+  ctx.toolLock.running = true;
+  ctx.setToolProgress({ title, pointsRead: 0, totalPoints: 0, showAsPercent: true });
+  try {
+    const line = { a: section.a, b: section.b, up: section.up };
+    const options: ToolOptions = {
+      tempDir: ctx.tempDir,
+      onProgress: (p) => ctx.setToolProgress({ title, pointsRead: p.pointsRead, totalPoints: p.totalPoints, showAsPercent: true }),
+    };
+    const result =
+      source instanceof WebSource
+        ? await source.computeSectionLine(sourceLayer.cloudId, line, section.lineRequest, options)
+        : await tauriComputeSectionLine(sourceLayer.cloudId, line, section.lineRequest, options);
+    ctx.setSectionLine(sectionLayerId, result);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    reportToolMessage(ctx, message.includes("キャンセル") ? `${title}をキャンセルしました` : message);
+  } finally {
+    ctx.toolLock.running = false;
+    ctx.setToolProgress(null);
+  }
 }
 
 /** Merge the selected point-cloud layers into one new layer. */

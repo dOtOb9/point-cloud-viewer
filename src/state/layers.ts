@@ -6,6 +6,7 @@
 
 import type { CloudInfo } from "../datasource/DataSource";
 import type { RasterLayerInfo, RasterValueKind } from "../datasource/tools";
+import type { SectionGroundLine, SectionLineRequest } from "../datasource/section-line";
 import { resolveColorMode, type ColorMode } from "../renderer/colormap";
 import type { PointShape } from "../renderer/device-profile";
 import { DEFAULT_POINT_SIZE_PX, sanitizePointSize } from "../renderer/layer-focus";
@@ -29,6 +30,22 @@ export interface SectionInfo {
   up: [number, number, number];
   /** Thickness of the slab in file units (both sides together). */
   thickness: number;
+  // --- G2: section line (G2-4) ---
+  /** The layer the slab was cut from. The section line is computed from this layer, because a thin slab has no context. */
+  sourceLayerId: string;
+  /** What to ask Rust for when computing the section line (preset, corridor width and cloth resolution in file units). */
+  lineRequest: SectionLineRequest;
+  /** The ground line. Absent until it has been computed, and when computing failed or was cancelled. */
+  line?: SectionLineState;
+}
+
+/**
+ * The ground line of a cross section. `original` is what the computation made and is never changed; `current` is what
+ * the panel draws and the editing of G2-5 will change, so "reset" can go back to `original`.
+ */
+export interface SectionLineState {
+  original: SectionGroundLine;
+  current: SectionGroundLine;
 }
 
 /** 画面の「レイヤー」1件。ADR-0018 の「選んだレイヤーから新しいレイヤーを作る」の元になる単位。 */
@@ -111,6 +128,12 @@ export function selectLayerInState(state: LayersState, id: string): LayersState 
 
 export function setLayerVisibleInList(layers: ViewerLayer[], id: string, visible: boolean): ViewerLayer[] {
   return layers.map((l) => (l.id === id ? { ...l, visible } : l));
+}
+
+// --- G2: section line ---
+/** Store the computed section line on a cross-section layer (both `original` and `current`). Other layers are left as they are. */
+export function setLayerSectionLineInList(layers: ViewerLayer[], id: string, line: SectionGroundLine): ViewerLayer[] {
+  return layers.map((l) => (l.id === id && l.section ? { ...l, section: { ...l.section, line: { original: line, current: line } } } : l));
 }
 
 /** 選んだ着色をそのレイヤーに当てはめたときの実際の値（RGB が無ければ標高）。無いレイヤーは null。 */

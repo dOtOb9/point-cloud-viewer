@@ -25,6 +25,8 @@ export interface ToolProgressState {
   title: string;
   pointsRead: number;
   totalPoints: number;
+  // --- G2: section line --- true: show `pointsRead / totalPoints` as a percentage (a calculation, not points read).
+  showAsPercent?: boolean;
 }
 
 // UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、

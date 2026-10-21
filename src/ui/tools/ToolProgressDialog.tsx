@@ -24,9 +24,13 @@ export function ToolProgressDialog({ viewer }: { viewer: CopcViewerState }) {
       </p>
       {progress && progress.totalPoints > 0 ? (
         <>
-          <p className="text-sm">
-            読み込み中: {progress.pointsRead.toLocaleString()} / {progress.totalPoints.toLocaleString()} 点（{(ratio * 100).toFixed(1)}%）
-          </p>
+          {progress.showAsPercent ? (
+            <p className="text-sm">計算中: {(ratio * 100).toFixed(1)}%</p>
+          ) : (
+            <p className="text-sm">
+              読み込み中: {progress.pointsRead.toLocaleString()} / {progress.totalPoints.toLocaleString()} 点（{(ratio * 100).toFixed(1)}%）
+            </p>
+          )}
           <div className="h-2 w-full overflow-hidden rounded bg-tertiary/25">
             <div className="h-full w-full origin-left bg-secondary transition-transform duration-(--motion-progress) ease-linear" style={{ transform: `scaleX(${ratio})` }} />
           </div>
