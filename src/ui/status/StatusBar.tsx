@@ -18,11 +18,16 @@ export function StatusBar({
   glassEnabled,
   onOpenErrorLog,
   onOpenConversion,
+  toolDialogCollapsed,
+  onOpenToolProgress,
 }: {
   viewer: CopcViewerState;
   glassEnabled: boolean;
   onOpenErrorLog: () => void;
   onOpenConversion: () => void;
+  /** True when the tool progress dialog was collapsed (outside click / Esc); the tool may still be running. */
+  toolDialogCollapsed: boolean;
+  onOpenToolProgress: () => void;
 }) {
   const stats = viewer.stats;
 
@@ -40,6 +45,11 @@ export function StatusBar({
   } else {
     loadProgressLabel = "待機なし";
   }
+
+  // A running point-cloud tool whose progress dialog is collapsed: show its ratio and let the user reopen the dialog.
+  const tool = viewer.toolProgress;
+  const toolLabel =
+    tool && tool.totalPoints > 0 ? `ツール実行中 ${Math.min(100, (tool.pointsRead / tool.totalPoints) * 100).toFixed(0)}%` : "ツール実行中…";
 
   return (
     <div
@@ -69,6 +79,11 @@ export function StatusBar({
       ) : (
         <span className="min-w-0 truncate">{loadProgressLabel}</span>
       )}
+      {tool && toolDialogCollapsed ? (
+        <button type="button" onClick={onOpenToolProgress} className="min-h-8 min-w-0 truncate rounded bg-secondary px-2 text-on-secondary" data-testid="tool-progress-chip">
+          {toolLabel}
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={onOpenErrorLog}

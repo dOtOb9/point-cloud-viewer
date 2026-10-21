@@ -59,6 +59,15 @@ export function AppShell() {
   // ファイルのドラッグ&ドロップで開く(ADR-0017)。ドラッグ中は案内を重ねて出す。
   const dragging = useFileDrop((items) => openFiles(viewer.fileOpenContext, items));
   const [conversionDialogOpen, setConversionDialogOpen] = useState(false);
+  // The tool progress dialog: collapsed by an outside click / Esc (the tool keeps running), reopened from the status bar.
+  // A new tool run opens it again (detected by comparing with the previous render, like the conversion dialog below).
+  const [toolDialogOpen, setToolDialogOpen] = useState(true);
+  const toolRunning = viewer.toolProgress !== null;
+  const [prevToolRunning, setPrevToolRunning] = useState(toolRunning);
+  if (prevToolRunning !== toolRunning) {
+    setPrevToolRunning(toolRunning);
+    if (toolRunning) setToolDialogOpen(true);
+  }
   // エラーダイアログ: null=閉じている / "current"=いま出ているエラー / "history"=全履歴。
   const [errorDialogMode, setErrorDialogMode] = useState<"current" | "history" | null>(null);
 
@@ -126,6 +135,8 @@ export function AppShell() {
         glassEnabled={glassEnabled}
         onOpenErrorLog={() => setErrorDialogMode("history")}
         onOpenConversion={() => setConversionDialogOpen(true)}
+        toolDialogCollapsed={!toolDialogOpen}
+        onOpenToolProgress={() => setToolDialogOpen(true)}
       />
 
       <SettingsModal
@@ -151,7 +162,7 @@ export function AppShell() {
       <SectionPanel viewer={viewer} glassEnabled={glassEnabled} />
       {/* G1: the Rasterize dialog (opened from the toolbar button). */}
       <RasterDialog viewer={viewer} open={rasterOpen} onClose={() => setRasterOpen(false)} />
-      <ToolProgressDialog viewer={viewer} />
+      <ToolProgressDialog viewer={viewer} open={toolDialogOpen} onCollapse={() => setToolDialogOpen(false)} />
 
       <ConversionDialog viewer={viewer} open={conversionDialogVisible} onClose={() => setConversionDialogOpen(false)} />
 

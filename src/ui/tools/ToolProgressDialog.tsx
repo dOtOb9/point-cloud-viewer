@@ -3,16 +3,19 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_BUTTON_CLASS } from "../dialogs/dialog-styles";
 
-/** Progress of the running point-cloud tool, with a cancel button. Shown while `viewer.toolProgress` is set. */
-export function ToolProgressDialog({ viewer }: { viewer: CopcViewerState }) {
+/**
+ * Progress of the running point-cloud tool, with a cancel button. Shown while `viewer.toolProgress` is set and `open`.
+ * Outside click / Esc only collapses it (`onCollapse`); the status bar reopens it. Only the cancel button cancels.
+ */
+export function ToolProgressDialog({ viewer, open, onCollapse }: { viewer: CopcViewerState; open: boolean; onCollapse: () => void }) {
   const progress = viewer.toolProgress;
   const ratio = progress && progress.totalPoints > 0 ? Math.min(1, progress.pointsRead / progress.totalPoints) : 0;
   return (
     <Dialog
-      open={progress !== null}
+      open={open && progress !== null}
       title="点群ツールを実行中"
       accent="secondary"
-      onClose={() => cancelTool(viewer.toolContext)}
+      onClose={onCollapse}
       footer={
         <button type="button" onClick={() => cancelTool(viewer.toolContext)} className={DIALOG_BUTTON_CLASS} data-testid="tool-cancel">
           キャンセル
