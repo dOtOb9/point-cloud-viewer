@@ -186,14 +186,7 @@ impl CoarsePoints {
         let spec = self.preview_spec(options.cell_size)?;
         let mut acc = CellAccumulator::new(spec, options.value, classes);
         for p in &self.points {
-            acc.add(
-                p.x,
-                p.y,
-                f64::from(p.z),
-                p.intensity,
-                p.class,
-                p.rgb,
-            );
+            acc.add(p.x, p.y, f64::from(p.z), p.intensity, p.class, p.rgb);
         }
         if acc.accepted_points() == 0 {
             return Err(RasterError::NoPoints);
@@ -387,31 +380,40 @@ mod tests {
     fn depth_limit_skips_deeper_nodes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = make_copc(dir.path(), 60, 200); // 3600 points, several levels
-        let total = {
+        let deepest = {
             let reader = CopcReader::from_path(&path).expect("open");
-            reader.file().header().number_of_points()
+            reader
+                .file()
+                .hierarchy_entries()
+                .filter(|e| e.has_point_data())
+                .map(|e| e.key.level)
+                .max()
+                .expect("nodes")
         };
-        assert_eq!(total, 3600);
+        assert!(deepest >= 2, "the test needs a deep file: {deepest}");
 
         let reader = CopcReader::from_path(&path).expect("open");
-        let all_levels = ExtractPoints::all(reader).stats().nodes_total;
-        let (coarse, candidates) = read_all(&path, 60, 1000);
-        assert!(candidates < total, "deeper nodes are not selected: {candidates}");
-        assert!(candidates <= 1000 || coarse.depth == 0, "{candidates}");
+        let all_nodes = ExtractPoints::all(reader).stats().nodes_total;
         let reader = CopcReader::from_path(&path).expect("open");
         let mut it = ExtractPoints::coarse(reader, 1000);
         let depth = it.depth_limit().expect("depth");
+        assert!(depth < deepest, "depth {depth} of {deepest}");
         let mut n = 0u64;
         for record in it.by_ref() {
             record.expect("point");
             n += 1;
         }
         let stats = it.stats();
-        assert_eq!(n, candidates);
-        assert!(stats.nodes_read < all_levels, "{stats:?} of {all_levels}");
+        // Only the upper levels were read, and they fit the budget.
+        assert!(stats.nodes_read < all_nodes, "{stats:?} of {all_nodes}");
         assert_eq!(stats.nodes_read, stats.nodes_selected);
-        assert_eq!(coarse.depth, depth);
-        assert!(depth >= 0);
+        assert_eq!(n, stats.candidate_points);
+        assert!(n <= 1000, "{n}");
+        // The reader of the window picks the same depth and keeps exactly those points.
+        let (store, candidates) = read_all(&path, 60, 1000);
+        assert_eq!(store.depth, depth);
+        assert_eq!(candidates, n);
+        assert_eq!(store.len() as u64, n);
     }
 
     #[test]
@@ -465,17 +467,23 @@ mod tests {
             value,
             ground_only,
         };
-        let z = store.render(&options(RasterValue::ZMean, false)).expect("z");
+        let z = store
+            .render(&options(RasterValue::ZMean, false))
+            .expect("z");
         assert_eq!((z.width, z.height), (10, 10));
         assert_eq!(z.points, 1600);
         assert_eq!(z.rgba.len(), 10 * 10 * 4);
         assert!(z.range.is_some());
         let (lo, hi) = z.range.expect("range");
         assert!(lo < hi);
-        let count = store.render(&options(RasterValue::Count, false)).expect("count");
+        let count = store
+            .render(&options(RasterValue::Count, false))
+            .expect("count");
         // 4 m cells over a 39 m extent: 10 x 10 cells, 16 points each.
         assert_eq!(count.range, Some((16.0, 16.0)));
-        let ground = store.render(&options(RasterValue::Count, true)).expect("ground");
+        let ground = store
+            .render(&options(RasterValue::Count, true))
+            .expect("ground");
         assert_eq!(ground.points, 800, "x even is ground: half the points");
     }
 
@@ -510,18 +518,28 @@ mod tests {
             value: RasterValue::RgbMean,
             ground_only: false,
         };
-        assert!(store.render(&rgb).expect_err("no colour").to_string().contains("色"));
+        assert!(store
+            .render(&rgb)
+            .expect_err("no colour")
+            .to_string()
+            .contains("色"));
         // Everything here is class 1 or 2, so "ground only" works; make a cloud with none.
         let mut none = CoarsePoints::new(bounds(20), false, 10, 0);
-        let mut p = LasPointRecord::default();
-        p.classification = 1;
+        let p = LasPointRecord {
+            classification: 1,
+            ..Default::default()
+        };
         none.push(&p);
         let ground = PreviewOptions {
             cell_size: 1.0,
             value: RasterValue::Count,
             ground_only: true,
         };
-        assert!(none.render(&ground).expect_err("no ground").to_string().contains("点がありません"));
+        assert!(none
+            .render(&ground)
+            .expect_err("no ground")
+            .to_string()
+            .contains("点がありません"));
     }
 
     #[test]

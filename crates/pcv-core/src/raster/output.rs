@@ -74,7 +74,9 @@ pub fn write_geotiff<W: Write>(
         TiffKind::Values if acc.value_kind() == RasterValue::RgbMean => {
             geotiff::write_rgb_u16(out, acc.spec(), epsg, acc.rgb_samples())
         }
-        TiffKind::Values => geotiff::write_f32(out, acc.spec(), epsg, NODATA, acc.f32_samples(NODATA)),
+        TiffKind::Values => {
+            geotiff::write_f32(out, acc.spec(), epsg, NODATA, acc.f32_samples(NODATA))
+        }
     }
 }
 
@@ -175,8 +177,16 @@ mod tests {
             DecodingResult::U8(v) => {
                 assert_eq!(v.len(), 16);
                 assert_eq!(&v[0..4], &[0, 0, 0, 0], "NW is empty: transparent");
-                assert_eq!(&v[4..8], &[255, 0, 0, 255], "NE = max of the given range: red");
-                assert_eq!(&v[8..12], &[51, 255, 0, 255], "SW = t 0.4 of the given range");
+                assert_eq!(
+                    &v[4..8],
+                    &[255, 0, 0, 255],
+                    "NE = max of the given range: red"
+                );
+                assert_eq!(
+                    &v[8..12],
+                    &[51, 255, 0, 255],
+                    "SW = t 0.4 of the given range"
+                );
             }
             other => panic!("unexpected sample type: {other:?}"),
         }
@@ -216,7 +226,8 @@ mod tests {
         let json = r#"{"cellSize":2.5,"value":"zMean","groundOnly":false}"#;
         let o: RasterOptions = serde_json::from_str(json).expect("old shape still reads");
         assert_eq!((o.tiff, o.range), (TiffKind::Colored, None));
-        let json = r#"{"cellSize":2.5,"value":"count","groundOnly":true,"tiff":"values","range":[1,9]}"#;
+        let json =
+            r#"{"cellSize":2.5,"value":"count","groundOnly":true,"tiff":"values","range":[1,9]}"#;
         let o: RasterOptions = serde_json::from_str(json).expect("full shape");
         assert_eq!((o.tiff, o.range), (TiffKind::Values, Some((1.0, 9.0))));
     }

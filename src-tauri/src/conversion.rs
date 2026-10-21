@@ -1116,14 +1116,20 @@ pub async fn raster_preview_render(
     match joined {
         Ok(Ok(Ok(bytes))) => Ok(tauri::ipc::Response::new(bytes)),
         Ok(Ok(Err(e))) => Err(e.to_string()),
-        Ok(Err(panic)) => Err(format!("内部エラー(panic): {}", panic_message(panic.as_ref()))),
+        Ok(Err(panic)) => Err(format!(
+            "内部エラー(panic): {}",
+            panic_message(panic.as_ref())
+        )),
         Err(e) => Err(format!("プレビューを作れなかった: {e}")),
     }
 }
 
 /// Frees the kept points of a closed Rasterize window.
 #[tauri::command]
-pub fn raster_preview_close(id: u64, previews: State<'_, RasterPreviewState>) -> Result<(), String> {
+pub fn raster_preview_close(
+    id: u64,
+    previews: State<'_, RasterPreviewState>,
+) -> Result<(), String> {
     previews
         .stores
         .lock()

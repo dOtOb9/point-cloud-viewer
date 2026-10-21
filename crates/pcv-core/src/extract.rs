@@ -356,8 +356,7 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
     /// like `all`. The point count comes from the hierarchy, so nothing is read here.
     pub fn coarse(reader: CopcReader<R>, max_points: u64) -> Self {
         // Points per level, from the hierarchy only.
-        let mut per_level: std::collections::BTreeMap<i32, u64> =
-            std::collections::BTreeMap::new();
+        let mut per_level: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
         for entry in reader.file().hierarchy_entries() {
             if entry.has_point_data() {
                 *per_level.entry(entry.key.level).or_insert(0) +=

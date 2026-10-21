@@ -26,6 +26,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
+use crate::streaming::ReadProgress;
 use copc_core::{CancelCheck, StreamingLayout};
 use copc_reader::CopcReader;
 use pcv_core::crs::{crs_id_from_las_header, CrsId};
@@ -33,7 +34,6 @@ use pcv_core::extract::{ExtractPoints, ExtractStats};
 use pcv_core::raster::output::{missing_crs_warning, write_geotiff};
 use pcv_core::raster::preview::{CoarsePoints, CoarseReader, XyBounds};
 use pcv_core::raster::{CellAccumulator, GridSpec, RasterError, RasterOptions, RasterValue};
-use crate::streaming::ReadProgress;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RasterRunError {
@@ -134,7 +134,9 @@ where
     let mut reader = CoarseReader::new(copc_reader, facts.bounds, facts.layout.has_color, cap);
     loop {
         cancel.check().map_err(RasterRunError::Read)?;
-        let done = reader.feed(COARSE_BATCH_POINTS).map_err(RasterRunError::Read)?;
+        let done = reader
+            .feed(COARSE_BATCH_POINTS)
+            .map_err(RasterRunError::Read)?;
         let (points_read, total_points) = reader.progress();
         on_progress(ReadProgress {
             points_read,
