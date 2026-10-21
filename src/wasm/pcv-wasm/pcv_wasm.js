@@ -572,6 +572,70 @@ export class WasmRasterizer {
 }
 if (Symbol.dispose) WasmRasterizer.prototype[Symbol.dispose] = WasmRasterizer.prototype.free;
 
+export class WasmSectionLine {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmSectionLineFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmsectionline_free(ptr, 0);
+    }
+    /**
+     * Does a small piece of work and returns the progress (0 to 1). When `isDone()` is true, call `finish`.
+     * @param {WasmCopcFile} file
+     * @returns {number}
+     */
+    advance(file) {
+        _assertClass(file, WasmCopcFile);
+        const ret = wasm.wasmsectionline_advance(this.__wbg_ptr, file.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Builds the TIN and returns the result buffer described in `crates/pcv-core/src/section_line.rs`.
+     * @returns {Uint8Array}
+     */
+    finish() {
+        const ret = wasm.wasmsectionline_finish(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @returns {boolean}
+     */
+    isDone() {
+        const ret = wasm.wasmsectionline_isDone(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * `line` is the `SectionLine` JSON (a, b, up) and `request` the `SectionLineRequest` JSON
+     * (preset, corridorHalfWidth, clothResolution). Lengths are in the file's unit.
+     * @param {WasmCopcFile} file
+     * @param {any} line
+     * @param {any} request
+     */
+    constructor(file, line, request) {
+        _assertClass(file, WasmCopcFile);
+        const ret = wasm.wasmsectionline_new(file.__wbg_ptr, line, request);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmSectionLineFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) WasmSectionLine.prototype[Symbol.dispose] = WasmSectionLine.prototype.free;
+
 /**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
@@ -1020,11 +1084,20 @@ const WasmPointFileConverterFinalization = (typeof FinalizationRegistry === 'und
 const WasmRasterizerFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmrasterizer_free(ptr, 1));
+const WasmSectionLineFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmsectionline_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
     wasm.__wbindgen_externrefs.set(idx, obj);
     return idx;
+}
+
+function _assertClass(instance, klass) {
+    if (!(instance instanceof klass)) {
+        throw new Error(`expected instance of ${klass.name}`);
+    }
 }
 
 function debugString(val) {

@@ -264,6 +264,25 @@ export class WasmRasterizer {
     constructor(file: File, options: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
 }
 
+export class WasmSectionLine {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Does a small piece of work and returns the progress (0 to 1). When `isDone()` is true, call `finish`.
+     */
+    advance(file: WasmCopcFile): number;
+    /**
+     * Builds the TIN and returns the result buffer described in `crates/pcv-core/src/section_line.rs`.
+     */
+    finish(): Uint8Array;
+    isDone(): boolean;
+    /**
+     * `line` is the `SectionLine` JSON (a, b, up) and `request` the `SectionLineRequest` JSON
+     * (preset, corridorHalfWidth, clothResolution). Lengths are in the file's unit.
+     */
+    constructor(file: WasmCopcFile, line: any, request: any);
+}
+
 /**
  * Worker起動時に一度だけ呼ぶ。パニック時にブラウザのconsoleへ理由を出す
  * (GUIを目視できない開発フローでも、devtoolsのconsoleでwasm側の異常が
@@ -322,6 +341,7 @@ export interface InitOutput {
     readonly __wbg_wasmextractor_free: (a: number, b: number) => void;
     readonly __wbg_wasmpointfileconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmrasterizer_free: (a: number, b: number) => void;
+    readonly __wbg_wasmsectionline_free: (a: number, b: number) => void;
     readonly init_panic_hook: () => void;
     readonly inspectLasHeaderSummary: (a: any) => [number, number, number];
     readonly lastAllocationFailureMessage: () => [number, number];
@@ -355,6 +375,10 @@ export interface InitOutput {
     readonly wasmrasterizer_finish: (a: number) => [number, number, number];
     readonly wasmrasterizer_geotiff: (a: number) => [number, number, number, number];
     readonly wasmrasterizer_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmsectionline_advance: (a: number, b: number) => [number, number, number];
+    readonly wasmsectionline_finish: (a: number) => [number, number, number, number];
+    readonly wasmsectionline_isDone: (a: number) => number;
+    readonly wasmsectionline_new: (a: number, b: any, c: any) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
