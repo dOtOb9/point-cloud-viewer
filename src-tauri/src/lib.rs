@@ -308,7 +308,9 @@ pub fn run() {
             // ---
             conversion::supports_custom_temp_dir,
             // --- G2: cross-section view ---
-            copc_state::read_section_profile
+            copc_state::read_section_profile,
+            // --- G2: section line ---
+            conversion::compute_section_line
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

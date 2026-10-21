@@ -97,6 +97,41 @@ pub struct SectionLineParams {
     pub max_cells: u64,
 }
 
+/// The CSF preset the user picks in the section dialog (plan 2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CsfPreset {
+    Standard,
+    Steep,
+}
+
+/// What the frontend sends (JSON). Lengths are in the file's unit: the frontend converts metres with the CRS factor.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionLineRequest {
+    pub preset: CsfPreset,
+    pub corridor_half_width: f64,
+    pub cloth_resolution: f64,
+}
+
+impl SectionLineRequest {
+    /// The parameters for `SectionLineJob::new`. `max_cells` differs between desktop and Web.
+    pub fn to_params(self, max_cells: u64) -> SectionLineParams {
+        let base = match self.preset {
+            CsfPreset::Standard => CsfParams::standard(),
+            CsfPreset::Steep => CsfParams::steep(),
+        };
+        SectionLineParams {
+            corridor_half_width: self.corridor_half_width,
+            csf: CsfParams {
+                cloth_resolution: self.cloth_resolution,
+                ..base
+            },
+            max_cells,
+        }
+    }
+}
+
 /// Progress after one `advance` call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SectionLineProgress {

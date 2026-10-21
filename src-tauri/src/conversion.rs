@@ -1135,6 +1135,40 @@ pub async fn save_tool_file(source: String, destination: String) -> Result<(), S
         .map_err(|e| format!("ファイルを保存できませんでした ({destination}): {e}"))
 }
 
+// --- G2: section line ---
+
+/// Computes the ground line of a cross section from the SOURCE layer (`generation` of the open file),
+/// with a local CSF surface (`pcv_core::section_line`). Returns the binary buffer described there.
+/// Progress uses the tool progress event with a 0..1000 scale (per mille), and the cancel flag is the
+/// same one `cancel_las_conversion` sets, so the tool progress dialog's cancel button works.
+#[tauri::command]
+pub async fn compute_section_line(
+    app: AppHandle,
+    generation: u64,
+    line: pcv_core::profile::SectionLine,
+    request: pcv_core::section_line::SectionLineRequest,
+    state: State<'_, ConversionState>,
+    copc: State<'_, crate::copc_state::CopcState>,
+) -> Result<tauri::ipc::Response, String> {
+    let pool = copc.pool_of(generation)?;
+    let params = request.to_params(pcv_core::section_line::DEFAULT_SECTION_LINE_CELL_CAP);
+    let mut report = tool_progress(&app);
+    let bytes = run_tool(&state, move |cancel| {
+        let result = pool.run_with_file(|file| {
+            pcv_core::section_line::compute_section_line(file, &line, &params, &mut |fraction| {
+                report(ReadProgress {
+                    points_read: (fraction * 1000.0) as u64,
+                    total_points: 1000,
+                });
+                !cancel.0.load(Ordering::Relaxed)
+            })
+        })?;
+        result.map_err(|e| e.to_string())
+    })
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -172,7 +172,7 @@ fn default_pool_size() -> usize {
 ///   ほうが単純かつ安い（hierarchy再構築のコストは`ADR-0003`実測で
 ///   1〜16ms。プール初期化時にプールサイズの回数だけ払うだけで済み、
 ///   リクエストのたびには払わない）。
-struct CopcPool {
+pub(crate) struct CopcPool {
     idle: Mutex<Vec<CopcFile>>,
     available: Condvar,
     /// プールした本数。ログ表示だけに使う（`idle`の初期長と同じ）。
@@ -591,6 +591,42 @@ pub async fn read_section_profile(
         Ok(Ok(bytes)) => Ok(tauri::ipc::Response::new(bytes)),
         Ok(Err(message)) => Err(message),
         Err(e) => Err(format!("断面の読み出しを実行できなかった: {e}")),
+    }
+}
+
+// --- G2: section line ---
+
+impl CopcState {
+    /// The pool of an open file, or the message shown when the layer was closed.
+    pub(crate) fn pool_of(&self, generation: u64) -> Result<Arc<CopcPool>, String> {
+        self.lock_opened()?
+            .get(&generation)
+            .cloned()
+            .ok_or_else(|| "断面線の元になるレイヤーが閉じられています".to_string())
+    }
+}
+
+impl CopcPool {
+    /// Runs `work` with one reader of the pool. A panic is caught and turned into an error (ADR-0015): the
+    /// reader that panicked is dropped and the pool is refilled, like `read_node_bytes` does.
+    pub(crate) fn run_with_file<T>(
+        &self,
+        work: impl FnOnce(&mut CopcFile) -> T,
+    ) -> Result<T, String> {
+        let mut file = self.checkout();
+        match std::panic::catch_unwind(AssertUnwindSafe(|| work(&mut file))) {
+            Ok(value) => {
+                self.checkin(file);
+                Ok(value)
+            }
+            Err(payload) => {
+                self.replenish_after_panic();
+                Err(format!(
+                    "処理中にpanicが発生した: {}",
+                    panic_payload_message(payload)
+                ))
+            }
+        }
     }
 }
 
