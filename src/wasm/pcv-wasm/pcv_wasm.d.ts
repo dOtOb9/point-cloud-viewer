@@ -190,6 +190,38 @@ export class WasmCopcFile {
     totalSize(): number;
 }
 
+export class WasmDtm {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Does a small piece of work and writes the classified points it made to the spill. Go to `finish` when `done`.
+     */
+    advance(): any;
+    /**
+     * Builds the octree and writes the OPFS output, then builds the TIN. Returns the same result as the conversion
+     * (`FinishResultDto`). Fails (writing nothing) when no point is ground.
+     */
+    finish(): any;
+    /**
+     * The GeoTIFF bytes (`request.output.tiff`). Call after `finish`.
+     */
+    geotiff(): Uint8Array;
+    /**
+     * `{ width, height, cell_size, tin_points, tin_triangles, ground_points, warnings }`. Call after `finish`.
+     */
+    info(): any;
+    /**
+     * The LandXML bytes. `unix_seconds` is the time to write (the Worker reads the clock). Call after `finish`.
+     */
+    landxml(unix_seconds: number): Uint8Array;
+    /**
+     * `file` is the source COPC; `request` is the `DtmRequest` JSON (shape in `src/datasource/dtm.ts`, lengths in the
+     * file's unit). The scratch-file pool and output handle are the same ones the conversion uses.
+     * Fails before reading any point when the cloth or the grid is over its cap.
+     */
+    constructor(file: File, request: any, scratch_handles: Array<any>, output_handle: FileSystemSyncAccessHandle, output_name: string, max_points_per_node: number);
+}
+
 export class WasmExtractor {
     free(): void;
     [Symbol.dispose](): void;
@@ -389,6 +421,7 @@ export interface InitOutput {
     readonly __wbg_lazrangedecompressor_free: (a: number, b: number) => void;
     readonly __wbg_wasmconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmcopcfile_free: (a: number, b: number) => void;
+    readonly __wbg_wasmdtm_free: (a: number, b: number) => void;
     readonly __wbg_wasmextractor_free: (a: number, b: number) => void;
     readonly __wbg_wasmpointfileconverter_free: (a: number, b: number) => void;
     readonly __wbg_wasmrasterizer_free: (a: number, b: number) => void;
@@ -417,6 +450,12 @@ export interface InitOutput {
     readonly wasmcopcfile_readNode: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmcopcfile_readSectionProfile: (a: number, b: any, c: number) => [number, number, number, number];
     readonly wasmcopcfile_totalSize: (a: number) => number;
+    readonly wasmdtm_advance: (a: number) => [number, number, number];
+    readonly wasmdtm_finish: (a: number) => [number, number, number];
+    readonly wasmdtm_geotiff: (a: number) => [number, number, number, number];
+    readonly wasmdtm_info: (a: number) => [number, number, number];
+    readonly wasmdtm_landxml: (a: number, b: number) => [number, number, number, number];
+    readonly wasmdtm_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly wasmextractor_feed: (a: number, b: number) => [number, number, number];
     readonly wasmextractor_finish: (a: number) => [number, number, number];
     readonly wasmextractor_new: (a: any, b: any, c: any, d: any, e: number, f: number, g: number) => [number, number, number];

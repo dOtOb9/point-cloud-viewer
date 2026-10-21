@@ -362,6 +362,103 @@ export class WasmCopcFile {
 }
 if (Symbol.dispose) WasmCopcFile.prototype[Symbol.dispose] = WasmCopcFile.prototype.free;
 
+export class WasmDtm {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmDtmFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmdtm_free(ptr, 0);
+    }
+    /**
+     * Does a small piece of work and writes the classified points it made to the spill. Go to `finish` when `done`.
+     * @returns {any}
+     */
+    advance() {
+        const ret = wasm.wasmdtm_advance(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Builds the octree and writes the OPFS output, then builds the TIN. Returns the same result as the conversion
+     * (`FinishResultDto`). Fails (writing nothing) when no point is ground.
+     * @returns {any}
+     */
+    finish() {
+        const ret = wasm.wasmdtm_finish(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * The GeoTIFF bytes (`request.output.tiff`). Call after `finish`.
+     * @returns {Uint8Array}
+     */
+    geotiff() {
+        const ret = wasm.wasmdtm_geotiff(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * `{ width, height, cell_size, tin_points, tin_triangles, ground_points, warnings }`. Call after `finish`.
+     * @returns {any}
+     */
+    info() {
+        const ret = wasm.wasmdtm_info(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * The LandXML bytes. `unix_seconds` is the time to write (the Worker reads the clock). Call after `finish`.
+     * @param {number} unix_seconds
+     * @returns {Uint8Array}
+     */
+    landxml(unix_seconds) {
+        const ret = wasm.wasmdtm_landxml(this.__wbg_ptr, unix_seconds);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * `file` is the source COPC; `request` is the `DtmRequest` JSON (shape in `src/datasource/dtm.ts`, lengths in the
+     * file's unit). The scratch-file pool and output handle are the same ones the conversion uses.
+     * Fails before reading any point when the cloth or the grid is over its cap.
+     * @param {File} file
+     * @param {any} request
+     * @param {Array<any>} scratch_handles
+     * @param {FileSystemSyncAccessHandle} output_handle
+     * @param {string} output_name
+     * @param {number} max_points_per_node
+     */
+    constructor(file, request, scratch_handles, output_handle, output_name, max_points_per_node) {
+        const ptr0 = passStringToWasm0(output_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmdtm_new(file, request, scratch_handles, output_handle, ptr0, len0, max_points_per_node);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmDtmFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) WasmDtm.prototype[Symbol.dispose] = WasmDtm.prototype.free;
+
 export class WasmExtractor {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -1225,6 +1322,9 @@ const WasmConverterFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmCopcFileFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcopcfile_free(ptr, 1));
+const WasmDtmFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmdtm_free(ptr, 1));
 const WasmExtractorFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmextractor_free(ptr, 1));
