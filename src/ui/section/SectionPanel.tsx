@@ -83,6 +83,8 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
   const { points, panelSize } = state;
   const drawView = effectiveSectionView(state);
   const { scale, offsetX, offsetY } = drawView;
+  // G2-4: the ground line of the layer (absent until computed, and when computing failed).
+  const groundLine = layer?.section?.line?.current.points ?? null;
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!open || !canvas || panelSize.width === 0 || panelSize.height === 0) return;
@@ -91,11 +93,13 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
       horizontalUnitScale: horizontalUnitScale ?? 1,
       verticalUnitScale: verticalUnitScale ?? 1,
       unitLabel,
+      line: groundLine,
     });
     // The last draw time, for measuring on a real screen (read it from the DOM; see TaskSheets/G2-T8-section-panel.md).
     canvas.dataset.drawMs = result.totalMs.toFixed(1);
     canvas.dataset.fillMs = result.fillMs.toFixed(1);
-  }, [open, points, panelSize, scale, offsetX, offsetY, horizontalUnitScale, verticalUnitScale, unitLabel]);
+    canvas.dataset.lineSamples = String((groundLine?.length ?? 0) / 2);
+  }, [open, points, panelSize, scale, offsetX, offsetY, horizontalUnitScale, verticalUnitScale, unitLabel, groundLine]);
 
   if (!layer) return null;
 

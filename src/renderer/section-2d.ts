@@ -113,6 +113,9 @@ export interface DrawSectionOptions {
   verticalUnitScale: number;
   /** "m", "ft" or a note such as "単位不明", drawn at the end of each axis. */
   unitLabel: string;
+  // --- G2: section line ---
+  /** The ground line as `s, z` pairs in file units (see `SectionGroundLine`), drawn on top of the points. Absent: no line. */
+  line?: Float32Array | null;
 }
 
 export interface DrawSectionResult {
@@ -158,7 +161,35 @@ export function drawSection(
 
   // With no points the view is a meaningless fit of an empty range, so no axes either.
   if (points.count > 0) drawAxes(ctx, canvas, cssWidth, cssHeight, view, options);
+  // --- G2: section line --- on top of the points and the grid.
+  if (options.line) drawGroundLine(ctx, options.line, view, options.dpr, getComputedStyle(canvas).getPropertyValue("--secondary").trim());
   return { fillMs, totalMs: performance.now() - start, drawn };
+}
+
+// --- G2: section line ---
+/** Width of the ground line in CSS pixels. */
+export const GROUND_LINE_WIDTH_PX = 2;
+/** The orange of the theme (`--secondary` in src/index.css) when the canvas cannot tell. */
+const GROUND_LINE_FALLBACK_COLOR = "#fb923c";
+
+/** The ground line as a 2 px polyline in the theme's secondary orange, over the points. `view` is in CSS pixels. */
+export function drawGroundLine(ctx: CanvasRenderingContext2D, line: Float32Array, view: DrawView, dpr: number, color: string): void {
+  if (line.length < 4) return;
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.strokeStyle = color || GROUND_LINE_FALLBACK_COLOR;
+  ctx.lineWidth = GROUND_LINE_WIDTH_PX;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  for (let i = 0; i < line.length; i += 2) {
+    const x = view.offsetX + line[i] * view.scale;
+    const y = view.offsetY - line[i + 1] * view.scale;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** Grid lines and labels in the display unit, on top of the points. Text takes the canvas's CSS `color`. */

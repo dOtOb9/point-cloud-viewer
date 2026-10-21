@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SectionPoints } from "../datasource/section-profile";
-import { classificationPalette, fillSectionPixels, formatTick, niceStep, niceTicks, SMALL_DOT_MAX_POINTS } from "./section-2d";
+import { classificationPalette, drawGroundLine, fillSectionPixels, formatTick, GROUND_LINE_WIDTH_PX, niceStep, niceTicks, SMALL_DOT_MAX_POINTS } from "./section-2d";
 
 /** Points laid out like the Rust buffer: three 32-bit words per point (s, z as floats, packed r|g<<8|b<<16|class<<24). */
 function makePoints(list: { s: number; z: number; r?: number; g?: number; b?: number; cls?: number }[], hasColor: boolean): SectionPoints {
@@ -115,5 +115,48 @@ describe("axes", () => {
     expect(formatTick(1200, 100)).toBe("1,200");
     expect(formatTick(0.25, 0.05)).toBe("0.25");
     expect(formatTick(-0, 1)).toBe("0");
+  });
+});
+
+// --- G2: section line ---
+describe("drawGroundLine", () => {
+  /** A canvas context that only records what the line drawing asks for. */
+  function recorder() {
+    const calls: string[] = [];
+    const raw = {
+      strokeStyle: "",
+      lineWidth: 0,
+      lineJoin: "",
+      lineCap: "",
+      save: () => calls.push("save"),
+      restore: () => calls.push("restore"),
+      scale: (x: number) => calls.push(`scale ${x}`),
+      beginPath: () => calls.push("begin"),
+      moveTo: (x: number, y: number) => calls.push(`move ${x} ${y}`),
+      lineTo: (x: number, y: number) => calls.push(`line ${x} ${y}`),
+      stroke: () => calls.push("stroke"),
+    };
+    return { ctx: raw as unknown as CanvasRenderingContext2D, raw, calls };
+  }
+
+  it("draws a 2 px polyline through the (s, z) pairs, mapped by the view, in the given colour", () => {
+    const { ctx, raw, calls } = recorder();
+    drawGroundLine(ctx, new Float32Array([0, 0, 2, 1, 4, 3]), { scale: 10, offsetX: 5, offsetY: 100 }, 2, "#fb923c");
+    expect(calls).toEqual(["save", "scale 2", "begin", "move 5 100", "line 25 90", "line 45 70", "stroke", "restore"]);
+    expect(raw.strokeStyle).toBe("#fb923c");
+    expect(raw.lineWidth).toBe(GROUND_LINE_WIDTH_PX);
+    expect(GROUND_LINE_WIDTH_PX).toBe(2);
+  });
+
+  it("falls back to orange when the canvas gives no colour", () => {
+    const { ctx, raw } = recorder();
+    drawGroundLine(ctx, new Float32Array([0, 0, 1, 1]), IDENTITY, 1, "");
+    expect(raw.strokeStyle).toBe("#fb923c");
+  });
+
+  it("draws nothing for fewer than two samples", () => {
+    const { ctx, calls } = recorder();
+    drawGroundLine(ctx, new Float32Array([0, 0]), IDENTITY, 1, "#fff");
+    expect(calls).toEqual([]);
   });
 });
