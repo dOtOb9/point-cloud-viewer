@@ -111,17 +111,29 @@ impl CellColorizer {
     /// RGBA of the cell at the flat index; empty cells are transparent.
     pub fn rgba(&self, acc: &CellAccumulator, i: usize) -> [u8; 4] {
         if self.kind == RasterValue::RgbMean {
-            return match acc.rgb_at(i) {
-                Some([r, g, b]) => [
-                    self.depth.to_u8(r),
-                    self.depth.to_u8(g),
-                    self.depth.to_u8(b),
-                    255,
-                ],
-                None => TRANSPARENT,
-            };
+            self.rgba_of_rgb(acc.rgb_at(i))
+        } else {
+            self.rgba_of_value(acc.value_at(i))
         }
-        match (acc.value_at(i), self.range) {
+    }
+
+    /// RGBA of a mean colour (RGB rasters). `None` is an empty cell. Split from `rgba`
+    /// so the preview can colour values it changed (`preview::fill_isolated_holes`).
+    pub fn rgba_of_rgb(&self, rgb: Option<[u16; 3]>) -> [u8; 4] {
+        match rgb {
+            Some([r, g, b]) => [
+                self.depth.to_u8(r),
+                self.depth.to_u8(g),
+                self.depth.to_u8(b),
+                255,
+            ],
+            None => TRANSPARENT,
+        }
+    }
+
+    /// RGBA of a single-band value through the ramp. `None` is an empty cell.
+    pub fn rgba_of_value(&self, value: Option<f32>) -> [u8; 4] {
+        match (value, self.range) {
             (Some(v), Some(range)) => {
                 let [r, g, b] = ramp_color(normalize(v, range));
                 [r, g, b, 255]

@@ -191,10 +191,28 @@ impl CoarsePoints {
         if acc.accepted_points() == 0 {
             return Err(RasterError::NoPoints);
         }
+        // The range is taken from the unfilled cells. A filled cell is a mean of its
+        // neighbours, so it lies inside min..max already and cannot change the range
+        // (the legend stays the same as without the fill).
         let colorizer = CellColorizer::new(&acc, None);
-        let mut rgba = Vec::with_capacity(spec.cell_count() as usize * 4);
+        let (width, height) = (spec.width as usize, spec.height as usize);
+        let cell_count = spec.cell_count() as usize;
+        let pixels: Vec<[u8; 4]> = if options.value == RasterValue::RgbMean {
+            let cells: Vec<Option<[u16; 3]>> = (0..cell_count).map(|i| acc.rgb_at(i)).collect();
+            fill_isolated_holes(&cells, width, height, mean_rgb)
+                .into_iter()
+                .map(|c| colorizer.rgba_of_rgb(c))
+                .collect()
+        } else {
+            let cells: Vec<Option<f32>> = (0..cell_count).map(|i| acc.value_at(i)).collect();
+            fill_isolated_holes(&cells, width, height, mean_value)
+                .into_iter()
+                .map(|c| colorizer.rgba_of_value(c))
+                .collect()
+        };
+        let mut rgba = Vec::with_capacity(cell_count * 4);
         let mut filled = 0u32;
-        for pixel in colorizer.rgba_samples(&acc) {
+        for pixel in pixels {
             if pixel[3] != 0 {
                 filled += 1;
             }
@@ -210,6 +228,67 @@ impl CoarsePoints {
             rgba,
         })
     }
+}
+
+/// An empty cell is filled when at least this many of its 8 neighbours have a value.
+/// The preview is made from thinned points (2-3 per cell), so many cells are empty only
+/// by sampling chance; those are surrounded by values and get filled. A real gap (a river
+/// edge, the border of the data) has most neighbours empty too, so with 5 of 8 it mostly
+/// stays empty. Corner cells have 3 neighbours and edge cells 5, so a corner never fills.
+/// Preview only: the export never calls `fill_isolated_holes`.
+pub const FILL_MIN_NEIGHBOURS: usize = 5;
+
+/// One pass over the grid (row-major, `width * height` cells). An empty cell with at least
+/// `FILL_MIN_NEIGHBOURS` non-empty neighbours (of the 8 around it that exist) becomes
+/// `mean` of those neighbours. Every cell is judged against the ORIGINAL `cells`, so the
+/// fill does not chain into the next cell.
+pub fn fill_isolated_holes<T: Copy>(
+    cells: &[Option<T>],
+    width: usize,
+    height: usize,
+    mean: impl Fn(&[T]) -> T,
+) -> Vec<Option<T>> {
+    let mut out = cells.to_vec();
+    if width == 0 || height == 0 || cells.len() != width * height {
+        return out;
+    }
+    for row in 0..height {
+        for col in 0..width {
+            let index = row * width + col;
+            if cells[index].is_some() {
+                continue;
+            }
+            let mut found: Vec<T> = Vec::with_capacity(8);
+            for r in row.saturating_sub(1)..=(row + 1).min(height - 1) {
+                for c in col.saturating_sub(1)..=(col + 1).min(width - 1) {
+                    if (r, c) == (row, col) {
+                        continue;
+                    }
+                    if let Some(v) = cells[r * width + c] {
+                        found.push(v);
+                    }
+                }
+            }
+            if found.len() >= FILL_MIN_NEIGHBOURS {
+                out[index] = Some(mean(&found));
+            }
+        }
+    }
+    out
+}
+
+fn mean_value(values: &[f32]) -> f32 {
+    values.iter().sum::<f32>() / values.len() as f32
+}
+
+/// Mean colour per channel (rounded).
+fn mean_rgb(colors: &[[u16; 3]]) -> [u16; 3] {
+    let n = colors.len() as u32;
+    let channel = |k: usize| -> u16 {
+        let sum: u32 = colors.iter().map(|c| u32::from(c[k])).sum();
+        ((sum + n / 2) / n) as u16
+    };
+    [channel(0), channel(1), channel(2)]
 }
 
 /// A rendered preview: RGBA pixels (row 0 = north, transparent = empty cell) and what
@@ -561,5 +640,121 @@ mod tests {
         assert_eq!((f32_at(12), f32_at(16), f32_at(20)), (1.5, 9.0, 2.0));
         assert_eq!((u32_at(24), u32_at(28)), (7, 1));
         assert_eq!(&b[32..], &[1, 2, 3, 255, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn isolated_hole_gets_the_mean_of_its_eight_neighbours() {
+        let mut cells = vec![Some(8.0f32); 9];
+        cells[4] = None;
+        cells[0] = Some(0.0); // mean = (7 * 8 + 0) / 8 = 7
+        let out = fill_isolated_holes(&cells, 3, 3, mean_value);
+        assert_eq!(out[4], Some(7.0));
+    }
+
+    #[test]
+    fn four_neighbours_are_not_enough_but_five_are() {
+        let four = [
+            Some(1.0f32),
+            Some(1.0),
+            None,
+            Some(1.0),
+            None,
+            None,
+            Some(1.0),
+            None,
+            None,
+        ];
+        assert_eq!(fill_isolated_holes(&four, 3, 3, mean_value)[4], None);
+        let five = [
+            Some(2.0f32),
+            Some(4.0),
+            None,
+            Some(6.0),
+            None,
+            None,
+            Some(8.0),
+            Some(10.0),
+            None,
+        ];
+        assert_eq!(fill_isolated_holes(&five, 3, 3, mean_value)[4], Some(6.0));
+    }
+
+    #[test]
+    fn edge_cells_count_only_existing_neighbours_and_corners_never_fill() {
+        // 4 wide, 3 high. Edge cell (row 0, col 1) has 5 neighbours: all filled -> fills.
+        let mut cells = vec![Some(3.0f32); 12];
+        cells[1] = None;
+        assert_eq!(fill_isolated_holes(&cells, 4, 3, mean_value)[1], Some(3.0));
+        // One more empty neighbour leaves it 4 of 5 -> stays empty.
+        cells[2] = None;
+        assert_eq!(fill_isolated_holes(&cells, 4, 3, mean_value)[1], None);
+        // A corner has only 3 neighbours, so it never fills.
+        let mut cells = vec![Some(3.0f32); 12];
+        cells[0] = None;
+        assert_eq!(fill_isolated_holes(&cells, 4, 3, mean_value)[0], None);
+    }
+
+    #[test]
+    fn the_fill_does_not_chain() {
+        // 5 wide, 3 high; two adjacent holes at index 6 and 7 (row 1, cols 1 and 2).
+        let mut cells = vec![Some(1.0f32); 15];
+        for i in [6, 7, 0, 1, 5, 10, 11] {
+            cells[i] = None;
+        }
+        // Left hole (6): filled neighbours are 2, 12 only (7 is empty) -> stays empty.
+        // Right hole (7): filled neighbours 2, 3, 8, 12, 13 = 5 -> fills.
+        let out = fill_isolated_holes(&cells, 5, 3, mean_value);
+        assert_eq!(out[7], Some(1.0));
+        // A chained pass would let the left hole see the new value at 7 (3 of 8 -> still
+        // empty), so also check a case where chaining WOULD flip the result below.
+        assert_eq!(out[6], None);
+        // Left hole with 4 filled neighbours plus a hole next to it that itself fills:
+        // chaining would make it 5; judged against the original it has 4.
+        let mut cells = vec![Some(1.0f32); 15];
+        for i in [6, 7, 0, 1, 5] {
+            cells[i] = None;
+        }
+        // Left hole (6): filled 2, 10, 11, 12 = 4 (7 empty). Right hole (7): 2, 3, 8, 11,
+        // 12, 13 = 6 -> fills.
+        let out = fill_isolated_holes(&cells, 5, 3, mean_value);
+        assert_eq!(out[7], Some(1.0));
+        assert_eq!(out[6], None);
+    }
+
+    #[test]
+    fn rgb_mean_is_per_channel() {
+        let mut cells = vec![Some([10u16, 20, 30]); 9];
+        cells[4] = None;
+        cells[0] = Some([90, 20, 30]); // R: (7 * 10 + 90) / 8 = 20
+        let out = fill_isolated_holes(&cells, 3, 3, mean_rgb);
+        assert_eq!(out[4], Some([20, 20, 30]));
+    }
+
+    #[test]
+    fn export_colouring_leaves_holes_empty_while_the_preview_fills_them() {
+        // 3 x 3 cells of 1 m, all filled but the centre.
+        let spec = GridSpec::from_bounds(0.0, 0.0, 3.0, 3.0, 1.0, 100).expect("spec");
+        let mut acc = CellAccumulator::new(spec, RasterValue::ZMean, ClassFilter::all());
+        for row in 0..3 {
+            for col in 0..3 {
+                if (row, col) != (1, 1) {
+                    acc.add(
+                        f64::from(col) + 0.5,
+                        f64::from(row) + 0.5,
+                        5.0,
+                        0,
+                        1,
+                        [0; 3],
+                    );
+                }
+            }
+        }
+        // Export path: `CellColorizer` over the accumulator, no fill (output.rs never
+        // calls `fill_isolated_holes`; this pins the behaviour of that path).
+        let colorizer = CellColorizer::new(&acc, None);
+        assert_eq!(colorizer.rgba(&acc, 4)[3], 0);
+        // Preview path: the same cells through the fill.
+        let cells: Vec<Option<f32>> = (0..9).map(|i| acc.value_at(i)).collect();
+        assert_eq!(fill_isolated_holes(&cells, 3, 3, mean_value)[4], Some(5.0));
     }
 }
