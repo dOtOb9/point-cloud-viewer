@@ -48,3 +48,37 @@ G2-T13（なぞって断面線を直す）の後に、同じ `SectionPanel.tsx`�
 3. 断面を2つ作り、交互に選ぶ → 選んだ方の断面図に切り替わる
 4. 「拡大」→ 画面の中央に大きく出る。なぞり・右クリックの GL・拡大縮小がそのまま使える。「縮小」→ 右下に戻る
 5. スマホでも 1〜4
+
+## 実施記録（実装エージェント）
+
+### 実行したコマンド（実際の出力）
+
+- `npm run typecheck`: エラー無し
+- `npm run lint`: エラー無し
+- `npx vitest run`: `Test Files 77 passed (77)` / `Tests 766 passed (766)`（G2-T13 のあとの 760 から、G2-T14 のテスト 7 件を足した。`point-cloud-tools.test.ts` の「パネルを開く」テスト 2 件は役目が `followSelectedLayer` に移ったので消し、「失敗したら断面線を計算しない」1 件に作り直した。760 + 7 - 2 + 1 = 766）
+
+### 触ったファイル
+
+- `src/app/section-view.ts`: `followSelectedLayer`・`toggleSectionEnlarged` を追加。`SectionViewState.enlarged`、コンテキストに `setEnlarged`。`closeSectionPanel` が `enlarged` を false に戻す
+- `src/state/useSectionView.ts`: `enlarged` の state
+- `src/state/useCopcViewer.ts`: `selectedLayerId` を見る `useEffect` 1つ（中身は `followSelectedLayer` を呼ぶだけ）。`openSectionView` の配線を消した
+- `src/app/point-cloud-tools.ts`・`src/state/usePointCloudTools.ts`: `openSectionView` と、断面ツールの最後の呼び出しを消した
+- `src/ui/section/SectionPanel.tsx`: 「閉じる」を消し、「拡大／縮小」（`section-panel-enlarge`）を足した。「全体表示」を「全体を表示」に変えた。拡大時の置き場所
+- テスト: `src/app/section-view.test.ts`（(a)-(e)）、`src/app/point-cloud-tools.test.ts`・`src/app/raster-window.test.ts`（`openSectionView` の削除に合わせた）
+- 設計書: `docs/book/src/flows/point-cloud-tools.md`
+
+### 決めたこと
+
+- **`openSectionView` の呼び出しは消した。** `addOpenedLayer` が使う `addLayerToState` は新しいレイヤーを選択する（`selectedLayerId: layer.id`）ので、断面ツールが作ったレイヤーは選択され、effect がパネルを開く。選択する方に直す必要は無かった。
+- `section-panel-close` を使っている所は、`src/` にも `e2e/` にも他に無かった（grep で確認）。
+- effect の依存配列は `[layers.selectedLayerId]` だけにし、`react-hooks/exhaustive-deps` を理由つきで無効にした（context は毎回作り直されるが、選択が変わったときだけ動かしたい）。その render の context で呼ばれるので、`ctx.openLayerId`（同じレイヤーなら読み直さない判定）は最新の値になる。
+- 開くのに失敗するとパネルは閉じ、選択はそのまま。選択が変わらない限り再試行はしない（無限に読み直さない）。
+- 拡大したままで別の断面レイヤーに切り替えたときは、拡大のまま（閉じていないので）。閉じたときだけ縮小に戻す。
+- 重なり: 拡大時は `z-[25]`。レイヤーの引き出し（z-10）・その開閉ボタン・狭い画面の通常のパネル（z-5）・広い画面の通常のパネル（z-20）より前、進捗の表示（z-30）とダイアログ（z-40、z-50）より後ろ。`h-[85%] w-[90%]` で中央（`left-1/2 top-1/2` と `-translate-*`）。スマホも同じ。
+
+### 確かめていないこと（未確認）
+
+- 実際の画面での、開閉・切り替え・拡大／縮小の見た目、拡大時の他の部品との重なり（ツールバーが隠れる範囲）は未確認。
+- 拡大したあとの `ResizeObserver` による描き直し・拡大中のなぞり・右クリックの GL が実際に動くかは未確認（座標は `getBoundingClientRect` の相対なので動くはずという推定）。
+- 選択の変え方ごと（一覧のクリック、Ctrl/Shift、レイヤーの削除、ツールの自動選択）に実際の React で effect が動くかは未確認。単体テストは `followSelectedLayer` の関数までで、effect の配線は見ていない。
+- スマホでの確認、E2E は実行していない。

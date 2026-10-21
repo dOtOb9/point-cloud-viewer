@@ -18,7 +18,7 @@
 | 操作 | 最初に呼ばれるもの |
 |---|---|
 | カット(多角形を閉じる) | `src/state/useLayerTool.ts` の `finishPolygon` → `extractFromLayer(viewer.toolContext, ..., "カット")` |
-| 断面(厚みと高さを確定) | 同 `confirmSection` → `extractFromLayer(viewer.toolContext, ..., "断面", box.normal, section)`。成功すると右下に[断面図のパネル](#3-d-断面図2d-のパネルg2-3)が開く |
+| 断面(厚みと高さを確定) | 同 `confirmSection` → `extractFromLayer(viewer.toolContext, ..., "断面", box.normal, section)`。成功して新しい断面のレイヤーが選ばれると、右下に[断面図のパネル](#3-d-断面図2d-のパネルg2-3)が開く |
 | 合成(ツールバーの「合成」) | `src/ui/toolbar/buttons/MergeLayersButton.tsx` の `onClick` → `mergeSelectedLayers(viewer.toolContext)` |
 
 `extractFromLayer` / `mergeSelectedLayers` / `cancelTool` の実体は `src/app/point-cloud-tools.ts` の普通の関数です(R13 の `openFiles` と同じ形。F12 で飛べる)。
@@ -66,9 +66,11 @@
 ### 3-D. 断面図(2D のパネル。G2-3)
 
 断面が成功すると、新しいレイヤーに断面の情報(`ViewerLayer.section` = A・B・上方向・厚み。`src/state/layers.ts` の `SectionInfo`)を持たせ、
-画面の右下に **2D の断面図**を出します(狭い画面では下に横幅いっぱい)。元のレイヤーは 3-A step 5 のとおり非表示のままで、パネルを閉じても戻しません。
+**選んでいるレイヤーが断面のレイヤーのとき**、画面の右下に **2D の断面図**を出します(狭い画面では下に横幅いっぱい)。選択が断面でないレイヤーや「なし」に変わると消え、閉じるボタンはありません(G2-T14)。元のレイヤーは 3-A step 5 のとおり非表示のままです。
 
-1. `useLayerTool.ts` の `confirmSection` が A・B・`up`・厚みを `extractFromLayer(..., "断面", box.normal, section)` に渡す。`runTool` は `addOpenedLayer(..., section)` でレイヤーに持たせ、最後に `ctx.openSectionView(layerId)` を呼ぶ。
+開閉は `src/state/useCopcViewer.ts` の `useEffect` 1つが `selectedLayerId` を見て、`section-view.ts` の `followSelectedLayer(ctx, selectedLayerId)` を呼ぶだけです。選択を変える場所(一覧のクリック・複数選択・ツールが作ったレイヤーの自動選択・レイヤーの削除)は多いので、値を1か所で見て漏れを無くしています。断面のレイヤーなら `openSectionPanel`(別の断面が開いていれば切り替え。同じレイヤーが開いていれば点を読み直さない)、そうでなければ `closeSectionPanel` です。ヘッダーの「拡大」(`data-testid="section-panel-enlarge"`)は `toggleSectionEnlarged` で、パネルを画面の中央に幅・高さとも約 85〜90% で出します(狭い画面でも同じ。レイヤーの引き出しやツールバーより前の `z-[25]`、進捗の表示 z-30 とダイアログの後ろ)。押すと「縮小」になり右下に戻ります。パネルが閉じると縮小に戻ります。「全体を表示」は点が全部入る表示に戻すボタンです。
+
+1. `useLayerTool.ts` の `confirmSection` が A・B・`up`・厚みを `extractFromLayer(..., "断面", box.normal, section)` に渡す。`runTool` は `addOpenedLayer(..., section)` でレイヤーに持たせる。新しいレイヤーは自動で選択されるので、上の `followSelectedLayer` がパネルを開く。
 2. `src/app/section-view.ts` `openSectionPanel` — レイヤーの点を `(s, z)` で読む。`s` = A から A→B の水平方向への距離、`z` = 上方向の高さ(どちらもファイルの単位)。
    - デスクトップ: `src/datasource/tauri.ts` `readSectionProfile` → Tauri コマンド `read_section_profile`(`src-tauri/src/copc_state.rs`。開いているファイルの世代番号で読む。`spawn_blocking` + `catch_unwind`)。バイナリをそのまま返す。
    - Web: `WebSource.readSectionProfile` → Worker の `sectionProfile` メッセージ → `WasmCopcFile.readSectionProfile`(`crates/pcv-wasm/src/lib.rs`)。`ArrayBuffer` を転送で返す。
