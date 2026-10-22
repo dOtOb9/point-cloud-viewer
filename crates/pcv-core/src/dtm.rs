@@ -73,6 +73,9 @@ pub enum DtmError {
     Grid(#[from] RasterError),
     #[error("DTM の計算: {0}")]
     Cloth(String),
+    /// A cap of the DTM tool was hit; the text names the DTM setting to change (not the raster tool's).
+    #[error("{0}")]
+    TooLarge(String),
     #[error("点を読めませんでした: {0}")]
     Read(#[from] copc_core::Error),
     #[error("点群に点がありません")]
@@ -269,6 +272,29 @@ pub struct DtmJob {
     points_per_advance: u64,
 }
 
+/// Rounds up to 2 significant digits (0.137 -> 0.14, 12.01 -> 13).
+fn round_up_2_digits(x: f64) -> f64 {
+    let step = 10f64.powf(x.log10().floor() - 1.0);
+    // The small slack keeps a value that is already round (0.3 / 0.01 = 30.000000000000004) as it is.
+    (x / step - 1e-9).ceil() * step
+}
+
+/// The smallest size, rounded up to 2 digits, for which `fits` holds. `start` is a guess from
+/// the area; the size grows by about 1 % per step until it fits. `None` if nothing fits soon.
+fn smallest_fitting(start: f64, fits: impl Fn(f64) -> bool) -> Option<f64> {
+    if !start.is_finite() || start <= 0.0 {
+        return None;
+    }
+    let mut candidate = round_up_2_digits(start);
+    for _ in 0..1000 {
+        if fits(candidate) {
+            return Some(candidate);
+        }
+        candidate = round_up_2_digits(candidate * 1.0001);
+    }
+    None
+}
+
 impl DtmJob {
     /// Checks the input and the caps, lays out the cloth and lists the nodes. No point is read.
     /// `epsg` is written into the GeoTIFF / LandXML (`None`: the files carry no CRS).
@@ -279,25 +305,67 @@ impl DtmJob {
     ) -> Result<Self, DtmError> {
         params.csf.validate().map_err(DtmError::Cloth)?;
         let h = reader.header();
-        let spec = GridSpec::from_bounds(
-            h.min_x,
-            h.min_y,
-            h.max_x,
-            h.max_y,
-            params.cell_size,
-            params.max_cells,
-        )?;
-        let cloth = Cloth::new(
-            XyExtent {
-                min_x: h.min_x,
-                min_y: h.min_y,
-                max_x: h.max_x,
-                max_y: h.max_y,
-            },
-            params.csf,
-            params.max_particles,
-        )
-        .map_err(DtmError::Cloth)?;
+        let (width, height) = (h.max_x - h.min_x, h.max_y - h.min_y);
+        let grid_for = |cell: f64| {
+            GridSpec::from_bounds(h.min_x, h.min_y, h.max_x, h.max_y, cell, params.max_cells)
+        };
+        let spec = match grid_for(params.cell_size) {
+            Ok(spec) => spec,
+            Err(RasterError::TooManyCells {
+                cols,
+                rows,
+                max_cells,
+            }) => {
+                // The raster tool's text talks about "ラスタ"; say it is the DTM cell size instead.
+                let start = (width * height / max_cells as f64).sqrt();
+                let text = match smallest_fitting(start, |c| grid_for(c).is_ok()) {
+                    Some(min) => format!(
+                        "DTM の範囲が大きすぎます（{cols:.0} 列 × {rows:.0} 行、上限は {max_cells} セル）。\
+                         DTM のセルの大きさを {min}（点群ファイルの単位）以上にするか、\
+                         先にカットで範囲を切り出してください"
+                    ),
+                    None => format!(
+                        "DTM の範囲が大きすぎます（{cols:.0} 列 × {rows:.0} 行、上限は {max_cells} セル）。\
+                         DTM のセルの大きさを大きくするか、先にカットで範囲を切り出してください"
+                    ),
+                };
+                return Err(DtmError::TooLarge(text));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let extent = XyExtent {
+            min_x: h.min_x,
+            min_y: h.min_y,
+            max_x: h.max_x,
+            max_y: h.max_y,
+        };
+        // The CSF settings and the extent were checked above, so the only way `Cloth::new` fails
+        // here is the particle cap (its own text is shared with the section tool, so it is replaced).
+        let cloth_for = |resolution: f64| {
+            let mut csf = params.csf;
+            csf.cloth_resolution = resolution;
+            Cloth::new(extent, csf, params.max_particles)
+        };
+        let res = params.csf.cloth_resolution;
+        let cloth = match cloth_for(res) {
+            Ok(cloth) => cloth,
+            Err(_) => {
+                let max_millions = params.max_particles as f64 / 1.0e6;
+                let start = (width * height / params.max_particles as f64).sqrt();
+                let text = match smallest_fitting(start.max(res), |r| cloth_for(r).is_ok()) {
+                    Some(min) => format!(
+                        "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max_millions:.1} 百万個を超えます。\
+                         布の解像度を {min}（点群ファイルの単位）以上にするか、\
+                         先にカットで範囲を切り出してください"
+                    ),
+                    None => format!(
+                        "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max_millions:.1} 百万個を超えます。\
+                         布の解像度を粗くするか、先にカットで範囲を切り出してください"
+                    ),
+                };
+                return Err(DtmError::TooLarge(text));
+            }
+        };
         let mut nodes = Vec::new();
         let mut points_total = 0u64;
         for entry in reader.file().hierarchy_entries() {

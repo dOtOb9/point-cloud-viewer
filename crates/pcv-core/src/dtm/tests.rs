@@ -257,11 +257,70 @@ fn caps_refuse_before_any_point_is_read() {
     // Cloth: 60 m at 0.5 m is about 124 x 124 = 15 thousand particles.
     let err = DtmJob::new(&reader, None, &params(1_000, 2_000_000)).err();
     let message = err.expect("refused").to_string();
-    assert!(message.contains("布の解像度を粗くするか"), "{message}");
+    assert!(message.contains("DTM"), "{message}");
+    assert!(message.contains("布"), "{message}");
+    assert!(message.contains("CSF の解像度"), "{message}");
+    assert!(!message.contains("ラスタ"), "{message}");
     // DTM cells: 61 x 61 = 3721 at 1 m.
     let err = DtmJob::new(&reader, None, &params(2_000_000, 100)).err();
     let message = err.expect("refused").to_string();
-    assert!(message.contains("先に範囲を切り出して"), "{message}");
+    assert!(message.contains("DTM"), "{message}");
+    assert!(message.contains("セルの大きさ"), "{message}");
+    assert!(!message.contains("ラスタ"), "{message}");
+}
+
+/// The number written just before 「（点群ファイルの単位）」 in a cap message.
+fn suggested_size(message: &str) -> f64 {
+    let head = message
+        .split("（点群ファイルの単位）")
+        .next()
+        .expect("split");
+    let digits: String = head
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    digits.parse().expect("a size in the message")
+}
+
+#[test]
+fn suggested_dtm_cell_size_fits_the_cap() {
+    let (points, _, _) = town(|_, _| 0.0);
+    let (_dir, reader) = open_reader(points, 5_000);
+    let message = DtmJob::new(&reader, None, &params(2_000_000, 100))
+        .err()
+        .expect("refused")
+        .to_string();
+    let size = suggested_size(&message);
+    assert!(size > 1.0, "{message}");
+    let mut p = params(2_000_000, 100);
+    p.cell_size = size;
+    assert!(DtmJob::new(&reader, None, &p).is_ok(), "{message}");
+}
+
+#[test]
+fn suggested_cloth_resolution_fits_the_cap() {
+    let (points, _, _) = town(|_, _| 0.0);
+    let (_dir, reader) = open_reader(points, 5_000);
+    let message = DtmJob::new(&reader, None, &params(1_000, 2_000_000))
+        .err()
+        .expect("refused")
+        .to_string();
+    let size = suggested_size(&message);
+    assert!(size > 0.5, "{message}");
+    let mut p = params(1_000, 2_000_000);
+    p.csf.cloth_resolution = size;
+    assert!(DtmJob::new(&reader, None, &p).is_ok(), "{message}");
+}
+
+#[test]
+fn round_up_keeps_two_digits() {
+    assert_eq!(round_up_2_digits(0.137), 0.14);
+    assert_eq!(round_up_2_digits(12.01), 13.0);
+    assert_eq!(round_up_2_digits(0.3), 0.3);
 }
 
 #[test]

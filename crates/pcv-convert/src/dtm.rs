@@ -545,13 +545,13 @@ mod tests {
         assert!(cloth
             .expect_err("cloth cap")
             .to_string()
-            .contains("布の解像度を粗くするか"));
+            .contains("CSF の解像度"));
         assert_eq!(calls, 0, "refused before any progress");
         let (cells, _) = run(request(true, true), 2_000_000, 10);
         assert!(cells
             .expect_err("cell cap")
             .to_string()
-            .contains("先に範囲を切り出して"));
+            .contains("DTM のセルの大きさ"));
         assert!(!out.copc.exists(), "nothing was written");
     }
 
