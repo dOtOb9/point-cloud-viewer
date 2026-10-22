@@ -13,7 +13,7 @@ import { findLayer, type LayersState, type SectionInfo } from "../state/layers";
 import { sectionAlong } from "../state/tool-math";
 import { startDownload } from "./download";
 
-export type SectionExportFormat = "csv";
+export type SectionExportFormat = "csv" | "dxf";
 
 /** What the workflow needs (a subset of the section view context). */
 export interface SectionExportContext {
@@ -51,6 +51,32 @@ export function sectionLineCsv(points: ExportPoint[]): string {
   return ["s,z,X,Y", ...rows].join(EOL) + EOL;
 }
 
+/** DXF R12 (AC1009): a 2D POLYLINE on layer SECTION_LINE with X = s and Y = z (the cross-section drawing). */
+export function sectionLineDxf(points: ExportPoint[]): string {
+  const layer = "SECTION_LINE";
+  const pairs: [number, string][] = [
+    [0, "SECTION"],
+    [2, "HEADER"],
+    [9, "$ACADVER"],
+    [1, "AC1009"],
+    [0, "ENDSEC"],
+    [0, "SECTION"],
+    [2, "ENTITIES"],
+    [0, "POLYLINE"],
+    [8, layer],
+    [66, "1"],
+    [10, "0.0"],
+    [20, "0.0"],
+    [30, "0.0"],
+    [70, "0"],
+  ];
+  for (const p of points) {
+    pairs.push([0, "VERTEX"], [8, layer], [10, p.s.toFixed(3)], [20, p.z.toFixed(3)], [30, "0.0"]);
+  }
+  pairs.push([0, "SEQEND"], [8, layer], [0, "ENDSEC"], [0, "EOF"]);
+  return pairs.map(([code, value]) => `${code}${EOL}${value}`).join(EOL) + EOL;
+}
+
 /** Replace characters a file name cannot hold. */
 export function safeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_");
@@ -68,15 +94,16 @@ export async function exportSectionLine(ctx: SectionExportContext, layerId: stri
       ctx.reportError("断面線を書き出せません: 2点が同じ鉛直線上にあります", "tool");
       return;
     }
-    const text = sectionLineCsv(points);
+    const text = format === "csv" ? sectionLineCsv(points) : sectionLineDxf(points);
     const fileName = `${safeFileName(layer.name)}-断面線.${format}`;
     if (ctx.getSource() instanceof WebSource) {
-      const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+      const mime = format === "csv" ? "text/csv;charset=utf-8" : "application/dxf";
+      const url = URL.createObjectURL(new Blob([text], { type: mime }));
       startDownload(url, fileName);
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
       return;
     }
-    const destination = await chooseTextDestination(fileName, "CSV", format);
+    const destination = await chooseTextDestination(fileName, format === "csv" ? "CSV" : "DXF", format);
     if (!destination) return; // the dialog was closed
     await saveTextFile(destination, text);
   } catch (e) {

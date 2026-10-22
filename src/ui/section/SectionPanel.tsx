@@ -176,6 +176,14 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
             >
               CSV
             </button>
+            <button
+              type="button"
+              onClick={() => exportSectionLine(ctx, layer.id, "dxf")}
+              className={TEXT_BUTTON_CLASS}
+              data-testid="section-export-dxf"
+            >
+              DXF
+            </button>
           </>
         )}
         <button type="button" onClick={() => resetSectionView(ctx)} className={TEXT_BUTTON_CLASS}>
