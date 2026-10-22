@@ -78,3 +78,59 @@
 - 10分以上かかりうるコマンド（CI の完了待ちなど）は `run_in_background` で走らせ、結果をファイルから読む
 - preview サーバーは自分が立てたものだけを止める（コマンドラインを確かめてから）。全 node/chrome の一括終了は禁止
 - 点群データは `C:\rust\point-cloud-viewer\data\` を絶対パスで読む。コミットしない
+
+## 5. 実施の記録（2026-10-23）
+
+### やったこと
+
+- G2-7a（CSV と共通の保存の経路）、G2-7b（DXF R12）の2コミット。パネルの上の段に「CSV」「DXF」のボタン（断面線があるときだけ。`data-testid` は `section-export-csv`・`section-export-dxf`）
+- `src/app/section-export.ts`: `sectionLineWorldPoints`（X・Y の計算）、`sectionLineCsv`、`sectionLineDxf`、`safeFileName`、手順 `exportSectionLine(ctx, layerId, format)`
+- `src/state/tool-math.ts`: `sectionAlong(a, b, up)` を足し、`sectionBox` もそれを使うようにした（`along` の作り方を1か所にした）
+- デスクトップ: Tauri コマンド `save_text_file(destination, text)`（`src-tauri/src/conversion.rs`、`panic` しない `write_text_file` に分けてテスト）。`src/datasource/tauri.ts` に `chooseTextDestination`・`saveTextFile`
+- Web: `Blob` + `<a download>`。`startDownload` を `src/app/download.ts` に動かし、GeoTIFF の書き出し（`raster-window.ts`）と共有
+
+### z は相対か絶対か（2.1）
+
+**絶対（`up` 方向の座標そのもの）。** `crates/pcv-core/src/profile.rs` の `SectionAxes::project` は
+`(dot(p - origin, along), dot(p, up))` で、`s` だけ A からの距離、`z` は `origin` を引かない `dot(p, up)`。
+パネルの GL の表示（右クリック）は `groundLevelAt`（`src/app/section-3d.ts`）が同じ線の `interpolateZ` から出す `reading.z` を
+`groundLevelLabel` で整形するだけなので、線の `z` と同じ値。したがって書き出す `z` は線の値のまま（変換なし）で、GL の表示と一致する。
+実測でも、Web で書き出した autzen の CSV の z が 429 前後（ファイルの単位は ft。下記）で、レイヤー情報の高さの範囲（123.79〜187.53 m = 406〜615 ft）の中にある。
+GL の画面表示との突き合わせ自体は目で比べていない（未確認）。
+
+### 他の案と採らなかった理由
+
+- X・Y を Rust 側で作る案: Tauri と Web の両方に要るため、純粋な TS 関数にした（受け入れ基準の指定どおり）
+- 書き出す前に m / ft へ換算する案: 座標を CRS と合わせるため、ファイルの単位のまま（2.1）
+- 保存を Rust の既存 `save_tool_file`（一時フォルダ → コピー）に載せる案: 一時ファイルを作る手間が増えるだけなので、文字列を直接書く `save_text_file` を足した
+
+### 触ったファイル
+
+`src/app/section-export.ts`・`section-export.test.ts`・`download.ts`（新規）、`src/app/raster-window.ts`、`src/state/tool-math.ts`、
+`src/datasource/tauri.ts`、`src/ui/section/SectionPanel.tsx`、`src-tauri/src/conversion.rs`・`lib.rs`
+
+### 実行したコマンドと結果
+
+- `npx vitest run`: 83 ファイル・818 テスト成功（追加は `section-export.test.ts` の 11 件。X・Y の 45° と大きな座標 -12345.678 / -45678.901、CSV の見出し・小数3桁・CRLF、DXF のグループコードと `VERTEX` 数、`exportSectionLine` の4経路と Web）
+- `npm run typecheck`・`npm run lint`: 指摘なし
+- `cargo test --workspace`: 失敗なし（`write_text_file_*` の2件を含む）、`cargo clippy --workspace --all-targets -- -D warnings`: 指摘なし、`cargo fmt --check`: 差分なし
+- Web で実際に書き出し: `GITHUB_PAGES_BUILD=true` でビルド → `vite preview`（ポート 4391）→ Playwright（Chromium + `--enable-unsafe-webgpu`）で
+  `autzen-classified.copc.laz`（10,653,336 点）を開き、断面（2クリック）→ 断面線の計算 → 「CSV」「DXF」を押してダウンロード。
+  - CSV: 1986 行（見出し + 1985 点）。先頭 `s,z,X,Y` / `0.000,429.283,637901.959,849647.931` / `1.640,429.288,637901.918,849649.571`。行末は `\r\n`（`od -c` で確認）、BOM なし
+  - CSV の X・Y は 637,821〜637,902 と 849,647〜852,902（ft）。レイヤー情報の範囲 x 193,724〜194,768 m・y 258,739〜260,158 m は、ファイルの単位が ft（EPSG:2992）なので ×0.3048 すると 194,4xx m・258,9xx〜259,9xx m で範囲の中
+  - DXF: 先頭 `0 SECTION / 2 HEADER / 9 $ACADVER / 1 AC1009 / 0 ENDSEC / 0 SECTION / 2 ENTITIES / 0 POLYLINE / 8 SECTION_LINE / 66 1 ...`、末尾 `0 SEQEND / 8 SECTION_LINE / 0 ENDSEC / 0 EOF`、`VERTEX` は 1985 個（点数と同じ）
+- 自分が立てた preview サーバー（ポート 4391）は止めた
+
+### 未確認
+
+- デスクトップ（Tauri）での保存ダイアログと `save_text_file`（Rust のコマンドは単体テストのみ。実機の画面は未確認）
+- CSV を Excel で、DXF を CAD・土木ソフトで開くこと（所有者の確認）
+- GL の画面表示（右クリック）の値と CSV の z を同じ点で並べて見たこと（コードの上で同じ値になることだけ確認）
+- 狭い画面でボタンが増えた分の折り返し
+
+### 所有者の確認手順
+
+1. 断面を作って断面線を計算し、パネルの「CSV」「DXF」を押す（デスクトップは保存先を選ぶ。ダイアログを閉じると何も起きない）
+2. CSV を Excel で開く: 見出し `s,z,X,Y`、数値が3桁、X・Y が点群の座標（ファイルの単位）
+3. DXF を使っている CAD・土木ソフトで開く: 画層 `SECTION_LINE` に横断の折れ線（横軸 = s、縦軸 = z）
+4. パネルで線を右クリックして出る GL と、CSV の同じ s の z が合うこと
