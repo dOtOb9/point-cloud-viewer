@@ -59,6 +59,7 @@ fn main() -> Result<(), String> {
             convergence_threshold: 0.005,
         },
         cell_size: cell,
+        display_unit: None,
         output: DtmOutputOptions {
             geotiff: true,
             landxml: true,
@@ -73,7 +74,7 @@ fn main() -> Result<(), String> {
     mark(start, "start");
     let mut reader = CopcReader::from_path(&source).map_err(|e| e.to_string())?;
     let mut job = DtmJob::new(&reader, None, &params).map_err(|e| e.to_string())?;
-    let grid = job.grid().clone();
+    let grid = *job.grid();
     println!(
         "grid {} x {} = {} cells; cloth + best-point grid = {} bytes; {} nodes",
         grid.width,
