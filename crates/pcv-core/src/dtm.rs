@@ -347,19 +347,19 @@ impl DtmJob {
             Cloth::new(extent, csf, params.max_particles)
         };
         let res = params.csf.cloth_resolution;
+        let max = params.max_particles;
         let cloth = match cloth_for(res) {
             Ok(cloth) => cloth,
             Err(_) => {
-                let max_millions = params.max_particles as f64 / 1.0e6;
                 let start = (width * height / params.max_particles as f64).sqrt();
                 let text = match smallest_fitting(start.max(res), |r| cloth_for(r).is_ok()) {
                     Some(min) => format!(
-                        "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max_millions:.1} 百万個を超えます。\
+                        "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max} 個を超えます。\
                          布の解像度を {min}（点群ファイルの単位）以上にするか、\
                          先にカットで範囲を切り出してください"
                     ),
                     None => format!(
-                        "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max_millions:.1} 百万個を超えます。\
+                        "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max} 個を超えます。\
                          布の解像度を粗くするか、先にカットで範囲を切り出してください"
                     ),
                 };
