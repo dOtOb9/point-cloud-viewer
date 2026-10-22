@@ -26,6 +26,7 @@ import { displayLengthToFile } from "../state/tool-math";
 import { lengthUnitsFor, type DisplayUnit } from "../state/units";
 import { CLOSED_RASTER_WINDOW, DEFAULT_RASTER_SETTINGS, type RasterSettings, type RasterWindowState } from "../state/raster-window";
 import { cancelTool, type PointCloudToolsContext } from "./point-cloud-tools";
+import { startDownload } from "./download";
 
 export { cancelTool };
 
@@ -146,16 +147,6 @@ export async function closeRasterWindow(ctx: RasterContext): Promise<void> {
   if (state.exported?.download) URL.revokeObjectURL(state.exported.download.url);
   ctx.setState(CLOSED_RASTER_WINDOW);
   if (state.session) await closePreview(ctx.tools.getSource(), state.session.id);
-}
-
-/** Make the browser save the GeoTIFF (Web). */
-function startDownload(url: string, fileName: string): void {
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
 }
 
 /**

@@ -570,6 +570,19 @@ export async function saveToolFile(sourcePath: string, destination: string): Pro
   await invoke("save_tool_file", { source: sourcePath, destination });
 }
 
+/** Asks where to save the section line (G2-T17). Null when the user closed the dialog without choosing. */
+export async function chooseTextDestination(suggestedName: string, filterName: string, extension: string): Promise<string | null> {
+  return await saveFileDialog({
+    defaultPath: suggestedName,
+    filters: [{ name: filterName, extensions: [extension] }],
+  });
+}
+
+/** Writes a text the app built (UTF-8, as it is) to `destination`. */
+export async function saveTextFile(destination: string, text: string): Promise<void> {
+  await invoke("save_text_file", { destination, text });
+}
+
 // --- G2: section line ---
 
 /**

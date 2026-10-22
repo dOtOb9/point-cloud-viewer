@@ -70,17 +70,31 @@ export interface SectionBox {
 }
 
 /**
- * The vertical slab of a cross section: along the line a-b (horizontal part only), `thickness` wide
- * (total, split evenly on both sides of the line), and from `heightMin` to `heightMax` along `up`.
- * Returns null when a and b are on the same vertical line (no direction).
+ * The unit `up`, the unit `along` (A -> B with its `up` part removed; same construction as `SectionAxes::new` in
+ * crates/pcv-core/src/profile.rs) and the horizontal length |AB|. Null when a and b are on one vertical line.
  */
-export function sectionBox(a: Vec3, b: Vec3, up: Vec3, thickness: number, heightMin: number, heightMax: number): SectionBox | null {
+export function sectionAlong(
+  a: Vec3,
+  b: Vec3,
+  up: Vec3,
+): { u: [number, number, number]; along: [number, number, number]; length: number } | null {
   const u = normalize(up);
   const ab = sub(b, a);
   const horizontal = sub(ab, scale(u, dot(ab, u)));
   const length = Math.hypot(horizontal[0], horizontal[1], horizontal[2]);
   if (!(length > 1e-9)) return null;
-  const along = scale(horizontal, 1 / length);
+  return { u, along: scale(horizontal, 1 / length), length };
+}
+
+/**
+ * The vertical slab of a cross section: along the line a-b (horizontal part only), `thickness` wide
+ * (total, split evenly on both sides of the line), and from `heightMin` to `heightMax` along `up`.
+ * Returns null when a and b are on the same vertical line (no direction).
+ */
+export function sectionBox(a: Vec3, b: Vec3, up: Vec3, thickness: number, heightMin: number, heightMax: number): SectionBox | null {
+  const axes = sectionAlong(a, b, up);
+  if (axes === null) return null;
+  const { u, along, length } = axes;
   const normal = cross(u, along); // horizontal and perpendicular to the line (unit, because u and along are perpendicular units)
   const mid: [number, number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
   // Move the centre along `up` to the middle of the height range.

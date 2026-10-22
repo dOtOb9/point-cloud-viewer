@@ -1223,6 +1223,18 @@ pub async fn save_tool_file(source: String, destination: String) -> Result<(), S
         .map_err(|e| format!("ファイルを保存できませんでした ({destination}): {e}"))
 }
 
+/// Writes a text file the app built itself (G2-T17: the section line as CSV / DXF) where the user chose in the
+/// save dialog. The destination comes from the dialog, like `save_tool_file`.
+#[tauri::command]
+pub async fn save_text_file(destination: String, text: String) -> Result<(), String> {
+    write_text_file(&destination, &text)
+}
+
+fn write_text_file(destination: &str, text: &str) -> Result<(), String> {
+    std::fs::write(destination, text.as_bytes())
+        .map_err(|e| format!("ファイルを保存できませんでした ({destination}): {e}"))
+}
+
 // --- G2: section line ---
 
 /// Computes the ground line of a cross section from the SOURCE layer (`generation` of the open file),
@@ -1465,6 +1477,22 @@ pub async fn dtm_copc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_text_file_writes_the_text_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line.csv");
+        write_text_file(path.to_str().unwrap(), "s,z\r\n1.000,2.000\r\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"s,z\r\n1.000,2.000\r\n");
+    }
+
+    #[test]
+    fn write_text_file_reports_a_missing_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no-such-folder").join("line.csv");
+        let err = write_text_file(path.to_str().unwrap(), "x").unwrap_err();
+        assert!(err.contains("ファイルを保存できませんでした"));
+    }
 
     #[test]
     fn run_guarded_does_not_report_when_work_finishes() {

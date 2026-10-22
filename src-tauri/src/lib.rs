@@ -311,6 +311,7 @@ pub fn run() {
             conversion::raster_preview_render,
             conversion::raster_preview_close,
             conversion::save_tool_file,
+            conversion::save_text_file, // G2-T17
             // ---
             conversion::supports_custom_temp_dir,
             // --- G2: cross-section view ---

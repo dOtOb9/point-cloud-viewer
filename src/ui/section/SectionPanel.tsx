@@ -15,6 +15,7 @@ import {
   zoomSectionWheel,
   type SectionPointer,
 } from "../../app/section-view";
+import { exportSectionLine } from "../../app/section-export";
 import { groundLevelLabel, groundLineToProfile, type GroundLevelReading } from "../../app/section-3d";
 import {
   canRedo,
@@ -166,6 +167,14 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
               data-testid="section-reset-line"
             >
               計算した線に戻す
+            </button>
+            <button
+              type="button"
+              onClick={() => exportSectionLine(ctx, layer.id, "csv")}
+              className={TEXT_BUTTON_CLASS}
+              data-testid="section-export-csv"
+            >
+              CSV
             </button>
           </>
         )}
