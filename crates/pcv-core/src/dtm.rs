@@ -100,6 +100,84 @@ pub struct DtmParams {
     pub max_particles: u64,
     /// Largest number of DTM cells (refused above it).
     pub max_cells: u64,
+    /// The unit the user typed the sizes in; only used to word the cap messages.
+    pub display_unit: Option<DisplayUnit>,
+}
+
+/// The unit shown on screen (m or ft), so a cap message can name a size the way the user typed it.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayUnit {
+    pub symbol: DisplaySymbol,
+    /// Length of one display unit in the file's unit; `None` when the file's unit is unknown.
+    pub file_units_per_display_unit: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub enum DisplaySymbol {
+    #[serde(rename = "m")]
+    Meter,
+    #[serde(rename = "ft")]
+    Foot,
+}
+
+impl DisplaySymbol {
+    fn text(self) -> &'static str {
+        match self {
+            Self::Meter => "m",
+            Self::Foot => "ft",
+        }
+    }
+}
+
+/// How cap messages name a size: the scale between the file's unit and the shown unit.
+struct SizeWording {
+    /// File units per shown unit (1.0 when the file's unit is named instead).
+    scale: f64,
+    /// "m" / "ft", or `None` to say "点群ファイルの単位".
+    symbol: Option<&'static str>,
+}
+
+impl SizeWording {
+    fn new(display: Option<DisplayUnit>) -> Self {
+        match display {
+            Some(DisplayUnit {
+                symbol,
+                file_units_per_display_unit: Some(k),
+            }) if k.is_finite() && k > 0.0 => Self {
+                scale: k,
+                symbol: Some(symbol.text()),
+            },
+            _ => Self {
+                scale: 1.0,
+                symbol: None,
+            },
+        }
+    }
+
+    /// A suggested minimum, already in the shown unit: "20 ft 以上", or "6（点群ファイルの単位）以上".
+    fn at_least(&self, shown: f64) -> String {
+        match self.symbol {
+            Some(symbol) => format!("{shown} {symbol} 以上"),
+            None => format!("{shown}（点群ファイルの単位）以上"),
+        }
+    }
+
+    /// The setting the user typed, given in the file's unit: "1.64 ft", or just "0.5" when the unit is not shown.
+    fn setting_text(&self, file_value: f64) -> String {
+        let Some(symbol) = self.symbol else {
+            return file_value.to_string();
+        };
+        let v = file_value / self.scale;
+        // 4 significant digits hide the noise of the round trip (0.5 m -> ft -> 1.6404199...).
+        let shown = if v.is_finite() && v != 0.0 {
+            let exp = v.abs().log10().floor() as i32 - 3;
+            with_exponent((v / 10f64.powi(exp)).round(), exp)
+        } else {
+            v
+        };
+        format!("{shown} {symbol}")
+    }
 }
 
 /// What the frontend sends (JSON). Lengths are in the file's unit; the CSF values come from the presets of
@@ -110,6 +188,9 @@ pub struct DtmRequest {
     pub csf: CsfParamsInput,
     pub cell_size: f64,
     pub output: DtmOutputOptions,
+    /// The unit shown on screen; absent in old requests (the cap messages then say "点群ファイルの単位").
+    #[serde(default)]
+    pub display_unit: Option<DisplayUnit>,
 }
 
 /// Which files to make (the setting "DTM の出力形式", owner's answer Q18).
@@ -144,6 +225,7 @@ impl DtmRequest {
             cell_size: self.cell_size,
             max_particles,
             max_cells,
+            display_unit: self.display_unit,
         }
     }
 
@@ -272,11 +354,18 @@ pub struct DtmJob {
     points_per_advance: u64,
 }
 
+/// `digits` * 10^`exp` as the double nearest to that decimal (7.1, not 71 * 0.1 = 7.1000000000000005).
+fn with_exponent(digits: f64, exp: i32) -> f64 {
+    format!("{digits}e{exp}")
+        .parse()
+        .unwrap_or(digits * 10f64.powi(exp))
+}
+
 /// Rounds up to 2 significant digits (0.137 -> 0.14, 12.01 -> 13).
 fn round_up_2_digits(x: f64) -> f64 {
-    let step = 10f64.powf(x.log10().floor() - 1.0);
+    let exp = x.log10().floor() as i32 - 1;
     // The small slack keeps a value that is already round (0.3 / 0.01 = 30.000000000000004) as it is.
-    (x / step - 1e-9).ceil() * step
+    with_exponent((x / 10f64.powi(exp) - 1e-9).ceil(), exp)
 }
 
 /// The smallest size, rounded up to 2 digits, for which `fits` holds. `start` is a guess from
@@ -317,12 +406,15 @@ impl DtmJob {
                 max_cells,
             }) => {
                 // The raster tool's text talks about "ラスタ"; say it is the DTM cell size instead.
-                let start = (width * height / max_cells as f64).sqrt();
-                let text = match smallest_fitting(start, |c| grid_for(c).is_ok()) {
+                // The size is searched in the shown unit; it is converted back only for the real check.
+                let w = SizeWording::new(params.display_unit);
+                let start = (width * height / max_cells as f64).sqrt() / w.scale;
+                let text = match smallest_fitting(start, |c| grid_for(c * w.scale).is_ok()) {
                     Some(min) => format!(
                         "DTM の範囲が大きすぎます（{cols:.0} 列 × {rows:.0} 行、上限は {max_cells} セル）。\
-                         DTM のセルの大きさを {min}（点群ファイルの単位）以上にするか、\
-                         先にカットで範囲を切り出してください"
+                         DTM のセルの大きさを {}にするか、\
+                         先にカットで範囲を切り出してください",
+                        w.at_least(min)
                     ),
                     None => format!(
                         "DTM の範囲が大きすぎます（{cols:.0} 列 × {rows:.0} 行、上限は {max_cells} セル）。\
@@ -351,12 +443,16 @@ impl DtmJob {
         let cloth = match cloth_for(res) {
             Ok(cloth) => cloth,
             Err(_) => {
+                let w = SizeWording::new(params.display_unit);
                 let start = (width * height / params.max_particles as f64).sqrt();
-                let text = match smallest_fitting(start.max(res), |r| cloth_for(r).is_ok()) {
+                let start = start.max(res) / w.scale;
+                let text = match smallest_fitting(start, |r| cloth_for(r * w.scale).is_ok()) {
                     Some(min) => format!(
-                        "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max} 個を超えます。\
-                         布の解像度を {min}（点群ファイルの単位）以上にするか、\
-                         先にカットで範囲を切り出してください"
+                        "DTM の布（CSF の解像度 {}）の粒子数が上限の {max} 個を超えます。\
+                         布の解像度を {}にするか、\
+                         先にカットで範囲を切り出してください",
+                        w.setting_text(res),
+                        w.at_least(min)
                     ),
                     None => format!(
                         "DTM の布（CSF の解像度 {res}）の粒子数が上限の {max} 個を超えます。\

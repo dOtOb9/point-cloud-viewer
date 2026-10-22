@@ -50,6 +50,20 @@ describe("dtmRequestFor", () => {
     expect(request.csf).toEqual(CSF_PRESETS_METRES.standard);
     expect(request.cellSize).toBe(0.5);
     expect(request.output).toEqual({ geotiff: true, landxml: false, tiff: "colored", unit: "meter" });
+    expect(request.displayUnit).toEqual({ symbol: "m", fileUnitsPerDisplayUnit: 1 });
+  });
+
+  it("names the display unit: feet on screen over metre files is 0.3048 file units per ft", () => {
+    const { request } = dtmRequestFor({ csf: csfPresetInDisplay("standard", "foot"), cellSize: 2 }, { ...METRES, display: "foot" }, OUTPUT);
+    expect(request.displayUnit.symbol).toBe("ft");
+    expect(request.displayUnit.fileUnitsPerDisplayUnit).toBeCloseTo(INTERNATIONAL_FOOT_IN_METERS, 12);
+  });
+
+  it("metres on screen over foot files is 1 / 0.3048 file units per m", () => {
+    const feetFile: LengthUnits = { horizontalToMeter: INTERNATIONAL_FOOT_IN_METERS, verticalToMeter: INTERNATIONAL_FOOT_IN_METERS, display: "meter" };
+    const { request } = dtmRequestFor({ csf: csfPresetInDisplay("standard", "meter"), cellSize: 1 }, feetFile, OUTPUT);
+    expect(request.displayUnit.symbol).toBe("m");
+    expect(request.displayUnit.fileUnitsPerDisplayUnit).toBeCloseTo(1 / INTERNATIONAL_FOOT_IN_METERS, 9);
   });
 
   it("converts through the display unit to the file's unit (feet files shown in metres)", () => {
@@ -81,6 +95,7 @@ describe("dtmRequestFor", () => {
     expect(request.cellSize).toBe(0.5);
     expect(request.csf.clothResolution).toBe(0.5);
     expect(request.output.unit).toBe("unknown");
+    expect(request.displayUnit).toEqual({ symbol: "m", fileUnitsPerDisplayUnit: null });
   });
 });
 

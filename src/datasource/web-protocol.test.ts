@@ -233,6 +233,7 @@ describe("点群ツールのリクエスト(L2-C)", () => {
       csf: { clothResolution: 0.5, rigidness: 3, timeStep: 0.65, classThresholdUpper: 0.1, classThresholdLower: 1, iterations: 500, slopeSmooth: true, hdiff: 0.3, convergenceThreshold: 0.005 },
       cellSize: 0.5,
       output: { geotiff: true, landxml: true, tiff: "colored", unit: "meter" },
+      displayUnit: { symbol: "m", fileUnitsPerDisplayUnit: 1 },
     } as const;
     expect(buildDtmStartRequest(9, file, request, "DTM: a.copc.laz")).toEqual({ type: "dtmStart", id: 9, file, request, label: "DTM: a.copc.laz" });
   });

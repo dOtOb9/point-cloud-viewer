@@ -22,6 +22,14 @@ export interface DtmRequest {
   /** Side of a DTM cell. */
   cellSize: number;
   output: DtmOutputOptions;
+  /** The unit on screen, so the cap messages from Rust can name a size the way the user typed it. */
+  displayUnit: DtmDisplayUnit;
+}
+
+/** The unit shown on screen. "fileUnitsPerDisplayUnit" is null when the file's unit is unknown. */
+export interface DtmDisplayUnit {
+  symbol: "m" | "ft";
+  fileUnitsPerDisplayUnit: number | null;
 }
 
 /** One file the tool made: on disk in the temp folder (desktop) or a download (Web). */

@@ -440,6 +440,7 @@ mod tests {
                 tiff: TiffKind::Values,
                 unit: LandXmlUnit::Meter,
             },
+            display_unit: None,
         }
     }
 

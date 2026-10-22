@@ -52,6 +52,7 @@ fn main() -> Result<(), String> {
             tiff: TiffKind::Values,
             unit: LandXmlUnit::Meter,
         },
+        display_unit: None,
     };
     let outputs = DtmOutputs {
         copc: out_dir.join("dtm.copc.laz"),

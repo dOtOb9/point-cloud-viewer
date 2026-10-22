@@ -94,6 +94,10 @@ export function dtmRequestFor(
       csf: params,
       cellSize: displayLengthToFile(values.cellSize, units.horizontalToMeter, units.display),
       output: dtmOutputOptionsFor(output, units),
+      displayUnit: {
+        symbol: units.display === "foot" ? "ft" : "m",
+        fileUnitsPerDisplayUnit: units.horizontalToMeter === null ? null : displayLengthToFile(1, units.horizontalToMeter, units.display),
+      },
     },
     warning,
   };

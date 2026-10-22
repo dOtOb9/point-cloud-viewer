@@ -14,6 +14,7 @@ fn params(max_particles: u64, max_cells: u64) -> DtmParams {
         cell_size: 1.0,
         max_particles,
         max_cells,
+        display_unit: None,
     }
 }
 
@@ -314,6 +315,171 @@ fn suggested_cloth_resolution_fits_the_cap() {
     let mut p = params(1_000, 2_000_000);
     p.csf.cloth_resolution = size;
     assert!(DtmJob::new(&reader, None, &p).is_ok(), "{message}");
+}
+
+/// Parameters whose sizes the user typed in `symbol`, `k` file units per shown unit.
+fn params_shown_in(
+    max_particles: u64,
+    max_cells: u64,
+    symbol: DisplaySymbol,
+    k: Option<f64>,
+) -> DtmParams {
+    let mut p = params(max_particles, max_cells);
+    p.display_unit = Some(DisplayUnit {
+        symbol,
+        file_units_per_display_unit: k,
+    });
+    p
+}
+
+/// The number written just before `marker` in a message.
+fn number_before(message: &str, marker: &str) -> f64 {
+    let head = message.split(marker).next().expect("split");
+    let digits: String = head
+        .trim_end()
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    digits.parse().expect("a size in the message")
+}
+
+#[test]
+fn cell_message_in_feet_fits_when_converted_back() {
+    const FT: f64 = 0.3048; // the file is in metres, the screen in feet
+    let (points, _, _) = town(|_, _| 0.0);
+    let (_dir, reader) = open_reader(points, 5_000);
+    let p = params_shown_in(2_000_000, 100, DisplaySymbol::Foot, Some(FT));
+    let message = DtmJob::new(&reader, None, &p)
+        .err()
+        .expect("refused")
+        .to_string();
+    println!("{message}");
+    assert!(message.contains(" ft 以上"), "{message}");
+    assert!(!message.contains("点群ファイルの単位"), "{message}");
+    let shown = number_before(&message, " ft 以上");
+    // 60 m cannot be 10 x 10 cells of 1 m, so the answer is in feet and larger than 1 m = 3.28 ft.
+    assert!(shown > 3.2, "{message}");
+    let mut fits = p;
+    fits.cell_size = shown * FT;
+    assert!(DtmJob::new(&reader, None, &fits).is_ok(), "{message}");
+}
+
+#[test]
+fn cloth_message_in_feet_fits_when_converted_back() {
+    const FT: f64 = 0.3048;
+    let (points, _, _) = town(|_, _| 0.0);
+    let (_dir, reader) = open_reader(points, 5_000);
+    let p = params_shown_in(1_000, 2_000_000, DisplaySymbol::Foot, Some(FT));
+    let message = DtmJob::new(&reader, None, &p)
+        .err()
+        .expect("refused")
+        .to_string();
+    println!("{message}");
+    assert!(message.contains(" ft 以上"), "{message}");
+    // The setting is shown as typed: 0.5 m of CSF resolution is about 1.64 ft.
+    assert!(message.contains("CSF の解像度 1.64 ft"), "{message}");
+    let shown = number_before(&message, " ft 以上");
+    let mut fits = p;
+    fits.csf.cloth_resolution = shown * FT;
+    assert!(DtmJob::new(&reader, None, &fits).is_ok(), "{message}");
+}
+
+#[test]
+fn same_unit_gives_the_same_number_as_before() {
+    let (points, _, _) = town(|_, _| 0.0);
+    let (_dir, reader) = open_reader(points, 5_000);
+    let plain = DtmJob::new(&reader, None, &params(2_000_000, 100))
+        .err()
+        .expect("refused")
+        .to_string();
+    let metres = params_shown_in(2_000_000, 100, DisplaySymbol::Meter, Some(1.0));
+    let shown = DtmJob::new(&reader, None, &metres)
+        .err()
+        .expect("refused")
+        .to_string();
+    println!("{shown}");
+    assert!(shown.contains(" m 以上"), "{shown}");
+    assert_eq!(
+        number_before(&shown, " m 以上"),
+        number_before(&plain, "（点群ファイルの単位）")
+    );
+    // The cloth message keeps the number too.
+    let plain = DtmJob::new(&reader, None, &params(1_000, 2_000_000))
+        .err()
+        .expect("refused")
+        .to_string();
+    let metres = params_shown_in(1_000, 2_000_000, DisplaySymbol::Meter, Some(1.0));
+    let shown = DtmJob::new(&reader, None, &metres)
+        .err()
+        .expect("refused")
+        .to_string();
+    println!("{shown}");
+    assert_eq!(
+        number_before(&shown, " m 以上"),
+        number_before(&plain, "（点群ファイルの単位）")
+    );
+}
+
+#[test]
+fn unknown_file_unit_keeps_the_old_wording() {
+    let (points, _, _) = town(|_, _| 0.0);
+    let (_dir, reader) = open_reader(points, 5_000);
+    let old = DtmJob::new(&reader, None, &params(2_000_000, 100))
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(old.contains("（点群ファイルの単位）以上"), "{old}");
+    let unknown = params_shown_in(2_000_000, 100, DisplaySymbol::Foot, None);
+    let message = DtmJob::new(&reader, None, &unknown)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert_eq!(message, old);
+    let old = DtmJob::new(&reader, None, &params(1_000, 2_000_000))
+        .err()
+        .expect("refused")
+        .to_string();
+    let unknown = params_shown_in(1_000, 2_000_000, DisplaySymbol::Foot, None);
+    let message = DtmJob::new(&reader, None, &unknown)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert_eq!(message, old);
+    assert!(old.contains("CSF の解像度 0.5）"), "{old}");
+}
+
+#[test]
+fn a_request_without_a_display_unit_still_parses() {
+    let json = r#"{"csf":{"clothResolution":0.5,"rigidness":3,"timeStep":0.65,"classThresholdUpper":0.1,
+        "classThresholdLower":1.0,"iterations":500,"slopeSmooth":true,"hdiff":0.3,"convergenceThreshold":0.005},
+        "cellSize":1.0,"output":{"geotiff":true,"landxml":false}}"#;
+    let old: DtmRequest = serde_json::from_str(json).expect("old request");
+    assert_eq!(old.display_unit, None);
+    let with = json.replace(
+        r#""cellSize":1.0,"#,
+        r#""cellSize":1.0,"displayUnit":{"symbol":"ft","fileUnitsPerDisplayUnit":0.3048},"#,
+    );
+    let new: DtmRequest = serde_json::from_str(&with).expect("new request");
+    assert_eq!(
+        new.display_unit,
+        Some(DisplayUnit {
+            symbol: DisplaySymbol::Foot,
+            file_units_per_display_unit: Some(0.3048)
+        })
+    );
+    let unknown = json.replace(
+        r#""cellSize":1.0,"#,
+        r#""cellSize":1.0,"displayUnit":{"symbol":"m","fileUnitsPerDisplayUnit":null},"#,
+    );
+    let r: DtmRequest = serde_json::from_str(&unknown).expect("unknown unit");
+    assert_eq!(
+        r.display_unit.map(|d| d.file_units_per_display_unit),
+        Some(None)
+    );
 }
 
 #[test]

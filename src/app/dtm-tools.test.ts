@@ -25,6 +25,7 @@ const REQUEST: DtmRequest = {
   csf: CSF_PRESETS_METRES.standard,
   cellSize: 0.5,
   output: { geotiff: true, landxml: false, tiff: "colored", unit: "meter" },
+  displayUnit: { symbol: "m", fileUnitsPerDisplayUnit: 1 },
 };
 
 const INFO: DtmInfo = {
