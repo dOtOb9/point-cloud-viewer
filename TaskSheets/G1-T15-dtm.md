@@ -141,7 +141,7 @@ npm run typecheck -> エラーなし
 ```
 
 CI（push `ff56b82` のあと）: CI run **39649616826** = success（e2e・frontend・invariants・rust・build すべて）、Pages run **39649616728** = success。
-最後の push のあとの run id は、この文書の最後に書く。
+この文書と確認スクリプトを足した push（`2e1e354`）のあとも CI run **39652459194** = success、Pages run **39652459244** = success。
 
 主なテスト（受け入れ基準との対応）:
 
