@@ -16,6 +16,7 @@
   - [レイヤー操作](./flows/layers.md)
   - [計測](./flows/measure.md)
   - [カット・断面・合成・ラスタ化](./flows/point-cloud-tools.md)
+  - [DTM（地表の分類と地形のモデル）](./flows/dtm.md)
   - [エラーの流れ](./flows/errors.md)
   - [設定と単位](./flows/settings.md)
 - [Rust 側]()
