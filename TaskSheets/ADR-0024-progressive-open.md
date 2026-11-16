@@ -127,7 +127,7 @@ getLayerStats(layerId: string): { drawnPoints: number; drawnNodes: number; loadi
   テストで、世代つきのノードを混ぜた階層で、親子が切れず、二重に描かれないこと、新旧が同時にあるとき子が新しい世代につながること、`hierarchyByKey` から両方引けることを確かめる
 - **点滅させない（F-12 の 1）**: 新しい世代のキーはまだ GPU に無いので、古いキーをすぐ捨てると、そのセルが空になり、さらに AN-1 のフェードイン（`firstDrawnAtMs === null` から 250 ms のディザ、`animation.ts` の `nodeFadeFactor`）で 0 から出直す。
   2 回/秒の差し替えごとに下見が点滅する。そのため:
-  1. 階層には、古いキーと新しいキーを**両方**入れて渡す（`replacements` で対にする）。古いキーは、新しいキーの GPU バッファが `NodeCache` に入るまで**描き続ける**（ノード選択は「後継が `NodeCache` にあれば古いほうを選ばない」）
+  1. 階層には、古いキーと新しいキーを**両方**入れて渡す（`replacements` で対にする）。古いキーは、新しいキーの GPU バッファが `NodeCache` に入るまで**描き続ける**（古いキーを外すのは、後継が載った時点で階層から外す側だけで足りる。選択側に「後継があれば古いほうを選ばない」という特別扱いは足さない。監査 F-23）
   2. 後継のノードが載るとき（`handleNodeLoaded`）、古いキーの `firstDrawnAtMs` を**引き継ぐ**（0 からのフェードにしない）。そのあとで古いキーを `NodeCache.remove(key)`（頂点・uniform のバッファを `destroy`、`totalPoints` を減らす）で捨て、階層からも外す
   3. 後継がなかなか載らない（読み込みが失敗した）ときは、古いキーを残したまま（見えなくならない）
 - `replaceLayerHierarchy` がすること:
