@@ -63,6 +63,7 @@ function layerRules(patterns, extraSyntax = []) {
     const re = selectorRegex(regex);
     syntax.push({ selector: `ImportExpression[source.value=/${re}/]`, message });
     syntax.push({ selector: `TSImportType[argument.literal.value=/${re}/]`, message });
+    syntax.push({ selector: `CallExpression[callee.name="require"][arguments.0.value=/${re}/]`, message });
   }
   return {
     "no-restricted-imports": ["error", { patterns: patterns.map((p) => ({ ...p, caseSensitive: true })) }],
