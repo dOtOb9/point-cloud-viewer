@@ -23,7 +23,7 @@ import { useViewShortcuts } from "../toolbar/useViewShortcuts"; // TP-1
 import { viewContext } from "../../app/view";
 import { openRasterWindow } from "../../app/raster-window";
 import { useRasterWindow } from "../../state/useRasterWindow";
-import { selectedPointCloudLayer } from "../toolbar/toolbar-state";
+import { hasPointCloud, selectedPointCloudLayer } from "../toolbar/toolbar-state";
 import { ToolProgressDialog } from "../tools/ToolProgressDialog";
 import { ViewerPanel } from "./ViewerPanel";
 import { ConversionDialog } from "../dialogs/ConversionDialog";
@@ -69,7 +69,8 @@ export function AppShell() {
   // G1-T15: whether the DTM dialog is open.
   const [dtmDialogOpen, setDtmDialogOpen] = useState(false);
   // TP-1: the view keys (F, 1 to 7) work on the whole window while a point cloud is open.
-  useViewShortcuts(viewContext, viewer.layers.length > 0);
+  // Measurement layers alone are not a point cloud: the view keys do nothing then (TP-1 audit F-10).
+  useViewShortcuts(viewContext, hasPointCloud(viewer));
   // TP-1: whether the view dialog is open.
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   // G1: the Rasterize window (state in the hook, steps in src/app/raster-window.ts).
