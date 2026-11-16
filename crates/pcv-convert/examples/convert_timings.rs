@@ -9,7 +9,6 @@
 //! The timeline shows when 1% / 10% / 50% / 100% of the points had been read. That is the time
 //! before which a "preview from the points read so far" (ADR-0024 option a) cannot show them.
 //! Peak memory and disk use are measured from outside (PowerShell), as in the other benches.
-#![allow(clippy::disallowed_methods)]
 
 use std::fs::File;
 use std::io::BufReader;
