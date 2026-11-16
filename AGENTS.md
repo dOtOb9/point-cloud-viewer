@@ -64,13 +64,20 @@
   - `npm run lint`
   - `npx vitest run`（**Windows では `C:\` の大文字のドライブ名から実行する。** `c:\` から実行すると vitest が全ファイル `Cannot read properties of undefined (reading 'config')` で落ちる）
   - Rust を触ったら `cargo test -p <触ったクレート>` と `cargo clippy -p <触ったクレート> -- -D warnings`。`pcv-core`・`pcv-wasm` を触ったら `npm run build:wasm` で wasm を作り直す
+- **タスクシートのコーディネーターの部分（目的・受け入れ基準・見出し・「記録」より前の文）は変えない。** 書いてよいのは記録（見出しに「記録」を含む節。「## 記録」も、節の中に足す「### 実装の記録 R1」も）の中だけ（PF-0 R2 で、作業エージェントが AC を書き換え、節を消した）。
+  終わる前に `node scripts/check-task-sheet.mjs <ループ開始前のコミット>` を実行して、出力を作業報告に貼る（`scripts/check-task-sheet.test.mjs` がテスト。監査役も同じコマンドを実行し直す）。
+  <ループ開始前のコミット> は base。コーディネーターがループの途中で AC を直したら、その直し以降のコミットを base にする
+- **設計（ADR）は、前提にするコードを読んでから書く。** `TaskSheets/ADR-TEMPLATE.md` の形で、「依存するコードの確認」（`path:line`・識別子・読んで確かめたこと、3 行以上）・「数えた物」・「整合の確認」を必ず埋める。
+  「〜は変えずに済む」「N 個ある」と書く前に、そのコードを開き、数えたコマンドと出力を載せる。`npm run check:docs` の `scripts/check-adr.mjs` が参照の実在を検査する（CI でも走る。下の「文書に書く事実」と同じ考えで、ADR はその厳しい形）
+- 計測は `scripts/bench/` の道具を使う（`run-native.ps1`・`sampler.ps1`。CSV は桁区切り無し）。CSV は `node scripts/bench/summarize-samples.mjs` で読む（列の数が合わない行は、黙って捨てずにエラーになる）。表に書く数値は、この出力か、測定ツール自身の出力から写す
 - 1コミット1関心事。コミットはローカルだけ（push はコーディネーターが所有者の了承を得てから）
 - 指摘を直すときは、指摘の ID ごとに「何を直したか／直さなかったならその理由」を作業報告に書く
 - **検査（lint・CI・スクリプト）を別の仕組みに置き換えるときは、前の検査が捕まえていた形を全部書き出し、新しい検査が全部捕まえることをテストで固定する**
   （RF-1 で grep を ESLint に置き換えたとき、動的 `import()` などが抜けた）。置き換える前の検査の誤りを一時的に再現して、新しい検査が落ちることも確かめ、作業報告に書く。
   例: `src/layer-rules.test.ts` の「everything the old CI greps caught is still caught」
 - **文書に書く事実（ある・ない、何をする、版、数）は、書く前に該当のコードを開くか、コマンドを実行して確かめる。** 他の文書（REVIEW など）や記憶から写さない。
-  確かめ方（開いたファイル・実行したコマンド）を作業報告に書く。パスと `](./…)` 形の相対リンクが存在することは、`TaskSheets/ARCHITECTURE.md`・`TaskSheets/ROADMAP.md`・`CLAUDE.md` に限り `npm run check:docs`（CI の `frontend` ジョブ。対象は `scripts/check-doc-paths.mjs` の `DOCS`）が見る。他の文書と、それ以外の事実は機械で見られない
+  確かめ方（開いたファイル・実行したコマンド）を作業報告に書く。パスと `](./…)` 形の相対リンクが存在することは、`TaskSheets/ARCHITECTURE.md`・`TaskSheets/ROADMAP.md`・`CLAUDE.md` に限り `npm run check:docs`（CI の `frontend` ジョブ。`scripts/check-doc-paths.mjs` の `DOCS` が対象）が見る。
+  新しい ADR（番号 24 以上）は、同じ `npm run check:docs` の `scripts/check-adr.mjs` が、依存するコードの参照（ファイル・行・識別子）の実在まで見る（上の「設計（ADR）は、前提にするコードを読んでから書く」）。それ以外の文書と事実は機械で見られない
 - **UI を足す・変えたら、画面を撮って自分の目で見る。** `node scripts/ui-shots.mjs --file <点群> --out <dir> --steps <data-testid,...>` が幅 375px と 1280px で
   操作の前後を撮る（先に `npx vite --port <空き> --strictPort` を自分で起動し、終わったら自分のものだけ止める）。ダイアログ・パネルが、押した結果（点群）を隠していないかを見る。
   見た画像のパスと所見を作業報告に書く（撮れない環境なら「未確認」。TP-1 の F-1 の再発防止）
@@ -100,7 +107,7 @@
 
 1. タスクシートの受け入れ基準と、作業報告を読む
 2. `git log` と `git diff <ループ開始前のコミット>..HEAD` で差分を**全部**読む
-3. 作業報告のコマンドを自分で実行し直す（typecheck・lint・vitest、Rust を触っていれば cargo test/clippy）
+3. 作業報告のコマンドを自分で実行し直す（typecheck・lint・vitest、Rust を触っていれば cargo test/clippy、タスクシートを触っていれば `node scripts/check-task-sheet.mjs <ループ開始前のコミット>`、ADR を触っていれば `npm run check:docs` を実行し、さらに ADR の「依存するコードの確認」の「前提」の欄を、挙げられた箇所のコードと照らして読む。スクリプトは参照が実在することしか見ない）
 4. 次の観点で見る
    - **受け入れ基準**: 1つずつ、満たしているかをコードとテストで確かめる
    - **正しさ**: 境界（空のレイヤー、点0個、単位が ft、CRS 無し、上方向が Y のデータ）、数値（f32 の桁落ち、大きな世界座標）、非同期（レイヤーを消した後に結果が届く）
