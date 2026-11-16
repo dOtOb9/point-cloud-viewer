@@ -14,7 +14,7 @@
 
 ---
 
-## TP-1（2026-11-16、監査: R2 で APPROVE、再発防止: 未承認）
+## TP-1（2026-11-16、監査: R2 で APPROVE、再発防止: R3 で APPROVE 2026-11-16）
 
 | 指摘 | 重さ | 根本原因 | 防ぐ仕組み（種類: テスト / lint / CI / スクリプト / 決まり / 注意） | 置いた場所・コミット |
 |---|---|---|---|---|
@@ -29,7 +29,7 @@
 | F-9 ツールチップにキー6・7が無い、レイヤーが無いのに 5 が効く、平行で新規レイヤーの距離が透視のまま | nit | ショートカット表（`VIEW_SHORTCUTS`）と表示（ツールチップ）が別々に書かれていた | 仕組みにしない（R2 で直した。ツールチップを表から生成するほどの数ではない。キーが増えるタスクで再検討） | — |
 | F-10 点群のレイヤーを消して計測レイヤーだけが残ると、「視点」ボタンはグレーアウトするのに 5 キーで投影が切り替わった（AppShell が `viewer.layers.length > 0` で有効を判定） | nit | 「視点が使える条件」をボタン（`hasPointCloud`）とショートカット（`layers.length > 0`）で別々に書いた。計測レイヤーもレイヤーに数えられることを見落とした | テスト（振る舞い）: 有効の判定を `src/app/view.ts` の `ViewContext.pointCloud`（ストア）に持たせ、`runViewAction`・`showViewPreset`・`fitAllView`・`setProjection` が、点群が無いとき何もしないようにした。`view.test.ts` が「計測レイヤーだけ（pointCloud = false）」のとき投影も視点も変わらないことを確かめる。点群があるかを決める式も `src/app/view.ts` の `hasPointCloudLayer` / `syncViewEnabled` に置き（ボタンの `hasPointCloud` も同じ関数）、`useViewShortcuts.test.tsx`（jsdom）が「計測レイヤーだけ → 5 で変わらない／点群あり → 変わる／レイヤーを消すと止まる」を通す。元の誤りを一時的に戻して確かめた: ①フックの同期呼び出しを消す → 2 件落ちる、②判定を `layers.length > 0` に戻す → view.test.ts と useViewShortcuts.test.tsx で各 2 件落ちる（AppShell が `viewer.layers` 以外を渡す誤りは、AppShell を描く手段が無いので検査していない）（R1 の文字列検査は、`hasPointCloud(` が別の形で書かれても通るので、監査 RP R1 の F-RP-2 で消した） | `hasPointCloud(viewer)` に統一（012c6db）、`src/app/view.ts`・`src/app/view.test.ts`・`src/ui/toolbar/useViewShortcuts.ts` |
 
-## RF-0/1/15（2026-11-16、監査: R2 で APPROVE、再発防止: 未承認）
+## RF-0/1/15（2026-11-16、監査: R2 で APPROVE、再発防止: R2 で APPROVE 2026-11-16）
 
 根本原因は 2 つにまとまる。(A) **検査を別の仕組みに置き換えたとき、前の検査が捕まえていた物を全部捕まえるかを確かめなかった**（F-1・F-2・F-3・F-5・F-6）。
 置き換えの受け入れ基準を「新しいルールが、わざとの違反で落ちる」（RF-1 の AC-2）としか書かず、「前の検査が落とした物で落ちなくなる物が無い」を持っていなかった。
