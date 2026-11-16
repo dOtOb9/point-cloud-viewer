@@ -74,7 +74,7 @@ export function ViewDialog({
         ))}
       </div>
       <fieldset className="flex flex-row gap-2 md:flex-col md:gap-1" data-testid="view-projection">
-        <legend className="mb-1 text-xs opacity-70">投影（5 キーで切り替え）</legend>
+        <legend className="sr-only mb-1 text-xs opacity-70 md:not-sr-only">投影（5 キーで切り替え）</legend>
         {PROJECTIONS.map((mode) => (
           <label
             key={mode}

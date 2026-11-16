@@ -125,6 +125,26 @@ Web 版（`npm run dev`）で `autzen-classified.copc.laz` を開き、各定位
 ②「平行投影」にして、ホイール・ドラッグ・ダブルクリックを試す。透視に戻した瞬間と大きさが変わらないこと。③同じ2点を透視・平行・上・正面で計測し、値が一致すること。
 ④EDL とグリッドが点群と合っていること。⑤幅 375px（ブラウザの開発者ツール）でダイアログとステータスバーを見る。
 
+### 実装の記録 R2（監査 R1 の指摘への対応、2026-11-16）
+
+- F-1: `Dialog` の `placement="side"` を狭い幅で縮めた（高さ 45vh まで、余白を小さく、投影の説明・キー表記・案内文は md 未満で隠す、全体＋6定位置は4列の格子、投影は横並び）。
+  撮り直したスクリーンショット（Playwright、`r3w375-5-iso-ortho.png`、375×740）で、ダイアログは y≈380〜685（画面の約41%）で、上の約半分に点群が見えることを目で確かめた。幅 1280 も見た（`r3w1280-5-iso-ortho.png`）。タッチ操作は未確認。
+- F-2: カーソルズームの式を `projection.ts` の `orthoCursorZoomDirection` に出した（renderer は呼ぶだけ）。「zoom の前後でカーソルの下のワールド点が同じ画素に残る」テストを置いた
+  （4つの倍率 × 3つのカーソル位置）。R1 の記録の「確かめた」はテストが無い状態での表現だったので、R2 のテストで裏付けた。
+- F-3: 平行のカーソルズームから視線方向の成分を外した（横のずれだけ返す）。`orthoDepthRange` に「注視点からシーン中心までの距離」を足した。
+  「20倍に引く→180°回す→0.05倍に寄る」の後もシーンの箱の全頂点が [near, far] に入るテストを置いた。
+- F-4: 状態の正を `src/app/view.ts` のストア（`src/app/store.ts` の `{ get, set, subscribe }`）に移した。投影モードの正はストア1つで、ステータスバー・ダイアログは `useStore`（`useSyncExternalStore`）で読み、
+  `setProjection` が renderer に伝える（一方向。`RenderStats.projectionMode` は削除）。renderer へは ref の箱ではなくストア（`attachViewRenderer` / `detachViewRenderer`、`useRendererLifecycle` が呼ぶ）。
+  `useDisplaySettings` の `useState`・`viewer.viewContext` は消した。ストアは TEA（ADR-0022）へ後で移す前提で、この回は今の形のまま。
+- F-5: `src/app/typing-target.ts` の `isTypingTarget`（INPUT/TEXTAREA/SELECT/contenteditable）に4か所を統一（view.ts・useMeasureTool・useLayerTool・layer-delete-key）。
+  計測・選択ツールも select にフォーカス中は Enter/Esc に反応しなくなる（挙動の変更）。
+- F-6: ショートカットを AppShell に1回だけ付けた（`useViewShortcuts(viewContext, 点群があるか)`）。ctx がアプリで1つなのでリスナーは付け直されない。
+- F-7: 投影の行は `whitespace-nowrap`。F-8: テスト名と `fitDistance` のコメントを直した（平行は 0.866 倍）。
+- F-9: ツールチップに 6・7 を追加。点群が無いときはキーを無効にした（5 で黙って切り替わらない）。レイヤーを足す／移るときも、平行なら平行用の距離（`focusGoal`）を使う。
+
+確かめたこと: typecheck / lint エラー無し、`npx vitest run`（`C:\` から）88 files 890 tests passed。スクリーンショットは自分で起動した vite（ポート 5297）で撮り、終わったら自分の vite だけ止めた。
+未確認: 実機の GPU 差、タッチ操作、EDL・グリッドの見た目の細部（R1 と同じ）。
+
 ---
 
 ## TP-2 表示範囲

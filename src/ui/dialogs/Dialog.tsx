@@ -151,16 +151,16 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
         onKeyDown={onKeyDown}
         className={`flex ${placement === "side" ? "max-h-[45vh] md:max-h-[85vh]" : "max-h-[85vh]"} w-full ${fitContent ? "md:w-fit" : ""} ${widthClass} flex-col overflow-hidden rounded-2xl ${glassSurfaceClass(blurEnabled)} border-t-[3px] ${ACCENT_BORDER[accent]} shadow-2xl outline-none`}
       >
-        <div className={`px-4 py-3 text-center ${headerTone}`}>
+        <div className={`px-4 ${placement === "side" ? "py-2 md:py-3" : "py-3"} text-center ${headerTone}`}>
           <h2 id={titleId} className="text-base font-semibold">
             {title}
           </h2>
         </div>
-        <div data-dialog-body className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+        <div data-dialog-body className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${placement === "side" ? "gap-2 p-3 md:gap-4 md:p-4" : "gap-4 p-4"}`}>
           {children}
         </div>
         {footer && (
-          <div className="flex flex-wrap items-center justify-center gap-2 border-t border-black/10 px-4 py-3 dark:border-white/10">{footer}</div>
+          <div className={`flex flex-wrap items-center justify-center gap-2 border-t border-black/10 px-4 ${placement === "side" ? "py-2 md:py-3" : "py-3"} dark:border-white/10`}>{footer}</div>
         )}
       </div>
     </div>
