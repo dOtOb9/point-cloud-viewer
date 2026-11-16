@@ -32,6 +32,40 @@
 3. 画面が 1 度に描く点は 100〜200 万点で足りている。**下見として全点を持つ必要は無く、数百万点で十分**
 4. メモリは今も余裕がある側にある: 変換のピークはネイティブ 309〜492 MiB（1 枚は回によって約 370〜480 MiB）、レンダラのキャッシュ予算は 1 GiB（デスクトップ）。Web は変換中に 1.7 GiB（10 枚）まで増える
 
+## 依存するコードの確認
+
+この ADR が前提にしているコードを、読んで確かめたもの（`npm run check:docs` が、ファイル・行・識別子の近さを検査する）。PF-0 の R1〜R4 の指摘は、ほとんどがここに挙げる箇所を読まずに書いたことから出た。
+
+| 場所 | 識別子 | この ADR の前提（読んで確かめたこと） |
+|---|---|---|
+| `src/renderer/node-selection.ts:35` | `parentKey` | キーを `split("-")` して 4 つの整数として読む。他の形は `null`（世代つきのキーを混ぜると親子が切れる。`positionKey` が要る理由） |
+| `src/renderer/node-selection.ts:56` | `treeOf` | 階層ごとに 1 回、位置のキー → 配列の添字（`indexByKey`）で木を作る。重複したキーは後のものが勝つ。先祖の無いノードは roots |
+| `src/renderer/node-selection.ts:168` | `selectNodesForLayers` | 全レイヤーの候補を **1 つの点予算**で選ぶ（c + p ≤ B。切り替えの条件と下見の上限 B/2 の理由）。候補のキーは `keyPrefix + node.key` |
+| `src/renderer/point-cloud-renderer.ts:530` | `addLayer` | `LayerInput.hierarchy` を一度だけ `Layer` に写す。あとから変える口が無い（階層の差し替えの口が要る理由） |
+| `src/renderer/point-cloud-renderer.ts:538` | `hierarchyByKey` | `n.key` を索引にした Map。`key` が重複すると片方が消える（新旧の世代は `key` を変える理由） |
+| `src/renderer/point-cloud-renderer.ts:730` | `readLayerNode` | `"<通し番号>:<ノードキー>"` からレイヤーの `readNode` を引く。`readNode` の引数はノードキーそのもの |
+| `src/renderer/point-cloud-renderer.ts:1041` | `handleNodeLoaded` | 通し番号で消えたレイヤーかどうかだけを見て捨てる。階層に無いキーを捨てる確認は今は無い（足す確認） |
+| `src/renderer/point-cloud-renderer.ts:1174` | `updateStats` | 統計は全レイヤーの合計だけ。レイヤーごとの値は無い（`getLayerStats` を足す理由） |
+| `src/renderer/node-cache.ts:69` | `removeByPrefix` | キーを指定してバッファを捨てる口は無い（レイヤーを消すときだけ）。`NodeCache.remove` を足す理由 |
+| `src/renderer/animation.ts:30` | `nodeFadeFactor` | まだ描いていないノード（`firstDrawnAtMs === null`）は 0 から始まる。後継が前の世代の値を引き継がないと点滅する |
+| `src/renderer/device-profile.ts:90` | `DESKTOP_POINT_CACHE_MEMORY_BUDGET_BYTES` | デスクトップのキャッシュ予算は 1 GiB（`pointBudgetMax` 約 2,684 万点の元） |
+| `crates/pcv-convert/src/streaming.rs:270` | `convert_and_timings` | 単一 LAS/LAZ の入口。進捗は件数だけを渡す |
+| `crates/pcv-convert/src/merge.rs:506` | `merge_paths_and_timings` | 複数 LAS の入口（別の読み手） |
+| `vendor/copc-writer/src/writer.rs:759` | `memory_budget_bytes` | 変換のメモリ内予算は開始時の値を一度だけ割って使う。途中では変えられない |
+
+## 数えた物
+
+- 変換の入口（デスクトップ）: `grep -rn "pub fn convert_and_timings|pub fn merge_paths_and_timings|pub fn convert_paths_to_copc_and_timings|pub fn convert_to_copc_and_timings" crates/pcv-convert/src` の結果は 4 行（`import/merge.rs:75`、`import/mod.rs:156`、`merge.rs:506`、`streaming.rs:270`）。Web は `crates/pcv-wasm` の別の読み手で 1 系統（`convert.rs` の `finish` など）。計 5 つ
+- 点予算を使う者: `selectNodesForLayers` の呼び出しは `point-cloud-renderer.ts` の 1 か所（全レイヤーで 1 つの予算）。レイヤーごとの予算は無い
+
+## 整合の確認
+
+- ADR-0018（レイヤーから新しいレイヤーを作る）: 下見は一部の点なので元になれない。ツールはグレーアウトする（「ADR-0022/0023 との整合」）
+- ADR-0021（React は表示だけ）: 下見の手順（ためる・差し替える・切り替える）は `src/app/` の関数と Effect にあり、React は状態を読むだけ
+- ADR-0022（TEA）: Model・Msg・Effect を「状態の流れ」に書いた。`previewGrew` は間引いて dispatch する
+- ADR-0023（プラグイン）: `layers.addProvisional` が `ProvisionalLayerHandle` を返す。下見は「開く」の中核で、プラグインにしない
+- ADR-0019（変換）: 触れない。ADR-0006・0012・0020: 変換の入口は変えず、読み込みの出口にコールバックを足すだけ
+
 ## 決定（提案）
 
 **案 (a) を採る。** 変換と並行して、読み込んだ点から一様に間引いた「下見の点」を持ち、仮のレイヤーとして描く。変換が終わって COPC のレイヤーが描けたら、下見を捨てる。

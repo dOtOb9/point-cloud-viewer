@@ -22,6 +22,8 @@ jobs:
       - run: npm run lint
       # No import cycles in src/ (type-only imports count). RF-1.
       - run: npm run check:circular
+      # New ADRs (>= 0024) must name the code they depend on and the references must be real (TaskSheets/ADR-TEMPLATE.md).
+      - run: npm run check:docs
       - run: npm run test
 
   # ARCHITECTURE.md の規約1・2・3・5をCIで機械的に守らせる（規約4は検査の対象外）。
