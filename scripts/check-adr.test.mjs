@@ -42,8 +42,29 @@ describe("check-adr", () => {
   it("rejects generic short names and an empty premise (the loophole found in review)", () => {
     const rows = "| `src/x.ts:3` | `key` | x |\n| `src/x.ts:3` | `if` | x |\n| `src/x.ts:3` | `a` | x |\n| `src/x.ts:3` | `parentKey` |  |";
     const problems = checkAdr(adr(rows), fs);
-    expect(problems.filter((p) => /too generic/.test(p))).toHaveLength(3);
+    expect(problems.filter((p) => /keyword or a generic word/.test(p))).toHaveLength(1); // key
+    expect(problems.filter((p) => /shorter than 3/.test(p))).toHaveLength(2); // if, a
     expect(problems.some((p) => /premise cell/.test(p))).toBe(true);
+  });
+
+  it("rejects language keywords and library words even in a proposal (the loophole found in review)", () => {
+    const rows = [
+      "| `src/x.ts:3` | `private` | a keyword proves nothing |",
+      "| `src/x.ts:3` | `Promise` | a built-in proves nothing |",
+      "| `src/x.ts:3` | `interface` | a keyword proves nothing |",
+    ].join("\n");
+    const problems = checkAdr(adr(rows, "提案"), fs);
+    expect(problems.filter((p) => /keyword or a generic word/.test(p))).toHaveLength(3);
+  });
+
+  it("requires the symbol to be declared or defined in the file, not only mentioned", () => {
+    // `filler` appears in every comment line of the file but is never declared.
+    const rows = [
+      "| `src/x.ts:3` | `filler` | only mentioned in comments |",
+      "| `src/x.ts:5` | `indexByKey` | builds the index by key |",
+      "| `src/x.ts:3` | `parentKey` | returns null for others |",
+    ].join("\n");
+    expect(checkAdr(adr(rows, "提案"), fs).some((p) => /never declared or defined/.test(p))).toBe(true);
   });
 
   it("matches whole words only", () => {
