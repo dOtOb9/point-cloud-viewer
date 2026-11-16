@@ -73,3 +73,13 @@ describe("typing target", () => {
     expect(offenders, "use isTypingTarget() from src/app/typing-target.ts").toEqual([]);
   });
 });
+
+describe("view enabled condition", () => {
+  it("the view button and the view keys decide 'enabled' with the same function, hasPointCloud()", () => {
+    // They once differed: the button used hasPointCloud, the keys used layers.length > 0 (TP-1 F-10).
+    for (const path of ["src/ui/toolbar/buttons/ViewButton.tsx", "src/ui/shell/AppShell.tsx"]) {
+      const text = FILES.find(([p]) => p === path)?.[1] ?? "";
+      expect(text, path).toContain("hasPointCloud(");
+    }
+  });
+});
