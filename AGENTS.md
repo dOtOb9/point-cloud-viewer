@@ -70,7 +70,7 @@
   （RF-1 で grep を ESLint に置き換えたとき、動的 `import()` などが抜けた）。置き換える前の検査の誤りを一時的に再現して、新しい検査が落ちることも確かめ、作業報告に書く。
   例: `src/layer-rules.test.ts` の「everything the old CI greps caught is still caught」
 - **文書に書く事実（ある・ない、何をする、版、数）は、書く前に該当のコードを開くか、コマンドを実行して確かめる。** 他の文書（REVIEW など）や記憶から写さない。
-  確かめ方（開いたファイル・実行したコマンド）を作業報告に書く。文書に書いたパスと相対リンクが存在することは `npm run check:docs`（CI の `frontend` ジョブ）が見る。それ以外の事実は機械で見られない
+  確かめ方（開いたファイル・実行したコマンド）を作業報告に書く。パスと `](./…)` 形の相対リンクが存在することは、`TaskSheets/ARCHITECTURE.md`・`TaskSheets/ROADMAP.md`・`CLAUDE.md` に限り `npm run check:docs`（CI の `frontend` ジョブ。対象は `scripts/check-doc-paths.mjs` の `DOCS`）が見る。他の文書と、それ以外の事実は機械で見られない
 - **UI を足す・変えたら、画面を撮って自分の目で見る。** `node scripts/ui-shots.mjs --file <点群> --out <dir> --steps <data-testid,...>` が幅 375px と 1280px で
   操作の前後を撮る（先に `npx vite --port <空き> --strictPort` を自分で起動し、終わったら自分のものだけ止める）。ダイアログ・パネルが、押した結果（点群）を隠していないかを見る。
   見た画像のパスと所見を作業報告に書く（撮れない環境なら「未確認」。TP-1 の F-1 の再発防止）
