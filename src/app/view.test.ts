@@ -4,15 +4,18 @@ import {
   createViewContext,
   detachViewRenderer,
   fitAllView,
+  hasPointCloudLayer,
   runViewAction,
   shortcutKeyOfPreset,
   showViewPreset,
+  syncViewEnabled,
   viewActionForKey,
   viewStatusText,
   VIEW_SHORTCUTS,
   type ViewContext,
 } from "./view";
 import { VIEW_PRESET_IDS } from "../renderer/view-presets";
+import type { ViewerLayer } from "../state/layers";
 
 function makeContext(opts: { attach?: boolean; mode?: "perspective" | "orthographic" } = {}) {
   const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
@@ -84,6 +87,23 @@ describe("view actions", () => {
     stop();
     runViewAction(ctx, { kind: "toggleProjection" });
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("hasPointCloudLayer / syncViewEnabled (the one rule for the button and the keys)", () => {
+  const point = { id: "a" } as unknown as ViewerLayer;
+  const measure = { id: "m", measurement: { kind: "distance" } } as unknown as ViewerLayer;
+  it("only measurement layers (or none) -> false; a point-cloud layer -> true", () => {
+    expect(hasPointCloudLayer([])).toBe(false);
+    expect(hasPointCloudLayer([measure])).toBe(false);
+    expect(hasPointCloudLayer([measure, point])).toBe(true);
+  });
+  it("syncViewEnabled puts the answer into the context", () => {
+    const ctx = createViewContext();
+    syncViewEnabled(ctx, [measure]);
+    expect(ctx.pointCloud.get()).toBe(false);
+    syncViewEnabled(ctx, [measure, point]);
+    expect(ctx.pointCloud.get()).toBe(true);
   });
 });
 

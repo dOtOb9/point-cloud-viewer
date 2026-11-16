@@ -38,17 +38,30 @@ const browser = await chromium.launch({ channel: "chromium", args: ["--enable-un
 try {
   for (const { width, height } of sizes) {
     const page = await browser.newPage({ viewport: { width, height }, hasTouch: width < 500, isMobile: width < 500 });
-    // Without WebGPU the app shows its "unsupported device" screen and the view button never enables (the wait below times out).
-    if (!(await page.evaluate(() => "gpu" in navigator))) console.warn(`${width}px: this browser has no WebGPU (navigator.gpu); the screenshots will not show the point cloud`);
     const errors = [];
     page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
     await page.goto(url, { waitUntil: "networkidle" });
+    // Checked on the loaded page (about:blank has no navigator.gpu). Without WebGPU the app shows its "unsupported device"
+    // screen and the view button never enables.
+    const hasWebGpu = await page.evaluate(() => "gpu" in navigator);
+    if (!hasWebGpu) console.warn(`${width}px: this browser has no WebGPU (navigator.gpu); the screenshots will not show the point cloud`);
     const chooser = page.waitForEvent("filechooser");
     await page.getByTestId("open-button").click();
     await (await chooser).setFiles(file);
     // The view button is enabled once a point cloud is open (a fixed wait would be too short or too long).
-    await page.getByTestId("view-button").waitFor({ state: "visible", timeout: 60000 });
-    await page.waitForFunction(() => !document.querySelector('[data-testid="view-button"]')?.hasAttribute("disabled"), null, { timeout: 60000 });
+    try {
+      await page.getByTestId("view-button").waitFor({ state: "visible", timeout: 60000 });
+      await page.waitForFunction(() => !document.querySelector('[data-testid="view-button"]')?.hasAttribute("disabled"), null, { timeout: 60000 });
+    } catch {
+      await page.screenshot({ path: `${out}/${width}-timeout.png` });
+      const why = hasWebGpu
+        ? "the file did not open (read failed or still converting); see the console errors and the screenshot"
+        : "this browser has no WebGPU, so the app shows its unsupported-device screen";
+      console.error(`${width}px: the view button did not become usable within 60 s: ${why}. Screenshot: ${out}/${width}-timeout.png`);
+      process.exitCode = 1;
+      await page.close();
+      continue;
+    }
     await page.waitForTimeout(3000); // let the nodes stream in
     await page.screenshot({ path: `${out}/${width}-0-loaded.png` });
     let n = 1;

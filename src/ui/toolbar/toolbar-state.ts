@@ -3,10 +3,11 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { toolSourceLayers } from "../../state/layer-selection";
 import { isMeasureLayer, type ViewerLayer } from "../../state/layers";
+import { hasPointCloudLayer } from "../../app/view";
 
 /** True when there is at least one point-cloud layer (measurement layers do not count). */
 export function hasPointCloud(viewer: CopcViewerState): boolean {
-  return viewer.layers.some((l) => !isMeasureLayer(l));
+  return hasPointCloudLayer(viewer.layers);
 }
 
 /** L2-F: how many point-cloud layers are selected together (Ctrl/Shift click in the layer list). */

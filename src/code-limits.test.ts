@@ -68,6 +68,10 @@ describe("file size", () => {
  * `isContentEditable` (a type declaration line `isContentEditable?: boolean` is not a use), and
  * `instanceof HTMLInputElement / HTMLTextAreaElement / HTMLSelectElement`. Lower-case words are not looked at
  * ("select" is also a tool mode name). Returns what was found, so a test can show it finds each form.
+ *
+ * What it does NOT see (a text search cannot): `el.matches("input, textarea, select")`, `el.closest(...)`, a list of
+ * lower-case tag names, or any other new way of asking. Those are covered by the rule in AGENTS.md ("call
+ * isTypingTarget(), do not compare tag names yourself"), which the auditor checks in the diff.
  */
 export function findTypingTargetCopies(text: string): string[] {
   const found: string[] = [];
