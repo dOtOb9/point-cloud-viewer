@@ -1,6 +1,7 @@
-// ADR-0001 で決めた抽象。Tauri の API を直接見てよいのは tauri.ts の実装だけで、
-// レンダラ・state・UI はこのインターフェースだけを見る。Web版はこれを実装する
-// HttpSource を差し替えるだけで動く想定（M0時点ではまだ存在しない）。
+// The abstraction decided in ADR-0001. Only tauri.ts may import Tauri APIs; the renderer, state and
+// UI see this interface. `TauriSource` (tauri.ts) and `WebSource` (web.ts) implement it.
+// The point-cloud tools (extract, thin, DTM, raster, ...) are not on this interface yet: see
+// TaskSheets/REVIEW-architecture-2026-11.md A-1 / RF-2.
 import type { ConversionProgress, ConversionStageBreakdown } from "./conversion-dto";
 
 /**

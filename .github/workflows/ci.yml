@@ -20,8 +20,8 @@ jobs:
       - run: npm run lint
       - run: npm run test
 
-  # ARCHITECTURE.md の規約をCIで機械的に守らせる。
-  # この2つが崩れると Web 版が出せなくなるが、崩れても通常のビルドは通ってしまうため、
+  # ARCHITECTURE.md の規約1・2・3・5をCIで機械的に守らせる（規約4は検査の対象外）。
+  # 崩れると Web 版が出せなくなるが、崩れても通常のビルドは通ってしまうため、
   # 人間のレビューに頼らずここで落とす。
   invariants:
     runs-on: ubuntu-latest
