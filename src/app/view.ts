@@ -1,19 +1,43 @@
 // TP-1: the steps behind the view button, the dialog and the keyboard shortcuts, as plain functions (ADR-0021).
 // React only shows the state and calls these. Everything they read or change is in the context.
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
-import type { ProjectionMode } from "../renderer/projection";
+import { DEFAULT_PROJECTION_MODE, type ProjectionMode } from "../renderer/projection";
+import { createStore, type Store } from "./store";
+import { isTypingTarget } from "./typing-target";
 import { VIEW_PRESET_LABELS, type ViewPresetId } from "../renderer/view-presets";
 
 export type { ProjectionMode, ViewPresetId };
 
-/** What the view functions work with. Built by the viewer state on every render. */
+/** The part of the renderer the view functions call. */
+export type ViewRenderer = Pick<PointCloudRenderer, "setViewPreset" | "fitAll" | "setProjectionMode">;
+
+/**
+ * What the view functions work with: two stores (src/app/store.ts).
+ * The projection mode is owned by the store: the status bar and the dialog read it from there, and
+ * `setProjection` tells the renderer (one direction; the renderer never reports the mode back).
+ */
 export interface ViewContext {
-  /** The renderer, or null before it exists. Only the two camera moves are used. */
-  getRenderer: () => Pick<PointCloudRenderer, "setViewPreset" | "fitAll"> | null;
-  /** The projection shown now (React state, so the screen updates the moment it changes). */
-  projectionMode: ProjectionMode;
-  /** Changes the React state and tells the renderer (the same setter as the other display settings). */
-  setProjectionMode: (mode: ProjectionMode) => void;
+  projection: Store<ProjectionMode>;
+  /** The renderer, or null before it exists / after it is disposed (set by `attachViewRenderer`). */
+  renderer: Store<ViewRenderer | null>;
+}
+
+export function createViewContext(): ViewContext {
+  return { projection: createStore<ProjectionMode>(DEFAULT_PROJECTION_MODE), renderer: createStore<ViewRenderer | null>(null) };
+}
+
+/** The one context of the app. Tests make their own with `createViewContext`. */
+export const viewContext: ViewContext = createViewContext();
+
+/** Hand the new renderer to the view functions and give it the projection chosen so far. */
+export function attachViewRenderer(ctx: ViewContext, renderer: ViewRenderer): void {
+  ctx.renderer.set(renderer);
+  renderer.setProjectionMode(ctx.projection.get());
+}
+
+/** The renderer is gone (disposed). */
+export function detachViewRenderer(ctx: ViewContext): void {
+  ctx.renderer.set(null);
 }
 
 /** One thing the user can ask for: "fit all", a fixed viewpoint, or flipping the projection. */
@@ -71,27 +95,20 @@ export function viewActionForKey(event: {
   return VIEW_SHORTCUTS.find((s) => s.key === key)?.action ?? null;
 }
 
-/** True for an element the user types into (input, textarea, select, contenteditable). */
-function isTypingTarget(target: unknown): boolean {
-  if (typeof target !== "object" || target === null) return false;
-  const el = target as { tagName?: string; isContentEditable?: boolean };
-  const tag = (el.tagName ?? "").toUpperCase();
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable === true;
-}
-
 /** Switch the projection. The screen size at the target stays the same (renderer/projection.ts). */
 export function setProjection(ctx: ViewContext, mode: ProjectionMode): void {
-  ctx.setProjectionMode(mode);
+  ctx.projection.set(mode);
+  ctx.renderer.get()?.setProjectionMode(mode);
 }
 
 /** Move to a fixed viewpoint (animated; immediate when animation is off). Does nothing when no layer is visible. */
 export function showViewPreset(ctx: ViewContext, id: ViewPresetId): boolean {
-  return ctx.getRenderer()?.setViewPreset(id) ?? false;
+  return ctx.renderer.get()?.setViewPreset(id) ?? false;
 }
 
 /** "Fit all": the visible layers fill the screen, the direction stays. Does nothing when no layer is visible. */
 export function fitAllView(ctx: ViewContext): boolean {
-  return ctx.getRenderer()?.fitAll() ?? false;
+  return ctx.renderer.get()?.fitAll() ?? false;
 }
 
 /** Run one action. The buttons, the dialog and the shortcuts all come here, so they cannot behave differently. */
@@ -104,7 +121,7 @@ export function runViewAction(ctx: ViewContext, action: ViewAction): void {
       showViewPreset(ctx, action.id);
       return;
     case "toggleProjection":
-      setProjection(ctx, ctx.projectionMode === "perspective" ? "orthographic" : "perspective");
+      setProjection(ctx, ctx.projection.get() === "perspective" ? "orthographic" : "perspective");
       return;
   }
 }

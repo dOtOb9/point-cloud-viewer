@@ -21,7 +21,7 @@ export function ViewButton({ viewer, onOpen }: Props) {
       label="視点"
       title={
         enabled
-          ? "視点を変える（F: 全体 / 1: 上 / 2: 正面 / 3: 右 / 4: 等角 / 5: 透視・平行の切り替え）"
+          ? "視点を変える（F: 全体 / 1: 上 / 2: 正面 / 3: 右 / 4: 等角 / 5: 透視・平行の切り替え / 6: 背面 / 7: 左）"
           : "点群を開くと、視点を変えられる"
       }
       disabled={!enabled}

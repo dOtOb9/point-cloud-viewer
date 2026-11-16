@@ -1,5 +1,6 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { viewStatusText } from "../../app/view";
+import { viewContext, viewStatusText } from "../../app/view";
+import { useStore } from "../../state/useStore";
 import { formatCrsShort } from "../common/crs-format";
 import { glassSurfaceClass } from "../common/glass";
 
@@ -31,6 +32,7 @@ export function StatusBar({
   onOpenToolProgress: () => void;
 }) {
   const stats = viewer.stats;
+  const projectionMode = useStore(viewContext.projection);
 
   // 読み込み進捗: 変換中は変換の割合、それ以外はストリーミング読み込みの
   // ロード中/キュー待ちノード数を出す(「進捗」の意味がこの2つに分かれる
@@ -73,8 +75,8 @@ export function StatusBar({
       {/* TP-1 (UX-1): the viewpoint and the projection; the narrow form drops the heading. */}
       {stats && stats.layerCount > 0 ? (
         <span className="whitespace-nowrap" data-testid="view-status">
-          <span className="hidden md:inline">{viewStatusText(stats.viewPreset, stats.projectionMode, false)}</span>
-          <span className="md:hidden">{viewStatusText(stats.viewPreset, stats.projectionMode, true)}</span>
+          <span className="hidden md:inline">{viewStatusText(stats.viewPreset, projectionMode, false)}</span>
+          <span className="md:hidden">{viewStatusText(stats.viewPreset, projectionMode, true)}</span>
         </span>
       ) : null}
       {/* CRS: 短い形(EPSGコード)。狭幅では省く(詳細は左パネルで見られる)。 */}

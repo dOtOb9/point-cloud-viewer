@@ -4,7 +4,6 @@
 // Each field is declared (and documented) once, in the interface of the hook that makes it; F12 on `viewer.xxx` goes there.
 // The hooks that fill each group of fields are listed in useCopcViewer.ts.
 import type { OpenFilesContext } from "../app/open-files";
-import type { ViewContext } from "../app/view";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import type { ViewerStatus } from "./viewer-status";
 import type { OpfsUsageBreakdown } from "../datasource/opfs";
@@ -98,7 +97,6 @@ export type CopcViewerState = Pick<
     | "stats"
     | "backgroundMode"
     | "gridEnabled"
-    | "projectionMode"
     | "edlEnabled"
     | "animationEnabled"
     | "renderScale"
@@ -108,7 +106,6 @@ export type CopcViewerState = Pick<
     | "setAutoPointBudgetEnabled"
     | "setBackgroundMode"
     | "setGridEnabled"
-    | "setProjectionMode"
     | "setEdlEnabled"
     | "setAnimationEnabled"
     | "setRenderScale"
@@ -143,8 +140,6 @@ export type CopcViewerState = Pick<
     convertingFileName: string | null;
     /** Copy the breakdown text of the selected layer to the clipboard. True if it succeeded (a failure is only logged). */
     copyConversionBreakdownText: () => Promise<boolean>;
-    /** TP-1: what the view functions in src/app/view.ts are called with (view button, dialog, shortcuts). */
-    viewContext: ViewContext;
     /** True in the browser build. Used by the settings pages and the download link. */
     isBrowser: boolean;
     /** 3D coordinates of a screen point (canvas CSS pixels); null where there is no point. The renderer's `pickPoint`. */

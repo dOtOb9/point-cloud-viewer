@@ -11,6 +11,7 @@ import { WebSource } from "../datasource/web";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
+import { attachViewRenderer, detachViewRenderer, viewContext } from "../app/view";
 import { readStoredAnimationEnabled } from "./motion-setting";
 import { getLocalStorage } from "./useDisplaySettings";
 import { formatStatsSummary } from "./stats-summary";
@@ -44,6 +45,8 @@ export function useRendererLifecycle(
     sourceRef.current = source;
     // Apply the saved animation setting to the renderer (on when nothing is saved).
     renderer.setAnimationEnabled(readStoredAnimationEnabled(getLocalStorage()));
+    // TP-1: the view functions (src/app/view.ts) reach the renderer through their store; give it the chosen projection.
+    attachViewRenderer(viewContext, renderer);
     // For measuring in a real browser (AN-1/AN-2): with ?pcvDebug in the URL, expose the renderer as
     // window.__pcvRenderer. Without it nothing happens.
     if (typeof location !== "undefined" && new URLSearchParams(location.search).has("pcvDebug")) {
@@ -91,6 +94,7 @@ export function useRendererLifecycle(
     return () => {
       cancelled = true;
       window.removeEventListener("resize", onResize);
+      detachViewRenderer(viewContext);
       renderer.dispose();
     };
   }, [canvasRef, rendererRef, sourceRef, onStats, reportError, setError]);

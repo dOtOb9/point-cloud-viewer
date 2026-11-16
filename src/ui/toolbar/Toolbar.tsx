@@ -15,7 +15,6 @@ import { SelectPointsButton } from "./buttons/SelectPointsButton";
 import { SettingsButton } from "./buttons/SettingsButton";
 import { ViewButton } from "./buttons/ViewButton"; // TP-1
 import { ToolbarSeparator } from "./ToolbarSeparator";
-import { useViewShortcuts } from "./useViewShortcuts"; // TP-1
 import { useToolbarDragScroll } from "./useToolbarDragScroll";
 
 interface Props {
@@ -58,7 +57,6 @@ interface Props {
  * corners. Touch targets are 44px or more (buttons are `min-h-14` = 56px).
  */
 export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter, onOpenDtm, onOpenView }: Props) {
-  useViewShortcuts(viewer.viewContext); // TP-1: F, 1 to 7
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useToolbarDragScroll();
   // Narrow screens: stretched to the edges, no rounded corners. Wide: floats a little, rounded.

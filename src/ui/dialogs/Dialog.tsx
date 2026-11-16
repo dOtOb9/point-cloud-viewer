@@ -149,7 +149,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className={`flex max-h-[85vh] w-full ${fitContent ? "md:w-fit" : ""} ${widthClass} flex-col overflow-hidden rounded-2xl ${glassSurfaceClass(blurEnabled)} border-t-[3px] ${ACCENT_BORDER[accent]} shadow-2xl outline-none`}
+        className={`flex ${placement === "side" ? "max-h-[45vh] md:max-h-[85vh]" : "max-h-[85vh]"} w-full ${fitContent ? "md:w-fit" : ""} ${widthClass} flex-col overflow-hidden rounded-2xl ${glassSurfaceClass(blurEnabled)} border-t-[3px] ${ACCENT_BORDER[accent]} shadow-2xl outline-none`}
       >
         <div className={`px-4 py-3 text-center ${headerTone}`}>
           <h2 id={titleId} className="text-base font-semibold">

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  attachViewRenderer,
+  createViewContext,
+  detachViewRenderer,
   fitAllView,
   runViewAction,
   shortcutKeyOfPreset,
@@ -11,16 +14,12 @@ import {
 } from "./view";
 import { VIEW_PRESET_IDS } from "../renderer/view-presets";
 
-function makeContext(overrides: Partial<ViewContext> = {}) {
-  const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true) };
-  const setProjectionMode = vi.fn();
-  const ctx: ViewContext = {
-    getRenderer: () => renderer,
-    projectionMode: "perspective",
-    setProjectionMode,
-    ...overrides,
-  };
-  return { ctx, renderer, setProjectionMode };
+function makeContext(opts: { attach?: boolean; mode?: "perspective" | "orthographic" } = {}) {
+  const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
+  const ctx: ViewContext = createViewContext();
+  if (opts.mode) ctx.projection.set(opts.mode);
+  if (opts.attach !== false) attachViewRenderer(ctx, renderer);
+  return { ctx, renderer, setProjectionMode: renderer.setProjectionMode };
 }
 
 const plain = { ctrlKey: false, metaKey: false, altKey: false, target: { tagName: "DIV" } };
@@ -39,7 +38,7 @@ describe("view actions", () => {
   });
 
   it("does nothing (and does not fail) before the renderer exists", () => {
-    const { ctx } = makeContext({ getRenderer: () => null });
+    const { ctx } = makeContext({ attach: false });
     expect(fitAllView(ctx)).toBe(false);
     expect(showViewPreset(ctx, "top")).toBe(false);
   });
@@ -51,12 +50,38 @@ describe("view actions", () => {
   });
 
   it("the projection toggle flips between the two modes", () => {
-    const a = makeContext({ projectionMode: "perspective" });
+    const a = makeContext({ mode: "perspective" });
     runViewAction(a.ctx, { kind: "toggleProjection" });
-    expect(a.setProjectionMode).toHaveBeenCalledWith("orthographic");
-    const b = makeContext({ projectionMode: "orthographic" });
+    expect(a.setProjectionMode).toHaveBeenLastCalledWith("orthographic");
+    expect(a.ctx.projection.get()).toBe("orthographic");
+    const b = makeContext({ mode: "orthographic" });
     runViewAction(b.ctx, { kind: "toggleProjection" });
-    expect(b.setProjectionMode).toHaveBeenCalledWith("perspective");
+    expect(b.setProjectionMode).toHaveBeenLastCalledWith("perspective");
+    expect(b.ctx.projection.get()).toBe("perspective");
+  });
+
+  it("the store is the one source of the projection: a new renderer gets the mode chosen before it existed", () => {
+    const ctx = createViewContext();
+    runViewAction(ctx, { kind: "toggleProjection" }); // no renderer yet: only the store changes
+    expect(ctx.projection.get()).toBe("orthographic");
+    const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
+    attachViewRenderer(ctx, renderer);
+    expect(renderer.setProjectionMode).toHaveBeenCalledWith("orthographic");
+    detachViewRenderer(ctx);
+    expect(fitAllView(ctx)).toBe(false);
+  });
+
+  it("subscribers are told when the projection changes, and only then", () => {
+    const { ctx } = makeContext();
+    const listener = vi.fn();
+    const stop = ctx.projection.subscribe(listener);
+    runViewAction(ctx, { kind: "toggleProjection" });
+    expect(listener).toHaveBeenCalledTimes(1);
+    ctx.projection.set("orthographic"); // same value
+    expect(listener).toHaveBeenCalledTimes(1);
+    stop();
+    runViewAction(ctx, { kind: "toggleProjection" });
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });
 
