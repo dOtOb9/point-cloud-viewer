@@ -135,3 +135,61 @@ describe("edlShadingFactor", () => {
     }
   });
 });
+
+// TP-1: orthographic projection. Depth is linear and the eye distance can be zero or negative (near < 0), so EDL
+// compares depth steps against the orbit distance instead of taking log2 of the eye distance.
+import { orthographicMatrix, transformPoint } from "./mat4";
+import { edlLogDepth, edlLogDepthOrtho, edlShadingFactorFromLogs, linearizeDepthOrtho } from "./edl";
+
+describe("linearizeDepthOrtho", () => {
+  it("returns the eye distance of a point (also for negative near)", () => {
+    const near = -300;
+    const far = 500;
+    const m = orthographicMatrix(10, 1.6, near, far);
+    for (const z of [-250, 0, 120, 480]) {
+      const c = transformPoint(m, [1, 2, -z]);
+      expect(linearizeDepthOrtho(c[2] / c[3], near, far)).toBeCloseTo(z, 6);
+    }
+  });
+});
+
+describe("edlShadingFactorFromLogs / the two projections", () => {
+  it("perspective: unchanged (edlShadingFactor is edlShadingFactorFromLogs of log2)", () => {
+    const own = 100;
+    const neighbours = [99, 100, 98];
+    expect(edlShadingFactor(own, neighbours, 0.15)).toBeCloseTo(
+      edlShadingFactorFromLogs(edlLogDepth(own), neighbours.map(edlLogDepth), 0.15),
+      12,
+    );
+  });
+
+  it("orthographic: the response depends on the step relative to the orbit distance, not on the eye plane", () => {
+    const ref = 100;
+    // The same 2 m step seen with two different eye-plane positions gives the same shade.
+    const a = edlShadingFactorFromLogs(edlLogDepthOrtho(-50 + 2, ref), [edlLogDepthOrtho(-50, ref)], 0.15);
+    const b = edlShadingFactorFromLogs(edlLogDepthOrtho(900 + 2, ref), [edlLogDepthOrtho(900, ref)], 0.15);
+    expect(a).toBeCloseTo(b, 9);
+    expect(a).toBeLessThan(1);
+    expect(a).toBeGreaterThanOrEqual(EDL_MIN_SHADE);
+  });
+
+  it("orthographic: a bigger step relative to the zoom is darker; a step toward the camera does not darken", () => {
+    const ref = 100;
+    const small = edlShadingFactorFromLogs(edlLogDepthOrtho(1, ref), [edlLogDepthOrtho(0, ref)], 0.15);
+    const large = edlShadingFactorFromLogs(edlLogDepthOrtho(5, ref), [edlLogDepthOrtho(0, ref)], 0.15);
+    expect(large).toBeLessThanOrEqual(small);
+    expect(edlShadingFactorFromLogs(edlLogDepthOrtho(0, ref), [edlLogDepthOrtho(5, ref)], 0.15)).toBe(1);
+  });
+
+  it("orthographic: matches the perspective value near the target plane (first order, the same zoom)", () => {
+    // Perspective at distance 100: a 1 m step -> log2(101/100). Orthographic with reference 100: 1 / (100 ln 2).
+    const persp = edlLogDepth(101) - edlLogDepth(100);
+    const ortho = edlLogDepthOrtho(101, 100) - edlLogDepthOrtho(100, 100);
+    expect(ortho).toBeCloseTo(persp, 3);
+  });
+
+  it("strength 0 and no neighbours give 1 (both projections)", () => {
+    expect(edlShadingFactorFromLogs(1, [0], 0)).toBe(1);
+    expect(edlShadingFactorFromLogs(1, [], 0.15)).toBe(1);
+  });
+});

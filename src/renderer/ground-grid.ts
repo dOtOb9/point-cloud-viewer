@@ -113,7 +113,9 @@ struct GridUniforms {
   gridRight: vec4<f32>,    // xyzだけ使う
   gridForward: vec4<f32>,  // xyzだけ使う
   // x: 平面の高さ(カメラからの相対値。groundHeight - eyeHeight), y: セルサイズ,
-  // z: フェード距離, w: 未使用
+  // z: フェード距離, w: 1なら平行投影(TP-1。0なら透視)。平行投影のときは
+  // viewRightScaled/viewUpScaledが「画面の端までの実寸(ワールド単位)」を表す
+  // (right * アスペクト比 * 見える高さの半分 / up * 見える高さの半分)。
   params: vec4<f32>,
   // x: カメラ位置のgridRight成分をセルサイズで割った余り, y: 同gridForward成分の余り,
   // z, w: 未使用。ワールド座標の絶対値の代わりにこれを使う（ファイル冒頭のコメント）。
@@ -149,7 +151,16 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
   // このピクセルのレイ方向を、画素ごとに基底から直接組み立てる（NDCがいくつでも
   // 厳密。sky.tsファイル冒頭の「対策（2回目）」参照）。カメラを原点とする座標系
   // (カメラ相対)ですべて計算する。eyeの絶対座標そのものは登場しない。
-  let dir = normalize(u.viewForward.xyz + in.ndc.x * u.viewRightScaled.xyz + in.ndc.y * u.viewUpScaled.xyz);
+  // TP-1: 透視では全レイがカメラ位置から出て方向が画素ごとに違う。平行投影では全レイの方向が
+  // 視線と同じで、出発点が画素ごとに視線に直交する向きへずれる(rayOrigin。カメラ相対)。
+  let orthographic = u.params.w > 0.5;
+  var dir = normalize(u.viewForward.xyz);
+  var rayOrigin = vec3<f32>(0.0, 0.0, 0.0);
+  if (orthographic) {
+    rayOrigin = in.ndc.x * u.viewRightScaled.xyz + in.ndc.y * u.viewUpScaled.xyz;
+  } else {
+    dir = normalize(u.viewForward.xyz + in.ndc.x * u.viewRightScaled.xyz + in.ndc.y * u.viewUpScaled.xyz);
+  }
   let up = normalize(u.upAxis.xyz);
 
   let relGroundHeight = u.params.x; // 平面の高さ(カメラからの相対値)
@@ -162,14 +173,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
   if (abs(denom) < 1e-6) {
     discard;
   }
-  let t = relGroundHeight / denom;
-  if (t <= 0.0) {
-    // 交点がカメラの後ろ（＝面は視線の逆側）。
+  let t = (relGroundHeight - dot(rayOrigin, up)) / denom;
+  // 交点がカメラの後ろ（＝面は視線の逆側）。平行投影では、カメラの面より後ろにも描くので
+  // (投影行列のニアが負。projection.ts)、後ろでも捨てない。
+  if (t <= 0.0 && !orthographic) {
     discard;
   }
 
   // カメラから交点までの差分（カメラ相対なので、これがそのまま交点の座標）。
-  let hitRel = dir * t;
+  let hitRel = rayOrigin + dir * t;
   let hitU = dot(hitRel, u.gridRight.xyz);
   let hitV = dot(hitRel, u.gridForward.xyz);
 
@@ -189,8 +201,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
   let intensity = max(lineU, lineV);
 
   // 遠方はフェードさせ、格子が密集してモアレになるのを避ける（カメラ相対なので
-  // 交点までの距離はhitRelの長さそのもの）。
-  let dist = length(hitRel);
+  // 交点までの距離はhitRelの長さそのもの）。平行投影では「遠い」ことに意味が無いので、
+  // 視線からの横ずれ(画面の中心からの実寸)で測る。
+  let dist = select(length(hitRel), length(rayOrigin), orthographic);
   let fade = 1.0 - smoothstep(fadeDistance * 0.5, fadeDistance, dist);
 
   let alpha = intensity * fade * u.lineColor.a;
@@ -303,6 +316,8 @@ export class GroundGrid {
     fadeDistance: number,
     phaseU: number,
     phaseV: number,
+    /** TP-1: true for the orthographic projection (then viewRightScaled / viewUpScaled are the half extents in world units). */
+    orthographic = false,
   ): void {
     if (!this.pipeline || !this.uniformBuffer || !this.bindGroup) return;
 
@@ -312,7 +327,7 @@ export class GroundGrid {
     this.uniformData.set([upAxis[0], upAxis[1], upAxis[2], 0], 12);
     this.uniformData.set([gridRight[0], gridRight[1], gridRight[2], 0], 16);
     this.uniformData.set([gridForward[0], gridForward[1], gridForward[2], 0], 20);
-    this.uniformData.set([relGroundHeight, cellSize, fadeDistance, 0], 24);
+    this.uniformData.set([relGroundHeight, cellSize, fadeDistance, orthographic ? 1 : 0], 24);
     this.uniformData.set([phaseU, phaseV, 0, 0], 28);
     this.uniformData.set([...GRID_LINE_COLOR, GRID_MAX_ALPHA], 32);
     device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData.buffer, this.uniformData.byteOffset, this.uniformData.byteLength);

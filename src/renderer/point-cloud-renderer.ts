@@ -17,7 +17,17 @@ import { computeIntensityRange, type ParsedNode } from "../datasource/node-forma
 import { StaleNodeRequestError } from "../datasource/stale-node-error";
 import { attachOrbitControls, OrbitCamera } from "./orbit-camera";
 import { flyToGoal, pickFlyToPoint } from "./fly-to";
-import { multiply, perspective, type Mat4 } from "./mat4";
+import { cameraBasis, multiply, type Mat4 } from "./mat4";
+import {
+  buildProjection,
+  DEFAULT_PROJECTION_MODE,
+  eyeDistanceFromDepth,
+  fitDistance,
+  refinedProjection,
+  type Projection,
+  type ProjectionMode,
+} from "./projection";
+import { matchViewPreset, viewPresetAngles, type ViewPresetId } from "./view-presets";
 import { frustumPlanes } from "./frustum";
 import {
   CACHE_BUDGET_MULTIPLIER,
@@ -37,9 +47,7 @@ import { screenPointToWorldRay } from "./raycast";
 import {
   COARSE_HALF,
   REFINE_HALF,
-  depthToEyeDistance,
   nearestHit,
-  refineDepthRange,
   unprojectWindowSample,
   windowViewProj,
 } from "./pick-math";
@@ -52,7 +60,7 @@ import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } 
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
-import { FAR, FOV_Y_RADIANS, GpuResources, NEAR, type DrawFrameOptions, type NodePointStyle } from "./gpu-resources";
+import { GpuResources, type DrawFrameOptions, type NodePointStyle } from "./gpu-resources";
 import { DEFAULT_POINT_SIZE_PX, focusGoalFor, layerFocusBounds, sanitizePointSize } from "./layer-focus";
 import { extendRange, type ColorMode, type ValueRange } from "./colormap";
 import {
@@ -129,6 +137,9 @@ export interface RenderStats {
   cameraYaw: number;
   cameraUpAxis: [number, number, number];
   cameraEye: [number, number, number];
+  /** TP-1: the projection in use, and which fixed viewpoint the camera is at now (null = free). Shown in the status bar. */
+  projectionMode: ProjectionMode;
+  viewPreset: ViewPresetId | null;
   /** AN-2: カメラが慣性・ズーム・視点移動で動いている間true。 */
   cameraAnimating: boolean;
   /** HQ-2: カメラが止まったので、点予算を上限まで上げて読み込み・描画している最中。 */
@@ -277,6 +288,11 @@ export class PointCloudRenderer {
   /** 空の背景（M2-0c）。既定は単色(暗)のままで、"sky"を選んだときだけ描く。 */
   private backgroundMode: BackgroundMode = DEFAULT_BACKGROUND_MODE;
 
+  /** TP-1: perspective (default) or orthographic. */
+  private projectionMode: ProjectionMode = DEFAULT_PROJECTION_MODE;
+  /** TP-1: the projection of the latest frame (picking redraws with a narrowed copy of it). */
+  private lastProjection: Projection | null = null;
+
   /** 地面のグリッド（M2-0c補強B）。既定はオフ（空と同じく既定で強制しない）。 */
   private gridEnabled = DEFAULT_GRID_ENABLED;
   /** シーンのバウンディングボックスから決める、グリッドの間隔・フェード距離・高さ。
@@ -390,7 +406,24 @@ export class PointCloudRenderer {
   private getCursorDirection(screenX: number, screenY: number): [number, number, number] | null {
     if (!this.lastViewProj) return null;
     const ray = screenPointToWorldRay(this.lastViewProj, screenX, screenY, this.canvas.width, this.canvas.height);
-    return ray?.direction ?? null;
+    if (!ray) return null;
+    const projection = this.lastProjection;
+    if (projection?.mode !== "orthographic") return ray.direction;
+    // TP-1: in the orthographic mode every ray has the view direction, so "zoom toward the cursor" would not move
+    // sideways at all. Return forward + (the cursor's offset on the target plane) / distance instead: the camera's
+    // zoom() then shifts the target by exactly (1 - factor) * offset sideways (it moves the target by
+    // distance * (1 - factor) * this vector; this vector does not need to be a unit vector).
+    const ndcX = (screenX / this.canvas.width) * 2 - 1;
+    const ndcY = 1 - (screenY / this.canvas.height) * 2;
+    const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
+    const { forward, right, up } = cameraBasis(this.camera.eye(), this.camera.target, this.camera.getUpAxis());
+    const sideX = (ndcX * aspect * projection.halfHeight) / this.camera.distance;
+    const sideY = (ndcY * projection.halfHeight) / this.camera.distance;
+    return [
+      forward[0] + right[0] * sideX + up[0] * sideY,
+      forward[1] + right[1] * sideX + up[1] * sideY,
+      forward[2] + right[2] * sideX + up[2] * sideY,
+    ];
   }
 
   /**
@@ -471,10 +504,11 @@ export class PointCloudRenderer {
     // Stage 2: redraw around that pixel with a projection whose near/far bracket the rough distance, and read the depth.
     const hx = px - COARSE_HALF + hit.ix;
     const hy = py - COARSE_HALF + hit.iy;
-    const range = refineDepthRange(depthToEyeDistance(hit.depth, NEAR, FAR), NEAR, FAR);
-    const proj = perspective(FOV_Y_RADIANS, width / Math.max(height, 1), range.near, range.far);
+    const projection = this.lastProjection;
+    if (!projection) return null;
+    const refined = refinedProjection(projection, width / Math.max(height, 1), eyeDistanceFromDepth(projection, hit.depth));
     const refineSize = 2 * REFINE_HALF + 1;
-    const refineVP = windowViewProj(multiply(proj, view), hx, hy, refineSize, width, height);
+    const refineVP = windowViewProj(multiply(refined.matrix, view), hx, hy, refineSize, width, height);
     const fine = await this.gpu.renderDepthWindow(refineVP, refineSize, this.lastDrawn, options);
     const fineHit = fine ? nearestHit(fine, refineSize) : null;
     if (fineHit) {
@@ -749,6 +783,48 @@ export class PointCloudRenderer {
     this.backgroundMode = mode;
   }
 
+  /** TP-1: perspective or orthographic. Takes effect from the next frame; the on-screen size at the target stays (projection.ts). */
+  setProjectionMode(mode: ProjectionMode): void {
+    this.projectionMode = mode;
+  }
+
+  getProjectionMode(): ProjectionMode {
+    return this.projectionMode;
+  }
+
+  /**
+   * TP-1: move the camera to a fixed viewpoint. The target is the center of the visible layers, the distance is
+   * the one that fits them (same as "fit all"). Animated by `animateTo` (immediate when animation is off).
+   * Returns false when no layer is visible (nothing happens).
+   */
+  setViewPreset(id: ViewPresetId): boolean {
+    const bounds = this.visibleFitBounds();
+    if (!bounds) return false;
+    const angles = viewPresetAngles(id, this.camera.getUpAxis());
+    this.camera.setSceneScale(bounds.diagonal);
+    this.camera.animateTo({ target: bounds.center, distance: this.fitDistanceFor(bounds), ...angles });
+    return true;
+  }
+
+  /** TP-1: "fit all": the visible layers fill the screen, the direction stays as it is. False when no layer is visible. */
+  fitAll(): boolean {
+    const bounds = this.visibleFitBounds();
+    if (!bounds) return false;
+    this.camera.setSceneScale(bounds.diagonal);
+    this.camera.animateTo({ target: bounds.center, distance: this.fitDistanceFor(bounds) });
+    return true;
+  }
+
+  /** The box of the actual data (LAS header range) of all visible layers, or null when none is visible. */
+  private visibleFitBounds(): SceneBounds | null {
+    const cloud = this.visibleCloudBounds();
+    return cloud ? layerFocusBounds(null, cloud.boundsMin, cloud.boundsMax) : null;
+  }
+
+  private fitDistanceFor(bounds: SceneBounds): number {
+    return fitDistance(this.projectionMode, bounds.diagonal, this.canvas.width / Math.max(this.canvas.height, 1));
+  }
+
   /** 地面グリッド（M2-0c補強B）: 向き・尺度・地平線の手がかりを与える。既定はオフ。 */
   setGridEnabled(enabled: boolean): void {
     this.gridEnabled = enabled;
@@ -1013,9 +1089,11 @@ export class PointCloudRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
     const aspect = width / Math.max(height, 1);
-    const proj = perspective(FOV_Y_RADIANS, aspect, NEAR, FAR);
+    const sceneDiagonal = this.visibleFitBounds()?.diagonal ?? 0;
+    const projection = buildProjection(this.projectionMode, aspect, this.camera.distance, sceneDiagonal);
+    this.lastProjection = projection;
     const view = this.camera.viewMatrix();
-    const viewProj = multiply(proj, view);
+    const viewProj = multiply(projection.matrix, view);
     this.lastViewProj = viewProj;
     const planes = frustumPlanes(viewProj);
 
@@ -1082,6 +1160,7 @@ export class PointCloudRenderer {
       cameraEye: this.camera.eye(),
       cameraTarget: this.camera.target,
       upAxis: this.camera.getUpAxis(),
+      projection,
     };
     this.lastView = view; // L2-D: for picking (measurement)
     this.lastDrawOptions = drawOptions;
@@ -1115,6 +1194,8 @@ export class PointCloudRenderer {
       cameraYaw: this.camera.yaw,
       cameraUpAxis: [...this.camera.getUpAxis()],
       cameraEye: this.camera.eye(),
+      projectionMode: this.projectionMode,
+      viewPreset: matchViewPreset(this.camera.yaw, this.camera.pitch, this.camera.getUpAxis()),
       cameraAnimating: this.camera.isAnimating(),
       idleBoosting: this.idleBoost.boosting,
       autoPointBudgetEnabled: this.autoPointBudgetEnabled,

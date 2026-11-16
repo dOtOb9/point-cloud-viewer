@@ -125,6 +125,30 @@ export function linearizeDepth(ndcDepth: number, near: number, far: number): num
 }
 
 /**
+ * TP-1: orthographic counterpart of `linearizeDepth`. Depth is linear in an orthographic projection
+ * (`orthographicMatrix` in mat4.ts), so the eye distance is `near + depth * (far - near)`. `near` is usually
+ * negative there, so the result can be zero or negative: do not take log2 of it directly (see `edlLogDepthOrtho`).
+ * The WGSL `logDepth` in EDL_SHADER_SRC is the hand-written copy.
+ */
+export function linearizeDepthOrtho(ndcDepth: number, near: number, far: number): number {
+  return near + ndcDepth * (far - near);
+}
+
+/**
+ * TP-1: the value EDL compares for a pixel, for each projection. Perspective: log2 of the eye distance
+ * (a ratio of distances). Orthographic: there is no perspective scale, so the same "ratio" is taken against the
+ * orbit distance `referenceDistance`: a depth step dz gives dz / (referenceDistance * ln 2), which equals the
+ * first-order log2(1 + dz / referenceDistance). The response then depends on how large the step is relative to
+ * the zoom, not on where the eye plane happens to be (near can be negative).
+ */
+export function edlLogDepth(eyeDistance: number): number {
+  return Math.log2(eyeDistance);
+}
+export function edlLogDepthOrtho(eyeDistance: number, referenceDistance: number): number {
+  return eyeDistance / (referenceDistance * Math.LN2);
+}
+
+/**
  * EDLの陰影係数(shade)を計算する。1.0で無変化、小さいほど暗くなる。
  * 戻り値は[EDL_MIN_SHADE, 1]の範囲（strength=0・近傍なしは1.0）。
  *
@@ -142,14 +166,21 @@ export function linearizeDepth(ndcDepth: number, near: number, far: number): num
  * 手前に飛び出した部分は明るいまま残る（Eye-Dome Lightingの見た目の根拠）。
  */
 export function edlShadingFactor(ownDepth: number, neighbourDepths: readonly number[], strength: number): number {
-  if (neighbourDepths.length === 0 || strength === 0) return 1.0;
+  return edlShadingFactorFromLogs(edlLogDepth(ownDepth), neighbourDepths.map(edlLogDepth), strength);
+}
 
-  const ownLog = Math.log2(ownDepth);
+/**
+ * TP-1: the same shade from values already converted by `edlLogDepth` / `edlLogDepthOrtho`. Both projections
+ * end here, so the response and the shade formula exist once.
+ */
+export function edlShadingFactorFromLogs(ownLog: number, neighbourLogs: readonly number[], strength: number): number {
+  if (neighbourLogs.length === 0 || strength === 0) return 1.0;
+
   let sum = 0;
-  for (const neighbourDepth of neighbourDepths) {
-    sum += Math.max(0, ownLog - Math.log2(neighbourDepth));
+  for (const neighbourLog of neighbourLogs) {
+    sum += Math.max(0, ownLog - neighbourLog);
   }
-  const response = sum / neighbourDepths.length;
+  const response = sum / neighbourLogs.length;
 
   return Math.max(EDL_MIN_SHADE, Math.exp(-response * EDL_RESPONSE_SCALE * strength));
 }
@@ -172,7 +203,9 @@ struct EdlUniforms {
   far: f32,
   viewportWidth: f32,
   viewportHeight: f32,
-  _pad0: f32,
+  // TP-1: 0 = perspective. > 0 = orthographic, and the orbit distance used as the reference length
+  // (near/far are then the orthographic eye-distance range). See edl.ts edlLogDepthOrtho().
+  orthoRef: f32,
   _pad1: f32,
 };
 @group(0) @binding(0) var<uniform> u: EdlUniforms;
@@ -209,6 +242,15 @@ fn linearizeDepth(ndcDepth: f32) -> f32 {
   return (u.near * u.far) / (u.far - ndcDepth * (u.far - u.near));
 }
 
+// TP-1: the value compared between neighbours. Same as edl.ts edlLogDepth() / edlLogDepthOrtho().
+fn logDepth(ndcDepth: f32) -> f32 {
+  if (u.orthoRef > 0.0) {
+    let eyeDistance = u.near + ndcDepth * (u.far - u.near);
+    return eyeDistance / (u.orthoRef * 0.6931472);
+  }
+  return log2(linearizeDepth(ndcDepth));
+}
+
 @fragment
 fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   let dims = vec2<i32>(textureDimensions(pointDepth));
@@ -224,7 +266,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   }
 
   let color = textureLoad(pointColor, coord, 0);
-  let ownDepth = linearizeDepth(ownDepthNdc);
+  let ownLog = logDepth(ownDepthNdc);
 
   // 8方向の近傍と比べる(Potreeと同じ本数)。近傍座標は画面端でクランプし、
   // 範囲外アクセス（textureLoadの範囲外は0を返す仕様で、深度0=近クリップ=
@@ -243,9 +285,9 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
       // 近傍にも点がある場合だけ寄与を足す。近傍が背景(点が無い)場合は無視する
       // (edl.tsのedlShadingFactor()コメント参照。除外しない場合、背景の深度=遠方を
       // 「大きな凹み」と誤検出してしまう)。
-      let neighbourDepth = linearizeDepth(neighbourDepthNdc);
-      // メートルではなくlog2の差（距離の比）で比べる。edl.tsのedlShadingFactor()と同じ式。
-      responseSum = responseSum + max(0.0, log2(ownDepth) - log2(neighbourDepth));
+      // メートルではなくlog2の差（距離の比）で比べる。edl.tsのedlShadingFactor()と同じ式
+      // （平行投影のときの比べる値はlogDepth()参照）。
+      responseSum = responseSum + max(0.0, ownLog - logDepth(neighbourDepthNdc));
     }
   }
   let response = responseSum / 8.0;
@@ -369,6 +411,8 @@ export class EdlPass {
     far: number,
     viewportWidth: number,
     viewportHeight: number,
+    /** TP-1: 0 for perspective; the orbit distance for orthographic (see the shader's orthoRef). */
+    orthoRefDistance = 0,
   ): void {
     if (!this.pipeline || !this.uniformBuffer || !this.bindGroup) return;
 
@@ -378,7 +422,7 @@ export class EdlPass {
     this.uniformData[3] = far;
     this.uniformData[4] = viewportWidth;
     this.uniformData[5] = viewportHeight;
-    this.uniformData[6] = 0;
+    this.uniformData[6] = orthoRefDistance;
     this.uniformData[7] = 0;
     device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData.buffer, this.uniformData.byteOffset, this.uniformData.byteLength);
 

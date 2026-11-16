@@ -48,8 +48,8 @@ export interface CameraGoal {
 
 const MIN_DISTANCE = 0.01;
 const MAX_DISTANCE = 1e9; // COPCの世界座標は大きいことがあるので、上限は緩くしておく
-const MIN_PITCH = -Math.PI / 2 + 0.01;
-const MAX_PITCH = Math.PI / 2 - 0.01;
+export const MIN_PITCH = -Math.PI / 2 + 0.01;
+export const MAX_PITCH = Math.PI / 2 - 0.01;
 /** パン速度下限（`minPanDistance`）を、シーンBBOXの対角線の何割にするか。 */
 const MIN_PAN_DISTANCE_RATIO = 0.0005;
 

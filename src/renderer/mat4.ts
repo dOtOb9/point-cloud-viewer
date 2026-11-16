@@ -59,6 +59,22 @@ export function perspective(fovYRadians: number, aspect: number, near: number, f
   ];
 }
 
+/**
+ * TP-1: orthographic projection for WebGPU NDC (z: 0..1). `halfHeight` is the visible half height in world
+ * units; `near`/`far` are eye distances (near may be negative: points behind the eye plane stay visible).
+ * w stays 1. Inverse of the depth mapping: eyeDistance = near + depth * (far - near).
+ */
+export function orthographicMatrix(halfHeight: number, aspect: number, near: number, far: number): Mat4 {
+  const rangeInv = 1 / (near - far);
+  // prettier-ignore
+  return [
+    1 / (halfHeight * aspect), 0,              0,               0,
+    0,                         1 / halfHeight, 0,               0,
+    0,                         0,              rangeInv,        0,
+    0,                         0,              near * rangeInv, 1,
+  ];
+}
+
 /** 右手系のlookAt視点行列。eye/target/upはすべてワールド座標（f64のまま渡してよい）。 */
 export function lookAt(
   eye: readonly [number, number, number],

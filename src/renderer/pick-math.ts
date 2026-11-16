@@ -30,6 +30,14 @@ export function depthToEyeDistance(depth: number, near: number, far: number): nu
   return (near * far) / (far - depth * (far - near));
 }
 
+/**
+ * Orthographic counterpart of `depthToEyeDistance`. Depth is linear in an orthographic projection
+ * (`orthographicMatrix` in mat4.ts): d = (z - near) / (far - near)  ->  z = near + d * (far - near).
+ */
+export function depthToEyeDistanceOrtho(depth: number, near: number, far: number): number {
+  return near + depth * (far - near);
+}
+
 /** How much distance one depth step is worth around distance z (exact formula, not an approximation). */
 export function depthQuantumAt(z: number, near: number, far: number): number {
   return ((z * z * (far - near)) / (near * far)) * 2 ** -DEPTH_BITS;
@@ -48,6 +56,18 @@ export function depthQuantumAt(z: number, near: number, far: number): number {
 export function refineDepthRange(z: number, near: number, far: number): { near: number; far: number } {
   const margin = Math.max(z / 2, 4 * depthQuantumAt(z, near, far));
   return { near: Math.max(near, z - margin), far: Math.min(far, z + Math.max(z, margin)) };
+}
+
+/**
+ * Orthographic counterpart of `refineDepthRange`. One depth step is the same everywhere ((far - near) / 2^24),
+ * so the margin does not depend on z: 32 steps, but at least 0.2% of the range (the perspective case showed the
+ * rough distance can be off by a few times the theoretical step; the cause is not identified). The result stays
+ * inside [near, far]. Stage 2 resolution is then about 1e-9 of the range.
+ */
+export function refineDepthRangeOrtho(z: number, near: number, far: number): { near: number; far: number } {
+  const range = far - near;
+  const margin = Math.max(32 * range * 2 ** -DEPTH_BITS, 0.002 * range);
+  return { near: Math.max(near, z - margin), far: Math.min(far, z + margin) };
 }
 
 /**

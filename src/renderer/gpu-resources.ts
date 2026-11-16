@@ -14,6 +14,7 @@
 
 import { NODE_POINT_STRIDE, type ParsedNode } from "../datasource/node-format";
 import { cameraBasis, multiply, translation, type Mat4 } from "./mat4";
+import { FOV_Y_RADIANS, orthoReferenceDistance, type Projection } from "./projection";
 import { type CachedNode } from "./node-cache";
 import { clearColorForMode, SkyBackground, type BackgroundMode } from "./sky";
 import { floorMod, GroundGrid } from "./ground-grid";
@@ -36,11 +37,7 @@ export interface NodePointStyle {
   /** 直径（ピクセル）。renderScale は drawPoints で掛ける。 */
   sizePx: number;
 }
-/** WebGPUのFOV/near/far。orchestrator側（point-cloud-renderer.ts）が投影行列を
- *  組み立てる際にも同じ値が要るため、ここからexportする。 */
-export const FOV_Y_RADIANS = Math.PI / 3;
-export const NEAR = 0.01;
-export const FAR = 1e7;
+// TP-1: FOV / near / far and the projection matrices moved to projection.ts (perspective and orthographic share them).
 /**
  * 深度バッファのフォーマット。点群パイプラインと空パイプライン(sky.ts)の両方が
  * 同じレンダーパスに参加するので、1箇所にまとめて食い違いを防ぐ。
@@ -355,6 +352,8 @@ export interface DrawFrameOptions {
   cameraEye: readonly [number, number, number];
   cameraTarget: readonly [number, number, number];
   upAxis: Vec3;
+  /** TP-1: this frame's projection (mode, near/far). EDL and the grid read the mode and the depth range from it. */
+  projection: Projection;
   /** AN-1: 現在時刻(ms、requestAnimationFrameのタイムスタンプ)。ノードごとのフェード係数の計算に使う。 */
   nowMs: number;
   /** AN-1: フェードインを使うか。falseなら全ノードが最初から係数1(設定オフ・reduced-motion)。 */
@@ -941,10 +940,11 @@ export class GpuResources {
         pass,
         options.edlStrength,
         options.edlRadiusPx * options.renderScale,
-        NEAR,
-        FAR,
+        options.projection.near,
+        options.projection.far,
         width,
         height,
+        orthoReferenceDistance(options.projection),
       );
 
       pass.end();
@@ -1022,6 +1022,14 @@ export class GpuResources {
     const tanHalfFovY = Math.tan(FOV_Y_RADIANS / 2);
     const rightScaled: Vec3 = [right[0] * aspect * tanHalfFovY, right[1] * aspect * tanHalfFovY, right[2] * aspect * tanHalfFovY];
     const upScaled: Vec3 = [up[0] * tanHalfFovY, up[1] * tanHalfFovY, up[2] * tanHalfFovY];
+    // TP-1: the sky is only a backdrop, so it keeps the perspective rays in both modes. The grid has to agree with the
+    // points, so in the orthographic mode it gets the half extents in world units (see the grid shader).
+    const orthographic = options.projection.mode === "orthographic";
+    const halfHeight = options.projection.halfHeight;
+    const gridRightScaled: Vec3 = orthographic
+      ? [right[0] * aspect * halfHeight, right[1] * aspect * halfHeight, right[2] * aspect * halfHeight]
+      : rightScaled;
+    const gridUpScaled: Vec3 = orthographic ? [up[0] * halfHeight, up[1] * halfHeight, up[2] * halfHeight] : upScaled;
 
     if (options.backgroundMode === "sky") {
       this.sky.draw(device, pass, forward, rightScaled, upScaled, upAxis);
@@ -1040,8 +1048,8 @@ export class GpuResources {
         device,
         pass,
         forward,
-        rightScaled,
-        upScaled,
+        gridRightScaled,
+        gridUpScaled,
         upAxis,
         gridRight,
         gridForward,
@@ -1050,6 +1058,7 @@ export class GpuResources {
         options.gridFadeDistance,
         floorMod(eyeGridRight, options.gridCellSize),
         floorMod(eyeGridForward, options.gridCellSize),
+        orthographic,
       );
     }
   }

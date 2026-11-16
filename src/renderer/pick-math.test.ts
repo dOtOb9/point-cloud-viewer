@@ -111,3 +111,44 @@ describe("windowViewProj と unprojectWindowSample", () => {
     expect(ix).toBeCloseTo(COARSE_HALF, 6);
   });
 });
+
+// TP-1: orthographic counterparts (depth is linear, the margin does not depend on z).
+import { orthographicMatrix } from "./mat4";
+import { depthToEyeDistanceOrtho, refineDepthRangeOrtho } from "./pick-math";
+
+describe("depthToEyeDistanceOrtho", () => {
+  it("returns the eye distance of a point from its orthographic depth (also behind the eye plane)", () => {
+    const near = -400;
+    const far = 900;
+    const proj = orthographicMatrix(25, 1.5, near, far);
+    for (const z of [-399, -10, 0, 250, 899]) {
+      const c = transformPoint(proj, [3, -2, -z]);
+      expect(depthToEyeDistanceOrtho(c[2] / c[3], near, far)).toBeCloseTo(z, 6);
+    }
+  });
+  it("is linear: depth 0 -> near, depth 1 -> far", () => {
+    expect(depthToEyeDistanceOrtho(0, -5, 95)).toBe(-5);
+    expect(depthToEyeDistanceOrtho(1, -5, 95)).toBe(95);
+    expect(depthToEyeDistanceOrtho(0.5, -5, 95)).toBe(45);
+  });
+});
+
+describe("refineDepthRangeOrtho", () => {
+  it("brackets z with a margin much finer than the full range, inside [near, far]", () => {
+    const r = refineDepthRangeOrtho(100, -400, 900);
+    expect(r.near).toBeLessThan(100);
+    expect(r.far).toBeGreaterThan(100);
+    expect(r.far - r.near).toBeLessThan(0.01 * 1300);
+    expect(r.near).toBeGreaterThanOrEqual(-400);
+    expect(r.far).toBeLessThanOrEqual(900);
+  });
+  it("clamps to the full range at the ends", () => {
+    const r = refineDepthRangeOrtho(-399.99, -400, 900);
+    expect(r.near).toBe(-400);
+    expect(refineDepthRangeOrtho(899.99, -400, 900).far).toBe(900);
+  });
+  it("the quantization of the narrowed range (24-bit) is far below 1 mm for a 1 km range", () => {
+    const r = refineDepthRangeOrtho(100, -500, 500);
+    expect((r.far - r.near) * 2 ** -24).toBeLessThan(1e-3);
+  });
+});
