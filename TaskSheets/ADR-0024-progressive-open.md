@@ -105,7 +105,7 @@ getLayerStats(layerId: string): { drawnPoints: number; drawnNodes: number; loadi
   idle-boost・点予算の自動調整・他のレイヤーには触らない
 - 呼ぶ頻度は 1 秒に数回まで（下の「状態の流れ」）。数百〜数千ノードの配列を渡すだけ（ノード数に比例する処理は既にフレームごとにある）
 - テスト（vitest、GPU なし）: 差し替え後に、後継が載るまで古いキーが選ばれ続ける／後継が載ったら古いキーが選ばれず `destroy` される／後継が `firstDrawnAtMs` を引き継ぐ（フェードが 0 に戻らない）／
-  世代つきのノードが混ざっても `parentKey` と木の親子が切れず、二重に描かれない／取り消しに間に合わなかった古い結果が捨てられる／`intensityRange` が狭まらない／`getLayerStats` がレイヤーごとの値を返す／既存の `addLayer`・`removeLayer` が変わらない。実 GPU での確認は別（未確認）
+  世代つきのノード（`key` は `…@g5`、`positionKey` は `d-x-y-z`）が混ざっても木の親子が切れず、二重に描かれない／新旧が同時にあるとき子が新しい世代につながる／`hierarchyByKey` から新旧の両方が引ける／取り消しに間に合わなかった古い結果が捨てられる／`intensityRange` が狭まらない／`getLayerStats` がレイヤーごとの値を返す／既存の `addLayer`・`removeLayer` が変わらない。実 GPU での確認は別（未確認）
 
 ADR-0023 の `LayerApi` での見え方: プラグインには `layers.addProvisional(options)` が `ProvisionalLayerHandle`（`id`・`grow(nodes, replacements)`・`finish(finalLayerId)`・`discard()`）を返す形にし、`replaceLayerHierarchy` はホストの中にしまう。
 下見は「開く」の中核の一部でプラグインではないが、同じ口を ADR-0023 の将来のプラグイン（途中経過を出すツール、表示範囲で中身が変わるレイヤー）が使える。
