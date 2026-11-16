@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, type RefObject } from "react";
 import type { PointCloudRenderer, RenderStats } from "../renderer/point-cloud-renderer";
 import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "../renderer/sky";
 import { DEFAULT_GRID_ENABLED } from "../renderer/ground-grid";
+import { DEFAULT_PROJECTION_MODE, type ProjectionMode } from "../renderer/projection";
 import { DEFAULT_CENTER_PRIORITY_STRENGTH, DEFAULT_MIN_CENTER_PRIORITY_WEIGHT } from "../renderer/center-priority";
 import { defaultRenderSettings, readDeviceProfileInput } from "../renderer/device-profile";
 import { applyMotionAttribute, readStoredAnimationEnabled, storeAnimationEnabled } from "./motion-setting";
@@ -32,6 +33,8 @@ export interface DisplaySettings {
   autoPointBudgetEnabled: boolean;
   backgroundMode: BackgroundMode;
   gridEnabled: boolean;
+  /** TP-1: perspective or orthographic projection (the view dialog and the "5" key change it). */
+  projectionMode: ProjectionMode;
   /**
    * On/off of EDL (Eye-Dome Lighting). The default matches the renderer's (on). It is not off by default because it
    * lets a cloud without RGB (sofi.copc.laz) show its shape. The strength has no UI; it is fixed by
@@ -56,6 +59,7 @@ export interface DisplaySettings {
   setAutoPointBudgetEnabled: (enabled: boolean) => void;
   setBackgroundMode: (mode: BackgroundMode) => void;
   setGridEnabled: (enabled: boolean) => void;
+  setProjectionMode: (mode: ProjectionMode) => void;
   setEdlEnabled: (enabled: boolean) => void;
   setAnimationEnabled: (enabled: boolean) => void;
   setRenderScale: (scale: number) => void;
@@ -74,6 +78,7 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
   const [autoPointBudgetEnabled, setAutoPointBudgetEnabledState] = useState(true);
   const [backgroundMode, setBackgroundModeState] = useState<BackgroundMode>(DEFAULT_BACKGROUND_MODE);
   const [gridEnabled, setGridEnabledState] = useState(DEFAULT_GRID_ENABLED);
+  const [projectionMode, setProjectionModeState] = useState<ProjectionMode>(DEFAULT_PROJECTION_MODE);
   const [edlEnabled, setEdlEnabledState] = useState(deviceProfileDefaults.edlEnabled);
   const [animationEnabled, setAnimationEnabledState] = useState(() => readStoredAnimationEnabled(getLocalStorage()));
   const [renderScale, setRenderScaleState] = useState(deviceProfileDefaults.renderScale);
@@ -119,6 +124,14 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
     (enabled: boolean) => {
       setGridEnabledState(enabled);
       rendererRef.current?.setGridEnabled(enabled);
+    },
+    [rendererRef],
+  );
+
+  const setProjectionMode = useCallback(
+    (mode: ProjectionMode) => {
+      setProjectionModeState(mode);
+      rendererRef.current?.setProjectionMode(mode);
     },
     [rendererRef],
   );
@@ -177,6 +190,7 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
     autoPointBudgetEnabled,
     backgroundMode,
     gridEnabled,
+    projectionMode,
     edlEnabled,
     animationEnabled,
     renderScale,
@@ -186,6 +200,7 @@ export function useDisplaySettings(rendererRef: RefObject<PointCloudRenderer | n
     setAutoPointBudgetEnabled,
     setBackgroundMode,
     setGridEnabled,
+    setProjectionMode,
     setEdlEnabled,
     setAnimationEnabled,
     setRenderScale,
