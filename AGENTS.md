@@ -67,7 +67,7 @@
   - `npm run typecheck`
   - `npm run lint`
   - `npx vitest run`（**Windows では `C:\` の大文字のドライブ名から実行する。** `c:\` から実行すると vitest が全ファイル `Cannot read properties of undefined (reading 'config')` で落ちる）
-  - Rust を触ったら `cargo test -p <触ったクレート>` と `cargo clippy -p <触ったクレート> -- -D warnings`。`pcv-core`・`pcv-wasm` を触ったら `npm run build:wasm` で wasm を作り直す
+  - Rust を触ったら `cargo test -p <触ったクレート>` と `cargo clippy -p <触ったクレート> -- -D warnings`、さらに `cargo fmt --all -- --check`（CI の rust ジョブと同じ。差があれば `cargo fmt --all`）。`vendor/copc-writer` を触ったら `cargo fmt --manifest-path vendor/copc-writer/Cargo.toml -- --check` も（ルートの workspace の外なので上の fmt に入らない）。`pcv-core`・`pcv-wasm` を触ったら `npm run build:wasm` で wasm を作り直す
 - **タスクシートのメインの部分（目的・受け入れ基準・見出し・「記録」より前の文）は変えない。** 書いてよいのは記録（見出しに「記録」を含む節。「## 記録」も、節の中に足す「### 実装の記録 R1」も）の中だけ（PF-0 R2 で、作業役が AC を書き換え、節を消した）。
   終わる前に `node scripts/check-task-sheet.mjs <ループ開始前のコミット>` を実行して、出力を作業報告に貼る（`scripts/check-task-sheet.test.mjs` がテスト。監査役も同じコマンドを実行し直す）。
   <ループ開始前のコミット> は base。メインがループの途中で AC を直したら、その直し以降のコミットを base にする
