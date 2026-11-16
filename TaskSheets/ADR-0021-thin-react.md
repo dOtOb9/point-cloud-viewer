@@ -74,3 +74,19 @@ and called much later any more (R11 removed the event round trip), so there is n
 
 The same revision also settles navigation: the UI calls the `src/app/` function directly, because "go to definition" on
 `viewer.openFiles` stopped at a type declaration in `viewer-types.ts` (owner report, 2026-10-18).
+
+## 改訂（所有者、2026-11-16、RF-5）: 状態は「クラスでない小さなストア」に置く
+
+`TaskSheets/REVIEW-architecture-2026-11.md` の A-2 で、「状態は React の `useState`、手順は普通の関数」を守った結果、
+非同期の手順が最新の状態を読むための ref の箱（`layersStateRef`・`viewerRef` など。`useLayerTool` だけで ref の使用 46）が
+増えていることが分かった。2026-10-18 の改訂が取り除こうとした「最新値の箱」が、別の形で戻ってきている。
+
+所有者は REVIEW の案 (b) を選んだ。
+
+- 状態は、関心ごとに `src/app/` に置く**クラスでない小さなストア**に持つ。ストアは `{ get, set, subscribe }` を返す普通の関数で作る
+  （`useDisplayUnit.ts` がすでにこの形）。`private` の欄・`this`・継承は使わない
+- 手順の関数は、コンテキストでストアを受け取り、`store.get()` で最新の値を読み、`store.set()` で変える。ref の箱は要らない
+- React は `useSyncExternalStore` で読んで表示するだけ。新しい `useState` に、手順が読む状態を置かない（部品の中だけで閉じる見た目の状態はよい）
+- 2026-10-18 の「クラスにしない」「副作用を見えるようにする」はそのまま。R12 の `FileOpener` が問題だったのは、状態がクラスの中に隠れていたことで、
+  ストアそのものではない
+- 移行は「触ったところから」（ADR-0015 と同じ）。RF-4（計測・カット・断面の操作）・RF-6（`CopcViewerState` の分割）で関心ごとに移す。一度に全部は移さない
