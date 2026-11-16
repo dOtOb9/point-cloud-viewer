@@ -14,7 +14,7 @@
   （既存の英語の本文は一度に訳さない）。`TaskSheets/HANDOFF.md` はコーディネーターが管理する
 - 設計書（`docs/book/`）・コミットメッセージ・所有者への報告も**日本語**。英語にするのはコード中のコメントだけ
 - 何をしたか、なぜその方法を選んだか、他の案をなぜ採らなかったか、触ったファイル、所有者が自分で確かめる手順を `TaskSheets/` に記録する
-- 1コミット1関心事。逐次コミットして push する
+- 1コミット1関心事。逐次コミットする（push・PR・main へのマージの流れは `AGENTS.md` の「承認の後: push・CI・Pull Request」。作業役は push しない）
 
 ## 正直さ
 
@@ -90,8 +90,8 @@ UIを作り直すときも、同じ役割の要素にこれらの`data-testid`�
 
 ## エージェントとしての作業の手順
 
-- git worktree で作業する。始める前に `git fetch origin && git rebase origin/main`。push は `git push origin HEAD:main`。
-  push の前に `git diff origin/main --stat` で自分の差分だけか確かめる
+- 作業は作業ブランチ（または worktree）で行い、main に直接 push しない（所有者の決定 2026-11-17。`AGENTS.md`）。始める前にベースのブランチを `git fetch origin` で最新にする。
+  push する前に `git diff origin/main --stat` で自分の差分だけか確かめる（push はメイン＝所有者と話しているセッションがする）
 - **`git stash` は使わない**（他のセッションと共有されている）。退避は一時コミットで
 - 10分以上かかりうるコマンド（大きなビルド、数億点の変換、CI の完了待ち）は `run_in_background` で走らせる。返らないと中断される
 - 時間を測る計測は、プロセスを **P コアに固定して**走らせる（`ProcessorAffinity = 0xFFF`。この PC の i5-14600K の値）。
