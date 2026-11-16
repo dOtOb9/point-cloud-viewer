@@ -30,7 +30,7 @@
 | **ピッキング**（クリック位置の3D点） | **ある。** 深度バッファの読み戻し（`src/renderer/depth-pick.ts`）と octree への CPU レイキャスト（`raycast.ts`） | マーカー配置、計測、選択、歩行時の接地 |
 | **メッシュ描画パイプライン** | **無い。** 現在は point sprite 専用（DTM は LandXML への書き出しで、画面には出していない） | TIN 表示、断面の面表示、将来のメッシュ化 |
 | **カメラのナビゲーション** | **ある。** カーソル位置へのズーム（M1-5）・定位置の視点・平行投影（TP-1） | あらゆる目視検証の前提。EDL・カラーマップ・計測の評価もこれに乗る |
-| **2D プロファイル描画** | **ある。** 断面図のパネル（`src/ui/section/SectionPanel.tsx`、`src/renderer/section-2d.ts`）が HTML/SVG で描く | 断面図、ヒストグラム、時系列 |
+| **2D プロファイル描画** | **ある。** 断面図のパネル（`src/ui/section/SectionPanel.tsx`、`src/renderer/section-2d.ts`）が描く（点は Canvas 2D の `ImageData`、軸・目盛りは Canvas 2D、重ね描きは SVG） | 断面図、ヒストグラム、時系列 |
 
 ## 想定している将来機能と、必要な土台
 
