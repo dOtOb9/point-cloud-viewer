@@ -2,7 +2,7 @@
 // Start the built app first: GITHUB_PAGES_BUILD=true npm run build && npm run preview -- --port <PCV_BENCH_PORT> --strictPort
 // Pin it to the P cores (BENCH-measurement-cores.md): start node with ProcessorAffinity 0xFFF; Chromium inherits it. The result is
 // <dir>/web-<scenario>.json; read ranges with scripts/bench/summarize-runs.mjs, not by eye (PF-0 R2 F-1).
-// Opens the files in the built app (vite preview on port 5311) in a headed Chromium with the real GPU,
+// Opens the files in the built app (vite preview, default port 5311, PCV_BENCH_PORT) in a headed Chromium with the real GPU,
 // records first-draw / settled times and the browser process tree's private memory.
 import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";

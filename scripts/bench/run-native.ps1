@@ -6,7 +6,7 @@ param([string]$Exe, [string]$ArgLine, [string]$Tag, [string]$OutDir, [string]$Te
 $inv = [Globalization.CultureInfo]::InvariantCulture
 if ($TempDir -ne "") { $env:TEMP = $TempDir; $env:TMP = $TempDir }
 $p = Start-Process -FilePath $Exe -ArgumentList $ArgLine -PassThru -NoNewWindow -RedirectStandardOutput "$OutDir\$Tag.stdout" -RedirectStandardError "$OutDir\$Tag.stderr"
-$p.ProcessorAffinity = [IntPtr]0xFFF
+$p.ProcessorAffinity = [IntPtr]0xFFF   # set right after the start: the first few ms may run on any core (fine for runs of seconds)
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $peakPriv = 0; $minFree = [double]::MaxValue
 "t,private_mib,free_gb" | Out-File "$OutDir\$Tag.csv" -Encoding ascii
