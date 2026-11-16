@@ -23,6 +23,7 @@ import {
   DEFAULT_PROJECTION_MODE,
   eyeDistanceFromDepth,
   fitDistance,
+  orthoCursorZoomDirection,
   refinedProjection,
   type Projection,
   type ProjectionMode,
@@ -61,7 +62,7 @@ import { DEFAULT_BACKGROUND_MODE, type BackgroundMode } from "./sky";
 import { DEFAULT_GRID_ENABLED, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 import { DEFAULT_EDL_RADIUS_PX, DEFAULT_EDL_STRENGTH } from "./edl";
 import { GpuResources, type DrawFrameOptions, type NodePointStyle } from "./gpu-resources";
-import { DEFAULT_POINT_SIZE_PX, focusGoalFor, layerFocusBounds, sanitizePointSize } from "./layer-focus";
+import { DEFAULT_POINT_SIZE_PX, focusGoalFor, type FocusGoal, layerFocusBounds, sanitizePointSize } from "./layer-focus";
 import { extendRange, type ColorMode, type ValueRange } from "./colormap";
 import {
   computeSceneBounds,
@@ -137,8 +138,7 @@ export interface RenderStats {
   cameraYaw: number;
   cameraUpAxis: [number, number, number];
   cameraEye: [number, number, number];
-  /** TP-1: the projection in use, and which fixed viewpoint the camera is at now (null = free). Shown in the status bar. */
-  projectionMode: ProjectionMode;
+  /** TP-1: which fixed viewpoint the camera is at now (null = free). Shown in the status bar. The projection mode lives in the view store (src/app/view.ts). */
   viewPreset: ViewPresetId | null;
   /** AN-2: カメラが慣性・ズーム・視点移動で動いている間true。 */
   cameraAnimating: boolean;
@@ -409,21 +409,12 @@ export class PointCloudRenderer {
     if (!ray) return null;
     const projection = this.lastProjection;
     if (projection?.mode !== "orthographic") return ray.direction;
-    // TP-1: in the orthographic mode every ray has the view direction, so "zoom toward the cursor" would not move
-    // sideways at all. Return forward + (the cursor's offset on the target plane) / distance instead: the camera's
-    // zoom() then shifts the target by exactly (1 - factor) * offset sideways (it moves the target by
-    // distance * (1 - factor) * this vector; this vector does not need to be a unit vector).
+    // TP-1: orthographic rays are all parallel, so use the sideways vector instead (projection.ts explains).
     const ndcX = (screenX / this.canvas.width) * 2 - 1;
     const ndcY = 1 - (screenY / this.canvas.height) * 2;
     const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
-    const { forward, right, up } = cameraBasis(this.camera.eye(), this.camera.target, this.camera.getUpAxis());
-    const sideX = (ndcX * aspect * projection.halfHeight) / this.camera.distance;
-    const sideY = (ndcY * projection.halfHeight) / this.camera.distance;
-    return [
-      forward[0] + right[0] * sideX + up[0] * sideY,
-      forward[1] + right[1] * sideX + up[1] * sideY,
-      forward[2] + right[2] * sideX + up[2] * sideY,
-    ];
+    const { right, up } = cameraBasis(this.camera.eye(), this.camera.target, this.camera.getUpAxis());
+    return orthoCursorZoomDirection(right, up, ndcX, ndcY, aspect, projection.halfHeight, this.camera.distance);
   }
 
   /**
@@ -643,7 +634,13 @@ export class PointCloudRenderer {
   focusBox(min: readonly [number, number, number], max: readonly [number, number, number]): void {
     const bounds = layerFocusBounds(null, min, max);
     this.camera.setSceneScale(bounds.diagonal);
-    this.camera.animateTo(focusGoalFor(bounds));
+    this.camera.animateTo(this.focusGoal(bounds));
+  }
+
+  /** `focusGoalFor` with the distance that fits in the orthographic mode too (there the scale is the distance, TP-1). */
+  private focusGoal(bounds: SceneBounds, orientation?: { yaw: number; pitch: number }): FocusGoal {
+    const goal = focusGoalFor(bounds, orientation);
+    return this.projectionMode === "orthographic" ? { ...goal, distance: this.fitDistanceFor(bounds) } : goal;
   }
 
   private focusedLayer(): Layer | undefined {
@@ -659,7 +656,7 @@ export class PointCloudRenderer {
     this.focusedLayerId = layer.id;
     this.camera.setSceneScale(bounds.diagonal);
     this.applyGridBounds(bounds);
-    const goal = focusGoalFor(bounds, orientation);
+    const goal = this.focusGoal(bounds, orientation);
     if (immediate) {
       this.camera.cancelMotion();
       this.camera.target = goal.target;
@@ -1089,8 +1086,13 @@ export class PointCloudRenderer {
     const width = this.canvas.width;
     const height = this.canvas.height;
     const aspect = width / Math.max(height, 1);
-    const sceneDiagonal = this.visibleFitBounds()?.diagonal ?? 0;
-    const projection = buildProjection(this.projectionMode, aspect, this.camera.distance, sceneDiagonal);
+    const fitBounds = this.visibleFitBounds();
+    const sceneDiagonal = fitBounds?.diagonal ?? 0;
+    const target = this.camera.target;
+    const targetToSceneCenter = fitBounds
+      ? Math.hypot(target[0] - fitBounds.center[0], target[1] - fitBounds.center[1], target[2] - fitBounds.center[2])
+      : 0;
+    const projection = buildProjection(this.projectionMode, aspect, this.camera.distance, sceneDiagonal, targetToSceneCenter);
     this.lastProjection = projection;
     const view = this.camera.viewMatrix();
     const viewProj = multiply(projection.matrix, view);
@@ -1194,7 +1196,6 @@ export class PointCloudRenderer {
       cameraYaw: this.camera.yaw,
       cameraUpAxis: [...this.camera.getUpAxis()],
       cameraEye: this.camera.eye(),
-      projectionMode: this.projectionMode,
       viewPreset: matchViewPreset(this.camera.yaw, this.camera.pitch, this.camera.getUpAxis()),
       cameraAnimating: this.camera.isAnimating(),
       idleBoosting: this.idleBoost.boosting,

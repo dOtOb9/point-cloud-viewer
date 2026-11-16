@@ -52,23 +52,57 @@ export function orthoHalfHeight(distance: number, fovYRadians: number = FOV_Y_RA
 
 /**
  * Eye-distance range of the orthographic view: symmetric around the target (at `distance`), wide enough for the
- * whole scene. R = 2 * max(scene diagonal, distance, 1).
+ * whole scene. R = 2 * max(scene diagonal + how far the target is from the scene center, distance, 1).
+ * The target can be panned or zoomed far from the scene center; without the second term the data could end up
+ * outside the range (the screen goes empty).
  */
-export function orthoDepthRange(distance: number, sceneDiagonal: number): { near: number; far: number } {
-  const r = 2 * Math.max(sceneDiagonal, distance, 1);
+export function orthoDepthRange(
+  distance: number,
+  sceneDiagonal: number,
+  targetToSceneCenter = 0,
+): { near: number; far: number } {
+  const r = 2 * Math.max(sceneDiagonal + targetToSceneCenter, distance, 1);
   return { near: distance - r, far: distance + r };
 }
 
-/** The projection of a frame. `sceneDiagonal` is only used by the orthographic depth range. */
+/**
+ * Direction for `OrbitCamera.zoom(factor, direction)` that zooms toward the cursor in the orthographic mode.
+ * zoom() moves the target by `distance * (1 - factor) * direction`. Every orthographic ray has the view direction,
+ * so the ray direction would only move the target along the view (nothing on screen). The wanted move is sideways:
+ * (1 - factor) times the cursor's offset from the screen center on the target plane, which keeps the world point
+ * under the cursor at the same pixel. So the vector is that offset divided by `distance`, without a forward part
+ * (a forward part would also push the target along the view direction at every wheel step and could carry the
+ * data out of the depth range). `right` / `up` are the camera's unit basis vectors; ndc is -1..1 (up is +1).
+ */
+export function orthoCursorZoomDirection(
+  right: readonly [number, number, number],
+  up: readonly [number, number, number],
+  ndcX: number,
+  ndcY: number,
+  aspect: number,
+  halfHeight: number,
+  distance: number,
+): [number, number, number] {
+  const sideX = (ndcX * aspect * halfHeight) / distance;
+  const sideY = (ndcY * halfHeight) / distance;
+  return [
+    right[0] * sideX + up[0] * sideY,
+    right[1] * sideX + up[1] * sideY,
+    right[2] * sideX + up[2] * sideY,
+  ];
+}
+
+/** The projection of a frame. `sceneDiagonal` and `targetToSceneCenter` are only used by the orthographic depth range. */
 export function buildProjection(
   mode: ProjectionMode,
   aspect: number,
   distance: number,
   sceneDiagonal: number,
+  targetToSceneCenter = 0,
 ): Projection {
   if (mode === "orthographic") {
     const halfHeight = orthoHalfHeight(distance);
-    const { near, far } = orthoDepthRange(distance, sceneDiagonal);
+    const { near, far } = orthoDepthRange(distance, sceneDiagonal, targetToSceneCenter);
     return { mode, matrix: orthographicMatrix(halfHeight, aspect, near, far), near, far, halfHeight };
   }
   return { mode, matrix: perspective(FOV_Y_RADIANS, aspect, NEAR, FAR), near: NEAR, far: FAR, halfHeight: 0 };
@@ -107,7 +141,8 @@ export function refinedProjection(projection: Projection, aspect: number, z: num
 /**
  * Orbit distance at which a scene with the given bounding-box diagonal fits the screen (the sphere that
  * contains the box, centered on the target). `aspect` is width / height; for a tall screen the horizontal
- * direction limits the fit. For a wide screen both modes give about `diagonal` with the 60 degree FOV.
+ * direction limits the fit. With the 60 degree FOV and a wide screen: perspective gives `diagonal`,
+ * orthographic gives `diagonal / (2 * tan 30 deg)` = 0.866 * `diagonal` (the visible half height then equals the radius).
  */
 export function fitDistance(mode: ProjectionMode, diagonal: number, aspect: number): number {
   const radius = diagonal / 2;

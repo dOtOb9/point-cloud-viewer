@@ -15,6 +15,9 @@ import {
 import { invert, lookAt, multiply, perspective, transformPoint } from "./mat4";
 import { aabbIntersectsFrustum, frustumPlanes } from "./frustum";
 import { ndcPointToWorldRay, screenPointToWorldRay } from "./raycast";
+import { OrbitCamera } from "./orbit-camera";
+import { cameraBasis } from "./mat4";
+import { orthoCursorZoomDirection } from "./projection";
 import { projectedBoundsDiagonalPixels, screenSpaceError, surfaceSpacingPixels } from "./screen-space-error";
 import { projectPoint, projectSegment } from "./screen-project";
 import { unprojectWindowSample, windowViewProj } from "./pick-math";
@@ -144,7 +147,7 @@ describe("refinedProjection (picking stage 2)", () => {
 });
 
 describe("fitDistance", () => {
-  it("wide screen with the 60 degree FOV: the distance is the diagonal in both modes", () => {
+  it("wide screen with the 60 degree FOV: perspective gives the diagonal, orthographic 0.866 * diagonal", () => {
     expect(fitDistance("perspective", 100, ASPECT)).toBeCloseTo(100, 6);
     // ortho: radius / tan(30 deg) = 50 / 0.577 = 86.6; the visible half height at that distance is 50
     const d = fitDistance("orthographic", 100, ASPECT);
@@ -262,5 +265,82 @@ describe("orthographic with the consumers that read the view-projection matrix",
     const behind: [number, number, number] = [eye[0], eye[1] - 30, eye[2] + 40];
     expect(projectPoint(vp, behind, W, H)).not.toBeNull();
     expect(projectSegment(vp, target, behind, W, H)).not.toBeNull();
+  });
+});
+
+describe("orthographic zoom toward the cursor (OrbitCamera.zoom with orthoCursorZoomDirection)", () => {
+  /** Screen position (NDC) of a world point for the camera as it is now. */
+  function ndcOf(cam: OrbitCamera, point: [number, number, number], sceneDiagonal: number) {
+    const proj = buildProjection("orthographic", ASPECT, cam.distance, sceneDiagonal);
+    const c = transformPoint(multiply(proj.matrix, cam.viewMatrix()), point);
+    return [c[0] / c[3], c[1] / c[3]];
+  }
+
+  /** The world point on the target plane under a cursor at (ndcX, ndcY). */
+  function pointUnderCursor(cam: OrbitCamera, ndcX: number, ndcY: number): [number, number, number] {
+    const { right, up } = cameraBasis(cam.eye(), cam.target, cam.getUpAxis());
+    const half = orthoHalfHeight(cam.distance);
+    return [0, 1, 2].map((i) => cam.target[i] + right[i] * ndcX * ASPECT * half + up[i] * ndcY * half) as [number, number, number];
+  }
+
+  it("the world point under the cursor stays under the cursor, for zoom in and out and several cursor positions", () => {
+    for (const [ndcX, ndcY] of [[0.6, 0.3], [-0.8, -0.5], [0, 0.9]]) {
+      for (const factor of [1 / 1.1, 1.1, 0.5, 3]) {
+        const cam = new OrbitCamera([637000, 851000, 120], 300);
+        cam.yaw = 0.7;
+        cam.pitch = 0.5;
+        const p = pointUnderCursor(cam, ndcX, ndcY);
+        const { right, up } = cameraBasis(cam.eye(), cam.target, cam.getUpAxis());
+        const dir = orthoCursorZoomDirection(right, up, ndcX, ndcY, ASPECT, orthoHalfHeight(cam.distance), cam.distance);
+        cam.zoom(factor, dir);
+        const [x, y] = ndcOf(cam, p, 500);
+        expect(x).toBeCloseTo(ndcX, 6);
+        expect(y).toBeCloseTo(ndcY, 6);
+      }
+    }
+  });
+
+  it("the cursor vector has no part along the view direction (the target does not slide along the view)", () => {
+    const cam = new OrbitCamera([0, 0, 0], 100);
+    cam.pitch = 0.4;
+    const { forward, right, up } = cameraBasis(cam.eye(), cam.target, cam.getUpAxis());
+    const dir = orthoCursorZoomDirection(right, up, 0.5, -0.5, ASPECT, orthoHalfHeight(100), 100);
+    expect(dir[0] * forward[0] + dir[1] * forward[1] + dir[2] * forward[2]).toBeCloseTo(0, 12);
+  });
+
+  it("the cursor at the screen center gives the zero vector (plain zoom about the target)", () => {
+    const dir = orthoCursorZoomDirection([1, 0, 0], [0, 0, 1], 0, 0, ASPECT, 50, 100);
+    expect(dir).toEqual([0, 0, 0]);
+  });
+
+  it("the data stays inside the depth range after zooming far out, turning around and zooming far in (F-3)", () => {
+    const diag = 1000;
+    const center: [number, number, number] = [0, 0, 0];
+    const cam = new OrbitCamera([0, 0, 0], diag);
+    // Zoom out 20x about a cursor, turn 180 degrees, zoom in to 0.05 x the diagonal about the same cursor.
+    const zoomAbout = (factor: number) => {
+      const { right, up } = cameraBasis(cam.eye(), cam.target, cam.getUpAxis());
+      cam.zoom(factor, orthoCursorZoomDirection(right, up, 0.7, 0.2, ASPECT, orthoHalfHeight(cam.distance), cam.distance));
+    };
+    for (let i = 0; i < 30; i++) zoomAbout(1.1);
+    cam.yaw += Math.PI;
+    for (let i = 0; i < 70; i++) zoomAbout(1 / 1.1);
+    const target = cam.target;
+    const offset = Math.hypot(target[0] - center[0], target[1] - center[1], target[2] - center[2]);
+    const proj = buildProjection("orthographic", ASPECT, cam.distance, diag, offset);
+    // Every corner of the scene box has an eye distance inside [near, far].
+    const view = cam.viewMatrix();
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      const corner: [number, number, number] = [sx * diag / 2, sy * diag / 2, sz * diag / 2];
+      const z = -transformPoint(view, corner)[2];
+      expect(z).toBeGreaterThan(proj.near);
+      expect(z).toBeLessThan(proj.far);
+    }
+  });
+
+  it("orthoDepthRange grows with the distance of the target from the scene center", () => {
+    const a = orthoDepthRange(100, 500, 0);
+    const b = orthoDepthRange(100, 500, 800);
+    expect(b.far - b.near).toBeCloseTo(a.far - a.near + 4 * 800, 9);
   });
 });
