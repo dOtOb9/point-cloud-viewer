@@ -64,6 +64,11 @@
   - `npm run lint`
   - `npx vitest run`（**Windows では `C:\` の大文字のドライブ名から実行する。** `c:\` から実行すると vitest が全ファイル `Cannot read properties of undefined (reading 'config')` で落ちる）
   - Rust を触ったら `cargo test -p <触ったクレート>` と `cargo clippy -p <触ったクレート> -- -D warnings`。`pcv-core`・`pcv-wasm` を触ったら `npm run build:wasm` で wasm を作り直す
+- **タスクシートのコーディネーターの部分（目的・受け入れ基準・見出し・「記録」より前の文）は変えない。** 書いてよいのは「記録」節の中だけ（PF-0 R2 で、作業エージェントが AC を書き換え、節を消した）。
+  終わる前に `node scripts/check-task-sheet.mjs <ループ開始前のコミット>` を実行して、出力を作業報告に貼る（`scripts/check-task-sheet.test.mjs` がテスト。監査役も同じコマンドを実行し直す）
+- **設計（ADR）は、前提にするコードを読んでから書く。** `TaskSheets/ADR-TEMPLATE.md` の形で、「依存するコードの確認」（`path:line`・識別子・読んで確かめたこと、3 行以上）・「数えた物」・「整合の確認」を必ず埋める。
+  「〜は変えずに済む」「N 個ある」と書く前に、そのコードを開き、数えたコマンドと出力を載せる。`npm run check:docs` が参照の実在を検査する（CI でも走る）
+- 計測は `scripts/bench/` の道具を使う（`run-native.ps1`・`sampler.ps1`。CSV は桁区切り無し）。CSV は `node scripts/bench/summarize-samples.mjs` で読む（列の数が合わない行は、黙って捨てずにエラーになる）。表に書く数値は、この出力か、測定ツール自身の出力から写す
 - 1コミット1関心事。コミットはローカルだけ（push はコーディネーターが所有者の了承を得てから）
 - 指摘を直すときは、指摘の ID ごとに「何を直したか／直さなかったならその理由」を作業報告に書く
 
@@ -84,7 +89,7 @@
 
 1. タスクシートの受け入れ基準と、作業報告を読む
 2. `git log` と `git diff <ループ開始前のコミット>..HEAD` で差分を**全部**読む
-3. 作業報告のコマンドを自分で実行し直す（typecheck・lint・vitest、Rust を触っていれば cargo test/clippy）
+3. 作業報告のコマンドを自分で実行し直す（typecheck・lint・vitest、Rust を触っていれば cargo test/clippy、タスクシートを触っていれば `node scripts/check-task-sheet.mjs <ループ開始前のコミット>`、ADR を触っていれば `npm run check:docs` を実行し、さらに ADR の「依存するコードの確認」の「前提」の欄を、挙げられた箇所のコードと照らして読む。スクリプトは参照が実在することしか見ない）
 4. 次の観点で見る
    - **受け入れ基準**: 1つずつ、満たしているかをコードとテストで確かめる
    - **正しさ**: 境界（空のレイヤー、点0個、単位が ft、CRS 無し、上方向が Y のデータ）、数値（f32 の桁落ち、大きな世界座標）、非同期（レイヤーを消した後に結果が届く）
