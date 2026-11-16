@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # check:docs diffs against the base commit
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -22,8 +24,19 @@ jobs:
       - run: npm run lint
       # No import cycles in src/ (type-only imports count). RF-1.
       - run: npm run check:circular
-      # New ADRs (>= 0024) must name the code they depend on and the references must be real (TaskSheets/ADR-TEMPLATE.md).
-      - run: npm run check:docs
+      # Documents state facts about the code, so two checks run here (npm run check:docs):
+      #  - scripts/check-doc-paths.mjs: the paths and relative links in ARCHITECTURE.md, ROADMAP.md and CLAUDE.md exist (RECURRENCE RF-0/1/15).
+      #  - scripts/check-adr.mjs: a new ADR (>= 0024) names the code it depends on and the references are real (TaskSheets/ADR-TEMPLATE.md).
+      #    With --base (the commit before this push / the base of this pull request) an ADR changed since then also gets the strict
+      #    line-distance check. If the base is unknown (first push, force push) it runs without --base.
+      - name: Check docs
+        run: |
+          BASE="${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+          if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            npm run check:docs -- --base "$BASE"
+          else
+            npm run check:docs
+          fi
       - run: npm run test
 
   # ARCHITECTURE.md の規約1・2・3・5をCIで機械的に守らせる（規約4は検査の対象外）。

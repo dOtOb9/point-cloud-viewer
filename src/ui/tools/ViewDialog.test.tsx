@@ -20,6 +20,7 @@ function fakeViewer(opts: { preset?: string | null; mode?: "perspective" | "orth
   const setProjectionMode = renderer.setProjectionMode;
   const mode = opts.mode ?? "perspective";
   const context = createViewContext();
+  context.pointCloud.set(true);
   context.projection.set(mode);
   attachViewRenderer(context, renderer);
   const viewer = {

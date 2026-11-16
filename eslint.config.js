@@ -63,6 +63,7 @@ function layerRules(patterns, extraSyntax = []) {
     const re = selectorRegex(regex);
     syntax.push({ selector: `ImportExpression[source.value=/${re}/]`, message });
     syntax.push({ selector: `TSImportType[argument.literal.value=/${re}/]`, message });
+    syntax.push({ selector: `CallExpression[callee.name="require"][arguments.0.value=/${re}/]`, message });
   }
   return {
     "no-restricted-imports": ["error", { patterns: patterns.map((p) => ({ ...p, caseSensitive: true })) }],
@@ -70,7 +71,7 @@ function layerRules(patterns, extraSyntax = []) {
   };
 }
 
-const SRC_FILES = ["src/**/*.{ts,tsx,js,mjs,cjs}"];
+const SRC_FILES = ["src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"];
 const GENERATED_WASM = "src/wasm/**";
 
 // ADR-0023: what a plugin file may import. `depth` is how many folders the file is below src/plugins/
@@ -101,7 +102,7 @@ function pluginPatterns(depth, isTest) {
 function pluginZones() {
   const zones = [
     // Any depth: the checks that do not depend on it.
-    { files: ["src/plugins/**/*.{ts,tsx,js,mjs,cjs}"], rules: layerRules([pluginBare(false), UNNORMALIZED]) },
+    { files: ["src/plugins/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([pluginBare(false), UNNORMALIZED]) },
     {
       files: ["src/plugins/**/*.test.{ts,tsx}"],
       rules: layerRules([pluginBare(true), UNNORMALIZED]),
@@ -111,7 +112,7 @@ function pluginZones() {
     const dir = "src/plugins/" + (depth === 0 ? "" : "*/".repeat(depth));
     const tests = [dir + "*.test.{ts,tsx}"];
     zones.push({
-      files: [dir + "*.{ts,tsx,js,mjs,cjs}"],
+      files: [dir + "*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
       ignores: tests,
       rules: layerRules(pluginPatterns(depth, false)),
     });
@@ -127,7 +128,7 @@ export default tseslint.config(
   { ignores: ["dist", "src-tauri", "target", ".claude", "**/*.generated.tsx"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ["**/*.{ts,tsx}"],
+    files: ["**/*.{ts,tsx,mts,cts}"],
     languageOptions: {
       ecmaVersion: 2020,
       globals: globals.browser,
@@ -148,12 +149,12 @@ export default tseslint.config(
   // longer fails. See layerRules() for why each zone lists its complete set of patterns.
   { files: SRC_FILES, ignores: ["src/datasource/tauri.ts", GENERATED_WASM], rules: layerRules([TAURI]) },
   // Rule 3 (first half): the renderer does not know React. JSX imports React implicitly, so it is forbidden too.
-  { files: ["src/renderer/**/*.{ts,tsx,js,mjs,cjs}"], rules: layerRules([TAURI, REACT], JSX_SYNTAX) },
+  { files: ["src/renderer/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, REACT], JSX_SYNTAX) },
   // Rule 5: src/app does not know React or the src/state hooks (type imports count too).
-  { files: ["src/app/**/*.{ts,tsx,js,mjs,cjs}"], rules: layerRules([TAURI, REACT, STATE_HOOKS, UNNORMALIZED], JSX_SYNTAX) },
+  { files: ["src/app/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, REACT, STATE_HOOKS, UNNORMALIZED], JSX_SYNTAX) },
   // Rule 3 (second half, decided again in RF-1): src/ui does not import the `PointCloudRenderer` class.
   // Pure functions, constants and types of src/renderer (screen-project.ts, colormap.ts, ...) are fine.
-  { files: ["src/ui/**/*.{ts,tsx,js,mjs,cjs}"], rules: layerRules([TAURI, RENDERER_CLASS]) },
+  { files: ["src/ui/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, RENDERER_CLASS]) },
   // ADR-0023: a plugin (src/plugins/<id>/**) may import only src/plugin-api, its own folder, react, lucide-react
   // and src/ui/kit. The folder does not exist yet; the rule is in place for when it does.
   ...pluginZones(),

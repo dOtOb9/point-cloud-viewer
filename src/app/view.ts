@@ -2,6 +2,7 @@
 // React only shows the state and calls these. Everything they read or change is in the context.
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import { DEFAULT_PROJECTION_MODE, type ProjectionMode } from "../renderer/projection";
+import { isMeasureLayer, type ViewerLayer } from "../state/layers";
 import { createStore, type Store } from "./store";
 import { isTypingTarget } from "./typing-target";
 import { VIEW_PRESET_LABELS, type ViewPresetId } from "../renderer/view-presets";
@@ -18,16 +19,36 @@ export type ViewRenderer = Pick<PointCloudRenderer, "setViewPreset" | "fitAll" |
  */
 export interface ViewContext {
   projection: Store<ProjectionMode>;
+  /**
+   * True while a point-cloud layer is open (measurement layers do not count). The view functions do nothing when it is
+   * false, so the keys cannot change the view or the projection while the view button is grayed out (TP-1 F-10).
+   * The app sets it with `syncViewEnabled` (useViewShortcuts); a test sets it directly.
+   */
+  pointCloud: Store<boolean>;
   /** The renderer, or null before it exists / after it is disposed (set by `attachViewRenderer`). */
   renderer: Store<ViewRenderer | null>;
 }
 
 export function createViewContext(): ViewContext {
-  return { projection: createStore<ProjectionMode>(DEFAULT_PROJECTION_MODE), renderer: createStore<ViewRenderer | null>(null) };
+  return {
+    projection: createStore<ProjectionMode>(DEFAULT_PROJECTION_MODE),
+    pointCloud: createStore(false),
+    renderer: createStore<ViewRenderer | null>(null),
+  };
 }
 
 /** The one context of the app. Tests make their own with `createViewContext`. */
 export const viewContext: ViewContext = createViewContext();
+
+/** True when the list has a point-cloud layer (measurement layers do not count). The one definition: the view button and the keys both use it. */
+export function hasPointCloudLayer(layers: readonly ViewerLayer[]): boolean {
+  return layers.some((layer) => !isMeasureLayer(layer));
+}
+
+/** Tell the view functions whether a point cloud is open. Called whenever the layer list changes. */
+export function syncViewEnabled(ctx: ViewContext, layers: readonly ViewerLayer[]): void {
+  ctx.pointCloud.set(hasPointCloudLayer(layers));
+}
 
 /** Hand the new renderer to the view functions and give it the projection chosen so far. */
 export function attachViewRenderer(ctx: ViewContext, renderer: ViewRenderer): void {
@@ -97,17 +118,20 @@ export function viewActionForKey(event: {
 
 /** Switch the projection. The screen size at the target stays the same (renderer/projection.ts). */
 export function setProjection(ctx: ViewContext, mode: ProjectionMode): void {
+  if (!ctx.pointCloud.get()) return;
   ctx.projection.set(mode);
   ctx.renderer.get()?.setProjectionMode(mode);
 }
 
 /** Move to a fixed viewpoint (animated; immediate when animation is off). Does nothing when no layer is visible. */
 export function showViewPreset(ctx: ViewContext, id: ViewPresetId): boolean {
+  if (!ctx.pointCloud.get()) return false;
   return ctx.renderer.get()?.setViewPreset(id) ?? false;
 }
 
 /** "Fit all": the visible layers fill the screen, the direction stays. Does nothing when no layer is visible. */
 export function fitAllView(ctx: ViewContext): boolean {
+  if (!ctx.pointCloud.get()) return false;
   return ctx.renderer.get()?.fitAll() ?? false;
 }
 

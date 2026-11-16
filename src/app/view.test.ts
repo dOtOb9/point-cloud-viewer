@@ -4,19 +4,23 @@ import {
   createViewContext,
   detachViewRenderer,
   fitAllView,
+  hasPointCloudLayer,
   runViewAction,
   shortcutKeyOfPreset,
   showViewPreset,
+  syncViewEnabled,
   viewActionForKey,
   viewStatusText,
   VIEW_SHORTCUTS,
   type ViewContext,
 } from "./view";
 import { VIEW_PRESET_IDS } from "../renderer/view-presets";
+import type { ViewerLayer } from "../state/layers";
 
 function makeContext(opts: { attach?: boolean; mode?: "perspective" | "orthographic" } = {}) {
   const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
   const ctx: ViewContext = createViewContext();
+  ctx.pointCloud.set(true);
   if (opts.mode) ctx.projection.set(opts.mode);
   if (opts.attach !== false) attachViewRenderer(ctx, renderer);
   return { ctx, renderer, setProjectionMode: renderer.setProjectionMode };
@@ -62,6 +66,7 @@ describe("view actions", () => {
 
   it("the store is the one source of the projection: a new renderer gets the mode chosen before it existed", () => {
     const ctx = createViewContext();
+    ctx.pointCloud.set(true);
     runViewAction(ctx, { kind: "toggleProjection" }); // no renderer yet: only the store changes
     expect(ctx.projection.get()).toBe("orthographic");
     const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
@@ -82,6 +87,40 @@ describe("view actions", () => {
     stop();
     runViewAction(ctx, { kind: "toggleProjection" });
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("hasPointCloudLayer / syncViewEnabled (the one rule for the button and the keys)", () => {
+  const point = { id: "a" } as unknown as ViewerLayer;
+  const measure = { id: "m", measurement: { kind: "distance" } } as unknown as ViewerLayer;
+  it("only measurement layers (or none) -> false; a point-cloud layer -> true", () => {
+    expect(hasPointCloudLayer([])).toBe(false);
+    expect(hasPointCloudLayer([measure])).toBe(false);
+    expect(hasPointCloudLayer([measure, point])).toBe(true);
+  });
+  it("syncViewEnabled puts the answer into the context", () => {
+    const ctx = createViewContext();
+    syncViewEnabled(ctx, [measure]);
+    expect(ctx.pointCloud.get()).toBe(false);
+    syncViewEnabled(ctx, [measure, point]);
+    expect(ctx.pointCloud.get()).toBe(true);
+  });
+});
+
+describe("no point cloud (TP-1 F-10: the keys agree with the grayed-out button)", () => {
+  it("every view function does nothing while no point-cloud layer is open (only measurement layers left)", () => {
+    const { ctx, renderer } = makeContext();
+    ctx.pointCloud.set(false);
+    runViewAction(ctx, { kind: "toggleProjection" });
+    expect(ctx.projection.get()).toBe("perspective");
+    expect(renderer.setProjectionMode).toHaveBeenCalledTimes(1); // only the attach call
+    expect(showViewPreset(ctx, "top")).toBe(false);
+    expect(fitAllView(ctx)).toBe(false);
+    expect(renderer.setViewPreset).not.toHaveBeenCalled();
+    expect(renderer.fitAll).not.toHaveBeenCalled();
+    ctx.pointCloud.set(true); // a point cloud is opened again
+    runViewAction(ctx, { kind: "toggleProjection" });
+    expect(ctx.projection.get()).toBe("orthographic");
   });
 });
 
