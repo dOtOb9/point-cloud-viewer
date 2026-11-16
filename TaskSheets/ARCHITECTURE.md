@@ -80,26 +80,26 @@ point-cloud-viewer/
 
 ## 守る規約
 
-この5つが崩れると Web 版が出せなくなるか、実装が追えなくなる。規約 1・2・3・5 は CI の `invariants` ジョブが検査する（4 は検査の対象外）。
+この5つが崩れると Web 版が出せなくなるか、実装が追えなくなる。規約 1 は CI の `invariants` ジョブが、規約 2・3・5 は ESLint の `no-restricted-imports`（`eslint.config.js`。CI の `frontend` ジョブの `npm run lint`）が検査する（4 は検査の対象外）。import の循環は `npm run check:circular`（madge）が検査する。
 
 1. **`pcv-core` は Tauri を知らない。** `tauri` への依存を足さない。ここが wasm で動く
    ことが、Web 版のバックエンドを成立させる条件。wasm-bindgen/web-sys等の
    wasm固有の依存も`pcv-core`には入れず、`crates/pcv-wasm`（ADR-0012）に閉じる。
-2. **Tauri の API を import してよいのは `src/datasource/tauri.ts` だけ。**
+2. **Tauri の API（`@tauri-apps/*` の npm パッケージ全部。`plugin-dialog`・`plugin-opener` も）を import してよいのは `src/datasource/tauri.ts` だけ。**
    他のファイルは `DataSource` インターフェースしか見ない。Web 版は
    `src/datasource/web.ts`（`WebSource`）がこれを実装する（ADR-0012）。
 3. **`src/renderer/` は React を知らない。** canvas と `DataSource` だけを受け取る。
-   逆に `src/ui/` はレンダラを直接触らず、`src/state/` を経由する、と書いてきたが、
-   **後半は検査されておらず、実際には `src/ui/` から `src/renderer/` の純粋な関数・定数（`projectPoint` など）と
-   `src/datasource/` を import している（REVIEW-architecture-2026-11 の A-3）。** 決め直しは RF-1 で行う。
+   逆向き（RF-1 で決め直した）: **`src/ui/` は `PointCloudRenderer` クラスを import しない。** 純粋な関数・定数・型
+   （`screen-project.ts`・`colormap.ts`・`view-presets.ts` など）はよい。レンダラへの操作は `src/state/`・`src/app/` を経由する。
+   以前の「`src/ui/` はレンダラを直接触らず、`src/state/` を経由する」は、検査されておらず守られていなかったので、実際に守れる形に書き直した。
 4. **大きいデータは `pcv://` カスタムプロトコルで運ぶ。`invoke` は制御メッセージ専用。**
    理由と実測値は ADR-0001 を参照。
 5. **React only displays; `src/app/` does not know React** (ADR-0021, owner 2026-10-18, revised after R12). Workflows
    (open/convert, layers, tools, measuring, display settings) are plain functions in `src/app/` that take a context object.
    State stays in React (`useState` in small `src/state/` hooks) and is changed only through setters in the context.
    Classes only for objects that own long-lived resources (`PointCloudRenderer`, `WebSource`). `src/app/` imports neither
-   `react` nor `src/state/use*`; `src/ui/` calls `src/app/` functions directly. Rules 3 and 5 are checked by the CI
-   `invariants` job. (2026-11-16: state now goes in small non-class stores; see the RF-5 revision of ADR-0021. The
+   `react` nor `src/state/use*` (not even `import type`); `src/ui/` calls `src/app/` functions directly. Rules 2, 3 and 5 are checked by ESLint
+   (`eslint.config.js`, run by `npm run lint`). (2026-11-16: state now goes in small non-class stores; see the RF-5 revision of ADR-0021. The
    "`useState` in small hooks" sentence above is the older form.)
 
 ### `src/renderer/` の内部構成（規約3の補足）
@@ -161,4 +161,4 @@ point-cloud-viewer/
   `src/plugins/<id>/` の 1 機能 1 フォルダに分ける。コアが残すのは WebGPU のレンダラ・データの読み込み・レイヤーの一覧・殻（リボン・ダイアログの枠・ステータスバー）。
   プラグインが import してよいのは `src/plugin-api/`（コアの唯一の入口）・自分のフォルダ・`react`・`lucide-react`・`src/ui/kit` だけで、
   ホストの実装は `src/core/plugin-host.ts`。組み込みも同じ API で書く。外部のプラグインは `sandbox="allow-scripts"` の iframe の中で動かし、権限は利用者に許可を求める。
-  段階は PL-0〜PL-9（ADR-0023 の表）。前提の RF-1（層の規約の検査）で、`src/plugins/**` の import 制限も ESLint のルールに先に入れる（フォルダが無くても効く形）。
+  段階は PL-0〜PL-9（ADR-0023 の表）。前提の RF-1（層の規約の検査）で、`src/plugins/**` の import 制限は ESLint のルールに先に入れてある（フォルダが無くても効く形。`src/layer-rules.test.ts` がテストする）。

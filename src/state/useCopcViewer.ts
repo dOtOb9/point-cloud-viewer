@@ -34,17 +34,7 @@ import { useTempDir } from "./useTempDir";
 import type { CopcViewerState } from "./viewer-types";
 import type { ViewerStatus } from "./viewer-status";
 
-export type {
-  BackgroundMode,
-  ColorMode,
-  ConversionProgress,
-  CopcViewerState,
-  GpuErrorEntry,
-  OpfsStorageInfo,
-  PointShape,
-  ToolProgressState,
-  ViewerLayer,
-} from "./viewer-types";
+export type { CopcViewerState } from "./viewer-types";
 
 /**
  * M1-4: state of the COPC viewer. It binds src/renderer and src/datasource and shows only this hook to

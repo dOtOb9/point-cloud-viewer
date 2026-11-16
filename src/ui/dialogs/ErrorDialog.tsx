@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { GpuErrorEntry } from "../../state/useCopcViewer";
+import type { GpuErrorEntry } from "../../renderer/gpu-error-log";
 import { Dialog } from "./Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
 

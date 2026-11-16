@@ -4,7 +4,7 @@ import type { RasterPreviewImage } from "../datasource/raster";
 import type { ViewerLayer } from "../state/layers";
 import { CLOSED_RASTER_WINDOW, type RasterWindowState } from "../state/raster-window";
 import type { DisplayUnit } from "../state/units";
-import type { ToolProgressState } from "../state/viewer-types";
+import type { ToolProgressState } from "./point-cloud-tools";
 import type { PointCloudToolsContext } from "./point-cloud-tools";
 import {
   changeRasterSettings,

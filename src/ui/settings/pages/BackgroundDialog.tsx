@@ -1,4 +1,5 @@
-import type { BackgroundMode, CopcViewerState } from "../../../state/useCopcViewer";
+import type { BackgroundMode } from "../../../renderer/sky";
+import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { OptionRow } from "../../dialogs/OptionRow";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
 

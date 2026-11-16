@@ -23,13 +23,17 @@
 - 画面・実機（GPU、スマホ、ブラウザ）で確かめられないことは「未確認」と書き、所有者の確認手順を残す
 - **テストと CI が緑でも、動くとは限らない。** このプロジェクトでは、緑のまま画面が真っ黒・全ノード読み込み失敗・Web の変換が必ず失敗、が何度も起きている
 
-## 規約（CI の `invariants` ジョブが検査する。詳細は `TaskSheets/ARCHITECTURE.md`）
+## 規約（ESLint の `no-restricted-imports` と CI が検査する。詳細は `TaskSheets/ARCHITECTURE.md`）
 
 1. `crates/pcv-core` は Tauri に依存せず、`wasm32-unknown-unknown` でビルドできる
 2. Tauri の API パッケージ（`@tauri-apps/` で始まる npm パッケージ）を import してよいのは `src/datasource/tauri.ts` だけ。
-   **検査は `src/` 配下の文字列検索なので、コメントにそのパッケージ名を書いただけでも落ちる**（過去に2回落ちた）
-3. `src/renderer/` は React を import しない
-5. `src/app/` は React も `src/state/use*` も import しない（番号は `ARCHITECTURE.md` に合わせている。4 は CI の検査対象外）
+   例外は無い（`@tauri-apps/plugin-opener` も `tauri.ts` から呼ぶ）。検査は `eslint.config.js` のルールで、**import 文だけを見る**ので、コメントにパッケージ名を書いても落ちない
+3. `src/renderer/` は React を import しない。`src/ui/` は `PointCloudRenderer` クラス（`point-cloud-renderer.ts`）を import しない
+   （純粋な関数・定数・型、たとえば `screen-project.ts`・`colormap.ts` はよい。操作は `src/app/` の関数を呼ぶ）
+5. `src/app/` は React も `src/state/use*` も import しない（`import type` も不可）。番号は `ARCHITECTURE.md` に合わせている。4 は検査の対象外
+
+規約 2・3・5 は `npm run lint`（CI の `frontend` ジョブ）が、import の循環は `npm run check:circular`（madge。同じジョブ）が、規約 1 は `invariants` ジョブが検査する。
+将来の `src/plugins/**`（ADR-0023）が import してよいのは `src/plugin-api`・自分のフォルダ・`react`・`lucide-react`・`src/ui/kit` だけで、このルールも `eslint.config.js` に入っている（`src/layer-rules.test.ts` がテストする）
 
 ## React は表示だけ（`TaskSheets/ADR-0021-thin-react.md`、所有者の決定 2026-10-18）
 

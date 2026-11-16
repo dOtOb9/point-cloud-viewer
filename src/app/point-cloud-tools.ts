@@ -32,8 +32,16 @@ import { effectiveSelectedIds, toolSourceLayers } from "../state/layer-selection
 import { sectionYaw } from "../state/tool-math";
 import { lengthUnitsFor } from "../state/units";
 import { sectionLineRequestFor } from "./csf-params";
-import type { ToolProgressState } from "../state/viewer-types";
 import type { ViewerStatus } from "../state/viewer-status";
+
+/** Progress of the running point-cloud tool (L2-F). `totalPoints` is 0 until the first progress arrives. */
+export interface ToolProgressState {
+  title: string;
+  pointsRead: number;
+  totalPoints: number;
+  // --- G2: section line --- true: show `pointsRead / totalPoints` as a percentage (a calculation, not points read).
+  showAsPercent?: boolean;
+}
 
 /**
  * Everything the tools read or change. Built by the bridge hook (src/state/usePointCloudTools.ts) on each render.

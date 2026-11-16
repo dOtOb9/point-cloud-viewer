@@ -6,12 +6,6 @@
 import type { OpenFilesContext } from "../app/open-files";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import type { ViewerStatus } from "./viewer-status";
-import type { OpfsUsageBreakdown } from "../datasource/opfs";
-import type { BackgroundMode } from "../renderer/sky";
-import type { GpuErrorEntry } from "../renderer/gpu-error-log";
-import type { ColorMode } from "../renderer/colormap";
-import type { PointShape } from "../renderer/device-profile";
-import type { ViewerLayer } from "./layers";
 import type { DisplaySettings } from "./useDisplaySettings";
 import type { ErrorLog } from "./useErrorLog";
 import type { Layers } from "./useLayers";
@@ -19,53 +13,6 @@ import type { OpfsStorage } from "./useOpfsStorage";
 import type { PointCloudTools } from "./usePointCloudTools";
 import type { SectionViewHook } from "./useSectionView";
 import type { TempDirSetting } from "./useTempDir";
-
-/** Progress of the running point-cloud tool (L2-F). `totalPoints` is 0 until the first progress arrives. */
-export interface ToolProgressState {
-  title: string;
-  pointsRead: number;
-  totalPoints: number;
-  // --- G2: section line --- true: show `pointsRead / totalPoints` as a percentage (a calculation, not points read).
-  showAsPercent?: boolean;
-}
-
-// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
-// PointShapeもここから再エクスポートする（M3-8）。
-export type { PointShape };
-
-// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
-// GpuErrorEntryもここから再エクスポートする。
-export type { GpuErrorEntry };
-
-// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
-// BackgroundModeもここから再エクスポートする。
-export type { BackgroundMode };
-
-// UI(src/ui)はrendererを直接触らずstate経由にする規約（ARCHITECTURE.md 規約3）のため、
-// ColorModeもここから再エクスポートする（M2-2）。
-export type { ColorMode };
-
-// L1-D: レイヤー1件の型も同じ理由で再エクスポートする。
-export type { ViewerLayer };
-
-// UI(src/ui)はdatasourceを直接触らずstate経由にする規約（規約2の裏返し。
-// tauri.tsをimportしてよいのはこのファイルだけ）のため、
-// ConversionProgressもここから再エクスポートする（M4-3）。
-export type { ConversionProgress };
-
-/**
- * M4-6追記: Web版のOPFS使用量(内訳)と永続化の状態をまとめた、設定画面
- * (SettingsModal「ブラウザの保存領域」節)向けの表示用の値。`quotaBytes`/
- * `usageBytes`は`estimateQuota()`、`persisted`は`isPersisted()`、
- * `breakdown`は`getOpfsUsageBreakdown()`の結果をそのまま持つ
- * (`refreshOpfsStorageInfo`がまとめて取得する)。
- */
-export interface OpfsStorageInfo {
-  quotaBytes: number;
-  usageBytes: number;
-  persisted: boolean;
-  breakdown: OpfsUsageBreakdown;
-}
 
 // canvasRef is deliberately not part of CopcViewerState. Mixing a ref (canvasRef) and state in one object makes
 // `react-hooks/refs` of eslint-plugin-react-hooks think "a property of this object may be a ref", and it reports

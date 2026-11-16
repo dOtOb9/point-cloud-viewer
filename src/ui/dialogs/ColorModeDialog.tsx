@@ -1,4 +1,5 @@
-import type { ColorMode, CopcViewerState } from "../../state/useCopcViewer";
+import type { ColorMode } from "../../renderer/colormap";
+import type { CopcViewerState } from "../../state/useCopcViewer";
 import { CloseButton } from "./CloseButton";
 import { Dialog } from "./Dialog";
 import { OptionRow } from "./OptionRow";

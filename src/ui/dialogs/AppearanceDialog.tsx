@@ -1,4 +1,5 @@
-import type { CopcViewerState, PointShape } from "../../state/useCopcViewer";
+import type { PointShape } from "../../renderer/device-profile";
+import type { CopcViewerState } from "../../state/useCopcViewer";
 import { DEFAULT_POINT_SIZE_PX, MAX_POINT_SIZE_PX, MIN_POINT_SIZE_PX } from "../../renderer/layer-focus";
 import { CloseButton } from "./CloseButton";
 import { Dialog } from "./Dialog";

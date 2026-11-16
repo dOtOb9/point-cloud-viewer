@@ -17,12 +17,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # The layer rules (ARCHITECTURE.md rules 2, 3, 5; ADR-0023 for src/plugins) are ESLint `no-restricted-imports`
+      # rules in eslint.config.js, so `npm run lint` checks them. Tests: src/layer-rules.test.ts.
       - run: npm run lint
+      # No import cycles in src/ (type-only imports count). RF-1.
+      - run: npm run check:circular
       - run: npm run test
 
   # ARCHITECTURE.md の規約1・2・3・5をCIで機械的に守らせる（規約4は検査の対象外）。
   # 崩れると Web 版が出せなくなるが、崩れても通常のビルドは通ってしまうため、
-  # 人間のレビューに頼らずここで落とす。
+  # 人間のレビューに頼らずここで落とす。規約1はこのジョブ、規約2・3・5は frontend ジョブの
+  # `npm run lint`（ESLint のルール）、循環の検査（madge）も frontend ジョブ。
   invariants:
     runs-on: ubuntu-latest
     steps:
@@ -37,37 +42,10 @@ jobs:
       - name: "規約1: pcv-core が wasm32 でビルドできる"
         run: cargo build -p pcv-core --target wasm32-unknown-unknown
 
-      # 規約2: Tauri の API を import してよいのは src/datasource/tauri.ts だけ。
-      # 他所に漏れると Web 版で HttpSource に差し替えられなくなる (ADR-0001)。
-      - name: "規約2: Tauri API の import が datasource に閉じている"
-        run: |
-          allowed="src/datasource/tauri.ts"
-          found=$(grep -rl "@tauri-apps/api" src/ || true)
-          if [ "$found" != "$allowed" ]; then
-            echo "::error::Tauri API を import してよいのは $allowed だけです。"
-            echo "実際に import しているファイル:"
-            echo "$found" | sed 's/^/  /'
-            echo "理由は TaskSheets/ADR-0001-architecture.md の「Tauri 依存を1ファイルに閉じ込める」を参照。"
-            exit 1
-          fi
-          echo "OK: $allowed のみ"
-
-      # Rule 3: src/renderer/ does not know React. Rule 5: src/app/ does not know React or the src/state hooks (ADR-0021).
-      # A plain text search, like rule 2: writing `from "react"` in a comment there also fails.
-      - name: "規約3・5: renderer と app が React を import しない"
-        run: |
-          react=$(grep -rlE "from ['\"]react(-dom)?(/[^'\"]*)?['\"]" src/renderer src/app 2>/dev/null || true)
-          tsx=$(find src/renderer src/app -name "*.tsx" 2>/dev/null || true)
-          hooks=$(grep -rlE "from ['\"][^'\"]*state/use[A-Z][^'\"]*['\"]" src/app 2>/dev/null || true)
-          if [ -n "$react$tsx$hooks" ]; then
-            echo "::error::src/renderer/ と src/app/ は React を、src/app/ は src/state/use* を import できません。"
-            [ -n "$react" ] && echo "React を import しているファイル:" && echo "$react" | sed 's/^/  /'
-            [ -n "$tsx" ] && echo ".tsx ファイル:" && echo "$tsx" | sed 's/^/  /'
-            [ -n "$hooks" ] && echo "src/state のフックを import しているファイル:" && echo "$hooks" | sed 's/^/  /'
-            echo "理由は TaskSheets/ADR-0021-thin-react.md を参照。"
-            exit 1
-          fi
-          echo "OK: src/renderer/ と src/app/ に React の import なし"
+      # Rules 2, 3 and 5 (Tauri packages only in src/datasource/tauri.ts; no React in src/renderer and src/app;
+      # no src/state/use* in src/app) used to be grep steps here. They are ESLint rules now and run in the
+      # `frontend` job (`npm run lint`), because grep also failed on a comment that merely named a package
+      # and missed `@tauri-apps/plugin-*` (RF-1).
 
   rust:
     runs-on: windows-latest
