@@ -132,3 +132,55 @@
   Ubuntu の Node 22 での `npm ci` は未実行（手元は Windows）。`ci.yml` の YAML の構文は目で確かめたのみで、`actionlint` は使っていない
 - `src/plugins/` の実物が無いので、プラグインのルールは `layer-rules.test.ts` の作り話のパスでのみ確かめた
 - デスクトップでの更新通知の「開く」ボタン（`openReleasePage`）の動作は未確認（`openUrl` の呼び出しを関数ごと `tauri.ts` へ移しただけで、中身は同じ）
+
+---
+
+## RF-15 コミットした wasm が古いことを CI で検出する
+
+### 先に測ったこと: `npm run build:wasm` は再現するか
+
+手元（Windows、`rustc 1.99.0`、`wasm-bindgen 0.2.128` = `crates/pcv-wasm/Cargo.lock` の版）で、`npm run build:wasm` を実際に 3 通り行い、`sha256sum` で比べた。
+`crates/pcv-wasm/target` を消してからの作り直し（59 クレートを再コンパイル）。
+
+| 比べたもの | `pcv_wasm.js` | `pcv_wasm.d.ts` | `pcv_wasm_bg.wasm.d.ts` | `pcv_wasm_bg.wasm` |
+|---|---|---|---|---|
+| ビルド 1 と、`target` を消したビルド 2（同じフォルダ `C:\workspace\point-cloud-viewer`） | 一致 | 一致 | 一致 | **一致**（2,083,361 バイト） |
+| ビルド 1 と、ソースを別のフォルダ（スクラッチの下）へ `git archive HEAD` で出して作ったビルド 3 | 一致 | 一致 | 一致 | **不一致**（2,086,228 バイト） |
+| コミット済みと、今回のビルド 1 | 内容は一致（`git diff` に差分なし。作業ツリーが CRLF のため sha256 は違う） | 同左 | 同左 | **不一致**（コミット済み 2,084,497 → 2,083,361 バイト） |
+
+- 結論: **同じフォルダ・同じツールなら `.wasm` も再現する。だが `.wasm` はフォルダと機械に依存する。** `pcv_wasm_bg.wasm` には Rust の panic の場所として絶対パスが埋まっている。
+  コミット済みの `.wasm` から `grep -a -o` で取り出した例: `C:\Users\Masa1\.cargo\registry\src\index.crates.io-…\copc-core-0.9.0\src\hierarchy.rs`、
+  `C:\rust\point-cloud-viewer\.claude\worktrees\agent-ab616ea6433c4e893\crates\pcv-core\src\raster\preview.rs`（別の worktree のパス）。
+  CI（ubuntu、`/home/runner/…`、`rustc` は常に最新の stable）の `.wasm` は、同じソースでも**必ず一致しない**
+- JS 糊と型の 3 ファイルは、フォルダが違っても再現した（ビルド 1・2・3 で一致）。コミット済みとも内容が一致した（今の HEAD は古くない）
+- 作業ツリーが CRLF なのは `core.autocrlf=true` のため。`git diff` は改行を正規化するので、比較は `git diff --exit-code` で行う（`sha256sum` では比べない）
+
+### やったこと
+
+- `package.json` に `check:wasm-glue`（`git diff --exit-code -- src/wasm/pcv-wasm/pcv_wasm.js src/wasm/pcv-wasm/pcv_wasm.d.ts src/wasm/pcv-wasm/pcv_wasm_bg.wasm.d.ts`）を足した
+- `.github/workflows/pages.yml` の、wasm を作り直すステップの後（`npm ci` の前）に、`npm run check:wasm-glue` を実行するステップを足した。落ちたら
+  「`npm run build:wasm` を実行してコミットする」というエラーを出す。`wasm-bindgen-cli` は既存のステップが `Cargo.lock` の版を入れるので、版のずれによる誤検出を避ける形はそのまま使っている（RF-15 の「危険」）
+- `ADR-0012` に追記: 「`pages.yml` がデプロイのたびに食い違いを検出できる」という上の記述の訂正
+
+### 採らなかった案
+
+- **`.wasm` 本体も `git diff --exit-code` に入れる**: 上の表のとおり、フォルダと機械で必ず違うので、CI で毎回落ちる。`RUSTFLAGS=--remap-path-prefix` で絶対パスを固定する手もあるが、
+  CI の `rustc` が最新の stable で手元と版が違うとコード生成が変わりうる（**未検証**）ので、版の固定まで要る。割に合わない。そのため JS 糊と型だけにした（REVIEW の案どおり）
+- **ソースのハッシュを生成物の隣に置いて、CI で再計算して比べる**: 関数の本体だけの変更（G1-T15・T18 のような、文言の修正）も検出できる。だが、`pcv-core` やコメントを 1 文字直すたびに
+  2 MB の `.wasm` を作り直してコミットすることになり、リポジトリが版ごとに太る（A-9: パックの約 52%）問題を悪化させる。やるなら「コミットをやめる」案（下）とセットで
+- **今の検出の限界（未対応）**: `#[wasm_bindgen]` の関数・型の追加・変更・削除は検出できる（JS 糊か型が変わる）。**関数の本体だけを変えて作り直しを忘れた場合は検出できない**
+- **将来（所有者の判断。やっていない）**: コミットをやめ、CI とローカルで作る案（ADR-0012 の見直し）。開発機に `wasm-bindgen-cli`（`Cargo.lock` と同じ版）が要る
+
+### 触ったファイル
+
+`package.json`、`.github/workflows/pages.yml`、`TaskSheets/ADR-0012-web-worker-sync-io.md`、`TaskSheets/RF-safety-net.md`
+
+### 確かめ方と結果
+
+- **AC-1（`#[wasm_bindgen]` の関数を 1 つ足して作り直さないと落ちる）**: `crates/pcv-wasm/src/lib.rs` の末尾に `#[wasm_bindgen] pub fn rf15_probe_added_function() -> u32 { 1 }` を足し、`npm run build:wasm` のあと
+  `npm run check:wasm-glue` を実行 → 終了コード 1。`pcv_wasm.d.ts` に `export function rf15_probe_added_function(): number;`、`pcv_wasm.js` に同名の関数の差分が出た。
+  確かめたあと、`git checkout -- crates/pcv-wasm/src/lib.rs src/wasm` で戻した（コミットしていない）
+- 一致する場合: 何も足さずに `npm run build:wasm` のあと `npm run check:wasm-glue` → 終了コード 0（`.wasm` が違っても落ちない）
+- `ci.yml`・`pages.yml` の変更は、**CI では未確認**（push しない決まり）。同じコマンドを手元（Windows）で実行して確かめた。ubuntu で `git diff` の対象に CRLF が混ざる心配は、
+  Linux の checkout では改行の変換が無いので小さいが、**実機（CI）では未確認**
+- 生成物（`src/wasm/pcv-wasm/`）はコミットしていない。HEAD のコミット済みの生成物と今のソースの JS 糊・型は一致していたため、作り直してコミットする必要が無かった

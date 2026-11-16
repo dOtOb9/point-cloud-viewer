@@ -202,3 +202,13 @@ Worker内で直接呼ぶより複雑になる。
   Actionsの実行結果を所有者に確認してもらう必要がある。
 - 複数Workerによる並列化が実際に必要になるかどうか（ノード読み込みが体感で
   遅いかどうか）は、実機・実データでの確認待ち。
+
+## 追記（2026-11-16、RF-15）: コミット済みの wasm が古いことの検出
+
+上の「検出できる」は不正確だった。`pages.yml` は wasm を作り直して**上書きする**だけなので、コミット済みの生成物が古くても、ジョブは緑のまま、
+作り直した新しい wasm が公開される（一方 `ci.yml` の E2E はコミット済みの古い生成物で通る）。
+`pages.yml` に、作り直した直後の JS 糊と型（`pcv_wasm.js`・`pcv_wasm.d.ts`・`pcv_wasm_bg.wasm.d.ts`）がコミット済みと一致することを
+`npm run check:wasm-glue`（`git diff --exit-code`）で確かめるステップを足した。`.wasm` 本体は比べない（絶対パスが埋まっていて機械ごとに違う）。
+測った内容と、検出できないもの（関数の本体だけの変更）は `TaskSheets/RF-safety-net.md` の RF-15 に書いた。
+ローカルで Rust を変えたら `npm run build:wasm` を実行し、`npm run check:wasm-glue` が通ることを確かめてからコミットする
+（`wasm-bindgen --version` が `crates/pcv-wasm/Cargo.lock` の `wasm-bindgen` と同じであること）。
