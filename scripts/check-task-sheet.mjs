@@ -10,6 +10,11 @@ import { fileURLToPath } from "node:url";
 
 const PLACEHOLDER = /^（作業エージェントが.*足す）$/;
 const AC_LINE = /\*\*AC-\d+\*\*/;
+const HORIZONTAL_RULE = /^(-{3,}|[*]{3,}|_{3,})$/;
+const RECORD_HEADING = /^#{1,6}\s+.*記録/;
+function isRecordHeading(line) {
+  return RECORD_HEADING.test(line);
+}
 
 /**
  * Lines outside the record sections. A record section starts at a heading whose text contains "記録", at any level,
@@ -29,15 +34,20 @@ export function protectedLines(text) {
         continue;
       }
     }
-    if (recordLevel === null && !PLACEHOLDER.test(line.trim())) out.push(line);
+    // A horizontal rule is only a separator: a worker's record is inserted before it, so it ends up inside the record section.
+    if (recordLevel === null && !PLACEHOLDER.test(line.trim()) && !HORIZONTAL_RULE.test(line.trim())) out.push(line);
   }
   return out;
 }
 
 /**
  * Problems when `headText` replaces `baseText`. Empty = fine. Only files with an "**AC-" line are checked.
- * Rule: every non-blank line the coordinator wrote outside the record sections must still be there outside the record
- * sections (so an AC swallowed by a record heading counts as removed), and no new AC line may appear outside them.
+ * Rules for the coordinator's part (everything outside the record sections):
+ *  1. every non-blank line must still be there,
+ *  2. in the same order,
+ *  3. and no new non-blank line may appear, except the heading of a record section (so "AC-4 ... but not for Web" appended
+ *     under an AC, or a new "## Notes" section outside the record, is caught).
+ * An AC swallowed by a record heading counts as removed (rule 1).
  */
 export function findProtectedChanges(baseText, headText) {
   if (!AC_LINE.test(baseText)) return [];
@@ -52,10 +62,18 @@ export function findProtectedChanges(baseText, headText) {
     }
   });
   head.forEach((line, i) => {
-    if (AC_LINE.test(line) && !baseSet.has(line)) {
-      problems.push(`acceptance criterion added outside a record section (head line ${i + 1}): ${line.slice(0, 100)}`);
-    }
+    if (line.trim() === "" || baseSet.has(line) || isRecordHeading(line)) return;
+    problems.push(`line added outside a record section (head line ${i + 1}): ${line.slice(0, 100)}`);
   });
+  if (problems.length === 0) {
+    // Rule 2: the base lines, in order, must be a subsequence of the head lines.
+    const wanted = base.filter((l) => l.trim() !== "");
+    let k = 0;
+    for (const line of head) {
+      if (k < wanted.length && line === wanted[k]) k++;
+    }
+    if (k < wanted.length) problems.push(`lines outside the record sections were reordered (first out of place: ${wanted[k].slice(0, 100)})`);
+  }
   return problems;
 }
 

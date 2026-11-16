@@ -62,6 +62,51 @@ describe("check-task-sheet", () => {
     expect(findProtectedChanges(base, head).some((p) => p.includes("text"))).toBe(true);
   });
 
+  it("catches a line appended under an acceptance criterion (loosening it by adding a sentence)", () => {
+    const head = BASE.replace("- **AC-4** memory limit in numbers", "- **AC-4** memory limit in numbers\n  ただし Web と Android は対象外とする");
+    expect(findProtectedChanges(BASE, head).some((p) => p.includes("対象外"))).toBe(true);
+  });
+
+  it("catches a new section added outside the record", () => {
+    const head = BASE.replace("## 記録", "## 補足\nAC-1 は Web だけでよい\n## 記録");
+    const problems = findProtectedChanges(BASE, head);
+    expect(problems.some((p) => p.includes("補足"))).toBe(true);
+    expect(problems.some((p) => p.includes("Web だけ"))).toBe(true);
+  });
+
+  it("catches two acceptance criteria swapped (the order is part of the sheet)", () => {
+    const head = BASE.replace("- **AC-1** time it\n- **AC-4** memory limit in numbers", "- **AC-4** memory limit in numbers\n- **AC-1** time it");
+    expect(findProtectedChanges(BASE, head).some((p) => /reordered/.test(p))).toBe(true);
+  });
+
+  it("ignores a horizontal rule that a record inserted before it swallowed (the TP-1 sheet has one)", () => {
+    const base = "## TP-1
+- **AC-1** a
+
+verify text
+
+---
+
+## TP-2
+- **AC-3** c
+";
+    const head = "## TP-1
+- **AC-1** a
+
+verify text
+
+### 実装の記録
+- did x
+
+---
+
+## TP-2
+- **AC-3** c
+---
+";
+    expect(findProtectedChanges(base, head)).toEqual([]);
+  });
+
   it("ignores sheets without acceptance criteria", () => {
     expect(findProtectedChanges("# ADR\ntext\n", "# ADR\nchanged\n")).toEqual([]);
   });
