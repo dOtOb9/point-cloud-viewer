@@ -60,6 +60,71 @@
 
 Web 版（`npm run dev`）で `autzen-classified.copc.laz` を開き、各定位置・平行投影で計測して、透視の時と同じ値になるか見る。
 
+### 実装の記録（作業エージェント R1、2026-11-16）
+
+コミット: `7e61104`（renderer: 平行投影・定位置の計算）、`e41495d`（src/app/view.ts と状態）、`99a0b8a`（ボタン・ダイアログ・ステータスバー）。
+
+**何をしたか**
+
+- `src/renderer/projection.ts`（新規）: 透視・平行の投影をここに集めた。フレームごとに `Projection`（モード・行列・near/far・平行の見える高さ）を1つ作り、
+  描画・ピック・EDL・グリッドはそれを読む。以前は `perspective(FOV_Y_RADIANS, …, NEAR, FAR)` が renderOnce・pickPoint・EDL・空とグリッドの基底に散らばっていた。
+- 平行投影の大きさ: 見える高さの半分 = `distance * tan(fovY/2)`。透視で注視点の面に見える高さと同じなので、切り替えても注視点の位置の大きさが変わらない（AC-4）。
+  平行ではホイールのズームがそのまま「拡大率」になる（`distance` が拡大率を兼ねる）。
+- 平行の near/far: 注視点を中心に対称（`distance ∓ 2 * max(シーンの対角線, distance)`）。near は負になり、カメラの後ろの点も消えない。深度は線形になる。
+- 深度から距離を戻す式を投影ごとに分けた: `pick-math.ts` の `depthToEyeDistance`（透視）／`depthToEyeDistanceOrtho`、`edl.ts` の `linearizeDepth`／`linearizeDepthOrtho`。
+  ピックの2段目の near/far の絞り込みも平行用（`refineDepthRangeOrtho`。深度が線形なので距離によらず一定の幅）。
+- EDL: 平行では目の距離が0や負になりうるので log2 が使えない。深度の差を注視距離で割った値（透視の log2 比の1次近似と一致）で比べる。
+  `edlShadingFactorFromLogs` に式を1つにまとめ、透視・平行の両方がそこを通る。WGSL 側は `logDepth()`。
+- グリッド: 平行ではレイの向きを視線に揃え、出発点を画素ごとにずらす（uniform の `params.w` が 1 のとき）。ずらす量は「画面の端までの実寸」で、
+  既存の `viewRightScaled / viewUpScaled` に入れ替えて渡す。空は背景なので透視のレイのまま。
+- LOD の選択（`screen-space-error.ts`）・視錐台カリング（`frustum.ts`）・レイ（`raycast.ts`）・計測の重ね描き（`screen-project.ts`）は、行列を通して計算しているので
+  コードを変えずに平行で動く。これをテストで確かめた（`projection.test.ts`）。
+- カーソル位置へのズーム: 平行ではどの画素のレイも向きが同じなので、そのままでは横に動かない。`getCursorDirection` が「視線 + カーソルの注視面でのずれ / distance」を返し、
+  `OrbitCamera.zoom()` の「target を distance × (1 − 倍率) × この向きだけ動かす」計算で、ちょうどカーソル位置が動かないように寄る（正規化されていないベクトルを渡す）。
+- ダブルクリックで寄る: 平行のレイの出発点は near 面（注視点の R だけ後ろ）なので、近くの箱の内側にならず、既存の `pickFlyToPoint` がそのまま使える。
+- 定位置（`view-presets.ts`）: yaw/pitch を上方向から決める。北 = Z-up なら +Y、Y-up なら −Z、それ以外は `horizontalBasis` の right。
+  上 = 正面と同じ yaw で pitch は上限（カメラは真上 90° を取れないので 89.4°）。等角 = 正面から東へ 45°・pitch 35°。
+  注視点は見えているレイヤーの**ヘッダーの実データ範囲**の中心（octree の立方体ではない。立方体は高さ方向に引き伸ばされていて、正面・側面で中心がずれるため）。
+- 全体の距離: `fitDistance`（透視: 外接球が収まる距離、平行: 見える高さの半分 ≥ 半径）。画面の縦横比も見る。
+- `src/app/view.ts`（ADR-0021。React・ref なしの関数）: `showViewPreset` / `fitAllView` / `setProjection` / `runViewAction`。ボタン・ダイアログ・キーボードは全部 `runViewAction` を通る。
+- UX: UX-1 ステータスバーに「視点: 正面（透視投影）」（狭い幅は「正面・透視」。実際のカメラから求めるので、回すと「自由」になる）。
+  UX-2 ダイアログは押したらすぐ動き、開いたまま、画面の端（狭い幅は下）に寄せて暗幕を暗くもぼかしもしない（`Dialog` に `placement="side"` を足した）。
+  UX-4 F=全体、1=上、2=正面、3=右、4=等角、5=投影の切り替え、6=背面、7=左。ツールチップとダイアログにキーを書いた。入力欄・Ctrl/Meta/Alt・IME変換中・キーの押しっぱなしでは反応しない。
+  ダイアログの Esc・Tab は共通 `Dialog` のまま。UX-6 「全体」で必ず戻れる。UX-7 ボタンは `min-h-11`。UX-8 言葉は「視点・全体・上・正面・背面・左・右・等角・透視投影・平行投影」。
+
+**採らなかった案**
+
+- 平行を「FOV を極端に小さくした透視」で近似する案: 深度の精度が足りず（NEAR/FAR の幅が 1e9）、ピックと EDL の式がそのまま使えるように見えて桁落ちする。
+- 平行の near を 0.01（透視と同じ）にする案: ズームでカメラが点群の中に入り、回すと後ろの点が消える。対称な near/far にした。
+- EDL を平行でも log2(目の距離) のままにする案: near が負なので log2 が定義できない。
+- 空も平行用に作り直す案: 空は向きを示す背景で、点群と位置を合わせる必要がない。グリッドだけ合わせた。
+- 視点のダイアログを「選んで OK で適用」にする案: UX-2（すぐ動く）に反する。
+- 全体の注視点・大きさに octree の立方体（`layerFocusBounds` の `sceneBounds`）を使う案: 上記のとおり高さ方向がずれる。
+
+**触ったファイル**
+
+`src/renderer/`: `projection.ts`（新）、`view-presets.ts`（新）、`mat4.ts`（`orthographicMatrix`）、`pick-math.ts`、`edl.ts`、`ground-grid.ts`、`gpu-resources.ts`、
+`point-cloud-renderer.ts`、`orbit-camera.ts`（`MIN_PITCH`/`MAX_PITCH` を export）、テスト（`projection.test.ts`・`view-presets.test.ts`・`pick-math.test.ts`・`edl.test.ts`）。
+`src/app/view.ts`・`view.test.ts`（新）。`src/state/`: `useDisplaySettings.ts`・`viewer-types.ts`・`useCopcViewer.ts`。
+`src/ui/`: `toolbar/buttons/ViewButton.tsx`・`toolbar/useViewShortcuts.ts`・`toolbar/Toolbar.tsx`・`tools/ViewDialog.tsx`（+ `.test.tsx`）・`dialogs/Dialog.tsx`・`shell/AppShell.tsx`・`status/StatusBar.tsx`。
+
+**確かめたこと（コマンドの出力）**: `npm run typecheck` / `npm run lint` エラー無し、`npx vitest run`（`C:\` から）87 files 881 tests passed。
+
+**未確認（画面・GPU でしか確かめられない）**
+
+- 平行投影の見た目全般: グリッドが点群と合っているか、EDL の陰影の強さが透視と近いか（強さは注視距離基準にした推定。実機で調整が要るかもしれない）、
+  深度の精度（near/far が広いので、シーンが大きいと 24bit の刻みが粗くなりうる。ピックは2段目で絞るので影響は小さい見込み）。
+- 計測のピックが透視と平行で同じ値になるか（受け入れの確かめ方）。WGSL の `logDepth()` とグリッドのシェーダはテストできない（式は TypeScript 側をテスト）。
+- 6つの定位置の向き（特に「上」で画面の上が北か、Y-up データで北を −Z にした判断が合っているか）、等角の見え方、アニメーション。
+- ダイアログの配置（右端・狭い幅で下）が結果を隠さないか、幅 375px でのはみ出し、タッチ操作。ステータスバーの表示の収まり。
+
+**既知の制限**: フラスタムの near 平面は既存の近似（`r3 + r2`）のままで、平行ではやや広めに判定する（外れた箱を落としきらないだけで、描画は壊れない）。
+`OrbitCamera.pan` のパン速度の下限（シーン規模の床）は平行でも同じで、深く寄ると指の動きより速く動く（透視と同じ癖）。
+
+**所有者の確認手順**: `npm run dev`（Web）で `autzen-classified.copc.laz` を開く。①リボンの「視点」→ダイアログが右端に出て、各ボタンで動く（`1`〜`5`・`F` キーも）。
+②「平行投影」にして、ホイール・ドラッグ・ダブルクリックを試す。透視に戻した瞬間と大きさが変わらないこと。③同じ2点を透視・平行・上・正面で計測し、値が一致すること。
+④EDL とグリッドが点群と合っていること。⑤幅 375px（ブラウザの開発者ツール）でダイアログとステータスバーを見る。
+
 ---
 
 ## TP-2 表示範囲
