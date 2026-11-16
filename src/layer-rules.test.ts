@@ -234,3 +234,16 @@ describe("everything the old CI greps caught is still caught", () => {
     expect(await layerMessages("src/renderer/x.tsx", "export const a = <div />;")).not.toEqual([]);
   });
 });
+
+// Audit RF-0/1/15-RP R1: the old greps looked at every file under src/, whatever its extension. Vite bundles
+// .jsx, .mts and .cts too, so the layer rules must look at them as well.
+describe("audit RF-0/1/15-RP R1: file extensions the old greps also saw", () => {
+  it.each([
+    ["src/ui/x.jsx", 'import { invoke } from "@tauri-apps/api/core";'],
+    ["src/x.mts", 'import { invoke } from "@tauri-apps/api/core";'],
+    ["src/x.cts", 'import { invoke } from "@tauri-apps/api/core";'],
+    ["src/app/x.jsx", 'import { useState } from "react";'],
+  ])("F-RP-2 rejects %s: %s", async (filePath, code) => {
+    expect(await layerMessages(filePath, code)).not.toEqual([]);
+  });
+});
