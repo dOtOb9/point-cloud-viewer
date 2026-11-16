@@ -28,3 +28,21 @@
 | F-8 テスト名・コメントが実際（平行は 0.866 倍）と違う | nit | 式を確かめずにコメントを書いた | 仕組みにしない（一度きり。コメントの正しさを機械で見る手段が無い） | — |
 | F-9 ツールチップにキー6・7が無い、レイヤーが無いのに 5 が効く、平行で新規レイヤーの距離が透視のまま | nit | ショートカット表（`VIEW_SHORTCUTS`）と表示（ツールチップ）が別々に書かれていた | 仕組みにしない（R2 で直した。ツールチップを表から生成するほどの数ではない。キーが増えるタスクで再検討） | — |
 | F-10 点群のレイヤーを消して計測レイヤーだけが残ると、「視点」ボタンはグレーアウトするのに 5 キーで投影が切り替わった（AppShell が `viewer.layers.length > 0` で有効を判定） | nit | 「視点が使える条件」をボタン（`hasPointCloud`）とショートカット（`layers.length > 0`）で別々に書いた。計測レイヤーもレイヤーに数えられることを見落とした | テスト: `src/code-limits.test.ts` の「view enabled condition」が、`ViewButton.tsx` と `AppShell.tsx` の両方が `hasPointCloud(` を使っていることを検査する（条件を1つの関数に集めた形を壊すと落ちる） | `hasPointCloud(viewer)` に統一（012c6db）、`src/code-limits.test.ts` |
+
+## RF-0/1/15（2026-11-16、監査: R2 で APPROVE、再発防止: 未承認）
+
+根本原因は 2 つにまとまる。(A) **検査を別の仕組みに置き換えたとき、前の検査が捕まえていた物を全部捕まえるかを確かめなかった**（F-1・F-2・F-3・F-5・F-6）。
+置き換えの受け入れ基準を「新しいルールが、わざとの違反で落ちる」（RF-1 の AC-2）としか書かず、「前の検査が落とした物で落ちなくなる物が無い」を持っていなかった。
+(B) **文書に書く事実を、コードを開いて確かめずに、REVIEW の文や記憶から写した**（F-7）。
+
+| 指摘 | 重さ | 根本原因 | 防ぐ仕組み（種類: テスト / lint / CI / スクリプト / 決まり / 注意） | 置いた場所・コミット |
+|---|---|---|---|---|
+| F-1 ESLint の `no-restricted-imports` が動的 `import()` を見ず、grep からの置き換えで検査が後退した | must | (A)。`no-restricted-imports` が import 文しか見ないことを知らず、grep が文字列を全部見ていたこと（動的 import・export-from・require も落としていた）を数えなかった | テスト: `src/layer-rules.test.ts` の「everything the old CI greps caught is still caught」。旧 grep が捕まえた形（import・export-from・動的 import・型の import・require・JSX、全部の層とファイル種別）を固定したケース（ファイル全体で 140 ケース）。決まり: AGENTS.md「検査を置き換えるときは、前の検査が捕まえていた形を全部捕まえることをテストで固定」。元の誤り（`ImportExpression` のセレクタを消す）で 15 ケースが落ちることを一時的に確かめ、戻した | `src/layer-rules.test.ts`、`eslint.config.js`（`require()` のセレクタを足した）、AGENTS.md |
+| F-2 型の位置の `import("…").X`（TSImportType）を見ない | should | F-1 と同じ（(A)）。TypeScript 固有の import の形を一覧にしなかった | F-1 のテストと、`layerRules()` がパターンを import 文・`import()`・型の `import()`・`require()` の全部に同じ正規表現で展開する作り（パターンを 1 つ足せば全部に効く）。別の仕組みは作らない | 同上 |
+| F-3 `RENDERER_CLASS` が拡張子つき（`.ts`・`.js`）を見ない | should | 正規表現を import 文の文字列の見た目だけで書き、tsconfig の `allowImportingTsExtensions` を見なかった | テスト: F-3 のケース（拡張子つき）。設定との食い違いを自動で見る仕組みは作らない（tsconfig の他の設定がルールを変える場合は、その場で足す） | `src/layer-rules.test.ts` |
+| F-5 正規化していないパス（`./../x` など）でプラグインのルールをすり抜ける | nit | 「`../` の数」で判定する作りの限界を、書いた時点で数えなかった | lint: 正規化していないパスを `src/app`・`src/plugins` で禁止（`UNNORMALIZED`）。テスト: F-5 のケース。限界（深さ 9 以上、`../state` の index）は `eslint.config.js` と RF-safety-net.md に書いた | `eslint.config.js`、`src/layer-rules.test.ts` |
+| F-6 層のルールが `.js`・`.mjs` を見ない（`files` が `ts,tsx` だけ） | nit | 旧 grep は拡張子を問わなかったことに気づかなかった（(A)） | テスト: F-6 のケースと、F-9（生成物の `src/wasm/**` は見ない）。旧 grep の形のテストにも `src/zz.js`・`.mjs` を含めた | `src/layer-rules.test.ts` |
+| F-7 文書の事実の誤り: ROADMAP「HTML/SVG」（実際は Canvas 2D と SVG）、`pcv-convert/Cargo.toml` の description（まだ「スパイク」）、記録の「版が動いた」の一覧（`detect-libc` などは動いていない） | should | (B)。REVIEW の文・記憶から写し、該当のコード（`section-2d.ts` の先頭のコメントなど）・`git diff` を開かなかった。CLAUDE.md の「数値は実際に実行したコマンドの出力から」は数値だけで、機能の説明・一覧には効いていなかった | スクリプト+CI: `scripts/check-doc-paths.mjs`（`npm run check:docs`、CI の `frontend` ジョブ）が ARCHITECTURE.md と CLAUDE.md の中のパスと相対リンクの存在を見る（RF-0 の AC-1 のワンライナーを置き換えた）。決まり: AGENTS.md「文書に書く事実は、書く前にコードを開く／コマンドを実行して確かめ、方法を作業報告に書く」と、作業報告の形式に「文書に書いた事実の確かめ方」の行。**事実の中身（機能の説明・版・数）は機械で見られない**ので、ここは決まりと報告の欄に頼る（弱い仕組みであることを承知で残す） | `scripts/check-doc-paths.mjs`、`package.json`、`ci.yml`、AGENTS.md |
+
+- `npm run check:docs` が落ちることの確認: CLAUDE.md の末尾にわざと存在しないパス（`src/app/not-here.ts`）と相対リンクを足して実行 → 終了コード 1 とその 2 件を表示（確かめて戻した）。現状は `OK`
+- 仕組みにしなかったもの: 作業報告の「文書の事実の確かめ方」の中身の真偽（監査役が見る）
