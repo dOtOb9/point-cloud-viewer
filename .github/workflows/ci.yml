@@ -1,10 +1,11 @@
 name: CI
 
+# Every branch and every pull request, whatever its base (AGENTS.md: the coordinator pushes a work branch and checks CI before
+# merging; stacked pull requests whose base is not main must be green on their own too).
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
 
 jobs:
   frontend:
