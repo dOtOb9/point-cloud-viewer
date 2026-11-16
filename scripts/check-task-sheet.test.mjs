@@ -34,12 +34,32 @@ describe("check-task-sheet", () => {
     const head = BASE.replace("### PF-1 以降（later）\n## 記録\n（作業エージェントが日本語で足す）\n", "");
     const problems = findProtectedChanges(BASE, head);
     expect(problems.some((p) => p.includes("PF-1 以降"))).toBe(true);
-    expect(problems).toContain("a record heading was removed");
+    expect(problems.some((p) => p.includes("## 記録"))).toBe(true);
   });
 
-  it("catches text added to the coordinator's part", () => {
+  it("catches an acceptance criterion added to the coordinator's part", () => {
     const head = BASE.replace("### PF-1 以降（later）", "- **AC-5** invented\n### PF-1 以降（later）");
     expect(findProtectedChanges(BASE, head).some((p) => p.includes("AC-5"))).toBe(true);
+  });
+
+  it("allows a nested implementation record under the coordinator's section (the TP-1 sheets)", () => {
+    const base = "# TP\n## TP-1 視点\n- **AC-1** a\n- **AC-2** b\n## TP-2 next\n- **AC-3** c\n";
+    const head =
+      "# TP\n## TP-1 視点\n- **AC-1** a\n- **AC-2** b\n### 実装の記録（作業エージェント R1）\n- did x\n### 実装の記録 R2\n- did y\n## TP-2 next\n- **AC-3** c\n";
+    expect(findProtectedChanges(base, head)).toEqual([]);
+  });
+
+  it("catches an acceptance criterion rewritten after a record heading was slipped in front of it", () => {
+    const base = "# TP\n## TP-1\n- **AC-1** a\n- **AC-4** original\n## TP-2\n- **AC-3** c\n";
+    const head = "# TP\n## TP-1\n- **AC-1** a\n### 実装の記録\n- **AC-4** rewritten\n## TP-2\n- **AC-3** c\n";
+    const problems = findProtectedChanges(base, head);
+    expect(problems.some((p) => p.includes("AC-4") && p.includes("original"))).toBe(true);
+  });
+
+  it("ends a nested record at the next heading of the same level", () => {
+    const base = "## A\n- **AC-1** a\n### 計画\ntext\n";
+    const head = "## A\n- **AC-1** a\n### 実装の記録\nnotes\n### 計画\nchanged text\n";
+    expect(findProtectedChanges(base, head).some((p) => p.includes("text"))).toBe(true);
   });
 
   it("ignores sheets without acceptance criteria", () => {

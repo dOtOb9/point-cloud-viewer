@@ -64,8 +64,9 @@
   - `npm run lint`
   - `npx vitest run`（**Windows では `C:\` の大文字のドライブ名から実行する。** `c:\` から実行すると vitest が全ファイル `Cannot read properties of undefined (reading 'config')` で落ちる）
   - Rust を触ったら `cargo test -p <触ったクレート>` と `cargo clippy -p <触ったクレート> -- -D warnings`。`pcv-core`・`pcv-wasm` を触ったら `npm run build:wasm` で wasm を作り直す
-- **タスクシートのコーディネーターの部分（目的・受け入れ基準・見出し・「記録」より前の文）は変えない。** 書いてよいのは「記録」節の中だけ（PF-0 R2 で、作業エージェントが AC を書き換え、節を消した）。
-  終わる前に `node scripts/check-task-sheet.mjs <ループ開始前のコミット>` を実行して、出力を作業報告に貼る（`scripts/check-task-sheet.test.mjs` がテスト。監査役も同じコマンドを実行し直す）
+- **タスクシートのコーディネーターの部分（目的・受け入れ基準・見出し・「記録」より前の文）は変えない。** 書いてよいのは記録（見出しに「記録」を含む節。「## 記録」も、節の中に足す「### 実装の記録 R1」も）の中だけ（PF-0 R2 で、作業エージェントが AC を書き換え、節を消した）。
+  終わる前に `node scripts/check-task-sheet.mjs <ループ開始前のコミット>` を実行して、出力を作業報告に貼る（`scripts/check-task-sheet.test.mjs` がテスト。監査役も同じコマンドを実行し直す）。
+  <ループ開始前のコミット> は base。コーディネーターがループの途中で AC を直したら、その直し以降のコミットを base にする
 - **設計（ADR）は、前提にするコードを読んでから書く。** `TaskSheets/ADR-TEMPLATE.md` の形で、「依存するコードの確認」（`path:line`・識別子・読んで確かめたこと、3 行以上）・「数えた物」・「整合の確認」を必ず埋める。
   「〜は変えずに済む」「N 個ある」と書く前に、そのコードを開き、数えたコマンドと出力を載せる。`npm run check:docs` が参照の実在を検査する（CI でも走る）
 - 計測は `scripts/bench/` の道具を使う（`run-native.ps1`・`sampler.ps1`。CSV は桁区切り無し）。CSV は `node scripts/bench/summarize-samples.mjs` で読む（列の数が合わない行は、黙って捨てずにエラーになる）。表に書く数値は、この出力か、測定ツール自身の出力から写す
