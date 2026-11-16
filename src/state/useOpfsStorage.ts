@@ -14,9 +14,21 @@ import {
   removeCachedConversionEntry,
   removeScratchDirByName,
   type CachedConversionEntry,
+  type OpfsUsageBreakdown,
 } from "../datasource/opfs";
 import { isTauriEnvironment } from "../datasource/environment";
-import type { OpfsStorageInfo } from "./viewer-types";
+
+/**
+ * The Web OPFS usage and persistence state shown in the settings ("browser storage" section). `quotaBytes` and
+ * `usageBytes` come from `estimateQuota()`, `persisted` from `isPersisted()` and `breakdown` from
+ * `getOpfsUsageBreakdown()`; `refreshOpfsStorageInfo` gathers them together.
+ */
+export interface OpfsStorageInfo {
+  quotaBytes: number;
+  usageBytes: number;
+  persisted: boolean;
+  breakdown: OpfsUsageBreakdown;
+}
 
 export interface OpfsStorage {
   /** Web OPFS usage (cache and scratch breakdown) and persistence state. null before it is fetched and on desktop (check `isBrowser` first; see `SettingsModal`). */

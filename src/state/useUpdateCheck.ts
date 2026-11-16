@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchLatestRelease, openReleasePage, type LatestRelease } from "../datasource/update-check";
+import { fetchLatestRelease, type LatestRelease } from "../datasource/update-check";
 import { isNewerVersion } from "../datasource/version-compare";
-import { getAppVersion } from "../datasource/tauri";
+import { getAppVersion, openReleasePage } from "../datasource/tauri";
 
 const STORAGE_KEY = "pcv-update-check-enabled";
 
@@ -35,8 +35,8 @@ export interface UpdateCheckState {
  * M3-2 / M3-4: 起動時の更新通知。デスクトップ・Androidで完全に同じロジックを使う
  * (ADR-0004追記4: 当面署名鍵を作らないため、デスクトップもAndroidと同じ
  * 「GitHub Releasesの最新版をfetchで確認 → 同意したらリリースページを開く」方式に
- * 統一した)。プラットフォームによる違いは`openReleasePage`内の
- * `@tauri-apps/plugin-opener`が吸収するので、ここにはプラットフォーム分岐が無い。
+ * 統一した)。プラットフォームによる違いは`openReleasePage`(tauri.ts)の
+ * プラグインが吸収するので、ここにはプラットフォーム分岐が無い。
  *
  * 「チェックは自動・適用は手動」の原則(ADR-0004)を守り、開発中(`tauri dev`)は
  * チェックしない。チェック自体も設定でオフにできる(オプトイン)。

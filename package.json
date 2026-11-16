@@ -13,7 +13,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "build:wasm": "cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm"
+    "build:wasm": "cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm",
+    "check:circular": "madge --circular --extensions ts,tsx src",
+    "check:wasm-glue": "git diff --exit-code -- src/wasm/pcv-wasm/pcv_wasm.js src/wasm/pcv-wasm/pcv_wasm.d.ts src/wasm/pcv-wasm/pcv_wasm_bg.wasm.d.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -38,10 +40,14 @@
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.12.0",
     "jsdom": "^26.1.0",
+    "madge": "^8.0.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.1",
     "vite": "^8.0.16",
     "vitest": "^5.0.1"
+  },
+  "overrides": {
+    "typescript": "$typescript"
   }
 }

@@ -110,6 +110,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # RF-15: the wasm glue committed in src/wasm/pcv-wasm/ must be what the steps above just generated.
+      # Otherwise a Rust change whose `npm run build:wasm` output was not committed would pass the E2E in
+      # ci.yml (which uses the committed files) while this job publishes a different build.
+      # Only the JS glue and the type files are compared (`npm run check:wasm-glue`, which is `git diff --exit-code`).
+      # The .wasm itself is NOT compared: it embeds absolute source paths (panic locations), so it differs
+      # between machines and directories even for identical sources. Measured in
+      # TaskSheets/RF-safety-net.md (RF-15). This catches a changed `#[wasm_bindgen]` signature, not a
+      # changed function body.
+      - name: Committed wasm glue (JS and types) is up to date
+        run: |
+          if ! npm run check:wasm-glue; then
+            echo "::error::src/wasm/pcv-wasm/ is stale. Run 'npm run build:wasm' and commit the result."
+            exit 1
+          fi
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint

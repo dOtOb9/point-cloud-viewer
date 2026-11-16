@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "M4-1のスパイク実装(素朴な全点メモリ実装)と、M4-3の本番変換経路(copc-writerを使ったout-of-core変換)。pcv-coreには含めない(規約1。ARCHITECTURE.mdの守る規約1参照)"
+description = "デスクトップ版の本番の変換器(copc-writerを使ったout-of-core変換、E57/PLY/PCD取り込み、結合・DTM・ラスタ・間引き)。M4-1のスパイクの素朴な全点メモリ実装も残す。pcv-coreには含めない(規約1。ARCHITECTURE.mdの守る規約1参照)"
 
 # 依存を追加するときの注意:
 # このクレートは規約1(pcv-coreがwasm32-unknown-unknownでビルドできること)の対象外。

@@ -4,7 +4,7 @@ import type { SectionInfo, ViewerLayer } from "../state/layers";
 import type { SectionGroundLine } from "../datasource/section-line";
 import type { ExtractFilter, ToolResult } from "../datasource/tools";
 import type { ViewerStatus } from "../state/viewer-status";
-import type { ToolProgressState } from "../state/viewer-types";
+import type { ToolProgressState } from "./point-cloud-tools";
 import { sectionLineRequestFor, UNKNOWN_UNIT_CSF_WARNING } from "./csf-params";
 import { cancelTool, extractFromLayer, hideSourceLayers, mergeSelectedLayers, type PointCloudToolsContext } from "./point-cloud-tools";
 

@@ -4,11 +4,10 @@
 // and call `extractFromLayer` (src/app/point-cloud-tools.ts) / `addMeasurement` (useLayers.ts).
 // Used by: useCopcViewer.ts. Entry: `usePointCloudTools(inputs)`.
 import { useState, type RefObject } from "react";
-import type { PointCloudToolsContext } from "../app/point-cloud-tools";
+import type { PointCloudToolsContext, ToolProgressState } from "../app/point-cloud-tools";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
 import type { LayersState } from "./layers";
-import type { ToolProgressState } from "./viewer-types";
 
 /** What the context is made of: the newest React values (refs are stable, the rest may change every render). */
 export type PointCloudToolsInputs = Pick<

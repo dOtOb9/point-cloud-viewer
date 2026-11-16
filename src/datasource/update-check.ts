@@ -10,10 +10,7 @@
 // 適用（インストール）は常に利用者の手作業。Windowsは無署名インストーラの
 // ダウンロード、AndroidはAPKのサイドロードになる。
 //
-// 規約2の拡張(TaskSheets/M3-release-and-update.md M3-2): @tauri-apps/plugin-opener の
-// importもこのファイルに閉じ込める（`src/datasource/tauri.ts`と同じ扱い）。
-
-import { openUrl } from "@tauri-apps/plugin-opener";
+// This file imports no Tauri package (rule 2). Opening the release page is `openReleasePage` in tauri.ts.
 
 const REPO = "dOtOb9/point-cloud-viewer";
 
@@ -47,16 +44,4 @@ export async function fetchLatestRelease(): Promise<LatestRelease | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * リリースページをブラウザで開く。`@tauri-apps/plugin-opener`はデスクトップ・
- * Androidの両方に対応しているため、プラットフォーム分岐はここに要らない
- * （「適用手段だけを差し替える」M3-4の設計要件をこの1関数で満たす）。
- *
- * インストール自体は利用者の手作業（ADR-0004）。Windowsは無署名インストーラなので
- * SmartScreenの警告が出る場合がある。Androidはサイドロードになる。
- */
-export async function openReleasePage(url: string): Promise<void> {
-  await openUrl(url);
 }

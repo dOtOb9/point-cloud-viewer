@@ -6,6 +6,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { DataSource, OpenedCloud, PrepareOptions, PrepareOutcome } from "./DataSource";
 import { basenameOfPath } from "./file-name";
 import { toConversionFailureOutcome, toPrepareOutcome } from "./prepare-outcome";
@@ -97,6 +98,15 @@ export async function reportToBackendConsole(message: string): Promise<void> {
  */
 export async function getAppVersion(): Promise<string> {
   return await getVersion();
+}
+
+/**
+ * Open the release page in the system browser (the update notice's "open" button; the user installs by hand, ADR-0004).
+ * `@tauri-apps/plugin-opener` supports desktop and Android, so there is no platform branch here. It lives in this file
+ * because rule 2 allows Tauri packages only here (moved from update-check.ts in RF-1; no exception to the rule).
+ */
+export async function openReleasePage(url: string): Promise<void> {
+  await openUrl(url);
 }
 
 /**
