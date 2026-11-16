@@ -62,24 +62,51 @@ describe("file size", () => {
   });
 });
 
+/**
+ * Ways of deciding "does this element take typed keys?" that must only exist in src/app/typing-target.ts:
+ * the upper-case tag names INPUT / TEXTAREA / SELECT (as in `tag === "INPUT"`, also on a line of their own),
+ * `isContentEditable` (a type declaration line `isContentEditable?: boolean` is not a use), and
+ * `instanceof HTMLInputElement / HTMLTextAreaElement / HTMLSelectElement`. Lower-case words are not looked at
+ * ("select" is also a tool mode name). Returns what was found, so a test can show it finds each form.
+ */
+export function findTypingTargetCopies(text: string): string[] {
+  const found: string[] = [];
+  const patterns: [string, RegExp][] = [
+    ["tag name string", /["'](INPUT|TEXTAREA|SELECT)["']/],
+    ["isContentEditable", /isContentEditable(?!\??\s*:\s*boolean)/],
+    ["instanceof HTML*Element", /instanceof\s+HTML(Input|TextArea|Select)Element/],
+  ];
+  for (const [name, re] of patterns) if (re.test(text)) found.push(name);
+  return found;
+}
+
 describe("typing target", () => {
+  it("finds each form of a copy (so the check below is not blind to them)", () => {
+    // A: tag name and string on the same line
+    expect(findTypingTargetCopies('return target.tagName === "INPUT" || x;')).toEqual(["tag name string"]);
+    // B: the layer-delete-key.ts shape before TP-1: the comparison is on the line after tagName
+    expect(findTypingTargetCopies('const tag = target.tagName?.toUpperCase();\n  return tag === "INPUT" || tag === "SELECT";')).toEqual([
+      "tag name string",
+    ]);
+    // C: contenteditable, and instanceof
+    expect(findTypingTargetCopies("if (el.isContentEditable) return true;")).toEqual(["isContentEditable"]);
+    expect(findTypingTargetCopies("return t instanceof HTMLInputElement;")).toEqual(["instanceof HTML*Element"]);
+    expect(findTypingTargetCopies("return t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement;")).toEqual(["instanceof HTML*Element"]);
+  });
+
+  it("does not flag a type declaration or a tool mode called select", () => {
+    expect(findTypingTargetCopies("interface T { tagName?: string; isContentEditable?: boolean }")).toEqual([]);
+    expect(findTypingTargetCopies('const mode = "select"; if (mode === "select") {}')).toEqual([]);
+  });
+
   it("only src/app/typing-target.ts decides whether an element takes typed keys", () => {
     const offenders: string[] = [];
     for (const [path, text] of FILES) {
       // Tests build fake elements ({ tagName: "INPUT" }); only code that decides is checked.
       if (path === "src/app/typing-target.ts" || isTest(path)) continue;
-      if (/tagName[^\n]*["'](INPUT|TEXTAREA|SELECT)["']/i.test(text)) offenders.push(path);
+      const found = findTypingTargetCopies(text);
+      if (found.length > 0) offenders.push(`${path} (${found.join(", ")})`);
     }
     expect(offenders, "use isTypingTarget() from src/app/typing-target.ts").toEqual([]);
-  });
-});
-
-describe("view enabled condition", () => {
-  it("the view button and the view keys decide 'enabled' with the same function, hasPointCloud()", () => {
-    // They once differed: the button used hasPointCloud, the keys used layers.length > 0 (TP-1 F-10).
-    for (const path of ["src/ui/toolbar/buttons/ViewButton.tsx", "src/ui/shell/AppShell.tsx"]) {
-      const text = FILES.find(([p]) => p === path)?.[1] ?? "";
-      expect(text, path).toContain("hasPointCloud(");
-    }
   });
 });

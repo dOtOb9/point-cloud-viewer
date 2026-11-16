@@ -29,17 +29,27 @@ const sizes = [
   { width: 1280, height: 800 },
 ];
 
+if (!(await import("node:fs")).existsSync(file)) {
+  console.error(`file not found: ${file}`);
+  process.exit(2);
+}
+
 const browser = await chromium.launch({ channel: "chromium", args: ["--enable-unsafe-webgpu"] });
 try {
   for (const { width, height } of sizes) {
     const page = await browser.newPage({ viewport: { width, height }, hasTouch: width < 500, isMobile: width < 500 });
+    // Without WebGPU the app shows its "unsupported device" screen and the view button never enables (the wait below times out).
+    if (!(await page.evaluate(() => "gpu" in navigator))) console.warn(`${width}px: this browser has no WebGPU (navigator.gpu); the screenshots will not show the point cloud`);
     const errors = [];
     page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
     await page.goto(url, { waitUntil: "networkidle" });
     const chooser = page.waitForEvent("filechooser");
     await page.getByTestId("open-button").click();
     await (await chooser).setFiles(file);
-    await page.waitForTimeout(12000);
+    // The view button is enabled once a point cloud is open (a fixed wait would be too short or too long).
+    await page.getByTestId("view-button").waitFor({ state: "visible", timeout: 60000 });
+    await page.waitForFunction(() => !document.querySelector('[data-testid="view-button"]')?.hasAttribute("disabled"), null, { timeout: 60000 });
+    await page.waitForTimeout(3000); // let the nodes stream in
     await page.screenshot({ path: `${out}/${width}-0-loaded.png` });
     let n = 1;
     for (const id of steps) {

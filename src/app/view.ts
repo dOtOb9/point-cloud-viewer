@@ -18,12 +18,22 @@ export type ViewRenderer = Pick<PointCloudRenderer, "setViewPreset" | "fitAll" |
  */
 export interface ViewContext {
   projection: Store<ProjectionMode>;
+  /**
+   * True while a point-cloud layer is open (measurement layers do not count). The view functions do nothing when it is
+   * false, so the keys cannot change the view or the projection while the view button is grayed out (TP-1 F-10).
+   * The app sets it from `hasPointCloud(viewer)` (useViewShortcuts); a test sets it directly.
+   */
+  pointCloud: Store<boolean>;
   /** The renderer, or null before it exists / after it is disposed (set by `attachViewRenderer`). */
   renderer: Store<ViewRenderer | null>;
 }
 
 export function createViewContext(): ViewContext {
-  return { projection: createStore<ProjectionMode>(DEFAULT_PROJECTION_MODE), renderer: createStore<ViewRenderer | null>(null) };
+  return {
+    projection: createStore<ProjectionMode>(DEFAULT_PROJECTION_MODE),
+    pointCloud: createStore(false),
+    renderer: createStore<ViewRenderer | null>(null),
+  };
 }
 
 /** The one context of the app. Tests make their own with `createViewContext`. */
@@ -97,17 +107,20 @@ export function viewActionForKey(event: {
 
 /** Switch the projection. The screen size at the target stays the same (renderer/projection.ts). */
 export function setProjection(ctx: ViewContext, mode: ProjectionMode): void {
+  if (!ctx.pointCloud.get()) return;
   ctx.projection.set(mode);
   ctx.renderer.get()?.setProjectionMode(mode);
 }
 
 /** Move to a fixed viewpoint (animated; immediate when animation is off). Does nothing when no layer is visible. */
 export function showViewPreset(ctx: ViewContext, id: ViewPresetId): boolean {
+  if (!ctx.pointCloud.get()) return false;
   return ctx.renderer.get()?.setViewPreset(id) ?? false;
 }
 
 /** "Fit all": the visible layers fill the screen, the direction stays. Does nothing when no layer is visible. */
 export function fitAllView(ctx: ViewContext): boolean {
+  if (!ctx.pointCloud.get()) return false;
   return ctx.renderer.get()?.fitAll() ?? false;
 }
 
