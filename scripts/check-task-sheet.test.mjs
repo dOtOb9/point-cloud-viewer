@@ -80,30 +80,8 @@ describe("check-task-sheet", () => {
   });
 
   it("ignores a horizontal rule that a record inserted before it swallowed (the TP-1 sheet has one)", () => {
-    const base = "## TP-1
-- **AC-1** a
-
-verify text
-
----
-
-## TP-2
-- **AC-3** c
-";
-    const head = "## TP-1
-- **AC-1** a
-
-verify text
-
-### 実装の記録
-- did x
-
----
-
-## TP-2
-- **AC-3** c
----
-";
+    const base = ["## TP-1", "- **AC-1** a", "", "verify text", "", "---", "", "## TP-2", "- **AC-3** c", ""].join("\n");
+    const head = ["## TP-1", "- **AC-1** a", "", "verify text", "", "### 実装の記録", "- did x", "", "---", "", "## TP-2", "- **AC-3** c", "---", ""].join("\n");
     expect(findProtectedChanges(base, head)).toEqual([]);
   });
 
