@@ -67,11 +67,26 @@ fn main() {
         std::process::exit(1);
     }
     println!("points            : {last_total}");
-    println!("read+decode (s)   : {:.2}", timings.source_read_and_decode.as_secs_f64());
-    println!("spill write (s)   : {:.2}", timings.spill_write.as_secs_f64());
-    println!("LOD index (s)     : {:.2}", timings.lod_index_build.as_secs_f64());
-    println!("node compress (s) : {:.2}", timings.node_compression.as_secs_f64());
-    println!("header+hier (s)   : {:.2}", timings.header_and_hierarchy_write.as_secs_f64());
+    println!(
+        "read+decode (s)   : {:.2}",
+        timings.source_read_and_decode.as_secs_f64()
+    );
+    println!(
+        "spill write (s)   : {:.2}",
+        timings.spill_write.as_secs_f64()
+    );
+    println!(
+        "LOD index (s)     : {:.2}",
+        timings.lod_index_build.as_secs_f64()
+    );
+    println!(
+        "node compress (s) : {:.2}",
+        timings.node_compression.as_secs_f64()
+    );
+    println!(
+        "header+hier (s)   : {:.2}",
+        timings.header_and_hierarchy_write.as_secs_f64()
+    );
     println!("stage total (s)   : {:.2}", timings.total().as_secs_f64());
     println!("wall (s)          : {wall:.2}");
     println!(
