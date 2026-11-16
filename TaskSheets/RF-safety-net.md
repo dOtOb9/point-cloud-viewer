@@ -94,6 +94,26 @@
 - **`src/ui/` から `src/datasource/` への import の禁止**: REVIEW は規約 3 を「`PointCloudRenderer` クラスだけ」と決めた。`pickFilesToOpen` などは許したまま
 - **旧 CI の「`.tsx` があれば落ちる」を `find` で残す**: JSX を書いたら React が要るので、構文の禁止で同じ意味になる。ファイル名だけで落ちるより正確
 
+### R2（監査 R1 への対応）
+
+- **F-1 直した**: `no-restricted-imports` は動的な `import("x")` を見ない。各ゾーンの禁止パターンを、`no-restricted-syntax` の
+  `ImportExpression[source.value=/…/]` にも同じ正規表現で書く（`layerRules()`）。ESLint は同じルールの設定を後勝ちで置き換えるので、
+  JSX の禁止もゾーンの一覧にまとめた。esquery の正規表現は `/` を含められないので、文字クラスの外の `/` は `[/]` に変換する（`selectorRegex()`）。
+  限界: 引数が文字列リテラルでない `import(name)` やテンプレートリテラルは見えない
+- **F-2 直した**: 型の位置の `import("x").Y`（`TSImportType`）も同じ正規表現で止める
+- **F-3 直した**: `RENDERER_CLASS` の末尾に拡張子（`.ts`・`.js` など）を許した
+- **F-4 直した**: パターンに `caseSensitive: true`（`../state/user-settings` は許される）
+- **F-5 直した**: 正規化していないパス（`./..`・`x/../y`・`a/./b`）を `src/app` と `src/plugins/**` で禁止した。`"../.."`（末尾に `/` が無い）も数える。
+  プラグインの深さの上限を 8 にし、それより深いファイルは「裸の import と正規化」の検査だけ（限界）。
+  限界: `src/state` の `index`（`../state`）への import は止めない（そのファイルが今は無い）
+- **F-6 直した**: 層のルールを `src/**/*.{ts,tsx,js,mjs,cjs}` に広げ、生成物の `src/wasm/**` は除いた
+- **F-7 直した**: ROADMAP の 2D プロファイルの説明（Canvas 2D と SVG）、`crates/pcv-convert/Cargo.toml` の description、上の版の一覧
+- **F-8**: madge の代わりに `dpdm` や `eslint-plugin-import` の `import/no-cycle` を**比べていない**。madge にしたのは、REVIEW の計測が madge で、
+  `npx madge` で動かせたため。依存の重さ（+1,530 行の lock）が気になるなら、`import/no-cycle` への置き換えを検討する余地がある（未検討）。
+  **TypeScript をメジャーで上げるとき**は、madge 側の依存（`filing-cabinet`・`detective-typescript`）が新しい版に対応しているか確かめる
+  （今は `overrides` で 6.0.3 を無理に使わせている。`npm run check:circular` が動くことで確かめる）
+- テスト: `src/layer-rules.test.ts` に監査役の赤のテスト 9 件（そのまま緑になった）と、F-4・F-5・F-6 の 8 件を足した。計 55 ケース
+
 ### 触ったファイル
 
 `eslint.config.js`、`.github/workflows/ci.yml`、`package.json`、`package-lock.json`、`CLAUDE.md`、`TaskSheets/ARCHITECTURE.md`、`TaskSheets/RF-safety-net.md`、
@@ -122,7 +142,7 @@
   同じ内容を `src/layer-rules.test.ts` が常に確かめる
 - **AC-3 コメントに `@tauri-apps/api` と書いても落ちない**: `src/app/zz-comment.ts` に `// @tauri-apps/api is imported only by tauri.ts` だけを書いて lint → エラー 0（確かめたあと削除）。`layer-rules.test.ts` にも同じケースがある
 - `npm ci`（lock との整合）: 作業ツリーとは別の空のフォルダに `package.json`・`package-lock.json` だけをコピーして `npm ci --ignore-scripts` を実行し、成功して `node_modules/.bin/madge` ができることを確かめた
-- 副作用: `package-lock.json` の更新で、既存の依存のうち `@babel/*`・`postcss`・`nanoid`・`source-map-js`・`detect-libc`・`electron-to-chromium` の版が上下した（madge が連れてきた依存との兼ね合い）。差分は +1,530 行。
+- 副作用: `package-lock.json` の更新で、既存の依存のうち `@babel/helper-string-parser`・`@babel/parser`・`@babel/types`・`nanoid`・`postcss`・`source-map-js` の patch 版 6 つが動いた（R2 で、`git diff package-lock.json` の `version` の行から数え直した）（madge が連れてきた依存との兼ね合い）。差分は +1,530 行。
   アプリのコードの検証は typecheck・lint・vitest で行った。`vite build`・`tauri build` はこの変更では実行していない
 - コマンド: `npm run typecheck` OK、`npm run lint` OK、`npm run check:circular` OK、`npx vitest run`（`C:\` から）89 files・928 tests passed
 

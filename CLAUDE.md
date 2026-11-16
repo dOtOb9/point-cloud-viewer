@@ -27,7 +27,7 @@
 
 1. `crates/pcv-core` は Tauri に依存せず、`wasm32-unknown-unknown` でビルドできる
 2. Tauri の API パッケージ（`@tauri-apps/` で始まる npm パッケージ）を import してよいのは `src/datasource/tauri.ts` だけ。
-   例外は無い（`@tauri-apps/plugin-opener` も `tauri.ts` から呼ぶ）。検査は `eslint.config.js` のルールで、**import 文だけを見る**ので、コメントにパッケージ名を書いても落ちない
+   例外は無い（`@tauri-apps/plugin-opener` も `tauri.ts` から呼ぶ）。検査は `eslint.config.js` のルールで、**import 文（動的 `import()` と型の `import()` を含む）だけを見る**ので、コメントにパッケージ名を書いても落ちない
 3. `src/renderer/` は React を import しない。`src/ui/` は `PointCloudRenderer` クラス（`point-cloud-renderer.ts`）を import しない
    （純粋な関数・定数・型、たとえば `screen-project.ts`・`colormap.ts` はよい。操作は `src/app/` の関数を呼ぶ）
 5. `src/app/` は React も `src/state/use*` も import しない（`import type` も不可）。番号は `ARCHITECTURE.md` に合わせている。4 は検査の対象外

@@ -108,3 +108,55 @@ describe("ADR-0023: what src/plugins/** may import", () => {
     expect(await layerMessages(filePath, code)).not.toEqual([]);
   });
 });
+
+// Audit RF-0/1/15 R1: forms of import that the layer rules must also stop.
+describe("audit RF-1 R1: other forms of import", () => {
+  // F-1: a dynamic import() loads the module just like an import statement (the old grep of rule 2 caught it).
+  it.each([
+    ["src/ui/x.ts", 'export const f = () => import("@tauri-apps/plugin-opener");'],
+    ["src/app/x.ts", 'export const f = () => import("react");'],
+    ["src/app/x.ts", 'export const f = () => import("../state/useLayers");'],
+    ["src/ui/x.ts", 'export const f = () => import("../renderer/point-cloud-renderer");'],
+    ["src/plugins/demo/index.ts", 'export const f = () => import("../../app/open-files");'],
+  ])("F-1 rejects a dynamic import in %s: %s", async (filePath, code) => {
+    expect(await layerMessages(filePath, code)).not.toEqual([]);
+  });
+
+  // F-2: a type written as import("...") is a type import too (rule 5 says "not even import type").
+  it.each([
+    ["src/app/x.ts", 'export type A = import("../state/useLayers").Layers;'],
+    ["src/ui/x.ts", 'export type A = import("../renderer/point-cloud-renderer").PointCloudRenderer;'],
+  ])("F-2 rejects an import() type in %s: %s", async (filePath, code) => {
+    expect(await layerMessages(filePath, code)).not.toEqual([]);
+  });
+
+  // F-3: tsconfig has allowImportingTsExtensions, so "point-cloud-renderer.ts" is the same module.
+  it.each([
+    'import { PointCloudRenderer } from "../../renderer/point-cloud-renderer.ts";',
+    'import { PointCloudRenderer } from "../../renderer/point-cloud-renderer.js";',
+  ])("F-3 rejects the PointCloudRenderer class with a file extension in src/ui: %s", async (code) => {
+    expect(await layerMessages("src/ui/tools/X.tsx", code)).not.toEqual([]);
+  });
+});
+
+describe("RF-1 R2: case, unnormalized paths and plain JavaScript", () => {
+  it("F-4 matches the hook pattern case-sensitively: state/user-settings is not a hook", async () => {
+    expect(await layerMessages("src/app/x.ts", 'import { x } from "../state/user-settings";')).toEqual([]);
+  });
+
+  it.each([
+    ["src/plugins/demo/index.ts", 'import { x } from "./../../../app/x";'],
+    ["src/plugins/demo/index.ts", 'import { x } from "../y/../../../app/x";'],
+    ["src/plugins/demo/index.ts", 'import { x } from "../../plugin-api/../app/x";'],
+    ["src/plugins/demo/index.ts", 'import { x } from "../..";'],
+    ["src/plugins/a/b/c/d/e/f/g/h/i/x.ts", 'import { chunk } from "lodash";'],
+    ["src/app/x.ts", 'import { x } from "../state/./useLayers";'],
+  ])("F-5 rejects %s: %s", async (filePath, code) => {
+    expect(await layerMessages(filePath, code)).not.toEqual([]);
+  });
+
+  it("F-6 checks plain JavaScript files too, but not the generated wasm glue", async () => {
+    expect(await layerMessages("src/zz.js", 'import { invoke } from "@tauri-apps/api/core";')).not.toEqual([]);
+    expect(await layerMessages("src/ui/zz.mjs", 'import { invoke } from "@tauri-apps/api/core";')).not.toEqual([]);
+  });
+});
