@@ -1,5 +1,6 @@
 // L2-A: 「選択中のレイヤーを Delete キーで消す」かどうかを決める小さな純粋関数。
 // React に依存しないので Vitest だけで確かめられる(layer-delete-key.test.ts)。
+import { isTypingTarget } from "../../app/typing-target";
 
 /** キー入力の判定に必要な部分だけ。KeyboardEvent の値をそのまま渡せる。 */
 export interface DeleteKeyInput {
@@ -9,14 +10,6 @@ export interface DeleteKeyInput {
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
-}
-
-/** 文字を打つ要素にフォーカスがあるときは、Delete は文字の削除に使われるのでレイヤーを消さない。 */
-function isTypingTarget(target: DeleteKeyInput["target"]): boolean {
-  if (!target) return false;
-  if (target.isContentEditable) return true;
-  const tag = target.tagName?.toUpperCase();
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
 /**

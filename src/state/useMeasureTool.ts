@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { isTypingTarget } from "../app/typing-target";
 import type { CopcViewerState } from "./useCopcViewer";
 import { autoFinishCount, MIN_POINTS, type MeasureKind, type Vec3 } from "./measure";
 
@@ -169,8 +170,7 @@ export function useMeasureTool(
       finish();
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      const target = e.target;
-      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (isTypingTarget(e.target)) return;
       if (e.key === "Escape") {
         reset(null);
       } else if (e.key === "Enter") {

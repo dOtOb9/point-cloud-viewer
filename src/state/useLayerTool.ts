@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { extractFromLayer } from "../app/point-cloud-tools";
+import { isTypingTarget } from "../app/typing-target";
 import type { SectionLinePreset } from "../datasource/section-line";
 import type { CopcViewerState } from "./useCopcViewer";
 import { isMeasureLayer } from "./layers";
@@ -229,8 +230,7 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
       if (modeRef.current === "select") finishPolygon();
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      const target = e.target;
-      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (isTypingTarget(e.target)) return;
       if (e.key === "Escape") reset(null);
       else if (e.key === "Enter") finishPolygon();
     };
