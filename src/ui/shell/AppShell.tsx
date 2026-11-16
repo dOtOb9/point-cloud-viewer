@@ -18,6 +18,7 @@ import { RasterWindow } from "../tools/RasterWindow";
 import { ThinDialog } from "../tools/ThinDialog"; // G3
 import { FilterDialog } from "../tools/FilterDialog"; // G3
 import { DtmDialog } from "../tools/DtmDialog"; // G1-T15
+import { ViewDialog } from "../tools/ViewDialog"; // TP-1
 import { openRasterWindow } from "../../app/raster-window";
 import { useRasterWindow } from "../../state/useRasterWindow";
 import { selectedPointCloudLayer } from "../toolbar/toolbar-state";
@@ -65,6 +66,8 @@ export function AppShell() {
   const [thinFilterDialog, setThinFilterDialog] = useState<"thin" | "filter" | null>(null);
   // G1-T15: whether the DTM dialog is open.
   const [dtmDialogOpen, setDtmDialogOpen] = useState(false);
+  // TP-1: whether the view dialog is open.
+  const [viewDialogOpen, setViewDialogOpen] = useState(false);
   // G1: the Rasterize window (state in the hook, steps in src/app/raster-window.ts).
   const raster = useRasterWindow(viewer.toolContext);
   // ファイルのドラッグ&ドロップで開く(ADR-0017)。ドラッグ中は案内を重ねて出す。
@@ -144,6 +147,7 @@ export function AppShell() {
         onOpenThin={() => setThinFilterDialog("thin")}
         onOpenFilter={() => setThinFilterDialog("filter")}
         onOpenDtm={() => setDtmDialogOpen(true)}
+        onOpenView={() => setViewDialogOpen(true)}
       />
 
       <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
@@ -185,6 +189,8 @@ export function AppShell() {
       {thinFilterDialog === "filter" && <FilterDialog viewer={viewer} onClose={() => setThinFilterDialog(null)} />}
       {/* G1-T15: the DTM dialog. */}
       {dtmDialogOpen && <DtmDialog viewer={viewer} onClose={() => setDtmDialogOpen(false)} />}
+      {/* TP-1: the view dialog (at the side, stays open while the user tries the views). */}
+      {viewDialogOpen && <ViewDialog viewer={viewer} onClose={() => setViewDialogOpen(false)} />}
       <ToolProgressDialog viewer={viewer} open={toolDialogOpen} onCollapse={() => setToolDialogOpen(false)} />
 
       <ConversionDialog viewer={viewer} open={conversionDialogVisible} onClose={() => setConversionDialogOpen(false)} />

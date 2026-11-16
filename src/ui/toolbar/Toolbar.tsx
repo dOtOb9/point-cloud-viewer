@@ -13,7 +13,9 @@ import { RasterizeButton } from "./buttons/RasterizeButton";
 import { SectionButton } from "./buttons/SectionButton";
 import { SelectPointsButton } from "./buttons/SelectPointsButton";
 import { SettingsButton } from "./buttons/SettingsButton";
+import { ViewButton } from "./buttons/ViewButton"; // TP-1
 import { ToolbarSeparator } from "./ToolbarSeparator";
+import { useViewShortcuts } from "./useViewShortcuts"; // TP-1
 import { useToolbarDragScroll } from "./useToolbarDragScroll";
 
 interface Props {
@@ -32,6 +34,8 @@ interface Props {
   onOpenFilter: () => void;
   /** G1-T15: opens the DTM dialog. */
   onOpenDtm: () => void;
+  /** TP-1: opens the view dialog. */
+  onOpenView: () => void;
 }
 
 /**
@@ -53,7 +57,8 @@ interface Props {
  * Below 768px (`useNarrowViewport`) it only stretches to the edges and drops the rounded
  * corners. Touch targets are 44px or more (buttons are `min-h-14` = 56px).
  */
-export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter, onOpenDtm }: Props) {
+export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter, onOpenDtm, onOpenView }: Props) {
+  useViewShortcuts(viewer.viewContext); // TP-1: F, 1 to 7
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useToolbarDragScroll();
   // Narrow screens: stretched to the edges, no rounded corners. Wide: floats a little, rounded.
@@ -68,6 +73,9 @@ export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTo
       className={`pointer-events-auto absolute ${placement} z-20 flex flex-nowrap items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain border-t-[3px] border-t-primary px-3 py-2 shadow-lg select-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${glassSurfaceClass(glassEnabled)}`}
     >
       <OpenFileButton viewer={viewer} />
+      <ToolbarSeparator />
+      {/* TP-1: view (fit all, fixed viewpoints, projection) */}
+      <ViewButton viewer={viewer} onOpen={onOpenView} />
       <ToolbarSeparator />
       <MeasureButton kind="distance" viewer={viewer} measure={measure} />
       <MeasureButton kind="height" viewer={viewer} measure={measure} />

@@ -1,4 +1,5 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
+import { viewStatusText } from "../../app/view";
 import { formatCrsShort } from "../common/crs-format";
 import { glassSurfaceClass } from "../common/glass";
 
@@ -69,6 +70,13 @@ export function StatusBar({
         </span>
       ) : null}
       <span className="whitespace-nowrap">fps:{stats ? stats.fps.toFixed(0) : "―"}</span>
+      {/* TP-1 (UX-1): the viewpoint and the projection; the narrow form drops the heading. */}
+      {stats && stats.layerCount > 0 ? (
+        <span className="whitespace-nowrap" data-testid="view-status">
+          <span className="hidden md:inline">{viewStatusText(stats.viewPreset, stats.projectionMode, false)}</span>
+          <span className="md:hidden">{viewStatusText(stats.viewPreset, stats.projectionMode, true)}</span>
+        </span>
+      ) : null}
       {/* CRS: 短い形(EPSGコード)。狭幅では省く(詳細は左パネルで見られる)。 */}
       <span className="hidden whitespace-nowrap md:inline">CRS: {viewer.selectedLayer ? formatCrsShort(viewer.selectedLayer.info.crs) : "―"}</span>
       {viewer.status.kind === "converting" ? (

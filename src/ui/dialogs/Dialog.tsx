@@ -14,6 +14,12 @@ interface Props {
   widthClass?: string;
   /** true: from `md` up the panel is as wide as its content (up to `widthClass`) instead of filling it. */
   fitContent?: boolean;
+  /**
+   * TP-1 (UX-2): "side" puts the panel at the right edge (bottom edge on a narrow screen) and does not dim or blur the
+   * view, so the user sees the result of what they press while the dialog stays open. Outside click and Esc still
+   * close it. Default "center".
+   */
+  placement?: "center" | "side";
   /** "top"は他のダイアログ(設定など)より前面に出す(エラー用)。 */
   layer?: "normal" | "top";
   /** "error"はタイトルバーを警告色にする(エラー用)。 */
@@ -55,7 +61,7 @@ const FOCUSABLE =
  *   暗幕の要素は残るので、外側クリックで閉じる動きとEscは変わらない(開いている間、点群への操作は暗幕が受け止める)。
  * - **狭幅(<768px):** 外枠の余白を小さくして、ほぼ全幅の中央ダイアログにする。
  */
-export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", fitContent = false, layer = "normal", tone = "normal", accent = "primary" }: Props) {
+export function Dialog({ open, title, onClose, children, footer, widthClass = "max-w-lg", fitContent = false, layer = "normal", tone = "normal", accent = "primary", placement = "center" }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   // 暗幕クリックで閉じる判定用: mousedownが暗幕自身の上で始まったか(refなので再描画しない)。
@@ -133,7 +139,7 @@ export function Dialog({ open, title, onClose, children, footer, widthClass = "m
       style={backdropStyle}
       onMouseDown={onBackdropMouseDown}
       onClick={onBackdropClick}
-      className={`fixed inset-0 ${layer === "top" ? "z-50" : "z-40"} flex items-center justify-center ${blurEnabled ? "bg-black/10 backdrop-blur-sm" : "bg-black/30"} p-3 md:p-4 ${shown ? "" : "pointer-events-none"}`}
+      className={`fixed inset-0 ${layer === "top" ? "z-50" : "z-40"} flex ${placement === "side" ? "items-end justify-center pb-14 md:items-start md:justify-end md:pt-28" : `items-center justify-center ${blurEnabled ? "bg-black/10 backdrop-blur-sm" : "bg-black/30"}`} p-3 md:p-4 ${shown ? "" : "pointer-events-none"}`}
     >
       <div
         style={panelStyle}
