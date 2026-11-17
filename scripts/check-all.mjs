@@ -13,6 +13,7 @@ const STEPS = [
   ["lint", "npm run lint"],
   ["check:circular", "npm run check:circular"],
   ["check:docs", "npm run check:docs"],
+  ["check:comments", "npm run check:comments"],
   ["vitest", "npx vitest run"],
   ["cargo fmt (workspace)", "cargo fmt --all -- --check"],
   ["cargo clippy (workspace)", "cargo clippy --workspace --all-targets -- -D warnings"],

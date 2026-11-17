@@ -38,6 +38,7 @@ jobs:
           else
             npm run check:docs
           fi
+      - run: npm run check:comments
       - run: npm run test
 
   # ARCHITECTURE.md の規約1・2・3・5をCIで機械的に守らせる（規約4は検査の対象外）。
