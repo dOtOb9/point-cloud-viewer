@@ -88,3 +88,14 @@
   変換のメモリ予算（開始時に空きから決め、途中は下見と NodeCache だけで応える）、PF-1 の範囲（単一 LAS/LAZ に絞る。10 枚・55 枚は PF-2）に直した。詳しくは ADR-0024
 - AC-4 の現在の要約: 下見の目標点数は空きメモリ A から `clamp(A×4%÷20B, 50万点, pointBudgetMax/2)`、逼迫したら 下見 → NodeCache（setPointBudget）の順に手放す。Web/Android は固定で、変換のメモリを悪化させない（ADR-0024「メモリ」）。
   上の「AC-4」の行の固定値の記述は R1 時点のもの
+
+### 監査の記録（メイン、2026-11-17。main への例外マージの PR の本文の代わり）
+
+- 受け入れ基準: AC-1 ✓（`TaskSheets/BENCH-first-open.md`、数値はログ `C:\pcv-bench-pf0\out` と照合済み）／AC-2 ✓（段階ごとの内訳）／AC-3 ✓（ADR-0024、状態「提案」。案 (a)(b)(c) の比較）／AC-4 ✓（空きメモリに応じた下見の上限 `pointBudgetMax/2`、手放す順、閾値は推定と明記）
+- 最終的な成果: 製品のコードは変えていない。計測の example（`crates/pcv-convert/examples/convert_timings.rs`）、計測の道具（`scripts/bench/`）、設計の ADR-0024、
+  再発防止の仕組み（`scripts/check-task-sheet.mjs`・`scripts/check-adr.mjs`・`TaskSheets/ADR-TEMPLATE.md`）
+- やり取りの要約: R1〜R4（4 往復）。主な論点は (1) CSV の桁区切りで Web のピークメモリを読み違えた → 計測の数値を出力と照合し直した、
+  (2) 「レンダラは変えずに」がレンダラの実際（階層は addLayer で固定・キャッシュの無効化 API 無し・`key` が5つの役を兼ねる）と3回食い違った → 階層の差し替えとノードの無効化の口を足す設計、`key` は世代つき・木だけ `positionKey` に決着、
+  (3) 下見の上限を固定から空きメモリに応じる形へ（所有者の依頼「余裕があれば先に使う」）、(4) 作業役が受け入れ基準を書き換えた → 元に戻し、`check-task-sheet` で機械的に防ぐ。
+  再発防止策は R3 で APPROVE（`RECURRENCE.md` の「PF-0」）
+- 残件: レンダラの口（`replaceLayerHierarchy` など）は未実装で試作もしていない（PF-1 の最初に）。Tauri アプリそのもの・Android・メモリの少ない端末の計測は未実施。閾値（4%・`A×10%` など）は推定

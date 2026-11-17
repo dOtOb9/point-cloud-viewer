@@ -148,7 +148,7 @@ point-cloud-viewer/
 | ピッキング・計測・点の選択・抽出・結合 | 実装済み: 深度ピック（`src/renderer/depth-pick.ts`）、計測、多角形での抽出、レイヤーの結合。結果は新しいレイヤーとして作る（[ADR-0018](./ADR-0018-layer-centric-operations.md)）。ツールの呼び出しは `src/app/point-cloud-tools.ts` が`instanceof WebSource`で Web とデスクトップに振り分けている（[REVIEW](./REVIEW-architecture-2026-11.md) A-1。RF-2 で `DataSource` に入れる予定） |
 | 断面線・断面図 | 実装済み（G2）: `crates/pcv-core/src/section_line*`・`profile*`、`src/app/section-*.ts`、`src/ui/section/`。CSV・DXF の書き出しまで |
 | ラスタ・DTM・間引き・フィルタ | 実装済み（G1）: 点群をラスタ（GeoTIFF）にする、布シミュレーション（CSF）の DTM と LandXML、LOD の間引き・外れ値のフィルタ。`crates/pcv-core`（`raster/`・`dtm/`・`csf.rs`・`thin.rs`・`outlier.rs`）と、`pcv-convert`・`pcv-wasm`・`src-tauri/src/conversion.rs` |
-| 視点（TP-1） | 実装済み（ブランチ `trendpoint-parity`）: 平行投影・定位置の視点（`src/renderer/projection.ts`・`view-presets.ts`）、手順は `src/app/view.ts`。[TP-trendpoint-parity.md](./TP-trendpoint-parity.md) |
+| 視点（TP-1） | 実装済み: 平行投影・定位置の視点（`src/renderer/projection.ts`・`view-presets.ts`）、手順は `src/app/view.ts`。[TP-trendpoint-parity.md](./TP-trendpoint-parity.md) |
 
 ## これから（まだ無い。決まっただけ）
 

@@ -6,7 +6,7 @@
 
 ## プロンプト
 
-あなたは `C:\workspace\point-cloud-viewer`（GitHub `dOtOb9/point-cloud-viewer`、public）の**メイン（制御役・監査役）**です。
+あなたは `C:\workspace\point-cloud-viewer`（GitHub `dOtOb9/point-cloud-viewer`、public）の**メイン（制御役）**です。判定はしない（ループの監査役・PR・CI の監査役というサブエージェントが出す。AGENTS.md「登場するもの」）。
 目標は「TREND-POINT のような品質の良い点群ビューア」。所有者は日本語で話す。返答も日本語。
 
 ### 最初に読む（この順）
