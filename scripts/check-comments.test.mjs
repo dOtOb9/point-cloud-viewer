@@ -161,6 +161,25 @@ describe("check-comments: Rust", () => {
   });
 });
 
+describe("check-comments: WGSL", () => {
+  it("counts //, a block comment and a nested block comment once in a .wgsl file", () => {
+    const text = [
+      "// line",
+      "@group(0) @binding(0) var<uniform> u: vec4<f32>; // trailing",
+      "/* outer /* inner */ still outer */",
+      "@fragment",
+      "fn fs_main() -> @location(0) vec4<f32> {",
+      "  return u / 2.0;",
+      "}",
+    ].join("\n");
+    expect(countedLines(text, "src/renderer/shaders/x.wgsl")).toEqual([1, 2, 3]);
+  });
+
+  it("does not count a division", () => {
+    expect(countedLines("fn f(a: f32) -> f32 { return a / 2.0 / 3.0; }\n", "x.wgsl")).toEqual([]);
+  });
+});
+
 describe("check-comments: which files are checked", () => {
   it("checks the source extensions and skips vendor, generated wasm glue, generated tsx and documents", () => {
     expect(isCheckedFile("src/app/a.ts")).toBe(true);
@@ -169,6 +188,7 @@ describe("check-comments: which files are checked", () => {
     expect(isCheckedFile("scripts/a.cjs")).toBe(true);
     expect(isCheckedFile("eslint.config.js")).toBe(true);
     expect(isCheckedFile("crates/pcv-core/src/lib.rs")).toBe(true);
+    expect(isCheckedFile("src/renderer/shaders/points.wgsl")).toBe(true);
     expect(isCheckedFile("vendor/copc-writer/src/lib.rs")).toBe(false);
     expect(isCheckedFile("src/wasm/pcv-wasm/pcv_wasm.js")).toBe(false);
     expect(isCheckedFile("src/ui/icons.generated.tsx")).toBe(false);

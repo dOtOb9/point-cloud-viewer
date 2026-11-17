@@ -5,7 +5,8 @@ import ts from "typescript";
 
 export const BASELINE_PATH = "scripts/comment-baseline.json";
 
-const CHECKED_EXTENSIONS = /\.(ts|tsx|js|mjs|cjs|rs)$/;
+const CHECKED_EXTENSIONS = /\.(ts|tsx|js|mjs|cjs|rs|wgsl)$/;
+const LEXED_LIKE_RUST = /\.(rs|wgsl)$/;
 const EXCLUDED_PATHS = [/^vendor\//, /^src\/wasm\//, /^docs\//, /^TaskSheets\//, /\.generated\.tsx$/];
 
 const TOOL_DIRECTIVES = [
@@ -214,7 +215,7 @@ function isAllowedComment(body, endLine, lines) {
 }
 
 export function findCountedComments(text, fileName) {
-  const ranges = fileName.endsWith(".rs") ? findRustCommentRanges(text) : findScriptCommentRanges(text, fileName);
+  const ranges = LEXED_LIKE_RUST.test(fileName) ? findRustCommentRanges(text) : findScriptCommentRanges(text, fileName);
   const lineStarts = lineStartsOf(text);
   const lines = text.split(/\r?\n/);
   const comments = [];
