@@ -230,7 +230,7 @@ PR の本文に書くはずだった内容は、タスクシートの「監査�
 
 ### CI の範囲
 
-テストだけ（`ci.yml`: frontend・invariants・rust）。インストーラーの作成（`release.yml`、タグでだけ走る）と Web アプリのデプロイ（`pages.yml`）は既にあるが、
+テストだけ（`ci.yml` のジョブ: frontend・invariants・rust・e2e・build。build はインストーラーを作らないビルドの確認）。インストーラーの作成（`release.yml`、タグでだけ走る）と Web アプリのデプロイ（`pages.yml`）は既にあるが、
 リリースしていない間はこの流れの確認の対象にしない。リポジトリは public（Actions の制限が緩い）。
 
 ## セッションの運用（所有者の決定 2026-11-17）

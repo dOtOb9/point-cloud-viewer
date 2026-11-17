@@ -204,3 +204,17 @@
 - `ci.yml`・`pages.yml` の変更は、**CI では未確認**（push しない決まり）。同じコマンドを手元（Windows）で実行して確かめた。ubuntu で `git diff` の対象に CRLF が混ざる心配は、
   Linux の checkout では改行の変換が無いので小さいが、**実機（CI）では未確認**
 - 生成物（`src/wasm/pcv-wasm/`）はコミットしていない。HEAD のコミット済みの生成物と今のソースの JS 糊・型は一致していたため、作り直してコミットする必要が無かった
+
+## 監査の記録（メイン、2026-11-17。main への例外マージの PR の本文の代わり）
+
+- 受け入れ基準（`REVIEW-architecture-2026-11.md` の RF-0・RF-1・RF-15）:
+  RF-0 AC-1 ✓（`npm run check:docs` が ARCHITECTURE・ROADMAP・CLAUDE.md のパスとリンクを検査）／AC-2 ✓（ROADMAP の状態をコードと照合）／AC-3 ✓（規約の番号と数が CLAUDE.md・ARCHITECTURE.md・ci.yml で一致）。
+  RF-1 AC-1 ✓（`npm run check:circular` 循環 0）／AC-2 ✓（わざとの違反で lint が落ちる。`src/layer-rules.test.ts`）／AC-3 ✓（コメントに Tauri のパッケージ名を書いても落ちない）。
+  RF-15 AC-1 ✓（手元で JS 糊の食い違いを検出。**CI では未確認**: `check:wasm-glue` は `pages.yml` にあり、main への push で初めて走る）
+- 最終的な実装: 層の規約を CI の grep から ESLint の `no-restricted-imports`＋`no-restricted-syntax`（動的 `import()`・型の `import()`・`require()` も）に置き換え、旧 grep が捕まえた形を全部テストで固定。
+  madge で循環を検出（devDependency、`overrides` で TypeScript を 6 に揃える）。`update-check.ts` の `openUrl` を `tauri.ts` へ。将来の `src/plugins/**` の import 制限。
+  文書のパスの検査（`scripts/check-doc-paths.mjs`）。コミットした wasm の JS 糊の検査（`check:wasm-glue`、`.wasm` 本体は絶対パスが埋まるので比べない）
+- やり取りの要約: 本体は R1〜R2（2 往復）。R1 の must は「ESLint が動的 `import()` を見ず、grep からの置き換えで検査が後退した」→ セレクタを足し、監査役の赤のテスト 9 件で固定。
+  再発防止策は R1〜R2（2 往復）。R1 の must は「`check:docs` が ROADMAP を見ないのに、AGENTS.md は全部見ると書いた」→ 対象を明記してテストを置いた
+- 残件: リテラルでない `import(name)`・`../state`（index）は捕まえない（限界として記録済み）。`TSImportType` の `argument` は typescript-eslint で非推奨（`source` への移行は後のタスク）。
+  CI の ubuntu で `check:wasm-glue` が通るかは、main への push の後の Pages の run で確かめる
