@@ -156,6 +156,18 @@ describe("check-comments: Rust", () => {
     expect(countedLines(text, "x.rs")).toEqual([6, 8, 9]);
   });
 
+  it("does not allow // SAFETY: when the next non-empty line is a comment that says unsafe", () => {
+    const text = [
+      "// SAFETY: looks allowed",
+      "// this is unsafe because of the pointer",
+      "let a = 1;",
+      "// SAFETY: before a block comment",
+      "/* unsafe */",
+      "unsafe { f() };",
+    ].join("\n");
+    expect(countedLines(text, "x.rs")).toEqual([1, 2, 4, 5]);
+  });
+
   it("allows // SAFETY: before unsafe in TypeScript too, with the same rule", () => {
     expect(countedLines("// SAFETY: x\nconst a = 1;\n", "x.ts")).toEqual([1]);
   });

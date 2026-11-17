@@ -208,9 +208,14 @@ function nextNonEmptyLine(lines, afterIndex) {
   return "";
 }
 
+function isUnsafeCode(line) {
+  const code = line.trim();
+  return !code.startsWith("//") && !code.startsWith("/*") && /\bunsafe\b/.test(code);
+}
+
 function isAllowedComment(body, endLine, lines) {
   if (TOOL_DIRECTIVES.some((pattern) => pattern.test(body))) return true;
-  if (SAFETY_COMMENT.test(body)) return /\bunsafe\b/.test(nextNonEmptyLine(lines, endLine - 1));
+  if (SAFETY_COMMENT.test(body)) return isUnsafeCode(nextNonEmptyLine(lines, endLine - 1));
   return false;
 }
 
