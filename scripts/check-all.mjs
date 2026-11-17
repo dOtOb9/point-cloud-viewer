@@ -15,6 +15,7 @@ const STEPS = [
   ["check:docs", "npm run check:docs"],
   ["vitest", "npx vitest run"],
   ["cargo fmt (workspace)", "cargo fmt --all -- --check"],
+  ["cargo clippy (workspace)", "cargo clippy --workspace --all-targets -- -D warnings"],
   ["cargo fmt (vendor/copc-writer)", "cargo fmt --manifest-path vendor/copc-writer/Cargo.toml -- --check"],
 ];
 
