@@ -118,3 +118,9 @@ PF-0 は 4 ラウンドかかった。指摘は 3 つの根本原因に集まる
 - `check-adr`（F-8・F-9）: 汎用語の一覧に TypeScript と Rust の予約語・標準の型（`private`・`readonly`・`interface`・`Promise`・`Result`・`Option`・`Self` など）を入れた。さらに、識別子が引いたファイルの中で**宣言か定義**（`function/const/class/fn/struct … 名前`、`名前(`、`名前:`、`名前 =`）されていることを求める（コメントに書かれているだけの語は落ちる）。文言は「キーワードか汎用語」「3 文字未満」に分けた
 - **限界（正直に）**: これらの検査は、ADR が「コードを開いて名前を挙げた」ことを確かめるだけで、本気でごまかす人（宣言のある別の名前を挙げる、AC の意味を変えずに書き足す、など）は止められない。目的は「コードを開かせる」「コーディネーターの部分を黙って変えさせない」ことで、「前提」の欄の正しさと AC の意味は監査役が見る
 - CI の `check:docs`（F-10）は今は `--base` 無しで走る。採択済みの ADR を PR で書き換えたときの厳しい検査（行の近さ）を CI で効かせるには、PR の base の sha を `--base` に渡す。これは本流との統合のときに決める
+
+## TP-1-CI（2026-11-17、PR・CI の監査 trendpoint-parity-PR R1 の F-2）
+
+| 指摘 | 重さ | 根本原因 | 防ぐ仕組み（種類: テスト / lint / CI / スクリプト / 決まり / 注意） | 置いた場所・コミット |
+|---|---|---|---|---|
+| CI の rust ジョブが `cargo fmt --check` で落ちた（run 43932290047。Rust の example の整形）。ループの中では誰も気づかなかった | should | 作業役の「終わる前に必ず」の一覧に `cargo fmt` が無く、ループの監査役も Rust を触った差分で fmt を走らせなかった。CI が見るものと手元で走らせるものが別々に書かれていて、差が出ても気づく手段が無かった。決まりを後から AGENTS.md に足した（867e58a）だけでは、人の注意に頼ったまま | スクリプト: `npm run check:all`（`scripts/check-all.mjs`）。typecheck・lint・check:circular・check:docs・vitest・`cargo fmt --all -- --check`・vendor の fmt を1つ落ちても最後まで走らせ、OK / FAILED の一覧を出す（Windows では作業ディレクトリのドライブ名を大文字にして vitest の失敗も避ける）。決まり: AGENTS.md の作業役の「終わる前に必ず」を check:all に置き換え、一覧を作業報告に貼る形にした。元の誤り（Rust の example `compare_copc_nodes.rs` に整形の崩れた行を一時的に足す）で `check:all` が `FAILED cargo fmt (workspace)` を出すことを確かめた（その後 `git checkout` で戻した）。限界: wasm・e2e・tauri のビルドは CI だけ（時間と環境が要るため） | `scripts/check-all.mjs`、`package.json`、AGENTS.md |
