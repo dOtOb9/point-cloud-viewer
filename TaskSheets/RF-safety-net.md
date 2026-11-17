@@ -169,7 +169,7 @@
 | コミット済みと、今回のビルド 1 | 内容は一致（`git diff` に差分なし。作業ツリーが CRLF のため sha256 は違う） | 同左 | 同左 | **不一致**（コミット済み 2,084,497 → 2,083,361 バイト） |
 
 - 結論: **同じフォルダ・同じツールなら `.wasm` も再現する。だが `.wasm` はフォルダと機械に依存する。** `pcv_wasm_bg.wasm` には Rust の panic の場所として絶対パスが埋まっている。
-  コミット済みの `.wasm` から `grep -a -o` で取り出した例: `C:\Users\Masa1\.cargo\registry\src\index.crates.io-…\copc-core-0.9.0\src\hierarchy.rs`、
+  コミット済みの `.wasm` から `grep -a -o` で取り出した例: `%USERPROFILE%\.cargo\registry\src\index.crates.io-…\copc-core-0.9.0\src\hierarchy.rs`、
   `C:\rust\point-cloud-viewer\.claude\worktrees\agent-ab616ea6433c4e893\crates\pcv-core\src\raster\preview.rs`（別の worktree のパス）。
   CI（ubuntu、`/home/runner/…`、`rustc` は常に最新の stable）の `.wasm` は、同じソースでも**必ず一致しない**
 - JS 糊と型の 3 ファイルは、フォルダが違っても再現した（ビルド 1・2・3 で一致）。コミット済みとも内容が一致した（今の HEAD は古くない）
