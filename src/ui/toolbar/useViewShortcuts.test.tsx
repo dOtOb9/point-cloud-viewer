@@ -81,4 +81,20 @@ describe("useViewShortcuts", () => {
     press("5");
     expect(ctx.projection.get()).toBe("perspective");
   });
+
+  // Audit trendpoint-parity-PR R1 F-1: the view dialog stays open and has projection radio buttons. After clicking one,
+  // focus is on an <input type="radio">, which takes no typed text, so the view keys must still work.
+  it("F-1 the keys still work while a radio button (the dialog's projection choice) has focus", () => {
+    const ctx = createViewContext();
+    mount(ctx, [pointCloud]);
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    document.body.appendChild(radio);
+    radio.focus();
+    const event = new KeyboardEvent("keydown", { key: "5", bubbles: true, cancelable: true });
+    act(() => {
+      radio.dispatchEvent(event);
+    });
+    expect(ctx.projection.get()).toBe("orthographic");
+  });
 });

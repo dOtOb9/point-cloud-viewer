@@ -145,6 +145,13 @@ Web 版（`npm run dev`）で `autzen-classified.copc.laz` を開き、各定位
 確かめたこと: typecheck / lint エラー無し、`npx vitest run`（`C:\` から）88 files 890 tests passed。スクリーンショットは自分で起動した vite（ポート 5297）で撮り、終わったら自分の vite だけ止めた。
 未確認: 実機の GPU 差、タッチ操作、EDL・グリッドの見た目の細部（R1 と同じ）。
 
+### 実装の記録 R3（PR・CI の監査 F-1、2026-11-17）
+
+- `isTypingTarget`（`src/app/typing-target.ts`）が `<input>` の `type` を読むようになった。radio・checkbox・button・submit・reset・range・color・file・image は「文字を打っている」と見なさない（type が無い・text 系は今までどおり打っている）。
+  理由: 視点ダイアログは押した後も開いたままで、投影のラジオを押すとフォーカスがラジオに残り、そのまま 1〜7・F・5 を押しても無反応だった（UX-4 違反）。赤のテストは `useViewShortcuts.test.tsx`、判定の単体テストは `typing-target.test.ts`。
+- 振る舞いの変化（この判定を使う他の所）: レイヤーの Delete キー、計測・選択ツールの Enter/Esc は、チェックボックスやボタンにフォーカスがあるときも効く（以前は INPUT 全部で無視）。
+  レイヤー一覧の表示チェックボックスにフォーカスがある状態で Delete を押すと、選択中のレイヤーが消える。これは `layer-delete-key.ts` の旧コメント「チェックボックスのときも消さない（安全側）」とは逆になる。確認: `layer-delete-key.test.ts` は type 無しの INPUT だけを見ていて通る。チェックボックスでの Delete は未確認（画面）。
+
 ---
 
 ## TP-2 表示範囲
