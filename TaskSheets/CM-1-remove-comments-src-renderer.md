@@ -12,6 +12,8 @@
 - **AC-3** コメントだけの行を消した後に、空行が2行以上続く・ブロックの先頭が空行になる、などの跡を残さない（整形ツールが通る）
 - **AC-4** `src/code-limits.test.ts` の BASELINE など、行数に依存する検査・文書（ADR-0024 などの `path:line` の参照）を、縮んだ行数に合わせて直す（`npm run check:docs` が通る）
 - **AC-5** `npm run check:all` が全部 OK
+- **AC-6** シェーダー（WGSL）を TS の文字列から出す: `/* wgsl */` の付いたテンプレート文字列を持つ5ファイル（`depth-pick.ts`・`edl.ts`・`gpu-resources.ts`・`ground-grid.ts`・`sky.ts`）のシェーダーを `src/renderer/shaders/*.wgsl` に置き、`?raw` で import する。`.wgsl` のコメントも消し、`npm run check:comments` が通る（CM-0 の検査は `.wgsl` を数える）。描画の結果は変えない（コメントを除いた文字列が同じであることをテストで確かめるか、差分で示す）
+- **AC-7** シェーダーが TS に戻らない守り: `src/code-limits.test.ts` に、`src/**/*.{ts,tsx}`（テストを除く）に WGSL の入口の属性（`@vertex`・`@fragment`・`@compute`）が出てきたら落ちるテストを置く。目印（`/* wgsl */`）でなく中身を見る（CM-0-RP の F-RP-2）。元の形に一時的に戻して落ちることを確かめる
 
 ## 移した理由の記録
 
