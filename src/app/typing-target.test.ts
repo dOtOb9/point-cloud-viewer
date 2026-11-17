@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTypingTarget } from "./typing-target";
+import { isFormControl, isTypingTarget } from "./typing-target";
 
 describe("isTypingTarget", () => {
   it("is true for input, textarea, select (any case) and contenteditable", () => {
@@ -10,6 +10,16 @@ describe("isTypingTarget", () => {
     for (const type of [undefined, "", "text", "search", "number", "email", "password", "TEXT"]) {
       expect(isTypingTarget({ tagName: "INPUT", type })).toBe(true);
     }
+  });
+  it("isFormControl: every input type (also radio, checkbox, range, button), textarea, select and contenteditable", () => {
+    for (const type of [undefined, "text", "radio", "checkbox", "range", "button", "submit", "file", "RADIO"]) {
+      expect(isFormControl({ tagName: "INPUT", type })).toBe(true);
+    }
+    expect(isFormControl({ tagName: "textarea" })).toBe(true);
+    expect(isFormControl({ tagName: "SELECT" })).toBe(true);
+    expect(isFormControl({ tagName: "DIV", isContentEditable: true })).toBe(true);
+    expect(isFormControl({ tagName: "BUTTON" })).toBe(false);
+    expect(isFormControl(null)).toBe(false);
   });
   it("an input that takes no text (radio, checkbox, button, range, ...) is not a typing target", () => {
     for (const type of ["radio", "checkbox", "button", "submit", "reset", "range", "color", "file", "RADIO"]) {

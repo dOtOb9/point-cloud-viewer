@@ -68,7 +68,8 @@
 - 受け入れ基準ごとに、それを満たすコードとテストを置く。テストを書けないもの（画面・GPU）は、確かめ方を TaskSheets に書いて「未確認」と明記する
 - 終わる前に必ず **`npm run check:all`** を実行し、末尾の一覧（OK / FAILED）を作業報告に貼る（`scripts/check-all.mjs`。typecheck・lint・check:circular・check:docs・vitest・`cargo fmt --all -- --check`・`vendor/copc-writer` の fmt を、1つ落ちても最後まで走らせてまとめる。CI の frontend・rust ジョブの手元で走る分。
   スクリプトが作業ディレクトリのドライブ名を大文字にして vitest を走らせる。単独で `npx vitest run` を打つときは **Windows では `C:\` の大文字から** 実行する。`c:\` からだと vitest が全ファイル `Cannot read properties of undefined (reading 'config')` で落ちる）。FAILED があれば直してから報告する
-  - 追加で、Rust を触ったときの下の確認  - Rust を触ったら `cargo test -p <触ったクレート>` と `cargo clippy -p <触ったクレート> -- -D warnings`（fmt は `check:all` が見る。差があれば `cargo fmt --all`）。`pcv-core`・`pcv-wasm` を触ったら `npm run build:wasm` で wasm を作り直す
+  - 追加で、Rust を触ったときの下の確認
+  - Rust を触ったら `cargo test -p <触ったクレート>` と `cargo clippy -p <触ったクレート> -- -D warnings`（fmt は `check:all` が見る。差があれば `cargo fmt --all`）。`pcv-core`・`pcv-wasm` を触ったら `npm run build:wasm` で wasm を作り直す
 - **タスクシートのメインの部分（目的・受け入れ基準・見出し・「記録」より前の文）は変えない。** 書いてよいのは記録（見出しに「記録」を含む節。「## 記録」も、節の中に足す「### 実装の記録 R1」も）の中だけ（PF-0 R2 で、作業役が AC を書き換え、節を消した）。
   終わる前に `node scripts/check-task-sheet.mjs <ループ開始前のコミット>` を実行して、出力を作業報告に貼る（`scripts/check-task-sheet.test.mjs` がテスト。監査役も同じコマンドを実行し直す）。
   <ループ開始前のコミット> は base。メインがループの途中で AC を直したら、その直し以降のコミットを base にする
@@ -92,7 +93,8 @@
 - **操作を重ねるもの（ズーム・パン・回転・視点移動）は、往復のあとも成り立つことのテストを置く**（例: 引く→回す→寄るの後も、データが描画範囲に入っている／カーソルの下の点が動かない）。1回の操作だけのテストでは、積み重なって初めて出る不具合を見逃す（TP-1 の F-3）
 - **終わる前に、決まりが変わっていないか確かめる。** `git log <作業を始めたコミット>..HEAD --oneline -- CLAUDE.md AGENTS.md "TaskSheets/ADR-*.md"` に出たコミットがあれば、その差分を読み、
   自分が作業中に足したものが新しい決まりに合っているか見直してから報告する（TP-1 の F-4。作業中に状態の置き場所の決まりが改訂された）
-- 「入力欄にフォーカスがあるか」は `src/app/typing-target.ts` の `isTypingTarget` を呼ぶ（自前で `tagName` を比べない。`src/code-limits.test.ts` が検査する）
+- **共有の関数・判定を変えるときは、その使い手を全部数え（`grep`）、各使い手にとって「壊れて困る側」が同じか確かめて、作業報告に数と結果を書く**（TP-1 の PR 監査 R2 F-1: 視点のキーのために共有の判定を緩めたら、確認なしでレイヤーを消す Delete まで緩んだ）
+- 「入力欄にフォーカスがあるか」は `src/app/typing-target.ts` の関数を呼ぶ（害のないキーは `isTypingTarget`、消す・決める・確定するキーは `isFormControl`。使い分けはファイル冒頭のコメント）（自前で `tagName` を比べない。`src/code-limits.test.ts` が検査する）
 
 ### 作業報告（Worker → Auditor）
 

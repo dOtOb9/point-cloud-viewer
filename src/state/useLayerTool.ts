@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { extractFromLayer } from "../app/point-cloud-tools";
-import { isTypingTarget } from "../app/typing-target";
+import { isFormControl } from "../app/typing-target";
 import type { SectionLinePreset } from "../datasource/section-line";
 import type { CopcViewerState } from "./useCopcViewer";
 import { isMeasureLayer } from "./layers";
@@ -230,7 +230,7 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
       if (modeRef.current === "select") finishPolygon();
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
+      if (isFormControl(e.target)) return; // Enter / Esc finish or cancel: any focused form control keeps them (typing-target.ts)
       if (e.key === "Escape") reset(null);
       else if (e.key === "Enter") finishPolygon();
     };

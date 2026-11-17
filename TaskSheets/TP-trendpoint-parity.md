@@ -149,8 +149,9 @@ Web 版（`npm run dev`）で `autzen-classified.copc.laz` を開き、各定位
 
 - `isTypingTarget`（`src/app/typing-target.ts`）が `<input>` の `type` を読むようになった。radio・checkbox・button・submit・reset・range・color・file・image は「文字を打っている」と見なさない（type が無い・text 系は今までどおり打っている）。
   理由: 視点ダイアログは押した後も開いたままで、投影のラジオを押すとフォーカスがラジオに残り、そのまま 1〜7・F・5 を押しても無反応だった（UX-4 違反）。赤のテストは `useViewShortcuts.test.tsx`、判定の単体テストは `typing-target.test.ts`。
-- 振る舞いの変化（この判定を使う他の所）: レイヤーの Delete キー、計測・選択ツールの Enter/Esc は、チェックボックスやボタンにフォーカスがあるときも効く（以前は INPUT 全部で無視）。
-  レイヤー一覧の表示チェックボックスにフォーカスがある状態で Delete を押すと、選択中のレイヤーが消える。これは `layer-delete-key.ts` の旧コメント「チェックボックスのときも消さない（安全側）」とは逆になる。確認: `layer-delete-key.test.ts` は type 無しの INPUT だけを見ていて通る。チェックボックスでの Delete は未確認（画面）。
+- 判定を2つに分けた（PR・CI の監査 R2 F-1）: 最初の直しは `isTypingTarget` を共有する Delete キー・計測・選択の Enter/Esc にも及び、チェックボックスやダイアログのラジオにフォーカスがあるとき Delete で選択中のレイヤーが確認なしに消える向きに変わってしまった（戻せない）。
+  そこで `src/app/typing-target.ts` に `isFormControl`（INPUT は type を問わず・TEXTAREA・SELECT・contenteditable）を足し、Delete（`layer-delete-key.ts`）と計測・選択の Enter/Esc（`useMeasureTool.ts`・`useLayerTool.ts`）は今までどおりこちら（安全側）を使う。`isTypingTarget`（type を読む）は害のない視点のキーだけが使う。
+  振る舞いは R1 までと同じに戻った（Delete・Enter/Esc は、どの input にフォーカスがあっても効かない）。テスト: `layer-delete-key.test.ts`（checkbox・radio・range）、`typing-target.test.ts`、`code-limits.test.ts`（3つのファイルが `isFormControl` を使い `isTypingTarget` を使わない）。
 
 ---
 

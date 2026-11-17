@@ -114,3 +114,18 @@ describe("typing target", () => {
     expect(offenders, "use isTypingTarget() from src/app/typing-target.ts").toEqual([]);
   });
 });
+
+describe("which typing check a key uses", () => {
+  // Audit trendpoint-parity-PR R2 F-1: keys that destroy or decide something must keep the safe check (isFormControl:
+  // any form control keeps them); only the harmless view keys use the narrower isTypingTarget. See typing-target.ts.
+  it("Delete (layer) and Enter / Esc (measure, selection tools) use isFormControl, never isTypingTarget", () => {
+    for (const path of ["src/ui/layers/layer-delete-key.ts", "src/state/useMeasureTool.ts", "src/state/useLayerTool.ts"]) {
+      const text = FILES.find(([p]) => p === path)?.[1] ?? "";
+      expect(text, path).toContain("isFormControl(");
+      expect(text, path).not.toContain("isTypingTarget(");
+    }
+  });
+  it("the view keys use isTypingTarget", () => {
+    expect(FILES.find(([p]) => p === "src/app/view.ts")?.[1] ?? "").toContain("isTypingTarget(");
+  });
+});
