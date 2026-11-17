@@ -17,6 +17,7 @@
     "check:circular": "madge --circular --extensions ts,tsx src",
     "check:wasm-glue": "git diff --exit-code -- src/wasm/pcv-wasm/pcv_wasm.js src/wasm/pcv-wasm/pcv_wasm.d.ts src/wasm/pcv-wasm/pcv_wasm_bg.wasm.d.ts",
     "check:docs": "node scripts/check-doc-paths.mjs && node scripts/check-adr.mjs",
+    "check:comments": "node scripts/check-comments.mjs",
     "check:all": "node scripts/check-all.mjs"
   },
   "dependencies": {
