@@ -168,6 +168,11 @@ describe("check-comments: Rust", () => {
     expect(countedLines(text, "x.rs")).toEqual([1, 2, 4, 5]);
   });
 
+  it("gives the beginning of a line comment without the \\r of a CRLF line end", () => {
+    expect(previews("// crlf\r\nfn f() {} /* block */\r\n", "x.rs")).toEqual(["// crlf", "/* block */"]);
+    expect(previews("// crlf\r\nconst a = 1;\r\n", "x.ts")).toEqual(["// crlf"]);
+  });
+
   it("allows // SAFETY: before unsafe in TypeScript too, with the same rule", () => {
     expect(countedLines("// SAFETY: x\nconst a = 1;\n", "x.ts")).toEqual([1]);
   });

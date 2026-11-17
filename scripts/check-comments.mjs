@@ -229,7 +229,7 @@ export function findCountedComments(text, fileName) {
     const line = lineNumberAt(lineStarts, start);
     const endLine = lineNumberAt(lineStarts, Math.max(start, end - 1));
     if (isAllowedComment(body, endLine, lines)) continue;
-    comments.push({ line, preview: body.split(/\r?\n/)[0].slice(0, PREVIEW_LENGTH) });
+    comments.push({ line, preview: body.split(/\r?\n/)[0].trimEnd().slice(0, PREVIEW_LENGTH) });
   }
   return comments;
 }
