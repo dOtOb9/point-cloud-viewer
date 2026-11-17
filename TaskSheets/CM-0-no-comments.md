@@ -92,3 +92,11 @@ YAML・TOML・`.gitattributes`・PowerShell は CM-0 の検査の対象外（数
 - `npm run check:comments` → `comments OK (407 files with 12261 comments left in scripts/comment-baseline.json)`
 - `npx vitest run scripts/check-comments.test.mjs`（`C:\` の大文字から）→ 19 passed
 - AC-5 を自分で再現する: 対象のファイルの末尾に `// x` を足して `npm run check:comments` が `ファイル:行: // x` を出して終了コード 1 になること、`const s = "https://a // b";` を足しても OK のままであること、既存のコメントを1つ消すと `lower it to N` で落ちることを見て、`git checkout -- <ファイル>` で戻す
+
+### 監査の指摘への対応（R1 の APPROVE の後、CM-0-RP R1）
+
+- F-1（should、WGSL のコメントを見ていない）: メインの決定どおり、`.wgsl` を対象の拡張子に足し、Rust と同じ `findRustCommentRanges` で数えるようにした（`LEXED_LIKE_RUST`。WGSL には文字列・文字が無いので、`//` と入れ子の `/* */` だけが効く）。テスト: `check-comments: WGSL` の 2 ケースと、`isCheckedFile("src/renderer/shaders/points.wgsl")`。`git ls-files '*.wgsl'` は 0 件なので baseline は変わらない。TS のテンプレート文字列の中にある今のシェーダーのコメントは、CM-1 で `src/renderer/shaders/*.wgsl` に出した時点で検査に入る（それまでは上の申し送りのとおり数えていない）
+- F-2（nit）: `// SAFETY:` の次の空でない行が `//` か `/*` で始まるときは許さない（`isUnsafeCode`）。テスト: `does not allow // SAFETY: when the next non-empty line is a comment that says unsafe`
+- F-3（nit）: 本文の先頭を `trimEnd()` して、CRLF の行の `\r` を出さない。テスト: `gives the beginning of a line comment without the \r of a CRLF line end`
+- F-4（nit）: **ファイルの名前を変えたら（`git mv`）、`scripts/comment-baseline.json` のキーも手で新しいパスに付け替える。** 検査は新しいパスを上限 0 として落とし、古いパスには「remove the entry」と出す。上限を上げずに済む付け替えを検査が自分で推し量ると、別のファイルへのコメントの持ち込みも通ってしまうので、手で付け替える決まりにした
+- 4 つのテストは、直す前の `scripts/check-comments.mjs`（`git checkout` で一時的に戻した）で 4 件落ちることを確かめ、直した版に戻した（`Tests  4 failed | 19 passed (23)`）
