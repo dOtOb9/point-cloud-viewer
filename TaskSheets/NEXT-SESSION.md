@@ -1,4 +1,4 @@
-# 次のセッション用のプロンプト（2026-11-17 03:xx に前のセッションが書いた）
+# 次のセッション用のプロンプト（2026-11-17 21:xx に前のセッションが書いた）
 
 下の「プロンプト」をそのまま新しいセッションに貼る。前のセッションのサブエージェントには続きを頼めないので、必要な文脈はこのファイル・タスクシート・PR に置いてある。
 
@@ -21,13 +21,15 @@
 
 ### いまの状態（2026-11-17）
 
-- 完了（作業ブランチ `trendpoint-parity` で APPROVE、再発防止策も APPROVE。CI が緑になったら main にマージ済みのはず。`git log origin/main` で確かめる）:
+- 完了して **main にマージ済み**（2026-11-17、`df75c9a`。CI run 44012805499・Pages run 44012805444 とも緑。Pages で `check:wasm-glue` も初めて走って通った）:
   - **TP-1 視点**（全体・上/正面/背面/左/右/等角・平行投影、ショートカット F・1〜7、ステータスバーの表示）
   - **RF-0/1/15**（文書を現状に、層の規約を ESLint・madge で検査、コミットした wasm の糊が古いことを Pages のワークフローで検出）
   - **PF-0**（初回の読み込みの計測と設計。結論: COPC は 0.2〜2 秒で出る。遅いのは LAS/LAZ の変換が終わるまで何も出ないこと。ADR-0024「提案」）
   - 再発防止の仕組み: `src/code-limits.test.ts`（800 行の上限・入力欄の判定のコピー）、`src/layer-rules.test.ts`、`scripts/check-doc-paths.mjs`・`scripts/check-adr.mjs`（`npm run check:docs`）、
     `scripts/check-task-sheet.mjs`、`scripts/ui-shots.mjs`（375px・1280px の画面）、`scripts/bench/*`（計測）
-- 未 push・未マージの物は無い（はず。`git status` と `git log origin/main..trendpoint-parity` で確かめる）
+- main へ入れる前に PR・CI の監査役が3往復で APPROVE（`AGENTS.md` の新しい役）。その中で `npm run check:all`（CI と同じ検査を手元で）と、キーの判定の分割（害の無い視点のキーは `isTypingTarget`、Delete・計測の Enter/Esc は安全側の `isFormControl`）が入った。
+- **後回しにした小さな指摘**（PL-0 の中で片づける）: (1) `src/code-limits.test.ts` の「どちらの判定を呼ぶか」の検査は別名の import・コメント・名前空間の import ですり抜けられる（import の指定子を読む形に、または計測・選択の Enter/Esc を純粋な関数に出してテスト）、(2) `eslint.config.js` の `TSImportType[argument…]` は typescript-eslint で非推奨（`source` へ）。
+- ブランチ `handoff-2026-11-17`（このファイルの更新）を main に入れた後、`trendpoint-parity`・`handoff-2026-11-17` は消してよい
 - 2026-11-17 に、未 push だった71コミットの著者を noreply に書き換えた。古い hash は `TaskSheets/HASH-MAP-2026-11-17.md` で読み替える。ローカルに `backup/trendpoint-parity-before-author` が残っている（所有者の了承があれば消してよい）
 - **画面・実機で未確認**: 平行投影での計測値の一致、EDL の強さ、Y-up のデータでの北、実機のタッチ。手順は `TaskSheets/TP-trendpoint-parity.md`
 
