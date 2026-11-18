@@ -94,7 +94,6 @@
   "scripts/thin-filter-browser-bench.mjs": 13,
   "scripts/ui-shots.mjs": 14,
   "src-tauri/src/conversion.rs": 244,
-  "src-tauri/src/copc_state.rs": 388,
   "src-tauri/src/lib.rs": 172,
   "src-tauri/src/main.rs": 1,
   "src/app/csf-params.test.ts": 1,
