@@ -53,7 +53,7 @@
 | `copc.worker.ts:WorkerScope` | tsconfig の lib を DOM 向けのままにしたいので、`self` は使う形だけをキャストで与える | ここ |
 | `copc.worker.ts:openFiles` | 開いているファイルの表（世代番号 = cloudId → ファイル）。複数を同時に持つ。`close` で表から外して `free()` し、wasm 側のリーダーとメモリを手放すので、メモリは開いているファイルの数にだけ比例する（L1-B） | ここ（監査 F-3 で足した） |
 | `copc.worker.ts:reportPreparing` | 準備段階のステップを細かく画面に送る。所有者の実機で「準備中のまま止まってタブが落ちる」不具合の調査のためで、次に落ちたときに、どのステップで止まったかを所有者が報告できるようにする（M4-11） | ここ（監査 F-3 で足した） |
-| `tauri.ts:readNode`（`panicMessageFromBackend`） | 500 の本文には Rust が `catch_unwind` で捕まえた panic のメッセージとノードキーが入っている（ADR-0013）。読み捨てると「500」としか出せない | 名前（`body` から変えた）＋ここ |
+| `tauri.ts:readNode`（`errorMessageFromBackend`） | 400 は普通のエラー（ファイルが開いていない・キーが不正など。`src-tauri/src/lib.rs` の `ReadNodeError::Normal`）、500 は Rust が `catch_unwind` で捕まえた panic（ADR-0013）。どちらも本文に理由（500 はノードキーも）が入っている。読み捨てると「400」「500」としか出せない | 名前（`body` から R1 で `panicMessageFromBackend`、PR 監査 F-1 で `errorMessageFromBackend` に変えた）＋ここ |
 | `tauri.ts:readNode`・`tauri-protocol.ts:buildNodeRequestPath` | `convertFileSrc` は文字列全体を 1 回 `encodeURIComponent` するので、区切りの `/` も `%2F` で届く。v0.1.3 では区切りが `:` で、Rust がデコードせずに解析していて全ノードの読み出しが失敗した。今は Rust がデコードしてから解析するので区切りの選び方は動作に影響せず、ベンチ用の `/<size>` と見分けやすい `/` にした | テスト名 `ベンチ用の'/<size>'形式(数字のみ)とは常に区別できる('/'を含む)`＋ここ |
 | `file-picker.ts:pickFilesOnWeb` | `input.click()` は呼び出し側のクリックの処理の中で、最初の `await` より前に同期で呼ぶ（そうしないとブラウザがユーザー操作でないとして止める）。そのためこの関数は `async` にしない。`cancel` イベントを出さないブラウザでは Promise が決まらないままだが、クリックの処理以外は待たないので害は無い。input は document に付けていない（R6 の記録） | ここ |
 | `point-count-estimate.ts`（点数で見積もる理由） | 旧実装の「ファイルサイズ×11」は LAZ（圧縮）の実測なので、非圧縮・f64 の PCD（sofi.pcd 9.47GB → 約 104GB）で誤って「空き容量不足」になった。一時領域も出力も点数にほぼ比例する | テスト名 `非圧縮PCD(sofi.pcd相当、3.64億点)でも、旧実装のファイルサイズ×11より…`＋ここ |
@@ -112,3 +112,8 @@
 - F-2（nit）: `SIZE_OF_A_DIR_IN_USE_BY_ANOTHER_TAB` を `SIZE_WHEN_UNREADABLE` にした（`dirTotalBytes` のどんな失敗でも 0 になるため）。使い手は `getOpfsUsageBreakdown` の 1 か所
 - F-3（nit）: 表に `copc.worker.ts:openFiles` と `copc.worker.ts:reportPreparing` の 2 行を足した
 - F-4（nit）: `opfs.ts`・`opfs.test.ts`・`file-system-sync-access-handle.d.ts` の先頭にあった BOM（`EF BB BF`）が消えた。R1 の一時的なスクリプトで、先頭の行のコメントを消すとき「行の前がコメント以外は空白か」を `trim()` で見ていて、`trim()` が BOM も空白として扱うので、BOM ごと行を消していた。BOM はコンパイラーにも検査にも影響しないので戻していない（`d05c858` で BOM があったのはこの 3 ファイルだけ。`git show d05c858:<file> | head -c3` で全ファイルを見た）
+
+### PR・CI の監査の指摘への対応（CM-2-PR）
+
+- F-1（should）: `tauri.ts` の `readNode` の `panicMessageFromBackend` を `errorMessageFromBackend` にした（400 の `ReadNodeError::Normal` の本文も受けるため。使い手は同じ関数の中の 1 か所）。表の `tauri.ts:readNode` の行も直した
+- F-2（nit）: `TaskSheets/RECURRENCE.md` の CM-2 の節のコミットを、付け替え後のハッシュ `6613450` に直した
