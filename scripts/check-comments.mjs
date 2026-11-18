@@ -7,7 +7,7 @@ export const BASELINE_PATH = "scripts/comment-baseline.json";
 
 const CHECKED_EXTENSIONS = /\.(ts|tsx|js|mjs|cjs|rs|wgsl)$/;
 const LEXED_LIKE_RUST = /\.(rs|wgsl)$/;
-const EXCLUDED_PATHS = [/^vendor\//, /^src\/wasm\//, /^docs\//, /^TaskSheets\//, /\.generated\.tsx$/];
+const EXCLUDED_PATHS = [/^vendor\//, /^src\/wasm\//, /^TaskSheets\//, /\.generated\.tsx$/];
 
 const TOOL_DIRECTIVES = [
   /^\/[/*]\s*eslint-disable/,

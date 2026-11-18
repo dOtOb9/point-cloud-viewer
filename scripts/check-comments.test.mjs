@@ -209,10 +209,18 @@ describe("check-comments: which files are checked", () => {
     expect(isCheckedFile("vendor/copc-writer/src/lib.rs")).toBe(false);
     expect(isCheckedFile("src/wasm/pcv-wasm/pcv_wasm.js")).toBe(false);
     expect(isCheckedFile("src/ui/icons.generated.tsx")).toBe(false);
-    expect(isCheckedFile("docs/video/a.ts")).toBe(false);
+    expect(isCheckedFile("docs/book/index.html")).toBe(false);
+    expect(isCheckedFile("docs/book/chapter.md")).toBe(false);
     expect(isCheckedFile("TaskSheets/x.ts")).toBe(false);
     expect(isCheckedFile("src/ui/a.css")).toBe(false);
     expect(isCheckedFile("Cargo.toml")).toBe(false);
+  });
+});
+
+describe("check-comments: code under docs is still code", () => {
+  it("checks the video tools scripts that CM-3 has to clean", () => {
+    expect(isCheckedFile("docs/video/tools/render.mjs")).toBe(true);
+    expect(isCheckedFile("docs/video/tools/lib/captions.mjs")).toBe(true);
   });
 });
 
