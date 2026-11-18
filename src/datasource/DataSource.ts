@@ -1,26 +1,14 @@
-// The abstraction decided in ADR-0001. Only tauri.ts may import Tauri APIs; the renderer, state and
-// UI see this interface. `TauriSource` (tauri.ts) and `WebSource` (web.ts) implement it.
-// The point-cloud tools (extract, thin, DTM, raster, ...) are not on this interface yet: see
-// TaskSheets/REVIEW-architecture-2026-11.md A-1 / RF-2.
 import type { ConversionProgress, ConversionStageBreakdown } from "./conversion-dto";
 
-/**
- * ファイルのCRS（`pcv_core::crs::CrsInfo`に対応）。デスクトップ・Webで同じ形。
- * `kind`が`"none"`ならファイルにCRS情報が無い。`error`があれば読み取りに失敗
- * （ファイルは開ける。本文はエラーログに出す。ADR-0015）。
- */
 export interface CrsInfo {
   epsg?: number;
   name: string;
   kind: "plane-rectangular" | "utm" | "other" | "none";
   error?: string;
-  /** Meters per horizontal coordinate unit (1 = meters, 0.3048 = international foot). Absent = unknown: do not convert. */
   horizontalUnitToMeter?: number;
-  /** Meters per vertical (elevation) unit. May differ from the horizontal one. Absent = unknown. */
   verticalUnitToMeter?: number;
 }
 
-/** 点群全体のサマリ（M1-1の `pcv_core::CloudInfo` に対応）。 */
 export interface CloudInfo {
   pointCount: number;
   min: readonly [number, number, number];
@@ -31,9 +19,7 @@ export interface CloudInfo {
   crs: CrsInfo;
 }
 
-/** octreeの1ノード分のメタデータ。点データそのものは含まない（`readNode`で別途取得）。 */
 export interface HierarchyNodeInfo {
-  /** `readNode` にそのまま渡せるキー文字列（例: "0-0-0-0"）。 */
   key: string;
   pointCount: number;
   boundsMin: readonly [number, number, number];
@@ -41,88 +27,44 @@ export interface HierarchyNodeInfo {
 }
 
 export interface OpenedCloud {
-  /** 開いたファイルの識別子。`readNode`・`close`に渡す。Tauriでは`pcv://<cloudId>/<key>`の世代番号、WebではWorkerの表のキー。 */
   cloudId: number;
   info: CloudInfo;
   nodes: HierarchyNodeInfo[];
 }
 
-/**
- * renderer（NodeLoader）が必要とする最小の形: キーだけでノードを読む。
- * renderer は DataSource や cloudId を知らない。呼び出し側が
- * `{ readNode: (key) => source.readNode(cloudId, key) }` のように cloudId を
- * 閉じ込めて渡す（L1-multi-layer.md の取り決め）。L1-C が renderer を
- * 作り直すとき、これは `LayerInput.readNode` に置き換わる。
- */
 export interface NodeReader {
   readNode(key: string): Promise<ArrayBuffer>;
 }
 
-/** Options of `prepareToOpen`. `tempDir` is used by the desktop, `isMobile` by the Web. */
 export interface PrepareOptions {
   tempDir: string | null;
   isMobile: boolean;
-  /** Called once when a conversion really starts (not for an already-COPC file or a cached result). */
   onConverting?: () => void;
   onProgress?: (progress: ConversionProgress) => void;
 }
 
-/** What a finished conversion reports (only the source knows these). */
 export interface ConversionResult {
-  /** Name for the layer list (the converted `.copc.laz`). */
   outputName: string;
-  /** Inputs of `formatConversionBreakdown` that only the source knows. */
   platform: "web" | "desktop";
   sourceFormat: string;
   stageTimings: ConversionStageBreakdown;
-  /** Backend warnings (e.g. a file without a CRS). Empty if none. */
   warnings: string[];
-  /** Web only: the converted file for the download link. Desktop: null. */
   download: { url: string; fileName: string } | null;
 }
 
-/**
- * What `prepareToOpen` resolves to, once the item(s) can be opened or definitely cannot. Every kind really
- * happens on the platform that returns it.
- * - `ready`: `path` is a COPC path/key that `open()` accepts. `conversion` is null when nothing was converted
- *   (already COPC, or a cached conversion).
- * - `failed`: `summary` is the short text for the panel status, `details` the long text for the error log.
- *   A failed conversion is reported here too.
- * - `cancelled`: the user cancelled the conversion.
- */
 export type PrepareOutcome =
   | { kind: "ready"; path: string; conversion: ConversionResult | null }
   | { kind: "failed"; summary: string; details: string }
   | { kind: "cancelled" };
 
 export interface DataSource {
-  /**
-   * Opens a COPC file and returns the info of the whole cloud and the list of octree nodes.
-   * Files already open stay open (several can be open at once). `close` closes one.
-   */
   open(path: string): Promise<OpenedCloud>;
 
-  /**
-   * Makes the chosen file(s) ready to open: one COPC opens as it is; anything else is converted (several
-   * LAS/LAZ are merged into one COPC). The promise resolves only when the conversion (if any) has finished;
-   * progress comes through `options`. Desktop: items are paths. Web: items are `File`s. It throws only for
-   * unexpected errors (a failed command, a bad item).
-   */
   prepareToOpen(items: string[] | File[], options: PrepareOptions): Promise<PrepareOutcome>;
 
-  /** Cancels the running conversion. Does nothing if none is running (no throw). */
   cancelConversion(): void;
 
-  /**
-   * 指定したノードキーの点データを取得する。返るバイト列はM1-2で決めた
-   * バイナリ形式（`src/datasource/node-format.ts`の`parseNodeBuffer`でパースする）。
-   */
   readNode(cloudId: number, key: string): Promise<ArrayBuffer>;
 
-  /**
-   * `cloudId`のファイルを閉じ、リーダー（Tauri: ファイルハンドルのプール、
-   * Web: Workerのwasmリーダー）を手放す。閉じたあとの`readNode`は
-   * `StaleNodeRequestError`になる。既に閉じている・知らない`cloudId`でもエラーにしない。
-   */
   close(cloudId: number): Promise<void>;
 }
