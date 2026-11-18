@@ -4,20 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
-/**
- * R7 (`TaskSheets/R7-web-ply-e57.md`): PLY and E57 conversion on the Web, in a real browser.
- * Same idea and same checks as `e2e/web-conversion.spec.ts` (LAS): pick the file with the open
- * button, wait for the conversion breakdown, and expect no error banner, no panic in the console and
- * a non-empty opened cloud. The files are made at test time and deleted afterwards (no point-cloud
- * data is committed, CLAUDE.md).
- *
- * Not covered: the desktop build, a real GPU, and cancel during conversion (checked by hand, see the
- * task sheet).
- */
+const TIME_THE_RESULT_MUST_STAY_VISIBLE_MS = 2000;
+const XYZ_FLOAT_BYTES = 3 * 4;
+const RGB_UCHAR_BYTES = 3;
 
 const POINT_COUNT = 2000;
 
-/** A small binary_little_endian PLY with x/y/z (float), red/green/blue (uchar) and a `face` element. */
 function buildSyntheticPly(pointCount: number): Buffer {
   const header =
     "ply\nformat binary_little_endian 1.0\n" +
@@ -26,7 +18,7 @@ function buildSyntheticPly(pointCount: number): Buffer {
     "property uchar red\nproperty uchar green\nproperty uchar blue\n" +
     "element face 1\nproperty list uchar int vertex_indices\n" +
     "end_header\n";
-  const row = 15; // 3 * 4 + 3
+  const row = XYZ_FLOAT_BYTES + RGB_UCHAR_BYTES;
   const body = Buffer.alloc(pointCount * row);
   for (let i = 0; i < pointCount; i++) {
     const at = i * row;
@@ -37,7 +29,6 @@ function buildSyntheticPly(pointCount: number): Buffer {
     body.writeUInt8((i * 3) % 256, at + 13);
     body.writeUInt8((i * 7) % 256, at + 14);
   }
-  // One face (3 vertex indices) that the converter has to skip.
   const face = Buffer.alloc(1 + 3 * 4);
   face.writeUInt8(3, 0);
   face.writeInt32LE(0, 1);
@@ -62,8 +53,7 @@ async function convertThroughTheOpenButton(page: Page, filePath: string): Promis
 
   const breakdown = page.getByTestId("conversion-breakdown");
   await expect(breakdown).toBeVisible({ timeout: 45_000 });
-  // It must stay visible (the earlier bug removed it right after the conversion finished).
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(TIME_THE_RESULT_MUST_STAY_VISIBLE_MS);
   await expect(breakdown).toBeVisible();
   await expect(page.getByTestId("download-link")).toBeVisible();
   await expect(page.getByTestId("viewer-error")).toHaveCount(0);
@@ -97,8 +87,6 @@ test("E57 file is converted on the Web and opens", async ({ page }) => {
   const tmpDir = mkdtempSync(join(tmpdir(), "pcv-e2e-e57-"));
   try {
     const e57Path = join(tmpDir, "synthetic.e57");
-    // The E57 writer is the `e57` crate, so the fixture comes from an ignored Rust test
-    // (`write_e57_fixture_for_e2e` in crates/pcv-wasm/src/e57_import.rs).
     try {
       execFileSync(
         "cargo",
@@ -114,7 +102,6 @@ test("E57 file is converted on the Web and opens", async ({ page }) => {
   }
 });
 
-// M4-17: PCD now goes through the same `WasmPointFileConverter` as PLY / E57 (the old PCD-only class was removed).
 test("PCD file is converted on the Web and opens", async ({ page }) => {
   const tmpDir = mkdtempSync(join(tmpdir(), "pcv-e2e-pcd-"));
   try {
