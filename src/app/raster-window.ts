@@ -1,9 +1,3 @@
-// The Rasterize window (G1-R3), as plain functions (no class, no React): `openRasterWindow`, `changeRasterSettings`,
-// `exportRaster`, `closeRasterWindow`. Plan: TaskSheets/G1-raster-and-dtm.md section 13, TaskSheets/G1-T11-raster-window.md.
-// The result is NOT a layer: the window draws a live preview from thinned points that Rust keeps while it is open, and
-// "書き出す" reads every point once and gives a GeoTIFF (desktop: save dialog, Web: download).
-// Everything the functions read or change comes in through `RasterContext`, built by src/state/useRasterWindow.ts.
-// Rule: nothing in src/app/ imports React or a `use*` hook (TaskSheets/ADR-0021-thin-react.md).
 import {
   chooseGeoTiffDestination,
   closeRasterPreview as tauriCloseRasterPreview,
@@ -30,17 +24,13 @@ import { startDownload } from "./download";
 
 export { cancelTool };
 
-/** Everything the Rasterize window functions read or change. */
 export interface RasterContext {
   tools: PointCloudToolsContext;
-  /** The newest state (a ref in the hook), read after an await to drop a stale answer. */
   getState: () => RasterWindowState;
-  /** Replaces the whole state. */
   setState: (next: RasterWindowState) => void;
   getDisplayUnit: () => DisplayUnit;
 }
 
-/** The cell size in the file's unit, from the text typed in the display unit. Null when the text is not a positive number. */
 export function fileCellSizeOf(layer: ViewerLayer, settings: RasterSettings, display: DisplayUnit): number | null {
   const typed = Number(settings.cellSizeText);
   if (settings.cellSizeText.trim() === "" || !Number.isFinite(typed) || typed <= 0) return null;
@@ -48,7 +38,6 @@ export function fileCellSizeOf(layer: ViewerLayer, settings: RasterSettings, dis
   return displayLengthToFile(typed, units.horizontalToMeter, display);
 }
 
-/** The request Rust takes, or null while the settings are not valid yet. */
 export function rasterRequestOf(layer: ViewerLayer, settings: RasterSettings, display: DisplayUnit): RasterRequest | null {
   const cellSize = fileCellSizeOf(layer, settings, display);
   if (cellSize === null) return null;
@@ -65,7 +54,6 @@ function pointCloudLayer(ctx: RasterContext, layerId: string | null): ViewerLaye
   return layer && !isMeasureLayer(layer) && layer.sourcePath !== undefined ? layer : null;
 }
 
-// Desktop (Tauri command) or Web (Worker): the same three calls.
 function openPreview(source: DataSource, path: string): Promise<RasterPreviewSession> {
   return source instanceof WebSource ? source.openRasterPreview(path) : tauriOpenRasterPreview(path);
 }
@@ -79,10 +67,6 @@ function closePreview(source: DataSource | null, sessionId: number): Promise<voi
   return source instanceof WebSource ? source.closeRasterPreview(sessionId) : tauriCloseRasterPreview(sessionId);
 }
 
-/**
- * Open the window for the point-cloud layer `layerId`: read the upper levels once (a second or two on a big cloud),
- * then draw the first preview. Failures are shown in the window and sent to the error log.
- */
 export async function openRasterWindow(ctx: RasterContext, layerId: string): Promise<void> {
   const layer = pointCloudLayer(ctx, layerId);
   const source = ctx.tools.getSource();
@@ -90,7 +74,6 @@ export async function openRasterWindow(ctx: RasterContext, layerId: string): Pro
     ctx.tools.reportError("点群のレイヤーを選んでください", "tool");
     return;
   }
-  // A layer with colour starts with its colours; one without starts with the height.
   const settings: RasterSettings = { ...DEFAULT_RASTER_SETTINGS, value: layer.info.hasColor ? "rgbMean" : "zMean" };
   ctx.setState({ ...CLOSED_RASTER_WINDOW, open: true, layerId, settings, busy: "opening" });
   let session: RasterPreviewSession;
@@ -103,7 +86,6 @@ export async function openRasterWindow(ctx: RasterContext, layerId: string): Pro
   }
   const now = ctx.getState();
   if (!now.open || now.layerId !== layerId) {
-    // Closed (or reopened for another layer) while the points were being read.
     await closePreview(source, session.id);
     return;
   }
@@ -111,14 +93,13 @@ export async function openRasterWindow(ctx: RasterContext, layerId: string): Pro
   await redrawRasterPreview(ctx);
 }
 
-/** Draw the picture for the current settings. A newer change wins: an answer for older settings is dropped. */
 async function redrawRasterPreview(ctx: RasterContext): Promise<void> {
   const started = ctx.getState();
   const layer = pointCloudLayer(ctx, started.layerId);
   const source = ctx.tools.getSource();
   if (!started.open || !started.session || !layer || !source) return;
   const request = rasterRequestOf(layer, started.settings, ctx.getDisplayUnit());
-  if (request === null) return; // the cell size text is not a number yet: keep the last picture
+  if (request === null) return;
   ctx.setState({ ...started, busy: "rendering", error: null });
   try {
     const image = await renderPreview(source, started.session.id, request);
@@ -132,16 +113,13 @@ async function redrawRasterPreview(ctx: RasterContext): Promise<void> {
   }
 }
 
-/** A setting changed: store it and draw the preview again from the kept points. */
 export async function changeRasterSettings(ctx: RasterContext, settings: RasterSettings): Promise<void> {
   const now = ctx.getState();
   const valueChanged = now.settings.value !== settings.value || now.settings.groundOnly !== settings.groundOnly || now.settings.cellSizeText !== settings.cellSizeText;
   ctx.setState({ ...now, settings });
-  // The TIFF kind only matters for the export.
   if (valueChanged) await redrawRasterPreview(ctx);
 }
 
-/** Close the window and free the points Rust kept for it. */
 export async function closeRasterWindow(ctx: RasterContext): Promise<void> {
   const state = ctx.getState();
   if (state.exported?.download) URL.revokeObjectURL(state.exported.download.url);
@@ -149,11 +127,6 @@ export async function closeRasterWindow(ctx: RasterContext): Promise<void> {
   if (state.session) await closePreview(ctx.tools.getSource(), state.session.id);
 }
 
-/**
- * Export: read every point at the chosen cell size and write the GeoTIFF the TIFF buttons say. Desktop asks where to
- * save first (so the long read is not followed by a surprise dialog), Web downloads. Progress and cancel use the
- * tool progress dialog. The colours of a colored file use the range of the preview the user looked at.
- */
 export async function exportRaster(ctx: RasterContext): Promise<void> {
   const tools = ctx.tools;
   const state = ctx.getState();
@@ -175,7 +148,7 @@ export async function exportRaster(ctx: RasterContext): Promise<void> {
   let destination: string | null = null;
   if (!(source instanceof WebSource)) {
     destination = await chooseGeoTiffDestination(`${baseName}-raster.tif`);
-    if (destination === null) return; // the user closed the dialog
+    if (destination === null) return;
   }
 
   const title = `ラスタ化の書き出し（${layer.name}）`;

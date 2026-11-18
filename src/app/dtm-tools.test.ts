@@ -6,7 +6,6 @@ import type { ViewerLayer } from "../state/layers";
 import { makeDtm, saveDtmFile, type PointCloudToolsContext } from "./point-cloud-tools";
 import { CSF_PRESETS_METRES } from "./csf-params";
 
-// What a fake (non-Web) source reaches: the Tauri commands.
 const tauri = vi.hoisted(() => ({
   extractToCopc: vi.fn(),
   mergeCopcs: vi.fn(),
@@ -93,7 +92,6 @@ describe("makeDtm", () => {
     expect(h.dtmSet).toEqual([["new-layer", INFO]]);
     expect(h.colorModes).toEqual([["new-layer", "classification"]]);
     expect(h.errors).toEqual([]);
-    // The progress is a fraction, so it is shown as a percent.
     expect(h.progresses[0]).toEqual({ title: "DTM（地形）", pointsRead: 0, totalPoints: 0, showAsPercent: true });
     expect(h.ctx.toolLock.running).toBe(false);
   });

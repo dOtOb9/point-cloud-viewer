@@ -16,7 +16,6 @@ import {
   type RasterContext,
 } from "./raster-window";
 
-// The Tauri commands are what a fake (non-Web) source reaches; each test decides what they answer.
 const tauri = vi.hoisted(() => ({
   openRasterPreview: vi.fn(),
   renderRasterPreview: vi.fn(),
@@ -101,10 +100,8 @@ function makeHarness(layer: ViewerLayer, display: DisplayUnit = "meter"): Harnes
 describe("cell size", () => {
   it("converts the typed display unit to the file unit", () => {
     const settings = { ...CLOSED_RASTER_WINDOW.settings, cellSizeText: "10" };
-    // Metres typed, file in metres: as it is. Feet typed, file in metres: 3.048.
     expect(fileCellSizeOf(layerOf(false), settings, "meter")).toBe(10);
     expect(fileCellSizeOf(layerOf(false), settings, "foot")).toBeCloseTo(3.048, 6);
-    // Unknown file unit: the number is taken as it is.
     expect(fileCellSizeOf(layerOf(false, null), settings, "foot")).toBe(10);
   });
 
@@ -184,7 +181,6 @@ describe("changeRasterSettings", () => {
     tauri.renderRasterPreview.mockResolvedValueOnce(image());
     await changeRasterSettings(h.ctx, { ...h.ctx.getState().settings, groundOnly: true, cellSizeText: "2" });
     expect(tauri.renderRasterPreview).toHaveBeenLastCalledWith(7, { cellSize: 2, value: "count", groundOnly: true });
-    // The preview never reads the file: no second open.
     expect(tauri.openRasterPreview).toHaveBeenCalledTimes(1);
   });
 
@@ -209,7 +205,7 @@ describe("changeRasterSettings", () => {
     const first = changeRasterSettings(h.ctx, { ...h.ctx.getState().settings, value: "count" });
     tauri.renderRasterPreview.mockResolvedValueOnce(image(100, 200));
     await changeRasterSettings(h.ctx, { ...h.ctx.getState().settings, value: "zMax" });
-    answerFirst(image(1, 2)); // the slow answer for "count" arrives last
+    answerFirst(image(1, 2));
     await first;
     expect(h.ctx.getState().image?.range).toEqual({ min: 100, max: 200 });
   });

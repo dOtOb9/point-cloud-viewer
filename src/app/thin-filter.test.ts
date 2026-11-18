@@ -11,9 +11,7 @@ import {
 } from "./thin-filter";
 
 const METRES: LengthUnits = { display: "meter", horizontalToMeter: 1, verticalToMeter: 1 };
-/** A file in international feet, shown in feet (Autzen). */
 const FEET_IN_FEET: LengthUnits = { display: "foot", horizontalToMeter: 0.3048, verticalToMeter: 0.3048 };
-/** A file in feet, shown in metres. */
 const FEET_IN_METRES: LengthUnits = { display: "meter", horizontalToMeter: 0.3048, verticalToMeter: 0.3048 };
 const UNKNOWN: LengthUnits = { display: "meter", horizontalToMeter: null, verticalToMeter: null };
 
@@ -36,7 +34,6 @@ describe("estimatePointSpacing", () => {
 
 describe("defaultSorSearchRadius", () => {
   it("is ten times the spacing, shown in the display unit", () => {
-    // Spacing 1 file unit: 10 file units; 10 ft shown in metres is 3.048 m.
     expect(defaultSorSearchRadius(info(10_000, 100, 100), METRES)).toBeCloseTo(10, 12);
     expect(defaultSorSearchRadius(info(10_000, 100, 100), FEET_IN_METRES)).toBeCloseTo(3.048, 12);
     expect(defaultSorSearchRadius(info(10_000, 100, 100), FEET_IN_FEET)).toBeCloseTo(10, 9);

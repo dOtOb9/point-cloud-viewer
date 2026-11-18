@@ -27,7 +27,6 @@ import {
   type SectionViewContext,
 } from "./section-view";
 
-// The Tauri command is what a fake (non-Web) source reaches.
 const tauri = vi.hoisted(() => ({ readSectionProfile: vi.fn() }));
 vi.mock("../datasource/tauri", () => tauri);
 
@@ -58,9 +57,7 @@ interface Harness {
   errors: Array<[string, string | undefined]>;
 }
 
-/** A context whose setters write into the same object, so the state can be read back (like React would, a render later). */
 function makeHarness(initialLayers: ViewerLayer[] = [sectionLayer()], source: DataSource | null = {} as DataSource): Harness {
-  // The layers state changes when the history of a section line is set, as the React state would a render later.
   let layers = initialLayers;
   const errors: Array<[string, string | undefined]> = [];
   const ctx: SectionViewContext = {
@@ -174,7 +171,7 @@ describe("view", () => {
     ctx.view = { scale: 2, offsetX: 10, offsetY: 100 };
     const cursor = { x: 50, y: 60 };
     const before = { s: (cursor.x - 10) / 2, z: (100 - cursor.y) / 2 };
-    zoomSectionWheel(ctx, cursor, -100, 0); // wheel up: zoom in
+    zoomSectionWheel(ctx, cursor, -100, 0);
     const view = ctx.view as SectionView;
     expect(view.scale).toBeGreaterThan(2);
     expect((cursor.x - view.offsetX) / view.scale).toBeCloseTo(before.s);
@@ -198,9 +195,9 @@ describe("mouse", () => {
     const { ctx } = makeHarness();
     ctx.view = { scale: 1, offsetX: 0, offsetY: 0 };
     sectionPointerDown(ctx, pointer(1, "mouse", 2, 100, 100, 0));
-    sectionPointerMove(ctx, pointer(1, "mouse", 2, 103, 100, 10)); // 3 px: not yet a drag
+    sectionPointerMove(ctx, pointer(1, "mouse", 2, 103, 100, 10));
     expect(ctx.view).toEqual({ scale: 1, offsetX: 0, offsetY: 0 });
-    sectionPointerMove(ctx, pointer(1, "mouse", 2, 110, 95, 20)); // now a drag: moves by the whole distance from the press
+    sectionPointerMove(ctx, pointer(1, "mouse", 2, 110, 95, 20));
     expect(ctx.view).toEqual({ scale: 1, offsetX: 10, offsetY: -5 });
     sectionPointerMove(ctx, pointer(1, "mouse", 2, 120, 95, 30));
     expect(ctx.view).toEqual({ scale: 1, offsetX: 20, offsetY: -5 });
@@ -212,7 +209,7 @@ describe("mouse", () => {
     const { ctx } = makeHarness();
     ctx.view = { scale: 1, offsetX: 0, offsetY: 0 };
     sectionPointerDown(ctx, pointer(1, "mouse", 2, 100, 100, 0));
-    sectionPointerMove(ctx, pointer(1, "mouse", 2, 102, 100, 400)); // held 400 ms: a pan from the first move
+    sectionPointerMove(ctx, pointer(1, "mouse", 2, 102, 100, 400));
     expect(ctx.view).toEqual({ scale: 1, offsetX: 2, offsetY: 0 });
   });
 
@@ -223,7 +220,7 @@ describe("mouse", () => {
     sectionPointerMove(ctx, pointer(1, "mouse", 0, 150, 100, 10));
     sectionPointerUp(ctx, pointer(1, "mouse", 0, 150, 100, 20));
     sectionPointerDown(ctx, pointer(2, "mouse", 2, 100, 100, 100));
-    sectionPointerUp(ctx, pointer(2, "mouse", 2, 100, 100, 150)); // right click: the G2-6 stub, nothing visible yet
+    sectionPointerUp(ctx, pointer(2, "mouse", 2, 100, 100, 150));
     expect(ctx.view).toEqual({ scale: 1, offsetX: 0, offsetY: 0 });
   });
 });
@@ -234,13 +231,10 @@ describe("touch", () => {
     ctx.view = { scale: 1, offsetX: 0, offsetY: 0 };
     sectionPointerDown(ctx, pointer(1, "touch", 0, 100, 100, 0));
     sectionPointerDown(ctx, pointer(2, "touch", 0, 200, 100, 0));
-    // Fingers move apart symmetrically: the midpoint (150, 100) stays, the distance doubles.
     sectionPointerMove(ctx, pointer(1, "touch", 0, 50, 100, 10));
     sectionPointerMove(ctx, pointer(2, "touch", 0, 250, 100, 10));
     const view = ctx.view as SectionView;
-    expect(view.scale).toBeCloseTo(2, 5); // 150/100 then 200/150: the distance went from 100 to 200
-    // Each finger is still near the section point it started on (100 and 200). Not exact: the fingers arrive one
-    // event at a time and `twoFingerStep` works on the midpoint, so the error is a few pixels while one finger lags.
+    expect(view.scale).toBeCloseTo(2, 5);
     expect(Math.abs((50 - view.offsetX) / view.scale - 100)).toBeLessThan(5);
     expect(Math.abs((250 - view.offsetX) / view.scale - 200)).toBeLessThan(5);
   });
@@ -263,7 +257,6 @@ describe("touch", () => {
 });
 
 describe("ground level (G2-6) and cursor (G2-8)", () => {
-  /** Layer with a line z = 10 (s 0..50) then rising 1:1 (s 50..100), in a CRS of the given unit factors. */
   function layerWithLine(unit: number | null): ViewerLayer {
     const base = sectionLayer();
     const crs = unit === null ? null : { horizontalUnitToMeter: unit, verticalUnitToMeter: unit };
@@ -279,7 +272,7 @@ describe("ground level (G2-6) and cursor (G2-8)", () => {
     const layer = withLine ? layerWithLine(unit) : { ...layerWithLine(unit), section: { ...sectionLayer().section! } };
     const h = makeHarness([layer]);
     h.ctx.openLayerId = "sec";
-    h.ctx.view = { scale: 1, offsetX: 0, offsetY: 100 }; // screen x = s
+    h.ctx.view = { scale: 1, offsetX: 0, offsetY: 100 };
     return h;
   }
 
@@ -301,9 +294,8 @@ describe("ground level (G2-6) and cursor (G2-8)", () => {
 
   it("uses a 1 m window in a feet file (1 ft = 0.3048 m)", () => {
     const { ctx } = openedHarness(0.3048);
-    showGroundLevelAt(ctx, 50); // exactly at the bend: window 1 / 0.3048 ft on each side
+    showGroundLevelAt(ctx, 50);
     const half = 1 / 0.3048;
-    // z(s - half) = 10, z(s + half) = 10 + half, over 2 * half: slope 0.5
     expect(ctx.groundLevel!.slopePercent).toBeCloseTo(50);
     expect(half).toBeGreaterThan(3);
   });
@@ -335,20 +327,17 @@ describe("ground level (G2-6) and cursor (G2-8)", () => {
 describe("tracing the section line (G2-5)", () => {
   const LINE = { points: new Float32Array([0, 10, 50, 10, 100, 60]), groundPoints: 3, cells: 3 };
 
-  /** The open layer "sec" with LINE; the view maps screen (x, y) to s = x and z = 100 - y. */
   function traceHarness(withLine = true) {
     const base = sectionLayer();
     const section = withLine ? { ...base.section!, line: { original: LINE, history: newHistory(LINE) } } : base.section!;
     const h = makeHarness([{ ...base, info: { crs: null }, section } as unknown as ViewerLayer]);
     h.ctx.openLayerId = "sec";
     h.ctx.view = { scale: 1, offsetX: 0, offsetY: 100 };
-    // Read the line back through the context (the harness keeps the layers state).
     const line = () => h.ctx.getLayersState().layers[0].section!.line;
     return { ...h, line };
   }
   const pairs = (a: Float32Array) => [...a];
 
-  /** Press at (x0, y0), move to each point, release at the last one. */
   function dragMouse(ctx: SectionViewContext, button: number, points: Array<[number, number]>) {
     sectionPointerDown(ctx, pointer(1, "mouse", button, points[0][0], points[0][1], 0));
     points.slice(1).forEach(([x, y], i) => sectionPointerMove(ctx, pointer(1, "mouse", button, x, y, 10 * (i + 1))));
@@ -358,7 +347,6 @@ describe("tracing the section line (G2-5)", () => {
 
   it("(a) a left drag replaces the covered range and pushes the result on the history", () => {
     const { ctx, line } = traceHarness();
-    // z = 100 - y: the trace is s 40..60 at z 30.
     dragMouse(ctx, 0, [[40, 70], [50, 70], [60, 70]]);
     const history = line()!.history;
     expect(history.past).toHaveLength(1);
@@ -366,7 +354,7 @@ describe("tracing the section line (G2-5)", () => {
     expect(pairs(history.present.points)).toEqual([0, 10, 40, 30, 50, 30, 60, 30, 100, 60]);
     expect(history.present.edited).toBe(true);
     expect(history.present.groundPoints).toBe(3);
-    expect(line()!.original).toBe(LINE); // the original is never changed
+    expect(line()!.original).toBe(LINE);
   });
 
   it("(a) shows the path while tracing and clears it on release", () => {
@@ -386,7 +374,7 @@ describe("tracing the section line (G2-5)", () => {
   it("(b) a left click that does not move leaves the history alone", () => {
     const { ctx, line } = traceHarness();
     const before = line()!.history;
-    dragMouse(ctx, 0, [[40, 70], [42, 71]]); // 2.2 px: under the drag threshold
+    dragMouse(ctx, 0, [[40, 70], [42, 71]]);
     expect(line()!.history).toBe(before);
     expect(ctx.trace).toBeNull();
     dragMouse(ctx, 0, [[40, 70]]);
@@ -426,10 +414,10 @@ describe("tracing the section line (G2-5)", () => {
     expect(ctx.trace).not.toBeNull();
     sectionPointerDown(ctx, pointer(2, "touch", 0, 200, 70, 20));
     expect(ctx.trace).toBeNull();
-    sectionPointerMove(ctx, pointer(1, "touch", 0, 60, 70, 30)); // pinch / pan now, no new trace
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 60, 70, 30));
     expect(ctx.trace).toBeNull();
     sectionPointerUp(ctx, pointer(2, "touch", 0, 200, 70, 40));
-    sectionPointerMove(ctx, pointer(1, "touch", 0, 70, 70, 50)); // the remaining finger must not start a trace
+    sectionPointerMove(ctx, pointer(1, "touch", 0, 70, 70, 50));
     expect(ctx.trace).toBeNull();
     sectionPointerUp(ctx, pointer(1, "touch", 0, 70, 70, 60));
     expect(line()!.history).toBe(before);
@@ -465,7 +453,6 @@ describe("tracing the section line (G2-5)", () => {
     undoSectionLine(ctx);
     expect(line()!.history.present).toBe(edited2);
 
-    // Nothing to redo any more after a new edit; undo past the start does nothing.
     undoSectionLine(ctx);
     undoSectionLine(ctx);
     undoSectionLine(ctx);
@@ -490,7 +477,6 @@ describe("tracing the section line (G2-5)", () => {
     redoSectionLine(ctx);
     resetSectionLineToComputed(ctx);
     expect(line()).toBeUndefined();
-    // With no panel open at all too.
     const closed = traceHarness();
     closed.ctx.openLayerId = null;
     const before = closed.line()!.history;
@@ -533,7 +519,7 @@ describe("the panel follows the selected layer (G2-T14)", () => {
     ctx.view = { scale: 2, offsetX: 1, offsetY: 1 };
     followSelectedLayer(ctx, "p");
     expect(ctx.openLayerId).toBeNull();
-    expect(ctx.view).toEqual({ scale: 2, offsetX: 1, offsetY: 1 }); // not reset by a needless close
+    expect(ctx.view).toEqual({ scale: 2, offsetX: 1, offsetY: 1 });
   });
 
   it("(c) moving from one section layer to another opens the other", async () => {
@@ -551,9 +537,9 @@ describe("the panel follows the selected layer (G2-T14)", () => {
     tauri.readSectionProfile.mockResolvedValue(POINTS);
     const { ctx } = makeHarness(layers());
     followSelectedLayer(ctx, "sec");
-    followSelectedLayer(ctx, "sec"); // while still loading
+    followSelectedLayer(ctx, "sec");
     await vi.waitFor(() => expect(ctx.points).toBe(POINTS));
-    followSelectedLayer(ctx, "sec"); // after loading
+    followSelectedLayer(ctx, "sec");
     expect(tauri.readSectionProfile).toHaveBeenCalledTimes(1);
   });
 

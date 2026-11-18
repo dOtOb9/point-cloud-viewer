@@ -6,7 +6,6 @@ import type { ViewerLayer } from "../state/layers";
 import type { ViewerStatus } from "../state/viewer-status";
 import { addOpenedLayer, cancelConversion, openFiles, type OpenFilesContext } from "./open-files";
 
-// The Tauri bridge is not needed here, and the breakdown text is tested on its own (conversion-breakdown.test.ts).
 vi.mock("../datasource/tauri", () => ({ reportToBackendConsole: vi.fn(async () => {}) }));
 vi.mock("../datasource/conversion-breakdown", () => ({ formatConversionBreakdown: () => "BREAKDOWN" }));
 
@@ -24,7 +23,6 @@ const CONVERSION: ConversionResult = {
   outputName: "out.copc.laz",
   platform: "web",
   sourceFormat: "las",
-  // The breakdown formatter is mocked, so the timings are never read.
   stageTimings: {} as ConversionResult["stageTimings"],
   warnings: [],
   download: { url: "blob:fake", fileName: "out.copc.laz" },
@@ -46,7 +44,6 @@ interface Harness {
   state: { toolRunning: boolean };
 }
 
-/** A context over a fake DataSource (`prepareToOpen` answers `outcome`) and a fake renderer. No React. */
 function makeHarness(outcome: PrepareOutcome | (() => Promise<PrepareOutcome>)): Harness {
   const statuses: ViewerStatus[] = [];
   const errors: Array<[string, string | undefined]> = [];
@@ -185,7 +182,6 @@ describe("openFiles progress and file name", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
-  /** A prepareToOpen that reports two progress values (the second while a tool runs, if asked). */
   function runWithProgress(toolRunningAtSecond: boolean) {
     const progressA = { phase: "reading", pointsRead: 1, totalPoints: 10, elapsedSecs: 0.1 } as const;
     const progressB = { phase: "postProcessing", elapsedSecs: 0.5 } as const;
@@ -202,7 +198,6 @@ describe("openFiles progress and file name", () => {
   it("sends progress while converting and clears it afterwards", async () => {
     const { h, progressA, progressB } = runWithProgress(false);
     await openFiles(h.ctx, [fakeFile("a.las")]);
-    // null at the start, the two values, null when the conversion is over.
     expect(h.progresses).toEqual([null, progressA, progressB, null]);
     expect(h.fileNames).toEqual(["a.las"]);
   });
@@ -219,7 +214,6 @@ describe("openFiles lock", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
-  /** A prepareToOpen that stays pending until `finish` is called. */
   function pendingOpen() {
     let finish: (outcome: PrepareOutcome | Error) => void = () => {};
     const h = makeHarness(

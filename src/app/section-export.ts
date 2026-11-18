@@ -1,10 +1,3 @@
-// G2-T17: write the section line (the line the panel shows) as CSV or DXF. Pure text builders plus one workflow function.
-// Desktop: ask where to save, then the Tauri command writes the text. Web: a Blob download.
-// Rule: nothing in src/app/ imports React or a `use*` hook (TaskSheets/ADR-0021-thin-react.md).
-//
-// Coordinates: the line is `(s, z)` in the file's unit. `z` is the ABSOLUTE height along `up` (profile.rs `project` is
-// `dot(p, up)`, no origin subtracted), the same value the panel's GL label shows, so it is written as it is. X and Y
-// are `A + s * along` in f64; the file's unit is kept (no m / ft conversion).
 import { chooseTextDestination, saveTextFile } from "../datasource/tauri";
 import type { DataSource } from "../datasource/DataSource";
 import { WebSource } from "../datasource/web";
@@ -15,14 +8,12 @@ import { startDownload } from "./download";
 
 export type SectionExportFormat = "csv" | "dxf";
 
-/** What the workflow needs (a subset of the section view context). */
 export interface SectionExportContext {
   getSource: () => DataSource | null;
   getLayersState: () => LayersState;
   reportError: (message: string, source?: GpuErrorSource) => void;
 }
 
-/** One point of the exported line. */
 export interface ExportPoint {
   s: number;
   z: number;
@@ -30,7 +21,6 @@ export interface ExportPoint {
   y: number;
 }
 
-/** `(s, z)` pairs -> `(s, z, X, Y)`. Null when A and B are on one vertical line (no direction). */
 export function sectionLineWorldPoints(section: SectionInfo, pairs: Float32Array): ExportPoint[] | null {
   const axes = sectionAlong(section.a, section.b, section.up);
   if (axes === null) return null;
@@ -45,13 +35,11 @@ export function sectionLineWorldPoints(section: SectionInfo, pairs: Float32Array
 
 const EOL = "\r\n";
 
-/** CSV: header `s,z,X,Y`, one row per point, 3 decimals, CRLF, no BOM. */
 export function sectionLineCsv(points: ExportPoint[]): string {
   const rows = points.map((p) => [p.s, p.z, p.x, p.y].map((v) => v.toFixed(3)).join(","));
   return ["s,z,X,Y", ...rows].join(EOL) + EOL;
 }
 
-/** DXF R12 (AC1009): a 2D POLYLINE on layer SECTION_LINE with X = s and Y = z (the cross-section drawing). */
 export function sectionLineDxf(points: ExportPoint[]): string {
   const layer = "SECTION_LINE";
   const pairs: [number, string][] = [
@@ -77,12 +65,10 @@ export function sectionLineDxf(points: ExportPoint[]): string {
   return pairs.map(([code, value]) => `${code}${EOL}${value}`).join(EOL) + EOL;
 }
 
-/** Replace characters a file name cannot hold. */
 export function safeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_");
 }
 
-/** The step of the panel's buttons: export the line of layer `layerId` in `format`. Failures go to the error log. */
 export async function exportSectionLine(ctx: SectionExportContext, layerId: string, format: SectionExportFormat): Promise<void> {
   const layer = findLayer(ctx.getLayersState().layers, layerId);
   const section = layer?.section;
@@ -104,7 +90,7 @@ export async function exportSectionLine(ctx: SectionExportContext, layerId: stri
       return;
     }
     const destination = await chooseTextDestination(fileName, format === "csv" ? "CSV" : "DXF", format);
-    if (!destination) return; // the dialog was closed
+    if (!destination) return;
     await saveTextFile(destination, text);
   } catch (e) {
     ctx.reportError(`断面線を書き出せませんでした: ${e instanceof Error ? e.message : String(e)}`, "tool");

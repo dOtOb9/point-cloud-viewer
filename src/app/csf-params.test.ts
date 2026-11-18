@@ -20,7 +20,6 @@ describe("csfParamsInFileUnits", () => {
     expect(r.params.classThresholdLower).toBeCloseTo(1 / 0.3048006096, 9);
     expect(r.params.hdiff).toBeCloseTo(0.3 / 0.3048006096, 9);
     expect(r.params.convergenceThreshold).toBeCloseTo(0.005 / 0.3048006096, 9);
-    // Not lengths: unchanged.
     expect(r.params.rigidness).toBe(3);
     expect(r.params.iterations).toBe(500);
     expect(r.params.timeStep).toBe(0.65);

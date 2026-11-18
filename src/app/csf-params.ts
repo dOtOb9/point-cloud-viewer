@@ -1,13 +1,7 @@
-// CSF (cloth simulation filter) parameters, as the owner states them: always in METRES. Rust takes the file's unit, so
-// every tool that runs CSF (the section line now, the DTM tool later) converts here, in one place, with the layer's CRS
-// factors: the horizontal factor for the cloth spacing, the vertical factor for the heights (class thresholds,
-// `hdiff`, the convergence step). Pure functions, no React (TaskSheets/ADR-0021-thin-react.md).
 import type { CsfParamsInFileUnits, SectionLinePreset, SectionLineRequest } from "../datasource/section-line";
 
-/** CSF parameters with lengths in metres. Meanings: `CsfParams` in `crates/pcv-core/src/csf.rs`. */
 export type CsfParamsInMetres = CsfParamsInFileUnits;
 
-/** The owner's presets (plan 2.2): standard and steep terrain. Same numbers as `CsfParams::standard` / `steep` in Rust. */
 export const CSF_PRESETS_METRES: Record<SectionLinePreset, CsfParamsInMetres> = {
   standard: {
     clothResolution: 0.5,
@@ -33,10 +27,8 @@ export const CSF_PRESETS_METRES: Record<SectionLinePreset, CsfParamsInMetres> = 
   },
 };
 
-/** Half width of the corridor the section line reads on each side of the line, in metres (plan 8.3). */
 export const SECTION_CORRIDOR_HALF_WIDTH_M = 20;
 
-/** The file's units in metres per file unit; `null` when the CRS does not say. */
 export interface FileUnitsInMetres {
   horizontalToMeter: number | null;
   verticalToMeter: number | null;
@@ -47,15 +39,9 @@ export const UNKNOWN_UNIT_CSF_WARNING =
 
 export interface ConvertedCsfParams {
   params: CsfParamsInFileUnits;
-  /** Set when a unit was unknown and the metre values were used as they are (for the error log). */
   warning: string | null;
 }
 
-/**
- * Metres to the file's unit: `clothResolution` with the horizontal factor, `classThreshold*`, `hdiff` and
- * `convergenceThreshold` with the vertical factor (a length in file units = metres / (metres per file unit)). A unit
- * that is unknown (`null`) leaves those values as they are and sets `warning`, like the other tools' unknown-unit handling.
- */
 export function csfParamsInFileUnits(metres: CsfParamsInMetres, units: FileUnitsInMetres): ConvertedCsfParams {
   const h = units.horizontalToMeter;
   const v = units.verticalToMeter;
@@ -73,7 +59,6 @@ export function csfParamsInFileUnits(metres: CsfParamsInMetres, units: FileUnits
   };
 }
 
-/** The request of the section line for a preset: CSF parameters and the 20 m corridor, in the file's unit. */
 export function sectionLineRequestFor(
   preset: SectionLinePreset,
   units: FileUnitsInMetres,

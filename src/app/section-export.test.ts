@@ -42,7 +42,6 @@ describe("sectionLineWorldPoints", () => {
   });
 
   it("removes the up part of A->B and rejects a vertical pair", () => {
-    // B is higher than A; along stays horizontal.
     const pts = sectionLineWorldPoints(section([0, 0, 0], [30, 0, 40]), new Float32Array([0, 0, 10, 0]));
     expect(pts![1].x).toBeCloseTo(10, 9);
     expect(pts![1].y).toBeCloseTo(0, 9);
@@ -55,7 +54,7 @@ describe("sectionLineCsv", () => {
     const pts = sectionLineWorldPoints(section([-12345.678, -45678.901, 0], [-12245.678, -45678.901, 0]), new Float32Array([0, 35.5, 25, 36.25]))!;
     const csv = sectionLineCsv(pts);
     expect(csv).toBe("s,z,X,Y\r\n0.000,35.500,-12345.678,-45678.901\r\n25.000,36.250,-12320.678,-45678.901\r\n");
-    expect(csv.charCodeAt(0)).toBe("s".charCodeAt(0)); // no BOM
+    expect(csv.charCodeAt(0)).toBe("s".charCodeAt(0));
   });
 });
 
@@ -63,11 +62,11 @@ describe("sectionLineDxf", () => {
   it("is R12 group code / value pairs with one VERTEX per point at (s, z)", () => {
     const pts = sectionLineWorldPoints(section([1000, 2000, 0], [1100, 2000, 0]), new Float32Array([0, 35.5, 25, 36.25, 50, 37]))!;
     const lines = sectionLineDxf(pts).split("\r\n");
-    expect(lines.pop()).toBe(""); // ends with CRLF
+    expect(lines.pop()).toBe("");
     expect(lines.length % 2).toBe(0);
     const pairs: [string, string][] = [];
     for (let i = 0; i < lines.length; i += 2) {
-      expect(lines[i]).toMatch(/^\d+$/); // every even line is a group code
+      expect(lines[i]).toMatch(/^\d+$/);
       pairs.push([lines[i], lines[i + 1]]);
     }
     expect(pairs.slice(0, 5)).toEqual([["0", "SECTION"], ["2", "HEADER"], ["9", "$ACADVER"], ["1", "AC1009"], ["0", "ENDSEC"]]);
@@ -78,7 +77,6 @@ describe("sectionLineDxf", () => {
     expect(count("POLYLINE")).toBe(1);
     expect(count("SEQEND")).toBe(1);
     expect(count("VERTEX")).toBe(3);
-    // The coordinates of the vertices are (s, z), not the world X, Y.
     const xs = pairs.filter(([c]) => c === "10").slice(1).map(([, v]) => v);
     const ys = pairs.filter(([c]) => c === "20").slice(1).map(([, v]) => v);
     expect(xs).toEqual(["0.000", "25.000", "50.000"]);

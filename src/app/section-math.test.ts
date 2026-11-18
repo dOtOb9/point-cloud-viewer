@@ -84,7 +84,6 @@ describe("view", () => {
       expect(c.y).toBeGreaterThanOrEqual(20 - 1e-9);
       expect(c.y).toBeLessThanOrEqual(180 + 1e-9);
     }
-    // s is the long side here: 360 px / 200 units
     expect(v.scale).toBeCloseTo(1.8, 9);
     expect((corners[0].x + corners[1].x) / 2).toBeCloseTo(200, 9);
     expect((corners[0].y + corners[1].y) / 2).toBeCloseTo(100, 9);
@@ -138,11 +137,11 @@ describe("interpolation and slope", () => {
   it("slope of a near-vertical segment is close to 90 degrees", () => {
     const s = slopeAt(line, 20.0005);
     expect(s?.degrees).toBeGreaterThan(89.9);
-    expect(s?.percent).toBeCloseTo(1_000_000, -2); // 10 / 0.001 * 100
+    expect(s?.percent).toBeCloseTo(1_000_000, -2);
   });
 
   it("on a vertex the slope is the segment to the right; on the last vertex the last segment", () => {
-    expect(slopeAt(line, 10)?.percent).toBe(0); // segment 10..20 is flat, the left one rises
+    expect(slopeAt(line, 10)?.percent).toBe(0);
     expect(slopeAt(line, 0)?.percent).toBeCloseTo(50, 9);
     expect(slopeAt(line, 20.001)?.degrees).toBeGreaterThan(89.9);
   });

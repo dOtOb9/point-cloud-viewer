@@ -74,13 +74,12 @@ describe("groundLevelAt", () => {
   });
 
   it("averages across a bend", () => {
-    // At s = 10: s-1 -> z 10, s+1 -> z 11, so the slope is 1 / 2.
     expect(groundLevelAt(RAMP, 10, 1)!.slopePercent).toBeCloseTo(50);
   });
 
   it("clamps the window at the ends", () => {
-    expect(groundLevelAt(RAMP, 0, 1)!.slopeDegrees).toBeCloseTo(0); // window [0, 1], flat
-    expect(groundLevelAt(RAMP, 20, 1)!.slopePercent).toBeCloseTo(100); // window [19, 20], rising
+    expect(groundLevelAt(RAMP, 0, 1)!.slopeDegrees).toBeCloseTo(0);
+    expect(groundLevelAt(RAMP, 20, 1)!.slopePercent).toBeCloseTo(100);
   });
 
   it("is null outside the line or for a short line", () => {

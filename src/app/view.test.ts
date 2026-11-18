@@ -67,7 +67,7 @@ describe("view actions", () => {
   it("the store is the one source of the projection: a new renderer gets the mode chosen before it existed", () => {
     const ctx = createViewContext();
     ctx.pointCloud.set(true);
-    runViewAction(ctx, { kind: "toggleProjection" }); // no renderer yet: only the store changes
+    runViewAction(ctx, { kind: "toggleProjection" });
     expect(ctx.projection.get()).toBe("orthographic");
     const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
     attachViewRenderer(ctx, renderer);
@@ -82,7 +82,7 @@ describe("view actions", () => {
     const stop = ctx.projection.subscribe(listener);
     runViewAction(ctx, { kind: "toggleProjection" });
     expect(listener).toHaveBeenCalledTimes(1);
-    ctx.projection.set("orthographic"); // same value
+    ctx.projection.set("orthographic");
     expect(listener).toHaveBeenCalledTimes(1);
     stop();
     runViewAction(ctx, { kind: "toggleProjection" });
@@ -113,12 +113,12 @@ describe("no point cloud (TP-1 F-10: the keys agree with the grayed-out button)"
     ctx.pointCloud.set(false);
     runViewAction(ctx, { kind: "toggleProjection" });
     expect(ctx.projection.get()).toBe("perspective");
-    expect(renderer.setProjectionMode).toHaveBeenCalledTimes(1); // only the attach call
+    expect(renderer.setProjectionMode).toHaveBeenCalledTimes(1);
     expect(showViewPreset(ctx, "top")).toBe(false);
     expect(fitAllView(ctx)).toBe(false);
     expect(renderer.setViewPreset).not.toHaveBeenCalled();
     expect(renderer.fitAll).not.toHaveBeenCalled();
-    ctx.pointCloud.set(true); // a point cloud is opened again
+    ctx.pointCloud.set(true);
     runViewAction(ctx, { kind: "toggleProjection" });
     expect(ctx.projection.get()).toBe("orthographic");
   });

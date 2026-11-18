@@ -8,7 +8,6 @@ import type { ToolProgressState } from "./point-cloud-tools";
 import { sectionLineRequestFor, UNKNOWN_UNIT_CSF_WARNING } from "./csf-params";
 import { cancelTool, extractFromLayer, hideSourceLayers, mergeSelectedLayers, type PointCloudToolsContext } from "./point-cloud-tools";
 
-// The Tauri commands are what a fake (non-Web) source reaches; each test decides what they answer.
 const tauri = vi.hoisted(() => ({
   extractToCopc: vi.fn(),
   mergeCopcs: vi.fn(),
@@ -21,7 +20,6 @@ beforeEach(() => vi.clearAllMocks());
 
 const FILTER: ExtractFilter = { kind: "screenPolygon", viewProj: [], polygonNdc: [] };
 
-/** A cross section cut from layer "a". */
 const SECTION: SectionInfo = {
   a: [0, 0, 0],
   b: [10, 0, 0],
@@ -152,7 +150,6 @@ describe("extractFromLayer", () => {
   });
 });
 
-// --- G2: section line ---
 describe("the section line after a cross section", () => {
   const LINE: SectionGroundLine = { points: new Float32Array([0, 1, 5, 2]), groundPoints: 10, cells: 100 };
 

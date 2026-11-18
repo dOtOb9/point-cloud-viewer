@@ -5,7 +5,6 @@ import type { ToolResult } from "../datasource/tools";
 import type { ViewerLayer } from "../state/layers";
 import { filterLayer, thinLayer, type PointCloudToolsContext } from "./point-cloud-tools";
 
-// What a fake (non-Web) source reaches: the Tauri commands.
 const tauri = vi.hoisted(() => ({
   extractToCopc: vi.fn(),
   mergeCopcs: vi.fn(),
@@ -26,7 +25,6 @@ function pointCloudLayer(id: string, name: string): ViewerLayer {
   return { id, name, cloudId: 0, sourcePath: `${id}.copc.laz`, visible: true, info: {} } as unknown as ViewerLayer;
 }
 
-/** A measurement layer: it has no `sourcePath`. */
 function measureLayer(id: string): ViewerLayer {
   return { id, name: "計測", visible: true, kind: "measure" } as unknown as ViewerLayer;
 }
