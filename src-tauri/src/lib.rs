@@ -116,41 +116,43 @@ fn handle_pcv_protocol(
     });
 }
 
+fn allow_fetch_from_dev_server_origin(
+    response: tauri::http::response::Builder,
+) -> tauri::http::response::Builder {
+    response.header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+}
+
 fn octet_stream_response(body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
-    tauri::http::Response::builder()
+    allow_fetch_from_dev_server_origin(tauri::http::Response::builder())
         .status(tauri::http::StatusCode::OK)
         .header(
             tauri::http::header::CONTENT_TYPE,
             "application/octet-stream",
         )
-        .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(body)
         .unwrap()
 }
 
 fn bad_request_response(message: &str) -> tauri::http::Response<Vec<u8>> {
-    tauri::http::Response::builder()
+    allow_fetch_from_dev_server_origin(tauri::http::Response::builder())
         .status(tauri::http::StatusCode::BAD_REQUEST)
         .header(tauri::http::header::CONTENT_TYPE, "text/plain")
-        .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(message.as_bytes().to_vec())
         .unwrap()
 }
 
 fn internal_server_error_response(message: &str) -> tauri::http::Response<Vec<u8>> {
-    tauri::http::Response::builder()
+    allow_fetch_from_dev_server_origin(tauri::http::Response::builder())
         .status(tauri::http::StatusCode::INTERNAL_SERVER_ERROR)
         .header(tauri::http::header::CONTENT_TYPE, "text/plain")
-        .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(message.as_bytes().to_vec())
         .unwrap()
 }
 
 fn stale_generation_response() -> tauri::http::Response<Vec<u8>> {
-    tauri::http::Response::builder()
+    allow_fetch_from_dev_server_origin(tauri::http::Response::builder())
         .status(tauri::http::StatusCode::CONFLICT)
         .header(tauri::http::header::CONTENT_TYPE, "text/plain")
-        .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(b"stale generation (file was switched)".to_vec())
         .unwrap()
 }
@@ -201,6 +203,26 @@ pub fn run() {
 mod tests {
     use super::*;
     use pcv_core::NodeKey;
+
+    #[test]
+    fn every_pcv_response_allows_fetch_from_the_dev_server_origin_localhost_1420_which_differs_from_pcv(
+    ) {
+        let responses = [
+            octet_stream_response(vec![1, 2, 3]),
+            bad_request_response("bad"),
+            internal_server_error_response("panic"),
+            stale_generation_response(),
+        ];
+        for response in responses {
+            assert_eq!(
+                response
+                    .headers()
+                    .get(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .map(|value| value.as_bytes()),
+                Some(&b"*"[..])
+            );
+        }
+    }
 
     #[test]
     fn parses_node_path_unencoded() {
