@@ -32,8 +32,6 @@
   "crates/pcv-core/src/thin.rs": 81,
   "crates/pcv-core/src/thin_filter_job.rs": 49,
   "crates/pcv-core/src/tiles.rs": 98,
-  "crates/pcv-wasm/src/convert.rs": 403,
-  "crates/pcv-wasm/src/opfs.rs": 313,
   "crates/pcv-wasm/tests/buffered_file_reader_reduces_read_calls.rs": 47,
   "crates/pcv-wasm/tests/memory_pcd_conversion.rs": 22,
   "crates/pcv-wasm/tests/memory_scratch_conversion.rs": 31,

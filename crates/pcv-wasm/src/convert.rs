@@ -1,160 +1,3 @@
-//! M4-6b: Web版のLAS/LAZ→COPC変換。
-//!
-//! # なぜ「バッチを1つずつ呼ぶ」設計にしたか(キャンセルの制約)
-//!
-//! デスクトップ・Android版(M4-3、`crates/pcv-convert/src/streaming.rs`)は、
-//! 変換を別スレッドで走らせ、UIスレッドが`Arc<AtomicBool>`を立てるだけで
-//! いつでもキャンセルできる。Web版にはこの手段が無い:
-//!
-//! - Web WorkerはUIスレッドと別だが、**このWorker自身は1本しかなく**
-//!   (ADR-0012「Web版はまずWorker1本」)、変換もこのWorkerの中で動かす
-//! - `postMessage`で届く「キャンセルして」というメッセージは、Workerの
-//!   JavaScriptイベントループが空いている時にしか処理されない。Rustの
-//!   1回の長い同期呼び出し(`fill_points`を何百万回も回すような処理)の
-//!   **途中では絶対に処理されない**(JavaScriptはシングルスレッドの
-//!   イベントループなので、実行中の関数はメッセージ処理を横取りされない)
-//! - `SharedArrayBuffer`+`Atomics.wait`を使えば、メインスレッドが直接
-//!   共有メモリへ書き込むことでWorkerを本当の意味で「今すぐ」止められるが、
-//!   これには`crossOriginIsolated`(COOP/COEPヘッダー)が要る。**GitHub Pages
-//!   は静的ホスティングでレスポンスヘッダーをカスタマイズできない**ため、
-//!   このプロジェクトのデプロイ先(`.github/workflows/pages.yml`)では使えない
-//!
-//! したがって、**読み込み段階をTypeScript側から小さなバッチ単位
-//! (`feed`)で駆動する**ことで、バッチとバッチの間にWorkerのイベントループへ
-//! 制御を返す機会を作る(`src/datasource/copc.worker.ts`が
-//! `await`で明示的に譲る)。その隙間でなら`postMessage`によるキャンセル要求を
-//! 処理できるので、**読み込み段階のキャンセルは実質的に即座に効く**。
-//!
-//! 一方、`finish`(octree構築・チャンク圧縮・書き出し)は`copc-writer`本体の
-//! 1回の同期呼び出しであり、**この間はキャンセルを割り込ませられない**。
-//! `finish`を呼ぶ前にキャンセル済みなら呼ばない(TypeScript側の責務)ことで
-//! 「後処理が始まってしまったら、それが終わるまで待つしかない」という
-//! 制約を最小化している。この制約は
-//! `TaskSheets/ADR-0006-conversion-strategy.md`のWeb版の節に記録する。
-//!
-//! # 一時ファイルの後始末
-//!
-//! この構造体自身はOPFSファイルの削除・ハンドルのクローズを一切行わない。
-//! ハンドル(`web_sys::FileSystemSyncAccessHandle`)はTypeScript側
-//! (`src/datasource/opfs.ts`)が開いたものをそのまま借りているだけで、
-//! 閉じる・OPFSから消す責務は呼び出し元(Worker、成功・失敗・キャンセルの
-//! いずれでも同じ後始末を通す)にある。理由は`opfs.rs`のドキュメント参照。
-//!
-//! # 読み込みのバッファリング(2026-10-01、実機不具合の修正)
-//!
-//! `FileRangeReader`(`file_reader.rs`)の`Read::read`は、呼ばれるたびに
-//! `File.slice`→`FileReaderSync::new()`→`read_as_array_buffer`→JSから
-//! wasmへのコピー、という重い処理を行う(バッファを持たない)。`las::Reader`
-//! は(LAZ非圧縮の生のLASでは)点を1件ずつ、点ごとの生レコード長(フォーマットに
-//! よるが20〜38バイト程度)だけ読むため、**`FileRangeReader`を直接渡すと
-//! 1点ごとにこの重い処理が1回走る。** 所有者の実機(Chrome)で、数万点を読む
-//! 前に進捗が一度も出ないまま止まって見えるという不具合として実際に踏んだ
-//! (`TaskSheets/M4-import-and-conversion.md`のM4-6b追記参照)。
-//!
-//! COPCを開く経路(`WasmCopcFile`、ADR-0012)は1ノード分のLAZチャンクを
-//! まとめて読むため、この問題が表に出なかった(1回の`read`呼び出しが
-//! 数万〜数十万バイト単位になる)。変換の経路だけがこの問題を持っていた。
-//!
-//! **対処**: `FileRangeReader`を`std::io::BufReader`(`READ_BUFFER_BYTES`、
-//! 4MiB)で包んでから`las::Reader::new`に渡す。変換は入力の先頭から順に
-//! (シークせず)読むだけなので、先読みがそのまま効く。`BufReader<R>`は
-//! `R: Seek`なら`Seek`も実装する(`std::io::BufReader`の標準実装)ため、
-//! `las::Reader::new`が要求する`Read + Seek + Send + Sync + 'static`を
-//! 満たす(`FileRangeReader`は既に`unsafe impl Send`/`Sync`済み。
-//! `file_reader.rs`参照)。
-//!
-//! **4MiBという値の根拠**: 読み込みは`feed(batch_size)`単位
-//! (既定64Ki点、`src/datasource/copc.worker.ts`の`CONVERT_BATCH_SIZE`)で
-//! 駆動する(モジュール冒頭「なぜ「バッチを1つずつ呼ぶ」設計にしたか」参照)。
-//! LASの点フォーマットのうち本アプリが対象とする範囲で最大のものは
-//! point format 7(RGB+GPS時刻、36バイト)相当で、64Ki点だと
-//! 65,536 × 36 ≈ 2.36MiB。4MiBはこれに余裕を持たせた値で、
-//! **1回の`feed`呼び出しがほぼ1回のバッファ補充(=1回の重い`FileRangeReader::read`
-//! 呼び出し)で収まる**ように選んだ。回帰テストは
-//! `crates/pcv-wasm/tests/buffered_file_reader_reduces_read_calls.rs`参照
-//! (`FileRangeReader`と同じ「呼ばれるたびに重い」形の疑似リーダーで、
-//! バッファの有無による下位`read`呼び出し回数の差を確認する)。
-//!
-//! # M4-7: LAZ展開の並列化(複数Worker)
-//!
-//! デスクトップ・Android(`crates/pcv-convert/src/streaming.rs`)は`las`クレートの
-//! `laz-parallel`フィーチャ(`rayon`使用)でLAZ展開をスレッドプールに分担させた。
-//! **Web版では`rayon`(スレッド)が使えない。** `rayon`はOSスレッドか
-//! `wasm32`の`atomics`(`SharedArrayBuffer`)のどちらかを要求するが、GitHub Pages
-//! は静的ホスティングでCOOP/COEPヘッダーを設定できないため`crossOriginIsolated`に
-//! ならず、`SharedArrayBuffer`は使えない(`TaskSheets/ADR-0012-web-worker-sync-io.md`・
-//! `TaskSheets/ADR-0006-conversion-strategy.md`のWeb版の節が既に確認済みの制約)。
-//!
-//! 代わりに、**独立したWeb Workerを複数立ててチャンク範囲を分担する**
-//! (`src/datasource/laz-decompress.worker.ts`、新設)。Workerはメモリを共有しない
-//! JSのグローバルなので、`SharedArrayBuffer`なしで真の並列実行になる。
-//!
-//! - 各展開Workerは、変換対象の`File`(構造化クローンで複製。`File`は不変な
-//!   スナップショットなので複数Workerで同時に読んでも競合しない)と、
-//!   自分が担当する点インデックスの範囲`[start_index, start_index+count)`を
-//!   受け取る(`init`メッセージ)
-//! - 展開Workerは**この変換専用の`WasmConverter`とは別の、独立した
-//!   `las::Reader`**を自分の`File`に対して開く(`LazRangeDecompressor`)。
-//!   `las::Reader::seek`でチャンクテーブルを辿って`start_index`近くまで
-//!   直接ジャンプしてから(全点を先頭から読み直さない)、担当範囲を読み進める
-//! - 読んだ点は`copc_core::serialize_le`で、spillと同じ固定長バイト列に
-//!   シリアライズしてから返す。**`copc_core`は`vendor/copc-writer`とは別の
-//!   公開クレートで、どちらの担当エージェントも自由に使ってよい共通の
-//!   シリアライズ形式を持っている**ため、新しい通信フォーマットを
-//!   発明する必要が無かった
-//! - 変換用Worker(メインの`WasmConverter`を持つ側)は、展開Workerから届いた
-//!   バイト列を受け取るたびに`push_serialized_records`で`deserialize_le`→
-//!   `SpillWriter::push`する。**spillへの書き込みは今までどおり1本の
-//!   `WasmConverter`だけが行う**(`SpillWriter`はWorkerをまたいで共有できない
-//!   ため、これ以外の設計は無い)
-//!
-//! ## M4-7追記(2026-10-07、緊急修正): バッチ単位・pull型・背圧
-//!
-//! 当初の設計は、展開Worker1個が担当範囲**全体**を1回の`postMessage`で返す
-//! ものだった(旧`decompress_laz_range`)。1点あたり約43〜57バイト
-//! (`vendor/copc-writer/tests/scratch_read_is_bounded.rs`)なので、担当範囲が
-//! 数千万点規模になると、1Workerあたり数百MB〜1GB超のバッファになりうる
-//! (M4-6で直した「メモリが点数に比例する」問題と同じ種類の不具合が、この
-//! 並列化で再び入っていた)。
-//!
-//! 代わりに、展開Workerは`LazRangeDecompressor::new`で担当範囲を受け取り、
-//! `feed(batch_size)`を呼ばれるたびに**そのバッチ分だけ**メモリを確保して
-//! 返す(呼び出し側がTypeScript側から小さなバッチ単位(`requestBatch`)で
-//! 駆動するpull型プロトコル、`src/datasource/laz-decompress.worker.ts`
-//! 参照)。変換用Workerは届いたバッチを`push_serialized_records`に渡して
-//! 即座に捨て、「要求済みでまだ消費していないバッチ」の数・バイト数を
-//! `src/datasource/decompress-partition.ts`の`BoundedBatchFlow`で数え、
-//! 上限に達したら次の`requestBatch`を送らずに待つ(背圧)。
-//!
-//! ## 点の順序について(変更あり)
-//!
-//! 以前は、変換用Workerが担当範囲(点インデックスの昇順)の順で結果を
-//! 取り出して`pushSerializedRecords`に渡していた(到着順ではない)。
-//! pull型・バッチ単位に変えた現在は、**Worker間の順序は到着順になる**
-//! (各Workerの担当範囲内での順序は保たれる)。順序を決め打ちにし直すには
-//! 「次に取り出す番のWorker」以外から届いたバッチをどこかに貯めておく
-//! 必要があり、これは「バッチを受け取ったら即座にpushして捨てる」という
-//! 上記の修正の前提を崩すため、到着順のままにした
-//! (`src/datasource/copc.worker.ts`の`runParallelReadPhase`参照)。
-//!
-//! いずれの順序でも正しい理由は変わらない: `SpillWriter::push`に渡す順序が
-//! 変わっても、`copc-writer`の検証(`validate_spill_record`)・統計
-//! (`PointStats`)はどちらも1点ごとに閉じた計算(範囲チェック・min/max・
-//! ヒストグラム)で、順序に依存しないことをソースで確認済み(vendor/
-//! copc-writerは読むだけで変更していない)。そのためoctree構築の結果
-//! (最終的な点の集合・空間分割)にも影響しない。この結論は
-//! `crates/pcv-wasm/tests/parallel_push_order_point_set.rs`で、実際に
-//! 順序を変えてpushした結果が点の集合として一致することを直接確認した。
-//!
-//! ## キャンセルと進捗
-//!
-//! キャンセルは、変換用Workerが展開Worker全員に対して`Worker.terminate()`を
-//! 呼ぶ(TypeScript側、`src/datasource/copc.worker.ts`参照)。`terminate()`は
-//! Workerの実行位置に関わらず即座に止まるため、従来の「バッチの合間に
-//! `postMessage`を処理させる」方式より反応は悪くならない。進捗は、バッチが
-//! 1つ届くたび(=`decompress-partition.ts`の`DECOMPRESS_BATCH_POINTS`点
-//! ごと)に変換用Worker側で更新する。
-
 use std::io::BufReader;
 use std::path::Path;
 use std::time::Duration;
@@ -176,12 +19,8 @@ fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
 
-/// `FileRangeReader`を包む先読みバッファのサイズ。根拠はモジュール冒頭の
-/// 「読み込みのバッファリング」参照。
 const READ_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
-/// `js_sys::Array`(`FileSystemSyncAccessHandle`の配列)を`Vec`へ変換する。
-/// `point_file_import.rs`の`WasmPointFileConverter::new`も使う(`pub(crate)`)。
 pub(crate) fn handles_from_js_array(
     array: &Array,
 ) -> Result<Vec<FileSystemSyncAccessHandle>, JsValue> {
@@ -195,10 +34,6 @@ pub(crate) fn handles_from_js_array(
     Ok(handles)
 }
 
-/// M4-14: `open_next_file`の比較ロジック本体。`JsValue`/`web_sys::File`に
-/// 依存しない純粋関数にして、ネイティブの`cargo test`から検証できるように
-/// する(`range_math.rs`/`RangeDecompressorCore`と同じ考え方。`WasmConverter`
-/// 自体は`web_sys`の型を持つため、ネイティブではインスタンス化できない)。
 fn check_layout_and_crs_match(
     current_layout: &StreamingLayout,
     new_layout: &StreamingLayout,
@@ -210,8 +45,6 @@ fn check_layout_and_crs_match(
             "入力ファイルの点フォーマットが一致しない({new_layout:?} != {current_layout:?})"
         ));
     }
-    // L2-C: files without a CRS are let through (the caller records a warning).
-    // Only a mismatch between files that both have a CRS stops the merge.
     if new_crs.is_missing() {
         return Ok(CrsOutcome::NewFileHasNoCrs);
     }
@@ -226,19 +59,13 @@ fn check_layout_and_crs_match(
     Ok(CrsOutcome::Same)
 }
 
-/// L2-C: result of `check_layout_and_crs_match` (what the caller must do about the CRS).
 #[derive(Debug, PartialEq, Eq)]
 enum CrsOutcome {
-    /// Nothing to do (the CRS matches).
     Same,
-    /// The new file has no CRS. Let it through and record its name for a warning.
     NewFileHasNoCrs,
-    /// No CRS so far and the new file is the first with one. Take the output CRS from it.
     AdoptNewFileCrs,
 }
 
-/// L2-C: warning text for files let through without a CRS in a merge (same text as the desktop
-/// `HeaderSummary::crs_warnings`).
 fn missing_crs_warnings(names: &[String], result_crs: &CrsId) -> Vec<String> {
     let result = if result_crs.is_missing() {
         "どのファイルにもCRSが無いので、結果にもCRSはありません"
@@ -255,17 +82,6 @@ fn missing_crs_warnings(names: &[String], result_crs: &CrsId) -> Vec<String> {
         .collect()
 }
 
-/// M4-14: 複数ファイル選択時の事前確認。`file`の**ヘッダーだけ**を読み
-/// (`las::Reader::new`はヘッダー+VLRしか読まず、点データは`fill_points`を
-/// 呼ぶまで読まれない。デスクトップ版`pcv_convert::merge::summarize_headers`の
-/// ドキュメントと同じ理由)、point format・CRS・申告点数・ファイルサイズを
-/// 返す。
-///
-/// `layout_key`/`crs_label`は`StreamingLayout`/`pcv_core::crs::CrsId`の`Debug`
-/// 表示そのまま。呼び出し側(`src/datasource/copc.worker.ts`)は文字列として
-/// `===`比較するだけで、中身の構造は解釈しない(デスクトップ版の
-/// `MergeError::LayoutMismatch`/`CrsMismatch`のエラー文言と同じく`{:?}`を使う。
-/// 値を2箇所で比較するための「比較可能な文字列」として十分という判断)。
 #[wasm_bindgen(js_name = inspectLasHeaderSummary)]
 pub fn inspect_las_header_summary(file: File) -> Result<JsValue, JsValue> {
     let file_size_bytes = file.size() as u64;
@@ -291,8 +107,6 @@ pub fn inspect_las_header_summary(file: File) -> Result<JsValue, JsValue> {
 pub struct WasmConverter {
     reader: las::Reader,
     point_data: las::PointData,
-    /// spillへの書き込みが終わったら`finish`が`take`する。`feed`は
-    /// `finish`が呼ばれた後には使えない(`None`ならエラーを返す)。
     spill: Option<SpillWriter>,
     fs: OpfsScratchFs,
     total_points: u64,
@@ -300,49 +114,17 @@ pub struct WasmConverter {
     output_name: String,
     metadata: copc_writer::CopcWriteMetadata,
     params: CopcWriterParams,
-    /// M4-7: 並列展開Workerが`copc_core::serialize_le`で作ったバイト列を
-    /// `push_serialized_records`で読み戻すのに使う。`feed`が内部で使う
-    /// レイアウトと同一であること(=同じファイルの同じヘッダーから導いた
-    /// 値であること)が前提(モジュールドキュメント「M4-7」参照)。
     layout: StreamingLayout,
-    /// M4-12(`TaskSheets/M4-import-and-conversion.md`): 入力の読み込み+展開に
-    /// かかった時間の累積(`feed`が`fill_points`を呼ぶ区間、
-    /// `push_serialized_records`が受け取ったバイト列を`deserialize_le`で
-    /// デコードする区間)。`Instant::now()`は`feed`/
-    /// `push_serialized_records`1呼び出しにつき2回(開始・終了)だけで、
-    /// いずれも**バッチ単位**の呼び出し(1点ごとではない。
-    /// `src/datasource/copc.worker.ts`の`CONVERT_BATCH_SIZE`・
-    /// `decompress-partition.ts`の`DECOMPRESS_BATCH_POINTS`単位)なので、
-    /// 通常の変換経路に計測自体が目に見えるコストを足さない
-    /// (`vendor/copc-writer`の`post_process_stage_bench.rs`が避けた
-    /// 「点ごとのInstant呼び出しによる観測者効果」と同じ考え方)。
     source_read_and_decode: Duration,
-    /// 取り出した点を一時ファイル(spill)へ書き込むのにかかった時間の累積
-    /// (`SpillWriter::push`。同じくバッチ単位でしか`Instant::now()`を呼ばない)。
     spill_write: Duration,
-    /// M4-12: 内訳のコピー用テキストに入れる、入力ファイルのバイト数。
-    /// M4-14: 複数ファイル選択時は`open_next_file`を呼ぶたびに加算される
-    /// (合計サイズ)。
     file_size_bytes: u64,
-    /// M4-14: 先頭ファイルから判定したCRS。`open_next_file`が、以降の
-    /// ファイルがこれと一致することを確認する(デスクトップ版
-    /// `pcv_convert::merge::summarize_headers`と同じ確認を複数ファイル選択の
-    /// Web経路でも行う)。
     crs: CrsId,
-    /// M4-14: これまでに`open_next_file`で開いたファイル数(先頭の1を含む)。
-    /// 内訳の「入力ファイル数」表示に使う。
     input_file_count: u64,
-    /// L2-C: names of files let through without a CRS (warned about only for merges).
     missing_crs_names: Vec<String>,
 }
 
 #[wasm_bindgen]
 impl WasmConverter {
-    /// `file`は変換元のLAS/LAZ。`scratch_handles`は事前に開いた一時ファイルの
-    /// プール(`opfs.rs`のドキュメント参照)、`output_handle`は出力先として
-    /// 事前に開いたハンドル、`output_name`は`ScratchFs::create_output`へ渡す
-    /// 識別名(OPFS向け実装は内容の確定にファイル名を使わないため、
-    /// ログ・デバッグ用途以上の意味は持たない)。
     #[wasm_bindgen(constructor)]
     pub fn new(
         file: File,
@@ -351,16 +133,10 @@ impl WasmConverter {
         output_name: String,
         max_points_per_node: u32,
     ) -> Result<WasmConverter, JsValue> {
-        // M4-12: 内訳のコピー用テキストに入れるファイルサイズ。`file`は
-        // 直後に`FileRangeReader::new`へ所有権が渡るため、先に読んでおく。
         let file_size_bytes = file.size() as u64;
         let file_name = file.name();
         let stats = BytesReadCounter::new();
         let source = FileRangeReader::new(file, stats);
-        // 読み込みのバッファリング(モジュール冒頭のドキュメント参照):
-        // FileRangeReaderを直接渡すと、lasクレートが点ごとに行う小さい
-        // read呼び出し1回ごとに重いJS往復が発生し、実機で進捗が出る前に
-        // 止まって見えるほど遅くなる不具合があった。
         let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
         let reader = las::Reader::new(buffered).map_err(to_js_error)?;
 
@@ -402,37 +178,16 @@ impl WasmConverter {
         })
     }
 
-    /// 入力の総点数(ヘッダーの申告値)。TypeScript側
-    /// (`src/datasource/copc.worker.ts`)が、並列展開Workerへ割り振る
-    /// 点インデックスの範囲を決めるために使う(M4-7)。
     #[wasm_bindgen(js_name = totalPoints)]
     pub fn total_points(&self) -> f64 {
-        // JSのNumberはf64。2^53未満なら誤差無く表現できる(`bytesRead`等と同じ変換)。
         self.total_points as f64
     }
 
-    /// spillの1レコードあたりのバイト数。並列展開Workerが返すバイト列は
-    /// この幅ちょうどの倍数になるため、TypeScript側は
-    /// `buffer.byteLength / recordWidth()`で点数を逆算できる(M4-7、
-    /// 戻り値を別途やり取りする手間を省くため)。
     #[wasm_bindgen(js_name = recordWidth)]
     pub fn record_width(&self) -> u32 {
         self.layout.record_width() as u32
     }
 
-    /// M4-14: 複数ファイル選択時、このファイルを読み終えた後に次のファイルへ
-    /// 切り替える。`spill`(1本のoctree用の書き込み先)・`metadata`・`params`は
-    /// そのまま使い続け、読み込み元(`reader`/`point_data`)だけを入れ替える
-    /// (デスクトップ版`pcv_convert::merge::MultiFileLasPoints`が複数ファイルを
-    /// 1本のイテレータにまとめるのと同じ考え方。モジュール冒頭のドキュメント
-    /// 「M4-7」の設計がWeb版でも成立する根拠(`SpillWriter::push`は呼ばれた
-    /// 順にその場で蓄積するだけ)は、ここでも変わらない)。
-    ///
-    /// 呼び出し側(`src/datasource/copc.worker.ts`)は、呼ぶ前に
-    /// `inspectLasHeaderSummary`で全ファイルのpoint format・CRSが一致することを
-    /// 確認している前提だが、ここでも同じ確認をもう一度行う(触った関数の
-    /// 周りはpanicしない形にする、CLAUDE.mdのエラー処理方針。TypeScript側の
-    /// 確認漏れ・不整合があっても、ここで明確なエラーとして止まる)。
     #[wasm_bindgen(js_name = openNextFile)]
     pub fn open_next_file(&mut self, file: File) -> Result<(), JsValue> {
         let file_name = file.name();
@@ -449,7 +204,6 @@ impl WasmConverter {
             CrsOutcome::Same => {}
             CrsOutcome::NewFileHasNoCrs => self.missing_crs_names.push(file_name),
             CrsOutcome::AdoptNewFileCrs => {
-                // Take the output CRS (WKT) from the first file that has one.
                 self.metadata.wkt_crs =
                     copc_write_metadata_from_source_header(reader.header()).wkt_crs;
                 self.crs = crs;
@@ -465,27 +219,12 @@ impl WasmConverter {
         Ok(())
     }
 
-    /// M4-14: 複数ファイル選択時、全ファイルのヘッダー確認
-    /// (`inspectLasHeaderSummary`)で事前に計算した合計点数・合計サイズで
-    /// 上書きする。`new()`時点では先頭ファイルのヘッダーしか見えていない
-    /// ため(`totalPoints()`はまだ1ファイル分)、全体の進捗バー・内訳表示を
-    /// 正しくするために呼ぶ(呼ばなければ単一ファイルの値のまま=既存の
-    /// 単一ファイル経路は無変更)。
     #[wasm_bindgen(js_name = setDeclaredTotals)]
     pub fn set_declared_totals(&mut self, total_points: f64, total_file_size_bytes: f64) {
         self.total_points = total_points as u64;
         self.file_size_bytes = total_file_size_bytes as u64;
     }
 
-    /// M4-7: 並列展開Worker(`decompress_laz_range`)が返したバイト列を
-    /// spillへ書く。バイト列は`recordWidth()`ちょうどの倍数の長さを持つ、
-    /// `copc_core::serialize_le`形式のレコードが連続したものであること。
-    ///
-    /// 展開Worker側で独立に`StreamingLayout::from_las_header`を計算して
-    /// いるため(同じファイルの同じヘッダーから導くので値は一致するはずだが、
-    /// 保険として)、渡されたバイト列の長さが`recordWidth()`の倍数で
-    /// ないときはエラーにする(値が合わなければ即座に気づけるようにする。
-    /// 黙って余りを捨てない)。
     #[wasm_bindgen(js_name = pushSerializedRecords)]
     pub fn push_serialized_records(&mut self, bytes: Vec<u8>) -> Result<(), JsValue> {
         let spill = self
@@ -500,18 +239,6 @@ impl WasmConverter {
                 bytes.len()
             )));
         }
-        // M4-12: このバッチ(`bytes`全体、最大`DECOMPRESS_BATCH_POINTS`点
-        // 分。`src/datasource/decompress-partition.ts`参照)を「デコード」
-        // 「spill書き込み」の2段に分け、それぞれ1回だけ`Instant`で区切って
-        // 測る(モジュールドキュメント`source_read_and_decode`参照)。
-        // 1点ごとに`Instant::now()`を呼ぶと(=各点のdeserialize/push個別に
-        // 計測すると)、Web版の本来のボトルネックである「小さな処理を
-        // 点数ぶん繰り返すJS境界越えのコスト」を計測自体が再現してしまう
-        // (`crates/pcv-wasm/src/opfs.rs`の`OpfsIoTimer`のドキュメント、
-        // `vendor/copc-writer/examples/post_process_stage_bench.rs`が
-        // 避けた観測者効果と同じ理由)。そのため、いったんこのバッチの
-        // 全レコードをデコードしてから(`records`、バッチサイズ分だけの
-        // 一時バッファ。点数全体には比例しない)、まとめてpushする。
         let decode_start = Instant::now();
         let mut records = Vec::with_capacity(bytes.len() / width);
         for chunk in bytes.chunks_exact(width) {
@@ -528,13 +255,6 @@ impl WasmConverter {
         Ok(())
     }
 
-    /// 最大`batch_size`点を読み、spillへ書く。呼び出し側
-    /// (`src/datasource/copc.worker.ts`)はこれを繰り返し呼び、呼び出しの
-    /// 合間に`await`でWorkerのイベントループへ制御を返す
-    /// (キャンセル要求を受け取れるようにするため。モジュールドキュメント参照)。
-    ///
-    /// 戻り値(`dto::FeedResultDto`)の`done`が`true`になったら、これ以上
-    /// `feed`を呼ばず`finish`へ進む。
     #[wasm_bindgen(js_name = feed)]
     pub fn feed(&mut self, batch_size: u32) -> Result<JsValue, JsValue> {
         let spill = self
@@ -542,10 +262,6 @@ impl WasmConverter {
             .as_mut()
             .ok_or_else(|| JsValue::from_str("feedはfinishの後には呼べない"))?;
 
-        // M4-12: `push_serialized_records`と同じ理由で、「読み込み+展開
-        // (`fill_points`。ディスクI/O相当の`FileRangeReader`読み出し+LAZ展開を
-        // 含む)」と「spill書き込み」をバッチ単位(1回の`feed`呼び出し)で
-        // 区切って測る(点ごとに`Instant::now()`は呼ばない)。
         let fetch_start = Instant::now();
         let count = self
             .reader
@@ -577,12 +293,6 @@ impl WasmConverter {
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }
 
-    /// 読み込みを終え、octreeを構築してOPFSの出力ハンドルへ書き出す。
-    /// この呼び出しの間はキャンセルできない(モジュールドキュメント参照)。
-    /// 呼び出し元はこれを呼ぶ前に、直近の`feed`で`done: true`が返っている
-    /// ことを確認すること(このメソッド自身は`feed`が尽きたかを検証しない。
-    /// spillに一部の点しか無い状態でも変換自体は成立してしまうため、
-    /// 呼び出し順の誤りは検出しない設計にしてある。単純さを優先した)。
     #[wasm_bindgen(js_name = finish)]
     pub fn finish(mut self) -> Result<JsValue, JsValue> {
         let spill = self
@@ -613,7 +323,6 @@ impl WasmConverter {
                 Some(self.fs.seq_read_stats()),
                 self.input_file_count,
             ),
-            // A missing CRS is not a warning for a single-file conversion (merges only).
             warnings: if self.input_file_count > 1 {
                 missing_crs_warnings(&self.missing_crs_names, &self.crs)
             } else {
@@ -624,40 +333,6 @@ impl WasmConverter {
     }
 }
 
-/// M4-7追記(2026-10-07、緊急修正): 展開専用Worker
-/// (`src/datasource/laz-decompress.worker.ts`)から呼ぶ。`file`の点インデックス
-/// `[start_index, start_index + count)`の範囲を、**小さなバッチ単位で**展開する。
-///
-/// # なぜ「全部まとめて返す」設計をやめたか
-///
-/// 旧設計(`decompress_laz_range`、1回の呼び出しで担当範囲**全体**の
-/// `Vec<u8>`を作って返す)は、展開Worker1つあたりのメモリ使用量が担当範囲の
-/// 点数に**比例**してしまう。1点あたり約43〜57バイト
-/// (`vendor/copc-writer/tests/scratch_read_is_bounded.rs`参照)なので、
-/// 例えば数千万点の入力を数個のWorkerに分けても、1Workerあたり数百MB〜
-/// 1GB超のバッファになりうる。これがwasm32の4GiBアドレス空間を圧迫し、
-/// 所有者の実機で確認された「変換に失敗しました: unreachable」(メモリ確保
-/// 失敗によるトラップ)の一因になっていた
-/// (`decompress-partition.ts`の`MAX_DECOMPRESS_WORKERS_MOBILE`のドキュメント、
-/// `TaskSheets/M4-import-and-conversion.md`のM4-7追記参照)。
-///
-/// `WasmConverter::feed`(変換用Worker側)が既に採用している「呼び出し側が
-/// 小さなバッチ単位で何度も呼ぶ」設計を、展開側にも同じ考え方で導入する。
-/// `LazRangeDecompressor`は自分専用の`las::Reader`を1回だけ開いて担当範囲の
-/// 先頭まで`seek`し、以降は`feed(batch_size)`を呼ばれるたびに**その
-/// バッチ分だけ**メモリを確保して返す。呼び出し側(`laz-decompress.worker.ts`)
-/// は1バッチ返すたびに`postMessage`で変換用Workerへ渡し、変換用Workerが
-/// `pushSerializedRecords`で消費し終えてから次のバッチを要求する
-/// (pull型・背圧。`src/datasource/copc.worker.ts`の`runParallelReadPhase`、
-/// `src/datasource/decompress-partition.ts`の`BoundedBatchFlow`参照)。これにより
-/// 同時にメモリ上に存在するのは「バッチサイズ×Worker数」程度に収まり、
-/// **点数に比例しない。**
-///
-/// `WasmConverter`とは完全に独立したインスタンス(自分専用の`las::Reader`)を
-/// 開く。Web Workerはメモリを共有しないグローバルなので、これは「1つの
-/// `File`を複数のWorkerがそれぞれ自分のReaderで読む」ことになるが、
-/// `File`は不変なスナップショットであり、読み出しは`FileRangeReader`経由の
-/// 範囲読み(`File.slice`)なので競合しない。
 #[wasm_bindgen]
 pub struct LazRangeDecompressor {
     core: RangeDecompressorCore,
@@ -665,11 +340,6 @@ pub struct LazRangeDecompressor {
 
 #[wasm_bindgen]
 impl LazRangeDecompressor {
-    /// `start_index`が`total_points`以上、または末尾付近で`count`点に
-    /// 満たない場合は、実際に読める点数だけを担当範囲として扱う(エラーに
-    /// しない。呼び出し側がファイル全体を`hardwareConcurrency`等分するときに、
-    /// 割り切れない端数が出てもそのまま渡せるようにするため。旧
-    /// `decompress_laz_range`と同じ方針)。
     #[wasm_bindgen(constructor)]
     pub fn new(file: File, start_index: f64, count: f64) -> Result<LazRangeDecompressor, JsValue> {
         let stats = BytesReadCounter::new();
@@ -680,12 +350,6 @@ impl LazRangeDecompressor {
         Ok(Self { core })
     }
 
-    /// 最大`batch_size`点を読み、`copc_core::serialize_le`形式(`recordWidth()`
-    /// ちょうどの幅)の固定長レコードを連結したバイト列を返す。戻り値の長さは
-    /// 常に`(読めた点数) * recordWidth()`で、`batch_size * recordWidth()`を
-    /// 超えない(=メモリ使用量が担当範囲全体の点数に比例しない、という
-    /// このAPIの目的そのもの)。空の`Vec`を返したら、担当範囲を読み終えた
-    /// (呼び出し側はこれ以上`feed`を呼ばない)。
     #[wasm_bindgen(js_name = feed)]
     pub fn feed(&mut self, batch_size: u32) -> Result<Vec<u8>, JsValue> {
         self.core
@@ -694,21 +358,10 @@ impl LazRangeDecompressor {
     }
 }
 
-/// `LazRangeDecompressor`の中身(wasm-bindgen/`web_sys::File`に依存しない
-/// 部分)。`open`の`R`を一般化してあるのは、ネイティブの`cargo test`から
-/// `Cursor<Vec<u8>>`を渡してロジックを検証できるようにするため
-/// (`web_sys::File`はネイティブのテストでは作れない。`range_math.rs`と
-/// 同じ考え方)。`las::Reader`自体がレコード幅の違いを内部で型消去している
-/// (`las`クレート0.10のReaderは`Read + Seek`を直接保持せず、コンストラクタの
-/// 時点でBoxして型を一旦固定する)ため、この構造体自身は`R`をフィールドに
-/// 持たない(=`LazRangeDecompressor`も`open()`が返した時点でジェネリックが
-/// 消えており、wasm-bindgenの型(ジェネリック不可)にそのまま載せられる)。
 struct RangeDecompressorCore {
     reader: las::Reader,
     point_data: las::PointData,
     layout: StreamingLayout,
-    /// 担当範囲のうち、まだ`feed`で読んでいない点数。0になったら
-    /// `feed`は空の`Vec`を返す(呼び出し側はそれ以上`feed`を呼ばない)。
     remaining: u64,
 }
 
@@ -719,9 +372,6 @@ impl RangeDecompressorCore {
     {
         let mut reader = las::Reader::new(source).map_err(|e| e.to_string())?;
 
-        // `StreamingLayout`はヘッダーだけから決まる値なので、`WasmConverter::new`が
-        // 同じファイルに対して計算するものと一致する(モジュールドキュメント
-        // 「M4-7」参照)。
         let layout = StreamingLayout::from_las_header(reader.header());
         let total_points = reader.header().number_of_points();
         let point_data = las::PointDataBuilder::new()
@@ -753,7 +403,6 @@ impl RangeDecompressorCore {
             .fill_points(to_read, &mut self.point_data)
             .map_err(|e| e.to_string())?;
         if n == 0 {
-            // ヘッダーの申告点数より実データが少なかった(壊れたファイル)。
             self.remaining = 0;
             return Ok(Vec::new());
         }
@@ -792,9 +441,6 @@ mod tests {
         StreamingLayout::from_las_header(&header)
     }
 
-    /// M4-14受け入れ条件: 複数ファイル選択時、point formatが一致しない
-    /// 入力は明確なエラーで拒否する(デスクトップ版
-    /// `pcv_convert::merge::MergeError::LayoutMismatch`と同じ確認)。
     #[test]
     fn check_layout_and_crs_match_rejects_different_layout() {
         let layout3 = layout_for_point_format(3);
@@ -804,20 +450,16 @@ mod tests {
         assert!(err.is_err());
     }
 
-    /// M4-14受け入れ条件: CRSが異なる入力は明確なエラーで拒否する
-    /// (デスクトップ版`MergeError::CrsMismatch`と同じ確認)。
     #[test]
     fn check_layout_and_crs_match_rejects_different_crs() {
         let layout = layout_for_point_format(3);
-        let crs_a = CrsId::Epsg(6677); // JGD2011 平面直角座標系IX系
-        let crs_b = CrsId::Epsg(32654); // UTM54N
+        let jgd2011_plane_ix = CrsId::Epsg(6677);
+        let utm_54n = CrsId::Epsg(32654);
 
-        let err = check_layout_and_crs_match(&layout, &layout, &crs_a, &crs_b);
+        let err = check_layout_and_crs_match(&layout, &layout, &jgd2011_plane_ix, &utm_54n);
         assert!(err.is_err());
     }
 
-    /// 両方`&CrsId::Missing`(CRS情報が無い)どうしは一致として扱う
-    /// (デスクトップ版と同じ方針。モジュール冒頭のドキュメント参照)。
     #[test]
     fn check_layout_and_crs_match_allows_matching_layout_and_unknown_crs() {
         let layout = layout_for_point_format(3);
@@ -826,8 +468,6 @@ mod tests {
         );
     }
 
-    /// L2-G: a CRS outside the range of `Crs` (EPSG:2992) is compared by its EPSG code: two such
-    /// files are the same CRS (no "no CRS" warning), and 2992 against another code is a mismatch.
     #[test]
     fn check_layout_and_crs_match_compares_unsupported_crs_by_epsg_code() {
         let layout = layout_for_point_format(3);
@@ -839,8 +479,6 @@ mod tests {
         assert!(check_layout_and_crs_match(&layout, &layout, &a, &CrsId::Epsg(6677)).is_err());
     }
 
-    /// L2-C: files without a CRS are let through; the CRS of the first file that has one is adopted.
-    /// Only a mismatch between files that both have a CRS stops (see the test above).
     #[test]
     fn check_layout_and_crs_match_passes_missing_crs_and_adopts_first_known() {
         let layout = layout_for_point_format(3);
@@ -870,10 +508,6 @@ mod tests {
         assert!(none[0].contains("どのファイルにもCRSが無い"));
     }
 
-    /// 複数チャンク(LAZの既定チャンクサイズはおよそ5万点)にまたがる
-    /// 合成LAZを、メモリ上の`Vec<u8>`として作る。`las::Writer`はパス越しの
-    /// 拡張子で圧縮するかを決める(`Writer::from_path`)ため、ここでは
-    /// 一時ファイルを経由する(`tempfile`はdev-dependencyとして既にある)。
     fn synthetic_multi_chunk_laz_bytes(point_count: u32) -> Vec<u8> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("synthetic.laz");
@@ -887,7 +521,7 @@ mod tests {
                 x: f64::from(i),
                 y: f64::from(i) * 2.0,
                 z: f64::from(i) * 3.0,
-                gps_time: Some(0.0), // point format 6はGPS時刻が必須
+                gps_time: Some(0.0),
                 ..Default::default()
             };
             writer.write_point(point).expect("点の書き込みに失敗");
@@ -897,8 +531,6 @@ mod tests {
         std::fs::read(&path).expect("書いたLAZを読み戻せなかった")
     }
 
-    /// `RangeDecompressorCore::feed`を`batch_size`点ずつ空になるまで呼び、
-    /// 結果を連結して返す(テスト用ヘルパー)。
     fn decompress_range_in_batches<R>(
         source: R,
         start_index: u64,
@@ -920,21 +552,12 @@ mod tests {
         Ok(out)
     }
 
-    /// 範囲を複数のバッチに分けて`feed`した結果を連結したものが、1回で
-    /// 全点を読んだ結果と**バイト単位で一致する**ことを確認する(M4-7の
-    /// 受け入れ条件: 並列展開Workerが担当範囲を分担しても、各範囲を順番どおりに
-    /// 連結すれば逐次読みと同じ結果になること)。`crates/pcv-convert/tests/
-    /// parallel_laz_decompression.rs`(ネイティブの`laz-parallel`、点の集合が
-    /// 一致することを確認)とは別の並列化経路(Web、複数Worker)に対する、
-    /// こちらは「連結結果がバイト単位で一致する」というより強い確認になっている
-    /// (範囲が重ならず連結順も決まっているため)。
     #[test]
     fn concatenated_ranges_match_a_single_full_range_read() {
-        const POINT_COUNT: u32 = 300_000; // 約6チャンク分
+        const POINT_COUNT: u32 = 300_000;
 
         let bytes = synthetic_multi_chunk_laz_bytes(POINT_COUNT);
 
-        // 全体を1バッチ(= 全点)で読んだ結果。
         let full = decompress_range_in_batches(
             Cursor::new(bytes.clone()),
             0,
@@ -943,9 +566,6 @@ mod tests {
         )
         .expect("全体の展開に失敗した");
 
-        // 3つの範囲(Worker)に分け、さらに各Workerも複数バッチ(batch_size=1,000点、
-        // チャンク境界をまたぐ値)に分けて読む。「範囲の分割」と「バッチの分割」
-        // どちらも結果に影響しないことを同時に確認する。
         let boundaries = [0u64, 70_000, 180_000, u64::from(POINT_COUNT)];
         let mut concatenated = Vec::new();
         for window in boundaries.windows(2) {
@@ -977,18 +597,9 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    /// 2026-10-07の緊急修正(最重要の受け入れ条件): `feed`1回あたりの戻り値の
-    /// 大きさが`batch_size * recordWidth()`を超えないこと、かつ**担当範囲の
-    /// 点数をどれだけ増やしても**(ここでは10倍にして比較)、1回の`feed`が
-    /// 一度に確保するバイト数(=`feed`の戻り値の最大長)が増えないことを
-    /// 確認する。旧設計(`decompress_laz_range`、担当範囲全体を1回で返す)は
-    /// この値が点数に比例してしまっていた。
     #[test]
     fn feed_batch_size_stays_bounded_regardless_of_total_point_count() {
         const BATCH_SIZE: u32 = 1_000;
-        // `synthetic_multi_chunk_laz_bytes`と同じpoint format(6、GPS時刻あり・
-        // 色無し)でヘッダーを作り、レコード幅を計算する(formatが違うと
-        // `record_width()`が変わるため、実際に使うformatと揃える必要がある)。
         let record_width = {
             let mut builder = las::Builder::from((1, 4));
             builder.point_format = las::point::Format::new(6).expect("format 6");
@@ -1023,15 +634,10 @@ mod tests {
                 u64::from(point_count),
                 "point_count={point_count}: feedの合計が担当範囲の点数と一致しない"
             );
-            // 10倍の点数でも、1回のfeedが確保する最大バイト数(max_seen)は
-            // batch_sizeで決まる上限と同じ(=点数に比例しない)。
             assert!(max_seen <= max_batch_bytes);
         }
     }
 
-    /// L2-G: builds a small COPC in memory. A COPC has one LAZ chunk per octree node, so the chunks
-    /// have different point counts (the laszip VLR says chunk_size = u32::MAX = "variable").
-    /// Scattered points and a small `max_points_per_node` make many nodes of different sizes.
     fn synthetic_copc_bytes(point_count: u32) -> Vec<u8> {
         let mut builder = las::Builder::from((1, 4));
         builder.point_format = las::point::Format::new(6).expect("format 6");
@@ -1067,11 +673,6 @@ mod tests {
         fs.take_output(output_path).expect("output recorded")
     }
 
-    /// L2-G: reading a range of a COPC (variable-size chunks) must return exactly the same bytes as
-    /// the same slice of a read from the start. This failed on the Web for autzen: the `seek` of
-    /// laz 0.12.2 used `point_idx % chunk_point_count` as the offset inside a chunk, which is only
-    /// right for fixed-size chunks, so ranges started at the wrong point (and sometimes ran into
-    /// the next chunk's bytes: "capacity overflow" in wasm32). `vendor/laz/PATCH.md` has the fix.
     #[test]
     fn range_of_variable_chunk_copc_matches_the_same_slice_of_a_full_read() {
         const POINT_COUNT: u32 = 5_000;
@@ -1092,7 +693,6 @@ mod tests {
             "full read returns every point"
         );
 
-        // Eight equal ranges, as `pointRangesFor` makes them, plus awkward starts.
         let mut ranges: Vec<(u64, u64)> = (0..8u64).map(|i| (i * 625, 625)).collect();
         ranges.extend([
             (1, 10),
