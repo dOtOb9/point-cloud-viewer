@@ -53,8 +53,9 @@
 | `orbit-camera.ts:zoom` | カーソルへのズームは「点」でなく「方向」を使う。AABB の面を点の代理にすると、毎回「残りの何%」だけ進んで箱の面に漸近して止まる（方式そのものが成立しない） | `TaskSheets/M1-point-rendering.md` M1-5 |
 | `orbit-camera.ts:attachOrbitControls` | 同時に押しているポインタの数で操作を決める（タッチは button が常に 0）。`canvas.style.touchAction = "none"`。タッチで寄った直後の `dblclick` は無視（同時に来るブラウザがある）。`pointercancel` でもポインタを外す | ここ（`TaskSheets/M3-release-and-update.md` M3-6） |
 | `animation.ts` の時間・減速の定数 | どれも未検証の初期値。減衰は `exp(-dt/tau)` で書き、フレームレートに依存しない | 既存のテスト `animation.test.ts`（30fps と 144fps の比較）、`TaskSheets/AN-animation.md` |
-| `colormap.ts:ELEVATION_INTENSITY_RAMP` | 緑と赤を直接補間すると中間が濁ったオリーブ色になるので黄を挟む（CloudCompare と同じ 4 点）。明度は単調でないが所有者の指定 | 名前: `YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY`。経緯は `TaskSheets/M2-shading-and-ui.md` M2-2 |
-| `colormap.ts:ASPRS_CLASSIFICATION_COLORS` | 各コードの意味（地表・植生・建物・ノイズなど） | 名前: `ASPRS_CLASS` |
+| `colormap.ts:ELEVATION_INTENSITY_RAMP` | 緑と赤を直接補間すると中間が濁ったオリーブ色になるので黄を挟む（CloudCompare と同じ 4 点）。明度は単調でないが所有者の指定 | 名前: `YELLOW_BETWEEN_GREEN_AND_RED`（R2 で `YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY` から改名。黄を挟む理由はこの行）。経緯は `TaskSheets/M2-shading-and-ui.md` M2-2 |
+| `colormap.ts:ASPRS_CLASSIFICATION_COLORS` | 各コードの意味（地表・植生・建物・ノイズなど）。似た意味のコードは近い色相（植生 3〜5 は緑で明度だけ変える、ワイヤー関連 13・14・16 は黄土色）。7（Low Point noise）と 18（High Noise）は異常値として目立つマゼンタと赤。12（旧 Overlap Points）は 8 の灰色 0.5 と区別できるよう明度を 0.58 にずらした。表に無いコードはどの色とも被らないシアン（`UNKNOWN_CLASSIFICATION_COLOR`） | 名前: `ASPRS_CLASS` と、ここ |
+| `gpu-resources.ts:ignoreBecauseDeviceLostNeverRejects` | `device.lost` は `Promise<GPUDeviceLostInfo>` で本来 reject しない。念のため `.catch` を付けて、未処理の rejection でコンソールを汚さない（R2 F-2。以前は空の `() => {}` だけが残っていた） | 名前: `ignoreBecauseDeviceLostNeverRejects` |
 | `colormap.ts:FALLBACK_COLOR_MODE_WITHOUT_RGB` | RGB の無い点群の既定は標高（全点に必ず意味のある値があり、範囲がヘッダーから決まる）。強度はセンサー次第で意味が無いことがある | ここ（`TaskSheets/M2-shading-and-ui.md` M2-2） |
 | `scene-bounds.ts:elevationRangeFromCloudBounds` | 標高の範囲はノードの箱（立方体で Z が水平の広さまで伸びる）でなく LAS ヘッダーの範囲から作る（「標高が全部紫」の不具合） | 既存のテスト `scene-bounds.test.ts`「実機不具合の再現: ノードのセル範囲(立方体)を標高に使ってはいけない」 |
 | `pick-math.ts:refineDepthRange` | 2 段目の near/far は z/2〜2z。実機（NVIDIA、autzen、z≈8000）で 1 段目の距離が理論の量子化誤差の約 3 倍ずれ、余裕 4 段では外れた。原因は未特定 | ここ |
@@ -65,6 +66,21 @@
 | `frustum.ts:frustumPlanes` | Gribb & Hartmann の方法。near の式は WebGPU の z 0..1 でも近似として十分 | 名前: `left`・`right`・`bottom`・`top`・`near`・`far` と、ここ |
 | `layer-key.ts`・`layer-focus.ts` | キーの前置きはレイヤーの id でなく通し番号（同じ id を付け直しても前の読み込み結果を捨てられる）。カメラは合併でなく 1 レイヤーに合わせる（遠いファイルの合併は FAR を超える） | ここ（`TaskSheets/L1-multi-layer.md`） |
 | `mat4.ts` の `// prettier-ignore` | 行列を 4 列で並べた形を保つ指示。このリポジトリに prettier は入っていない（`node_modules/.bin` に無い）ので、指示を消しても並びは変わらない | ここ |
+| `animation.ts` の `FADE_IN_DURATION_MS`(250)・`INERTIA_TAU_MS`(325)・`INERTIA_SAMPLE_WINDOW_MS`(100)・`INERTIA_MAX_IDLE_MS`(60)・`INERTIA_STOP_*`・`ZOOM_SMOOTH_TAU_MS`(80)・`TRANSITION_DURATION_MS`(500。0.4〜0.6 秒の範囲)・`FLY_TO_DISTANCE_RATIO`(0.5)・`DOUBLE_TAP_*`(300ms・30px) | どれも実機で触って決めた値ではない、未検証の初期値。所有者が画面で調整する入口をこのファイルに集めた。`ZOOM_SMOOTH_STOP_LOG`(1e-3) は残りのズーム（自然対数）がこれ未満なら一度に適用して終える | ここ（`TaskSheets/AN-animation.md`） |
+| `orbit-camera.ts:PAN_SPEED_PER_PIXEL_AND_DISTANCE`(0.0015)・`TAP_MAX_MOVE_PX`(10)・`DBLCLICK_IGNORED_AFTER_TOUCH_FLY_MS`(600)・`MIN_PAN_DISTANCE_RATIO`(0.0005)・`DEFAULT_PITCH`(0.3) | パンは距離に比例（マウスの移動量と見た目の移動を揃える簡易な近似）、寄りすぎたらシーンの対角線の 0.0005 倍を下限にする。タップは 10px 未満の動きで離したもの。タッチで寄った後 600ms の `dblclick` は無視。`DEFAULT_PITCH` 0.3（約 17°）は「少し見下ろしつつ地平線も見える」角度。10・600・0.0015 の値の根拠は元のコメントにも無い（R2 で名前を付けた） | 名前と、ここ |
+| `point-budget.ts:DEFAULT_POINT_BUDGET_TUNING` の各値・`REFRESH_ESTIMATE_GENERATION_MS`(15 秒)・`MIN_PLAUSIBLE_REFRESH_INTERVAL_MS`(4ms = 250Hz) | ミスの閾値 1.5 倍は 1 倍と 2 倍の中間。`missRatioToShrink` 0.15 は 20 フレームの窓で 3 回、`hitRatioToGrow` 0.05 は 1 回。`sustainedHitsToGrow` 3 は 500ms ごとの評価で 1.5 秒。`growRate` 0.1・`shrinkRate` 0.2（下げを速く）。4ms 未満の間隔は計測の異常。どれも未検証の初期値 | `TaskSheets/ADR-0010-lod-priority-and-point-budget.md` と、ここ |
+| `point-cloud-renderer.ts:AUTO_POINT_BUDGET_MIN`(20 万)・`AUTO_POINT_BUDGET_FRAME_HISTORY`(20)・`FALLBACK_REFRESH_INTERVAL_MS`(1000/60)・`STATS_INTERVAL_MS`(500)、`render-scale.ts:MIN_RENDER_SCALE`(0.05) | 下限 20 万点は「これより粗いと点群として意味が無い」経験的な値（実測ではない）。窓 20 本は単発の重いフレームに反応しないため（ADR-0009）。60Hz は最初のフレームまでの仮の値。統計は毎フレームだと受け手が重いので 500ms に間引く。`MIN_RENDER_SCALE` は R2 で名前を付けた（行数の上限のため `render-scale.ts` に置いた。値の根拠は元のコメントにも無い） | ここ |
+| `edl.ts:DEFAULT_EDL_STRENGTH`(0.15)・`DEFAULT_EDL_RADIUS_PX`(1.4)・`EDL_RESPONSE_SCALE`(300)・`EDL_MIN_SHADE`(0.5)、`wgslFloat` の `toFixed(4)` | 強さはスクリーンショットを見て決めた未検証の初期値。半径は Potree の既定（1.0〜1.4）、300 は Potree の edl.frag の値。下限 0.5 は 0.3〜0.5 の範囲で見て決めた。`toFixed(4)` は WGSL の f32 リテラルに小数点を付けるため（`1` でなく `1.0000`） | `TaskSheets/M2-shading-and-ui.md` M2-1 と、ここ |
+| `center-priority.ts:DEFAULT_MIN_CENTER_PRIORITY_WEIGHT`(0.2)・`DEFAULT_CENTER_PRIORITY_STRENGTH`(4)・`halfDiagonal` の `1e-6` | 0.2 は「下限が無いのと同じにならず、中央優先の効果も消えない」設計判断（実機で調整していない）。4 は所有者が 0/1/2/4 を試して一番良かった値。`1e-6` は大きさ 0 の canvas での 0 除算よけ | `TaskSheets/ADR-0010-lod-priority-and-point-budget.md` 追記4 |
+| `ground-grid.ts:GRID_LINE_COLOR`・`GRID_MAX_ALPHA`(0.35)・`TARGET_CELLS_ACROSS_SCENE`(40)・`FADE_DISTANCE_RATIO`(1.5)・`niceGridCellSize` の 1.5・3.5・7.5 | 線は背景に薄く重ねるだけ（点群を邪魔しない）。間隔は対角線をおよそ 40 マスに割り、1-2-5 系列に丸める（軸の目盛りの定番の方法。例: 対角線 100m → 2m 刻み） | ここ |
+| `sky.ts` の色（`SKY_COLORS`・`SOLID_DARK_CLEAR` など） | 色は主観で、実機の感想で 2 回直した（白っぽい → 暗すぎ → その中間）。地面の色は地平線とはっきり分ける | `TaskSheets/M2-shading-and-ui.md` M2-0c |
+| `device-profile.ts:MOBILE_LOW_MEMORY_THRESHOLD_GIB`(4)・`MOBILE_RENDER_SCALE`(0.5)・`MOBILE_POINT_CACHE_MEMORY_FRACTION`(1/64)・`MOBILE_FALLBACK_DEVICE_MEMORY_GIB`(4)・`DESKTOP_POINT_CACHE_MEMORY_BUDGET_BYTES`(1GiB) | 4GiB は所有者の実機を基準にした判断。0.5 はタスクシートの指定。1/64 は 4GiB 端末で 64MiB、点予算の上限 約 168 万点になる保守的な値。1GiB は ADR-0010 の値をそのまま。モバイル側はどれも未検証の初期値 | `TaskSheets/M3-release-and-update.md` M3-8 |
+| `node-loader.ts:CONCURRENCY_MEASURED_IN_ADR_0007`(8)・`MIN_CONCURRENCY_SO_FEW_CORES_DO_NOT_SERIALIZE`(4) | コア数が取れないときは実測で裏付けのある 8。コア数を極端に少なく申告する環境で直列化しないよう下限 4 | 名前（R2）と `TaskSheets/ADR-0007-pcv-protocol-concurrency.md` |
+| `pick-math.ts:PERSPECTIVE_MIN_MARGIN_STEPS`(4)・`ORTHOGRAPHIC_MARGIN_STEPS`(32)・`ORTHOGRAPHIC_MIN_MARGIN_FRACTION`(0.002)・`COARSE_HALF`(4) | 上の `refineDepthRange` の行の余裕（とても遠くで粗い 1 段が z/2 を超えるときの 4 段、平行投影の 32 段・範囲の 0.2%）。1 段目の窓は半径 4 で、点の幅が数ピクセルなので少しの隙間を許す | 名前（R2）と、ここ |
+| `up-axis.ts:UP_TOO_CLOSE_TO_Z_FOR_A_Z_SEED`(0.9)・`view-presets.ts:UP_IS_AN_AXIS`(0.999)・`MATCH_TOLERANCE`(0.02)・`ISOMETRIC_PITCH`(35°) | 上方向が Z に近いと種の Z と外積が 0 になるので種を X にする。上方向がちょうど Z（Y）なら地図の慣習の北を使う。0.02 ラジアン（約 1.1°）以内なら固定の視点にいるとみなす。等角の仰角は約 35° | 名前（R2）と、ここ |
+| `section-2d.ts:MAX_TICKS`(1000)・`CSS_PX_PER_HORIZONTAL_TICK`(90)・`CSS_PX_PER_VERTICAL_TICK`(50)・`SMALL_DOT_MAX_POINTS`(30 万)・`LABEL_HEIGHT_PX`(14) | 目盛りの数の上限（壊れた範囲で無限に回らない）、目盛りの間隔のおよその画面幅。30 万点を超えたら 1 点 1 ピクセル、以下なら 2x2（まばらな断面を見えるように）。ラベルは 11px の文字 | 名前（R2）と、ここ |
+| `layer-focus.ts:DEFAULT_POINT_SIZE_PX`(4)・`MAX_POINT_SIZE_PX`(32)、`idle-boost.ts:IDLE_BOOST_DELAY_MS`(500)、`screen-project.ts:LABEL_WIDTH_PX`(190)、`touch-gesture.ts:MIN_DISTANCE`(1e-3)、`raycast.ts:MIN_HIT_DISTANCE`(0.01)、`screen-space-error.ts:NEAR_W_EPSILON`(1e-6) | 4 は変更前の固定値と同じ（触らなければ見た目は変わらない）。500ms は未検証の初期値。190px は 12px のラベルのおよその幅。1e-3 は指が重なる瞬間の 0 除算よけ。0.01 は NEAR と同じ程度。1e-6 は 0 除算よけで、カメラのニアとは関係ない（元のコードから引き継いだ値） | ここ |
+| `src/renderer/*.test.ts` のテストの入力値 | テストの入力（距離・点数・フレーム間隔など）の説明のコメント。期待する性質はテストの名前にある。CM-5 の道具で 225 か所が出たが、テストの入力値には名前を付けていない | ここ（R2 で一覧を見て判断した） |
 
 ## 記録
 
@@ -120,3 +136,21 @@
 
 - 画面・GPU: シェーダーを `.wgsl` に出した後に点群・空・グリッド・EDL・ピッキングが同じに描けるかは、GPU のある環境で見ていない（未確認）。確かめ方: `npm run dev` で `sofi.copc.laz` か autzen を開き、背景を空にしてグリッドをオン、EDL のオン・オフ、着色を標高・強度・分類に切り替え、点の形を丸・四角に、計測で点を 2 つ拾う。どれも変更前と同じに見え、エラーのバナーが出ないこと
 - `?raw` の WGSL が Windows（CRLF）と Linux（LF）で同じに動くか（上の推定）
+
+### 監査の指摘への対応 R2（作業役）
+
+- F-1（must）: `points.wgsl` で、`${ELEVATION_INTENSITY_RAMP_WGSL_SRC}` の行を消した跡の 2 行続きの空行を 1 行にした。監査役の赤のテスト `shaders.test.ts`「no shader file keeps two blank lines in a row where a comment or a template value was removed」は弱めずにそのままコミットした（直す前は落ち、直した後は通る）
+- F-2（should）: `device.lost` の `.catch(() => {})` を `.catch(ignoreBecauseDeviceLostNeverRejects)` にした（中身は同じ空の関数）。表に 1 行足した
+- F-3（should）: `YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY` → `YELLOW_BETWEEN_GREEN_AND_RED`（使い手 1、`ELEVATION_INTENSITY_RAMP` だけ。`grep -rn YELLOW_ src` で確かめた）。理由は表の `ELEVATION_INTENSITY_RAMP` の行
+- F-4（nit）: 分類の色の理由（7・18 は異常値として目立つ色、12 は 8 と区別するため明度 0.58、未知のコードはシアン）を表の `ASPRS_CLASSIFICATION_COLORS` の行に足した
+- F-5（nit）: `src/renderer/shaders/uniform-layout.test.ts` を足した。TS のフィールドの一覧（`EDL_UNIFORM_F32_FIELDS`・`SKY_UNIFORM_VEC4_FIELDS`・`GRID_UNIFORM_VEC4_FIELDS`・`COLOR_SETTINGS_UNIFORM_F32_FIELDS`・`NODE_UNIFORM_FIELD_BYTES`）と、`.wgsl` の構造体のフィールドを、名前と順番で比べる。点の uniform の書き込み位置も `NODE_UNIFORM_FLOAT_INDEX`（R2 で `uniformData[16]`〜`[20]` に付けた名前）として、`mvp` の 16 個の後に構造体の順で並ぶことを見る。`edl.ts` の `"orthoRef", "_pad1"` を一時的に入れ替えると `edl.ts EDL_UNIFORM_F32_FIELDS lists the fields of EdlUniforms in order` が落ちることを確かめて戻した
+- F-6（nit）: `src/code-limits.test.ts` の `hasWgslEntryPoint` の `export` を外した
+- 消したコメントの近くに残った名前の無い数値: `C:\workspace\pcv-wt-CM-5\scripts\removed-comments-near-literals.mjs` を読み取りだけで `node …/removed-comments-near-literals.mjs d05c858 src/renderer` として実行した（自分のブランチにはコピーしていない）。354 件（テスト 225、テスト以外 129）
+  - テスト以外: 既に名前の付いた定数（その名前の値の理由をコメントが説明していた物）は、理由を表に足した（`animation.ts`・`point-budget.ts`・`edl.ts` ほか 14 行）。名前の無かった数値には名前を付けた: `orbit-camera.ts` の 0.0015・10・600、`node-loader.ts` の 8・4、`pick-math.ts` の 4・32・0.002、`point-cloud-renderer.ts` の 0.05（`render-scale.ts:MIN_RENDER_SCALE`。`point-cloud-renderer.ts` の行数の上限 867 を超えないよう、既存の import の行に足した）、`up-axis.ts` の 0.9、`view-presets.ts` の 0.999、`section-2d.ts` の 1000・90・50、`gpu-resources.ts` の `uniformData` の添字 16〜20
+  - 残した物: 型の文字列（`"rgb"`・`"top"` など）、配列の添字の 3（xyz の 3 成分・w）、バイト数の `* 4`（f32 の 4 バイト）、行列の 16 など、道具が数えても意味が自明な物。直した後に同じ道具を実行すると 341 件（テスト以外 116。名前を付けた定数の宣言の行も道具は数える）
+  - テスト: 入力値の説明だったので名前は付けず、表に 1 行（上）
+
+#### R2 の検査の結果
+
+- `npm run check:all`: typecheck・lint・check:circular・check:docs・check:comments・vitest（100 files 1126 tests passed）・cargo fmt (workspace)・cargo clippy (workspace)・cargo fmt (vendor/copc-writer) が全部 OK
+- `node scripts/check-task-sheet.mjs d05c858` → `task sheets OK (97 files compared with d05c858)`
