@@ -59,8 +59,9 @@ pub fn free_bytes_at(path: &Path) -> io::Result<u64> {
     let c_path = CString::new(dir.as_os_str().as_bytes())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
-    // SAFETY: `c_path` is NUL-terminated and outlives the call; `stat` is a valid stack value.
+    // SAFETY: `statvfs` is plain old data, so all-zero bytes are a valid value.
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is NUL-terminated and outlives the call; `stat` is a valid stack value.
     let result = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
     if result != 0 {
         return Err(io::Error::last_os_error());
