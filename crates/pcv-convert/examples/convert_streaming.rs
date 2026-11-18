@@ -1,38 +1,3 @@
-//! M4-1b(`TaskSheets/M4-import-and-conversion.md`)の計測用入口。
-//!
-//! M4-1の素朴な実装(`src/main.rs`)は全点をメモリへ読み込むため、点数に比例して
-//! ピークメモリが増える。`copc-writer`クレートが公開している
-//! `convert_las_to_copc_streaming`はout-of-core(一時ファイルへ逃がしながら
-//! 組み立てる)実装なので、それを素直に呼ぶだけのラッパーを用意し、
-//! ピークメモリが点数に比例せず頭打ちになるかを実測する。
-//!
-//! 変換アルゴリズム自体はこのクレートの外(`copc-writer`本体)にあるため、
-//! ここでは呼び出しと計測だけを行う。最適化やパラメータ調整はしていない。
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example convert_streaming -- \
-//!     <入力.las/.laz> <出力.copc.laz> [ノードあたり最大点数=100000] [spill_dir]
-//! ```
-//!
-//! 引数の既定値:
-//! - ノードあたり最大点数: `CopcWriterParams::default()`と同じ100,000点
-//! - spill_dir: 未指定なら`std::env::temp_dir()`(OS既定の一時ディレクトリ)
-//!
-//! **spill_dirについて分かったこと**: `convert_las_to_copc_streaming`に渡す
-//! `spill_dir`引数は、点レコードそのものを吐き出す一時ファイル
-//! (`.copc-writer-spill.*.part`)の置き場所しか制御しない。octree構築が使う
-//! LOD indexの一時ファイル(`.copc-writer-root.*.idx`・
-//! `.copc-writer-partition.*.idx`・`.copc-writer-order.*.idx`。
-//! `copc-writer`の`lod.rs`の`new_index_tempfile`)は、`tempfile::Builder::tempfile()`
-//! (ディレクトリ指定なし)で常にOS既定の一時ディレクトリに作られる実装になっており、
-//! spill_dirをどこに変えても影響しない。したがって一時ファイルの総使用量を
-//! 測るにはOS既定の一時ディレクトリ側を見る必要がある(このexampleでは
-//! spill_dirの既定値もOS既定の一時ディレクトリにしているため、変換に関わる
-//! 一時ファイルはすべて同じディレクトリに集まる)。
-//!
-//! ピークメモリ・一時ディレクトリの使用量はこのプロセスの外(PowerShell)から測る。
-//! 実行結果の記録方法は`TaskSheets/M4-import-and-conversion.md`のM4-1bを参照。
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

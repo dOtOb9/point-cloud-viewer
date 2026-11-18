@@ -1,15 +1,3 @@
-//! Developer tool: cut the points inside an axis-aligned box out of a COPC file into
-//! a new COPC file (L2-C). The app does not use it; it exists to measure time and
-//! memory (peak seen from another process).
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example extract_copc -- \
-//!     <input.copc.laz> <output.copc.laz> minx miny minz maxx maxy maxz [spill_dir]
-//! ```
-//!
-//! With only the input path it prints the point count and bounds (a hint for
-//! choosing the box).
-
 use std::path::PathBuf;
 use std::time::Instant;
 

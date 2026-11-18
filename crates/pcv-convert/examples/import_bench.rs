@@ -1,17 +1,3 @@
-//! E57/PLY/PCD → COPC(本番の変換経路、M4-9の`convert_path_to_copc`)を呼ぶだけの
-//! 計測用入口。`examples/convert_streaming.rs`(LAS/LAZ版)と同じ考え方で、
-//! ここでは入出力の口だけを用意し、計測(所要時間・ピークメモリ)はプロセスの
-//! 外(PowerShell)から行う。
-//!
-//! 用途: `examples/copc_to_pcd.rs`で作ったPCD(例: `data/sofi.pcd`)を、
-//! 本番の変換経路で実際にCOPCへ戻し、元のCOPCと点数を突き合わせる
-//! (`TaskSheets/M4-import-and-conversion.md`のM4-9参照)。
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example import_bench -- \
-//!     <入力.e57/.ply/.pcd> <出力.copc.laz> [spill_dir=OS既定の一時ディレクトリ]
-//! ```
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -51,8 +37,6 @@ fn main() {
         &NeverCancel,
         None,
         |progress| {
-            // 読み込み段階の進捗だけ分かる(streaming.rsのコメント参照)。
-            // 大きい入力で経過が分かるよう、ある程度まとまった間隔で出す。
             if progress.points_read % 10_000_000 == 0 {
                 println!(
                     "  読み込み中: {}/{}",

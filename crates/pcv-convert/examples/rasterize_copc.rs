@@ -1,24 +1,3 @@
-//! Developer tool: rasterise a COPC file (G1-3 / G1-R2) and print the time. The app does
-//! not use it; it exists to measure time and memory (peak seen from another process).
-//!
-//! Export (every point, one GeoTIFF):
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example rasterize_copc -- \
-//!     export <input.copc.laz> <out.tif> <cell_size> <kind> [ground] [values]
-//! ```
-//!
-//! Preview (what the window does: read the upper levels once, then switch):
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example rasterize_copc -- \
-//!     preview <input.copc.laz> <cell_size> [cap]
-//! ```
-//!
-//! `kind` is one of `zMin zMax zMean count intensityMean rgbMean`. The word `ground`
-//! counts only class 2; the word `values` writes the raw-value GeoTIFF (the default
-//! is the colored one).
-
 use std::path::PathBuf;
 use std::time::Instant;
 

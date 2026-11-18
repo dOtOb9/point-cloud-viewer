@@ -1,40 +1,3 @@
-//! 変換の「読み込み」段階の内訳を測る。
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example read_stage_bench -- <file.las|.laz>
-//! ```
-//!
-//! # なぜこれを測るか
-//!
-//! `TaskSheets/ADR-0007-pcv-protocol-concurrency.md`は「並列度だけを上げて、
-//! 1回あたりのコストを疑わなかった」失敗を記録している(並行数を上げても
-//! 頭打ちになり、原因は1ノードあたりの読み出しコストそのものだった)。
-//! LAZ展開の並列化に進む前に、同じ轍を踏まないよう、まず
-//! 「読み込み」段階(`crates/pcv-convert/src/streaming.rs`の`convert`が
-//! `write_streaming_with_cancel`に点を渡すまでの区間)の時間が何に
-//! 使われているかを、次の3つに分けて測る。
-//!
-//! 1. **入力の読み込み(ファイルI/O)**: `std::fs::read`でファイル全体を
-//!    バイト列として読む時間。ディスクから読む部分だけを測りたいので、
-//!    解凍(LAZ展開)やパースは一切行わない。
-//! 2. **LAZの展開**: 1.で得たバイト列を`std::io::Cursor`に包み、
-//!    ディスクI/Oを一切発生させない状態で`las::Reader`に読ませ、
-//!    全点を`fill_points`で読み切る(点は捨てる)。ディスクI/Oがゼロの
-//!    状態での所要時間なので、LAZ展開+lasクレートのレコード組み立て
-//!    (点ごとの軽いパース)のコストをほぼそのまま表す。
-//! 3. **点を`copc-writer`に渡して一時ファイルに書く部分**: ディスクから
-//!    読みながら(1.+2.相当の処理を経て)、`copc_writer::SpillWriter::push`
-//!    でspillへ書く。`fill_points`呼び出しにかかった時間と`push`呼び出しに
-//!    かかった時間を、ループの中でそれぞれ別の`Duration`に積算することで、
-//!    「読み込み(ディスクI/O+LAZ展開)」と「spillへの書き込み」を直接
-//!    分離して測る(推測ではなく、実際にその呼び出しを包んだ時間)。
-//!
-//! 参考として、読み込みの後の段階(octreeの構築・書き出し。
-//! `write_copc_from_spill_with_fs`の1回の呼び出し)の時間も測る。
-//!
-//! 出力(変換結果・spill)は`std::env::temp_dir()`配下に書き、
-//! プログラム終了時に消す(リポジトリには何もコミットしない)。
-
 use std::io::Cursor;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -52,7 +15,6 @@ fn main() {
     let path = Path::new(path);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
 
-    // --- 1. 入力の読み込み(ファイルI/O) ---
     let io_start = Instant::now();
     let bytes = std::fs::read(path).expect("ファイルを読めなかった");
     let io_elapsed = io_start.elapsed();
@@ -67,10 +29,6 @@ fn main() {
         file_mib / io_elapsed.as_secs_f64()
     );
 
-    // --- 2. LAZの展開(ディスクI/Oゼロ、メモリ上のバイト列から読む) ---
-    // `las::Reader::new`は`R: 'static`を要求するため、バイト列を複製して
-    // 所有権を渡す(複製自体はメモリコピーのみでディスクI/Oを伴わないため、
-    // 計測対象には含めない=計測区間の外で行う)。
     let bytes_owned = bytes.clone();
     let cursor = Cursor::new(bytes_owned);
     let mut reader = las::Reader::new(cursor).expect("las::Readerを開けなかった");
@@ -108,7 +66,6 @@ fn main() {
         "展開した点数がヘッダーの申告点数と一致しない"
     );
 
-    // --- 3. 点をcopc-writerに渡して一時ファイルに書く部分(ディスクから読みながら) ---
     let bench_dir =
         std::env::temp_dir().join(format!("pcv-read-stage-bench-{}", std::process::id()));
     std::fs::create_dir_all(&bench_dir).expect("ベンチ用一時ディレクトリを作れなかった");
@@ -165,7 +122,6 @@ fn main() {
         points_written
     );
 
-    // --- 参考: 読み込みの後の段階(octreeの構築・書き出し) ---
     let spill_reader = spill.finalize().expect("spillの確定に失敗した");
     let params = CopcWriterParams::new(100_000);
     let output_path = bench_dir.join("bench-output.copc.laz");
@@ -201,10 +157,7 @@ fn main() {
     );
     println!("(参考)[1]+[3]+[参考]の合計: {:.3}秒", total.as_secs_f64());
 
-    // 後始末: ベンチ用の一時ファイル・出力は残さない。
     let _ = std::fs::remove_dir_all(&bench_dir);
 }
 
-/// `crates/pcv-convert/src/streaming.rs`の`READ_BATCH_SIZE`と同じ値
-/// (本番の読み込みと同じ粒度で測るため)。
 const READ_BATCH_SIZE: u64 = 64 * 1024;

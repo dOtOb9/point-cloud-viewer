@@ -1,13 +1,3 @@
-//! M4-14: デスクトップ/Androidのアプリが使う入口
-//! (`pcv_convert::merge::merge_paths_and_timings`。`src-tauri`の
-//! `start_multi_las_conversion`が呼ぶのと同じ関数)を、Tauriを起動せずに
-//! 直接呼んで所要時間を測る例。ピークメモリは外部(PowerShell等)から
-//! このプロセスの`PrivateMemorySize64`を測る(`TaskSheets/ADR-0006`と同じ方法)。
-//!
-//! ```text
-//! merge_paths_bench <出力.copc.laz> <入力1.las> <入力2.las> ...
-//! ```
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

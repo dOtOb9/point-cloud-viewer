@@ -1,15 +1,3 @@
-//! Times the section line (G2-4) on a real COPC file and prints the result.
-//!
-//! ```text
-//! cargo run --release -p pcv-convert --example section_line_bench -- <file.copc.laz>
-//!     prints the bounding box and the CRS (to choose A and B)
-//! cargo run --release -p pcv-convert --example section_line_bench -- <file> ax ay az bx by bz [standard|steep] [half_width] [resolution]
-//!     computes the line; lengths are in the file's unit (defaults: standard, 20, 0.5)
-//! ```
-//!
-//! Prints the time of each phase (pass 1, simulation, pass 2, TIN), the cell and ground point counts, and
-//! the line as `s z` rows when `PCV_PRINT_LINE=1`.
-
 use std::path::Path;
 use std::time::Instant;
 
@@ -72,7 +60,6 @@ fn main() -> Result<(), String> {
         "preset {preset}, half width {half_width}, resolution {resolution}, cells {}",
         job.cell_count()
     );
-    // The phases are told apart by the fraction: 0..0.30 pass 1, 0.30..0.60 simulation, 0.60..0.95 pass 2.
     let mut marks = [None::<f64>; 3];
     let mut advances = 0u32;
     loop {

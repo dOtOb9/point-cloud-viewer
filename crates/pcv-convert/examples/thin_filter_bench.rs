@@ -1,16 +1,3 @@
-//! G3 measurement: thin a COPC file or remove outliers from it and print the number of
-//! tiles, the points read (against the header count), the kept count and the wall time.
-//! Peak memory is measured from outside (see `TaskSheets/G3-T7-thin-filter-core.md`).
-//!
-//! ```text
-//! cargo run --release -p pcv-convert --example thin_filter_bench -- <in.copc.laz> <out.copc.laz> <mode> [args]
-//!   grid   <size> [nearest|lowest|highest]
-//!   voxel  <size>
-//!   ror    <radius> <min_neighbors>
-//!   sor    <k> <n_sigma> <search_radius>
-//! env PCV_TILE_CAP (default 2000000) is the points-per-tile target.
-//! ```
-
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -23,8 +10,6 @@ use pcv_convert::thin_filter::{
 use pcv_core::outlier::{RorSettings, SorSettings};
 use pcv_core::thin::{GridKeep, ThinKind, ThinSettings};
 
-/// Prints progress to stderr whenever it advances by 2 percent, so a run that has to be
-/// stopped early still leaves partial numbers.
 fn progress_printer(started: Instant) -> impl FnMut(pcv_convert::streaming::ReadProgress) + Send {
     let mut last_step = 0u64;
     move |p| {

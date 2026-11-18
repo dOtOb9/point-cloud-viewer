@@ -1,12 +1,3 @@
-//! Diagnosis of the section line (G2-4): dumps, for a stretch of the line, the line samples, the section points near the
-//! line, the ground points the TIN used, the cloth height, and the TIN triangle at the highest sample. Writes a JSON
-//! file and a text table; a script draws the picture.
-//!
-//! ```text
-//! cargo run --release -p pcv-convert --example section_line_diag -- <file> ax ay az bx by bz <preset> <half_width> <resolution> <s_min> <s_max> <out_prefix>
-//! ```
-//! Lengths are in the file's unit. `up` is +Z. Nothing in the algorithm is changed by this example.
-
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -33,14 +24,11 @@ fn main() -> Result<(), String> {
     let resolution = number(&args, 10)?;
     let (s_min, s_max) = (number(&args, 11)?, number(&args, 12)?);
     let prefix = args.get(13).ok_or("out_prefix is missing")?;
-    // Metres per file unit (default 1). The CSF heights are given in metres (as the app does), so they are divided by it.
     let k = if args.len() > 14 {
         number(&args, 14)?
     } else {
         1.0
     };
-    // Optional 16th argument: metres per file unit used for the thresholds only (1 reproduces the app before the
-    // units fix, where the metre values were sent as they were).
     let threshold_k = if args.len() > 15 {
         number(&args, 15)?
     } else {
@@ -72,11 +60,7 @@ fn main() -> Result<(), String> {
     while !job.advance(&mut file).map_err(|e| e.to_string())?.done {}
     let vertices = job.debug_vertices();
 
-    // Line samples (decode the result buffer).
     let mut samples: Vec<(f64, f64)> = Vec::new();
-    // The triangle needs the job, so ask for it after the line is known: `finish` consumes the job, so find the
-    // spike from a second job-free pass: sample the TIN through `debug_triangle_at` is not enough, so run `finish`
-    // on a clone-free path by computing the line first from a fresh job.
     let mut job2 = SectionLineJob::new(&file, &line, &params).map_err(|e| e.to_string())?;
     while !job2.advance(&mut file).map_err(|e| e.to_string())?.done {}
     let bytes = job2.finish().map_err(|e| e.to_string())?;
@@ -98,7 +82,6 @@ fn main() -> Result<(), String> {
         .max_by(|x, y| x.1.total_cmp(&y.1))
         .ok_or("no samples in the range")?;
 
-    // Table.
     let mut table = String::new();
     let _ = writeln!(
         table,
@@ -115,14 +98,12 @@ fn main() -> Result<(), String> {
     }
     std::fs::write(format!("{prefix}-line.txt"), table).map_err(|e| e.to_string())?;
 
-    // Triangle at the spike (and the three samples before it if the spike is on an edge).
     let triangle = job.debug_triangle_at(spike.0, 0.0);
 
-    // Section points within 1 unit of the line, in the s range.
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let len = dx.hypot(dy);
     let along = [dx / len, dy / len];
-    let lateral = [-along[1], along[0]]; // up x along = (-ay, ax) for up = +Z
+    let lateral = [-along[1], along[0]];
     let corridor = pcv_core::extract::ExtractFilter::OrientedBox(pcv_core::extract::OrientedBox {
         center: [
             a[0] + along[0] * (s_min + s_max) / 2.0,
@@ -145,7 +126,6 @@ fn main() -> Result<(), String> {
     let mut near: Vec<[f64; 4]> = Vec::new();
     for key in keys {
         for p in file.read_node_points(key).map_err(|e| e.to_string())? {
-            // The box is centred at z = 0 with a huge z extent, so this tests s and t only.
             if corridor.contains([p.x, p.y, 0.0]) {
                 let (px, py) = (p.x - a[0], p.y - a[1]);
                 let s = px * along[0] + py * along[1];

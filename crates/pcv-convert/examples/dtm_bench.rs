@@ -1,15 +1,3 @@
-//! Developer tool: run the DTM tool (G1-T15) on a COPC file and print the times, the counts and the agreement of CSF
-//! with the source classification. The app does not use it; it exists to measure time and memory (the peak is read
-//! from another process, see `TaskSheets/G1-T15-dtm.md`).
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example dtm_bench -- \
-//!     <input.copc.laz> <out_dir> <cloth_resolution> <cell_size> [standard|steep] [both|geotiff|landxml]
-//! ```
-//!
-//! Lengths are in the file's unit. The time of each phase is read from the progress fraction (per mille):
-//! 0..250 pass 1, 250..550 simulation, 550..900 pass 2 and the writer, 950 the TIN and the files.
-
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -69,7 +57,6 @@ fn main() -> Result<(), String> {
     let summary = dtm_path(
         &source,
         request,
-        // Measuring: no practical cap here, the point is to see how far a run goes.
         u64::MAX / 2,
         u64::MAX / 2,
         &outputs,

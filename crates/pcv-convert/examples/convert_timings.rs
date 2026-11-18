@@ -1,15 +1,3 @@
-//! PF-0 benchmark: run the production LAS/LAZ conversion path (`convert_and_timings`, the same call
-//! `src-tauri` makes) and print the stage timings plus a timeline of the ingest progress.
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example convert_timings -- \
-//!     <input.las/.laz> <output.copc.laz> <spill_dir>
-//! ```
-//!
-//! The timeline shows when 1% / 10% / 50% / 100% of the points had been read. That is the time
-//! before which a "preview from the points read so far" (ADR-0024 option a) cannot show them.
-//! Peak memory and disk use are measured from outside (PowerShell), as in the other benches.
-
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;

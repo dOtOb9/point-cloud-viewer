@@ -1,26 +1,3 @@
-//! Benchmark tool: make a very large COPC by reading the same LAS tiles N times,
-//! each copy shifted in X/Y onto a grid, without ever creating a huge input file.
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example synthetic_copies_to_copc -- \
-//!     <input dir or glob> <output.copc.laz> <copies> [spill_dir] [--timings]
-//! ```
-//!
-//! Why: a real 10 billion point LAS would be about 340 GB, more than the disk
-//! holds. Reading the 1.05 billion point Tokyo tiles again for every copy needs
-//! no extra disk for the input. The output and the spill file are real and
-//! scale with the point count, which is what this tool is meant to measure.
-//!
-//! Copy `k` is shifted by `(k % cols) * PITCH` in X and `(k / cols) * PITCH` in Y,
-//! with `cols = ceil(sqrt(copies))`. `PITCH` (5000 m) is larger than the source
-//! area (about 4.4 km x 4.5 km), so copies do not overlap. The points are NOT
-//! real data beyond the first copy: they are only good for size / speed
-//! measurements, not for looking at a map.
-//!
-//! The output uses the scale/offset of the first input file (0.001 / 0). Shifted
-//! coordinates must still fit its i32 range (about +-2147 km), which holds for
-//! any grid this tool can finish in practice.
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -31,12 +8,8 @@ use copc_writer::{
 };
 use pcv_convert::merge::{collect_input_paths, summarize_headers_with_options, MultiFileLasPoints};
 
-/// Grid spacing between copies, in the source CRS units (metres).
 const PITCH: f64 = 5000.0;
 
-/// Yields the points of `paths` `copies` times, each time shifted on the grid.
-/// Only one `MultiFileLasPoints` (one file and one batch) is alive at a time,
-/// so memory does not grow with the number of copies.
 struct ShiftedCopies {
     paths: Vec<PathBuf>,
     declared_per_copy: u64,

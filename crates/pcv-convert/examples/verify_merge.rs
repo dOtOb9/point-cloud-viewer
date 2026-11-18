@@ -1,28 +1,7 @@
-//! `merge_las_to_copc`の受け入れ条件の確認(複数入力版)。
-//! `examples/verify.rs`(単一入力)は1つの入力の点数しか検算できないため、
-//! マージ後の出力は複数入力の合計・和集合を確認する別の確認手順が要る。
-//!
-//! 確認すること(`TaskSheets/TOOL-merge-las-to-copc.md`の受け入れ条件2):
-//! - 出力のCloudInfo点数・hierarchy点数合計が、全入力ヘッダーの申告点数の
-//!   合計と一致する
-//! - 出力のバウンディングボックスが、全入力ヘッダーのバウンディングボックスの
-//!   和集合である(浮動小数点の丸め分だけ許容誤差を見る)
-//! - いくつかのノードをサンプルして、RGBが(0,0,0)でない点が存在する
-//!   (`pcv-core`がビューアに渡すのと同じ8bit化後のバイト列。レイアウトは
-//!   `crates/pcv-core/src/node_format.rs`のドキュメント参照。モジュール自体は
-//!   非公開だが、`HEADER_BYTES`/`POINT_STRIDE`の値は`pcv_core`から再公開されている)
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example verify_merge -- \
-//!     <出力.copc.laz> <入力1.las> [入力2.las ...]
-//! ```
-
 use std::path::Path;
 
 use pcv_core::{CopcFile, HEADER_BYTES, POINT_STRIDE};
 
-/// 実世界座標の丸め誤差の許容量。出力のscale(既定0.001m)の半分より大きく
-/// 取っておけば、量子化の丸め自体は誤検知にならない。
 const BOUNDS_EPSILON_M: f64 = 0.01;
 
 fn main() {
@@ -123,7 +102,6 @@ fn verify(output: &Path, inputs: &[String]) -> Result<(), String> {
         }
     }
 
-    // いくつかのノードをサンプルして、RGBが非ゼロの点が1つ以上あることを確認する。
     let mut keys: Vec<_> = file.hierarchy().nodes().map(|n| n.key).collect();
     keys.sort_by_key(|key| (key.level, key.x, key.y, key.z));
     let sample_keys: Vec<_> = keys.iter().rev().take(5).copied().collect();

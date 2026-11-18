@@ -1,9 +1,3 @@
-//! G3-1 measurement: plan tiles for a COPC file and read every tile, reporting the number
-//! of tiles, the points read (including re-reads of coarse-level nodes) against the header
-//! count, the largest tile and the wall time.
-//!
-//! Usage: `cargo run --release -p pcv-convert --example tile_bench -- <file.copc.laz> [cap] [margin] [min_tile_size]`
-
 use std::path::PathBuf;
 use std::time::Instant;
 

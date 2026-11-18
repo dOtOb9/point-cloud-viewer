@@ -1,38 +1,3 @@
-//! 変換の「後処理」段階(octree構築・ノードごとのLAZ圧縮・書き出し)の内訳を測る。
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example post_process_stage_bench -- <file.las|.laz> [--sequential-compress]
-//! ```
-//!
-//! M4-10(`TaskSheets/M4-import-and-conversion.md`)追記: `--sequential-compress`を
-//! 付けると、ノードごとのLAZ圧縮を`CopcWriterParams::
-//! with_parallel_node_compression(false)`で強制的に逐次にする(`pcv-convert`の
-//! 既定は`parallel-compress`フィーチャが有効なため並列)。同じビルドのまま
-//! 逐次・並列を切り替えて測れるようにするための追加で、本番の変換経路の挙動は
-//! 変えない。
-//!
-//! # 背景
-//!
-//! `TaskSheets/M4-import-and-conversion.md`のM4-7で、「読み込み」段階
-//! (LAZの展開)を並列化した。その結果、並列化していない「後処理」段階
-//! (beer.lazで約64〜73秒)が変換時間の大半を占めるようになった。
-//! `TaskSheets/ADR-0007-pcv-protocol-concurrency.md`の教訓(並列度だけを
-//! 上げて1回あたりのコストを疑わなかった失敗)に倣い、並列化に進む前に
-//! まず後処理の内訳を測る(M4-8)。
-//!
-//! # 測る3つ
-//!
-//! 1. **octreeの分割**(LODの索引作り、点のノードへの振り分け):
-//!    `vendor/copc-writer`に計測専用で追加した
-//!    [`copc_writer::PostProcessStageTimings`]の`lod_index_build`。
-//! 2. **ノードごとのLAZ圧縮**(圧縮したバイト列を出力ストリームへ書く部分を
-//!    含む): 同構造体の`node_compression`。
-//! 3. **書き出し**(ヘッダー・VLR・hierarchyの書き出し。圧縮以外の全て):
-//!    同構造体の`header_and_hierarchy_write`。
-//!
-//! 出力(spill・変換結果)は`std::env::temp_dir()`配下に書き、プログラム終了時に
-//! 消す(リポジトリには何もコミットしない)。
-
 use std::path::Path;
 use std::time::Instant;
 
@@ -42,7 +7,6 @@ use copc_writer::{
 };
 use pcv_convert::write_metadata::copc_write_metadata_from_source_header;
 
-/// 本番(`crates/pcv-convert/src/streaming.rs`のM4-7後の値)と同じバッチサイズ。
 const READ_BATCH_SIZE: u64 = 1024 * 1024;
 
 fn main() {
@@ -62,7 +26,6 @@ fn main() {
     std::fs::create_dir_all(&bench_dir).expect("ベンチ用一時ディレクトリを作れなかった");
     let fs = NativeScratchFs::new(&bench_dir);
 
-    // --- spillを作る(本番の「読み込み」段階と同じ経路。計測対象には含めない) ---
     let mut reader = las::Reader::new(std::io::BufReader::new(
         std::fs::File::open(path).expect("入力を開けなかった"),
     ))
@@ -100,7 +63,6 @@ fn main() {
     );
     println!();
 
-    // --- 1〜3. 後処理の内訳(vendor/copc-writerの計測専用API) ---
     let params =
         CopcWriterParams::new(100_000).with_parallel_node_compression(!force_sequential_compress);
     println!(
@@ -149,6 +111,5 @@ fn main() {
         "    (内訳の合計 {accounted:.3} 秒 vs 区間計測 {total_secs:.3} 秒。差は計測の前後に残る軽い処理)"
     );
 
-    // 後始末: ベンチ用の一時ファイル・出力は残さない。
     let _ = std::fs::remove_dir_all(&bench_dir);
 }

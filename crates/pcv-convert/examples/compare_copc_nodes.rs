@@ -1,18 +1,3 @@
-//! Developer tool: checks that two COPC files hold the same points in every node.
-//!
-//! Used for ADR-0019, to compare the output of the index-based LOD builder (the
-//! build before the change) with the record-carrying one. The chunk order in the
-//! file and the order of points inside a node may differ; what must be equal is
-//! the set of nodes and, for every node, the multiset of points as the viewer
-//! sees them (`pcv-core` node buffer: relative position, color, intensity,
-//! classification). The files are compared node by node, so memory stays at
-//! about one node per file whatever the number of points (L3-C: the first
-//! version held both files, which took 30 GiB for 325 million points).
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example compare_copc_nodes -- <a.copc.laz> <b.copc.laz>
-//! ```
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -33,7 +18,6 @@ fn main() {
     }
 }
 
-/// The sorted point records of one node.
 fn read_node(file: &mut CopcFile, key: NodeKey, path: &Path) -> Result<Vec<Vec<u8>>, String> {
     let buffer = file
         .read_node(key)

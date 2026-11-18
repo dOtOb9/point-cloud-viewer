@@ -1,15 +1,3 @@
-//! Developer tool: run `pcv_core::dtm::DtmJob` phase by phase WITHOUT the COPC writer, and print a time mark (Unix
-//! milliseconds) at every phase boundary, so that a memory sampler running in another process can split the peak into
-//! the cloth, the best-point grid, the TIN and the file writers. See `TaskSheets/BENCH-dtm-memory.md`.
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example dtm_memory_bench -- \
-//!     <input.copc.laz> <out_dir> <cloth_resolution> <cell_size>
-//! ```
-//!
-//! Lengths are in the file's unit. Standard CSF preset; both the GeoTIFF (values) and the LandXML are written, one
-//! after the other, so each shows as its own step in the samples. The classified points are dropped (no writer).
-
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -26,7 +14,6 @@ fn unix_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-/// One line per phase boundary: `MARK <unix ms> <seconds since start> <name>`.
 fn mark(start: Instant, name: &str) {
     println!(
         "MARK {} {:.1} {name}",
@@ -67,7 +54,6 @@ fn main() -> Result<(), String> {
             unit: LandXmlUnit::Meter,
         },
     };
-    // Measuring: no practical cap here.
     let params = request.to_params(u64::MAX / 2, u64::MAX / 2);
 
     let start = Instant::now();
@@ -108,7 +94,6 @@ fn main() -> Result<(), String> {
         job.max_buffered_points()
     );
 
-    // `finish` frees the cloth and the best-point grid, then builds the TIN.
     let surface = job.finish().map_err(|e| e.to_string())?;
     mark(start, "tin_built");
     println!(

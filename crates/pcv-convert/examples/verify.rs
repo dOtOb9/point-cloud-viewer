@@ -1,12 +1,3 @@
-//! M4-1の受け入れ条件「出力したCOPCが`pcv-core`で開けて、hierarchyの点数の
-//! 合計が入力の点数と一致し、いくつかのノードを`read_node`で読めること」を
-//! 確かめる。GUIでの目視確認の代わり(`crates/pcv-core/examples/open_bench.rs`
-//! を参考にした)。
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example verify -- <入力.las/.laz> <出力.copc.laz>
-//! ```
-
 use std::path::Path;
 
 use pcv_core::CopcFile;
@@ -50,7 +41,6 @@ fn verify(input: &Path, output: &Path) -> Result<(), String> {
         ));
     }
 
-    // 粗いノードから数個、実際にread_nodeで読めるかを確かめる。
     let mut keys: Vec<_> = file
         .hierarchy()
         .nodes()

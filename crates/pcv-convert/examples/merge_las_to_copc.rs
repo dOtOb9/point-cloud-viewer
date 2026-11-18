@@ -1,27 +1,3 @@
-//! 開発者向けCLI: 隣接する多数のLAS/LAZタイルを1つのCOPCにまとめる。
-//!
-//! 本体の設計・前提は`crates/pcv-convert/src/merge.rs`冒頭のコメント、
-//! 使い方の詳細・実測値は`TaskSheets/TOOL-merge-las-to-copc.md`を参照。
-//! アプリ(デスクトップ/Android/Web)はこの経路を使わない。1ファイルずつしか
-//! 開けないビューアに「隣接タイルをまとめた1ファイル」を食わせるための、
-//! 開発者が手で実行するツール。
-//!
-//! ```text
-//! cargo run -p pcv-convert --release --example merge_las_to_copc -- \
-//!     <入力ディレクトリ or globパターン> <出力.copc.laz> \
-//!     [ノードあたり最大点数=100000] [spill_dir=OS既定の一時ディレクトリ] \
-//!     [--sequential-compress] [--timings]
-//! ```
-//!
-//! - 入力: ディレクトリを渡すと配下の`*.las`/`*.laz`(大小文字区別なし)を
-//!   ファイル名の昇順に集める。ディレクトリとして存在しない文字列は
-//!   globパターンとして扱う(例: `data/tokyo-shibuya/*.las`)。
-//! - `--sequential-compress`: `copc-writer`の既存の並列オプション
-//!   (`CopcWriterParams::parallel_node_compression`。`parallel-compress`
-//!   フィーチャの既定はtrue)を明示的に無効化する。
-//!   `examples/post_process_stage_bench.rs`の`force_sequential_compress`と
-//!   同じ使い方。計測・デバッグ用で、通常は付けない。
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -131,7 +107,6 @@ fn run(
         .with_parallel_node_compression(!sequential_compress);
     let points = MultiFileLasPoints::new(paths, summary.declared_points_total);
 
-    // Collect per-stage times only with --timings (see TaskSheets/BENCH-conversion-profile.md).
     let mut ingest = IngestStageTimings::default();
     let mut post = PostProcessStageTimings::default();
     let t0 = Instant::now();
