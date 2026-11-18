@@ -1,14 +1,10 @@
-// web-protocol.ts のテスト。WebSourceとcopc.worker.tsの間で交わすメッセージの
-// 組み立て・`open(path)`の`path`の分類ロジックは、Workerを起動しなくてもテストできる
-// 純粋関数にしてある(TaskSheets/ADR-0012-web-worker-sync-io.mdの受け入れ条件)。
-
 import { describe, expect, it } from "vitest";
 import {
   buildConvertCancelRequest,
   buildConvertMultiStartRequest,
   buildConvertStartRequest,
   buildExtractStartRequest,
-  buildDtmStartRequest, // G1-T15
+  buildDtmStartRequest,
   buildFilterStartRequest,
   buildThinStartRequest,
   buildRasterPreviewCloseRequest,
@@ -105,7 +101,6 @@ describe("buildConvertStartRequest / buildConvertCancelRequest", () => {
   });
 });
 
-// M4-14: 複数のLAS/LAZを選択したときの変換開始リクエスト。
 describe("buildConvertMultiStartRequest", () => {
   it("複数のFileをまとめたconvertMultiStartリクエストを組み立てる", () => {
     const files = [
@@ -130,7 +125,6 @@ describe("buildConvertMultiStartRequest", () => {
   });
 });
 
-// M4-9追記(TaskSheets/M4-import-and-conversion.md): PCD→COPC変換の開始リクエスト。
 describe("buildPointFileConvertStartRequest", () => {
   it("pointFileConvertStartリクエストを組み立てる", () => {
     const file = new File([new Uint8Array([1, 2, 3])], "cloud.pcd");

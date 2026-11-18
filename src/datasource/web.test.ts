@@ -1,15 +1,8 @@
-// web.ts (WebSource) のテスト。本物のWeb Worker/wasmは起動できない(vitestの
-// jsdom環境にはFileReaderSync等が無い)ので、`WorkerLike`を満たす偽物を注入して
-// メッセージの送受信・リクエストIDの対応付け・エラー伝播だけを確認する
-// (TaskSheets/ADR-0012-web-worker-sync-io.mdの受け入れ条件: 「Workerに依存しない
-// 部分」としてのメッセージの組み立てのテスト)。
-
 import { describe, expect, it } from "vitest";
 import { WebSource, type WorkerLike } from "./web";
 import type { WorkerRequest, WorkerResponse } from "./web-protocol";
 import { StaleNodeRequestError } from "./stale-node-error";
 
-/** 送られたメッセージを記録し、テストから任意のタイミングで応答を返せる偽Worker。 */
 class FakeWorker implements WorkerLike {
   readonly sent: WorkerRequest[] = [];
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
@@ -163,7 +156,6 @@ describe("WebSource: リクエストIDの対応付け", () => {
 
     const bufferA = new ArrayBuffer(1);
     const bufferB = new ArrayBuffer(2);
-    // わざと2番目のリクエストへ先に応答する。
     worker.respond({ type: "readNode-result", id: secondReq.id, ok: true, buffer: bufferB, bytesRead: 2 });
     worker.respond({ type: "readNode-result", id: firstReq.id, ok: true, buffer: bufferA, bytesRead: 1 });
 

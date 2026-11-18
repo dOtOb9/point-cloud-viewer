@@ -1,23 +1,12 @@
-// WebSource(メインスレッド) <-> copc.worker.ts(Worker) 間のメッセージ定義。
-//
-// Workerの実体やpcv-wasm(wasm-bindgen)には一切依存しない、ただのデータ形と
-// それを組み立てる純粋関数だけをここに置く。こうすることで、Workerを実際に
-// 起動できないvitest環境でも「メッセージの組み立てが正しいか」をテストできる
-// (TaskSheets/ADR-0012-web-worker-sync-io.md の受け入れ条件)。
-//
-// 実際のWorker起動・pcv-wasm呼び出しは`copc.worker.ts`、メインスレッド側の
-// 送受信は`web.ts`が行う。
-
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { ConversionProgressDto, ConversionStageBreakdownDto } from "./conversion-dto";
 import type { ExtractFilter } from "./tools";
 import type { FilterRequest, ThinRequest } from "./thin-filter";
-import type { DtmRequest } from "./dtm"; // G1-T15
+import type { DtmRequest } from "./dtm";
 import type { RasterExportRequest, RasterPreviewInfo, RasterRequest } from "./raster";
 import type { SectionLineInput } from "./section-profile";
 import type { SectionLineRequest } from "./section-line";
 
-/** ローカルファイルかURLか。`WebSource.open(path)`の`path`から組み立てる。 */
 export type OpenSource = { kind: "file"; file: File } | { kind: "url"; url: string };
 
 export interface OpenRequest {
@@ -30,41 +19,17 @@ export interface ReadNodeRequest {
   type: "readNode";
   id: number;
   key: string;
-  /** ファイル切り替え時の不具合の修正: `open`時にWorkerが返した世代番号
-   *  （`OpenResponse.generation`）をそのまま送り返す。Worker側
-   *  （`copc.worker.ts`）は、これが今開いているファイルの世代と違えば
-   *  `ReadNodeStaleResponse`を返し、実際の読み出しは行わない
-   *  （`src/datasource/stale-node-error.ts`参照）。 */
   generation: number;
 }
 
-/**
- * M4-6b: 生LAS/LAZ→COPC変換の開始。`open`/`readNode`と違い、この1つの
- * リクエストに対して複数の応答が返る(`convert-progress`が何度も、最後に
- * `convert-done`か`convert-failed`のどちらか1回)。`WebSource`側は
- * `pending`マップ(1リクエスト1応答)とは別の経路でこれを扱う
- * (`web.ts`参照)。
- */
 export interface ConvertStartRequest {
   type: "convertStart";
   id: number;
   file: File;
   maxPointsPerNode: number;
-  /** M4-11(`TaskSheets/M4-import-and-conversion.md`): モバイルでは展開用
-   *  Workerの数を抑える(`decompress-partition.ts`の`decompressWorkerCountFor`
-   *  参照)。メインスレッド(`matchMedia`が使える)で判定した値をそのまま
-   *  渡す(WorkerにはタッチUIの判定手段=`matchMedia`が無いため、Worker内で
-   *  再判定できない)。 */
   isMobile: boolean;
 }
 
-/**
- * M4-14: 複数のLAS/LAZを選択したときの変換開始。`ConvertStartRequest`
- * (単一ファイル)と同じ役割だが、`files`が配列になる。応答(`convert-progress`/
- * `convert-done`/`convert-failed`)は単一ファイル版と共通の型を使う
- * (`copc.worker.ts`の`handleConvertMultiStart`が、複数ファイルをまたいで
- * 1本のWasmConverterへ流し込む経路で処理する)。
- */
 export interface ConvertMultiStartRequest {
   type: "convertMultiStart";
   id: number;
@@ -73,21 +38,8 @@ export interface ConvertMultiStartRequest {
   isMobile: boolean;
 }
 
-/**
- * The formats the Web point-file converter (`WasmPointFileConverter`) reads. "lasLaz" appears only in a mixed
- * merge (M4-17): a selection of LAS/LAZ only goes to the LAS route (`convertMultiStart`) instead.
- * The names are those of `detectSourceFormatByName` (`source-format.ts`).
- */
 export type PointFileFormat = "lasLaz" | "pcd" | "ply" | "e57";
 
-/**
- * M4-9 / R7 / M4-17: start converting raw PCD / PLY / E57 files (one file, or several files of any format
- * including LAS/LAZ) to one COPC. Same role as `ConvertStartRequest` (LAS/LAZ), but the Worker handles it in
- * `handlePointFileConvertStart` with `WasmPointFileConverter`. It has no parallel decompression of LAZ (M4-7),
- * so the path is a plain batch loop. `formats[i]` is the format of `files[i]`, and the files are already sorted
- * by name (`WebSource.startPointFileConversion`). The responses (`convert-progress` / `convert-done` /
- * `convert-failed`) are the same types as for LAS/LAZ.
- */
 export interface PointFileConvertStartRequest {
   type: "pointFileConvertStart";
   id: number;
@@ -97,33 +49,22 @@ export interface PointFileConvertStartRequest {
   isMobile: boolean;
 }
 
-/**
- * 進行中の変換のキャンセルを要求する。応答は無い(fire-and-forget)。
- * Workerが読み込みバッチの合間にこのメッセージを処理できたときだけ
- * 効く(`crates/pcv-wasm/src/convert.rs`のドキュメント参照。後処理段階
- * (finish)の間はこのメッセージ自体は届くが、反映は後処理が終わった後になる)。
- */
 export interface ConvertCancelRequest {
   type: "convertCancel";
   id: number;
 }
 
-/** L1-B: `cloudId`のファイルを閉じて、Worker側のリソース(wasmのリーダー)を手放す。 */
 export interface CloseRequest {
   type: "close";
   id: number;
   cloudId: number;
 }
 
-// --- G2: cross-section view ---
-
-/** Read the whole opened file (`cloudId`) as `(s, z)` points of a cross section. Answered by `SectionProfileResponse`. */
 export interface SectionProfileRequest {
   type: "sectionProfile";
   id: number;
   cloudId: number;
   line: SectionLineInput;
-  /** Largest number of points; 0 = the default. */
   cap: number;
 }
 
@@ -131,7 +72,6 @@ export interface SectionProfileResponse {
   type: "section-profile-result";
   id: number;
   ok: true;
-  /** Transferred, not copied. Layout: `section-profile.ts`. */
   buffer: ArrayBuffer;
 }
 
@@ -154,7 +94,7 @@ export type WorkerRequest =
   | ExtractStartRequest
   | ThinStartRequest
   | FilterStartRequest
-  | DtmStartRequest // G1-T15
+  | DtmStartRequest
   | ToolMergeStartRequest
   | OpenRequest
   | ReadNodeRequest
@@ -170,11 +110,7 @@ export interface OpenResponse {
   ok: true;
   info: CloudInfoDto;
   nodes: HierarchyNodeDto[];
-  /** そのopen呼び出し時点までにWorkerが読んだ合計バイト数(統計・受け入れ確認用)。 */
   bytesRead: number;
-  /** ファイル切り替え時の不具合の修正: このファイルに割り当てられた世代番号
-   *  （`copc.worker.ts`の`openGeneration`）。`WebSource`が覚えておき、以後の
-   *  `readNode`リクエストに含めて送り返す。 */
   generation: number;
 }
 
@@ -188,18 +124,10 @@ export interface ReadNodeResponse {
   type: "readNode-result";
   id: number;
   ok: true;
-  /** `postMessage`のtransferable listに載せてコピーせず渡す。 */
   buffer: ArrayBuffer;
   bytesRead: number;
 }
 
-/**
- * ファイル切り替え時の不具合の修正: `ReadNodeRequest.generation`が、Worker側が
- * 今開いているファイルの世代と違った場合の応答。`error`（本当の失敗）とは区別し、
- * `WebSource`はこれを`StaleNodeRequestError`に変換する
- * （`src/datasource/stale-node-error.ts`参照。`NodeLoader`はこれを
- * エラーバナーに出さず黙って捨てる）。
- */
 export interface ReadNodeStaleResponse {
   type: "readNode-stale";
   id: number;
@@ -212,21 +140,12 @@ export interface ErrorResponse {
   message: string;
 }
 
-/** M4-6b: 読み込み段階の進捗。デスクトップ版(M4-3)と同じ`ConversionProgressDto`
- *  の形をそのまま使い、見せ方を揃える(`src/state/useCopcViewer.ts`参照)。 */
 export interface ConvertProgressResponse {
   type: "convert-progress";
   id: number;
   progress: ConversionProgressDto;
 }
 
-/** M4-6b: 変換完了。`outputName`はOPFS上の出力ファイル名
- *  (`opfs.ts`の`outputFileNameFor`が決めたもの)、`suggestedFileName`は
- *  ダウンロード時に提案するファイル名(元のファイル名から組み立てる。
- *  `outputName`はハッシュ由来で人が読める名前ではないため)。
- *  `stageTimings`はM4-12(`TaskSheets/M4-import-and-conversion.md`)で追加した、
- *  段階ごとの所要時間(`crates/pcv-wasm/src/dto.rs`の`FinishResultDto.
- *  stage_timings`をそのまま運ぶ。Rust側のフィールド名のままsnake_case)。 */
 export interface ConvertDoneResponse {
   type: "convert-done";
   id: number;
@@ -234,12 +153,9 @@ export interface ConvertDoneResponse {
   suggestedFileName: string;
   pointCount: number;
   stageTimings: ConversionStageBreakdownDto;
-  /** L2-C: warnings for the error log (e.g. files without a CRS were let through). Omitted or empty if none. */
   warnings?: string[];
 }
 
-/** M4-6b: 変換の失敗・キャンセル。デスクトップ版のonConversionFailedと
- *  同じ形(message, cancelled)。 */
 export interface ConvertFailedResponse {
   type: "convert-failed";
   id: number;
@@ -284,11 +200,6 @@ export function buildReadNodeRequest(id: number, key: string, generation: number
   return { type: "readNode", id, key, generation };
 }
 
-/**
- * `WebSource.open(path)`の`path`を`OpenSource`の元になる種別へ分類する。
- * ローカルファイルは文字列として渡せないので、`registerFile`が返した
- * `"file:<連番>"`というキーで表す。それ以外は http(s) URLとして扱う。
- */
 export function classifyOpenPath(path: string): { kind: "file"; fileKey: string } | { kind: "url"; url: string } {
   const FILE_KEY_PREFIX = "file:";
   if (path.startsWith(FILE_KEY_PREFIX)) {
@@ -301,8 +212,6 @@ export function makeFileKey(sequence: number): string {
   return `file:${sequence}`;
 }
 
-/** `copc-writer`の既定(`CopcWriterParams::default`)と揃える。デスクトップ版
- *  (`src-tauri/src/conversion.rs`)も同じ値を使っている。 */
 export const DEFAULT_MAX_POINTS_PER_NODE = 100_000;
 
 export function buildConvertStartRequest(
@@ -337,24 +246,14 @@ export function buildPointFileConvertStartRequest(
   return { type: "pointFileConvertStart", id, files, formats, maxPointsPerNode, isMobile };
 }
 
-// --- L2-C: point-cloud tools (extraction, COPC merge) ---
-//
-// These use response types (tool-*) separate from conversion (convert-*). Conversion done / progress
-// is received by an app-wide listener (`useCopcViewer`) that "opens the conversion result", so if a
-// tool result arrived with the same type it would be opened as a new file on its own.
-// `WebSource` routes tool responses by request id to the Promise of the function that was called.
-
-/** Creates a new COPC (on OPFS) from only the points of the open COPC (`file`) that match `filter`. */
 export interface ExtractStartRequest {
   type: "extractStart";
   id: number;
   file: File;
   filter: ExtractFilter;
-  /** Name shown in the usage breakdown (settings). */
   label: string;
 }
 
-/** Merges several open COPC files into one COPC (on OPFS). */
 export interface ToolMergeStartRequest {
   type: "toolMergeStart";
   id: number;
@@ -373,11 +272,9 @@ export interface ToolProgressResponse {
 export interface ToolDoneResponse {
   type: "tool-done";
   id: number;
-  /** Output name on OPFS. Turn it into a `File` with `opfs.getConvertedFile`. */
   outputName: string;
   pointCount: number;
   warnings: string[];
-  /** G1-T15: only the DTM tool sets it. */
   dtm?: DtmDoneFiles;
 }
 
@@ -397,20 +294,14 @@ export function buildExtractStartRequest(
   return { type: "extractStart", id, file, filter, label };
 }
 
-// --- G3: thinning and outlier filters ---
-// Progress, result and failure use the same `tool-*` responses as extraction.
-
-/** Thins the open COPC (`file`) into a new COPC (on OPFS). Lengths in `request` are in the file's unit. */
 export interface ThinStartRequest {
   type: "thinStart";
   id: number;
   file: File;
   request: ThinRequest;
-  /** Name shown in the usage breakdown (settings). */
   label: string;
 }
 
-/** Removes outliers (ROR or SOR) from the open COPC (`file`) into a new COPC (on OPFS). */
 export interface FilterStartRequest {
   type: "filterStart";
   id: number;
@@ -431,18 +322,12 @@ export function buildFilterStartRequest(
 ): FilterStartRequest {
   return { type: "filterStart", id, file, request, label };
 }
-// ---
 
-// --- G1: DTM ---
-// Progress, result and failure use the `tool-*` responses; `tool-done` carries the DTM files in `dtm`.
-
-/** Classifies the ground of the open COPC (`file`) into a new COPC (on OPFS) and makes the DTM files. */
 export interface DtmStartRequest {
   type: "dtmStart";
   id: number;
   file: File;
   request: DtmRequest;
-  /** Name shown in the usage breakdown (settings). */
   label: string;
 }
 
@@ -450,7 +335,6 @@ export function buildDtmStartRequest(id: number, file: File, request: DtmRequest
   return { type: "dtmStart", id, file, request, label };
 }
 
-/** The DTM part of `tool-done`. The byte arrays are transferred, not copied; `null` when that file was not asked for. */
 export interface DtmDoneFiles {
   geotiff: Uint8Array | null;
   landxml: Uint8Array | null;
@@ -461,11 +345,7 @@ export interface DtmDoneFiles {
   tinTriangles: number;
   groundPoints: number;
 }
-// ---
 
-// --- G1: rasterize ---
-
-/** Export: rasterizes the open COPC (`file`) into a GeoTIFF. Progress and failure use `tool-progress` / `tool-failed`; the result is `raster-done`. */
 export interface RasterStartRequest {
   type: "rasterStart";
   id: number;
@@ -480,14 +360,12 @@ export function buildRasterStartRequest(id: number, file: File, options: RasterE
 export interface RasterDoneResponse {
   type: "raster-done";
   id: number;
-  /** Transferred, not copied. */
   geotiff: Uint8Array;
   width: number;
   height: number;
   warnings: string[];
 }
 
-/** Preview: reads the upper levels of `file` and keeps them in the Worker under `id` until `rasterPreviewClose`. Answered by `RasterPreviewOpenResponse`. */
 export interface RasterPreviewOpenRequest {
   type: "rasterPreviewOpen";
   id: number;
@@ -512,7 +390,6 @@ export interface RasterPreviewOpenResponse {
   info: RasterPreviewInfo;
 }
 
-/** Preview: draws a picture from the kept points `sessionId`. Answered by `RasterPreviewImageResponse`. */
 export interface RasterPreviewRenderRequest {
   type: "rasterPreviewRender";
   id: number;
@@ -523,11 +400,9 @@ export interface RasterPreviewRenderRequest {
 export interface RasterPreviewImageResponse {
   type: "raster-preview-image";
   id: number;
-  /** Transferred, not copied. Layout: `decodePreviewImage` in raster.ts. */
   buffer: ArrayBuffer;
 }
 
-/** Preview: frees the kept points. Answered by `RasterPreviewClosedResponse`. */
 export interface RasterPreviewCloseRequest {
   type: "rasterPreviewClose";
   id: number;
@@ -538,7 +413,6 @@ export interface RasterPreviewClosedResponse {
   type: "raster-preview-closed";
   id: number;
 }
-// ---
 
 export function buildToolMergeStartRequest(
   id: number,
@@ -549,13 +423,6 @@ export function buildToolMergeStartRequest(
   return { type: "toolMergeStart", id, files, isMobile, label };
 }
 
-// --- G2: section line ---
-//
-// The ground line of a cross section, computed in small steps by `WasmSectionLine`. Own response types, like the
-// tools above, so an app-wide listener never mistakes them for a conversion or a tool that makes a layer.
-// Cancel with `ConvertCancelRequest` (the Worker checks the flag between steps).
-
-/** Compute the section line from the open source layer `cloudId`. Answered by progress responses and one done/failed. */
 export interface SectionLineStartRequest {
   type: "sectionLineStart";
   id: number;
@@ -567,14 +434,12 @@ export interface SectionLineStartRequest {
 export interface SectionLineProgressResponse {
   type: "section-line-progress";
   id: number;
-  /** 0 to 1. */
   fraction: number;
 }
 
 export interface SectionLineDoneResponse {
   type: "section-line-done";
   id: number;
-  /** Transferred, not copied. Layout: `section-line.ts`. */
   buffer: ArrayBuffer;
 }
 

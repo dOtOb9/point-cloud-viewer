@@ -1,19 +1,3 @@
-// DataSourceのWeb版実装。COPCの読込そのものはWeb Worker(`copc.worker.ts`)の中で
-// pcv-wasm(pcv-coreのwasm-bindgenラッパー)を使って行う。このファイル自身は
-// Tauriのnpmパッケージは一切importしない(規約2はtauri.ts専用の制約だが、
-// Web版のバンドルにTauriのAPIを引き込まないことも受け入れ条件になっている)。
-// 設計の経緯は `TaskSheets/ADR-0012-web-worker-sync-io.md` を参照。
-//
-// ## `open(path)`の`path`の意味
-//
-// `DataSource.open(path: string)`のシグネチャは変えていないが、Web版には
-// 「ファイルパス」という概念がない。かわりに:
-// - ローカルファイル: 先に`registerFile(file)`を呼び、返ってきたキー
-//   (`"file:<連番>"`)を`open()`に渡す。ファイル選択UIがこの2段階を行う。
-// - URL: `open()`にhttp(s)のURLをそのまま渡す。
-//
-// 分類は`web-protocol.ts`の`classifyOpenPath`(純粋関数、テスト対象)が行う。
-
 import type { DataSource, OpenedCloud, PrepareOptions, PrepareOutcome } from "./DataSource";
 import { isCopcFile } from "./copc-header";
 import { extensionOfFileName } from "./file-name";
@@ -41,7 +25,7 @@ import {
   buildConvertStartRequest,
   buildExtractStartRequest,
   buildFilterStartRequest,
-  buildDtmStartRequest, // G1-T15
+  buildDtmStartRequest,
   buildThinStartRequest,
   buildRasterPreviewCloseRequest,
   buildRasterPreviewOpenRequest,
@@ -56,7 +40,7 @@ import {
   buildSectionProfileRequest,
   classifyOpenPath,
   makeFileKey,
-  type DtmDoneFiles, // G1-T15
+  type DtmDoneFiles,
   type PointFileFormat,
   type RasterDoneResponse,
   type WorkerRequest,
@@ -65,7 +49,7 @@ import {
 import { StaleNodeRequestError } from "./stale-node-error";
 import type { ExtractFilter, ToolOptions, ToolProgress, ToolResult } from "./tools";
 import type { FilterRequest, ThinRequest } from "./thin-filter";
-import type { DtmFile, DtmRequest, DtmResult } from "./dtm"; // G1-T15
+import type { DtmFile, DtmRequest, DtmResult } from "./dtm";
 import {
   decodePreviewImage,
   type RasterExportRequest,
@@ -79,15 +63,13 @@ import { decodeSectionLine, type SectionGroundLine, type SectionLineRequest } fr
 
 type InsufficientSpaceWeb = Extract<ConversionOutcome, { kind: "insufficientSpaceWeb" }>;
 
-/** What the Worker's `tool-done` carries (`ToolDoneResponse` in web-protocol.ts, without the type and id). */
 interface ToolDone {
   outputName: string;
   pointCount: number;
   warnings: string[];
-  dtm?: DtmDoneFiles; // G1-T15
+  dtm?: DtmDoneFiles;
 }
 
-/** How the free-space check gets the point count of each raw point-file format (from its header). */
 const POINT_COUNT_ESTIMATORS: Record<PointFileFormat, (file: File) => Promise<number | null>> = {
   lasLaz: estimatePointCountForLasFile,
   pcd: estimatePointCountForPcdFile,
@@ -95,21 +77,6 @@ const POINT_COUNT_ESTIMATORS: Record<PointFileFormat, (file: File) => Promise<nu
   e57: estimatePointCountForE57File,
 };
 
-/**
- * M4-9追記(`TaskSheets/M4-import-and-conversion.md`): 容量の事前確認。
- * `pointCountEstimator`(形式ごとのヘッダー読み取り、`point-count-estimate.ts`)
- * で点数が読めればそれを根拠に見積もり、読めなければファイルサイズからの
- * フォールバックに倒す(壊れたヘッダー等でも変換を試みる機会は残す。安全側に
- * 「大きめに見積もって弾く」方向のフォールバックなので、誤って変換を
- * 始めてしまう心配は無い)。足りていれば`null`、足りなければ
- * `ConversionOutcome`の`insufficientSpaceWeb`を返す。
- *
- * M4-6追記: 見積もりの前に、まだ永続化されていなければ`persist()`を求める
- * (受け入れ条件「変換の前に永続的な保存を求める」)。ブラウザによっては
- * 永続化すると割り当てられる上限自体が変わる(`opfs.ts`の
- * `ensurePersistentStorage`のドキュメント参照)ため、`estimateQuota`は
- * この後で(やり直す形で)呼ぶ。
- */
 async function checkInsufficientSpace(
   file: File,
   pointCountEstimator: (file: File) => Promise<number | null>,
@@ -122,10 +89,6 @@ async function checkInsufficientSpace(
   const estimate = await opfs.estimateQuota();
   if (opfs.hasEnoughQuota(estimate, requiredBytes)) return null;
 
-  // 空き容量が足りない。所有者が「空けるにはどうすればいいか」を画面で
-  // 判断できるよう、OPFSの使用量の内訳(消せるもの)と永続化の状態を
-  // 併せて返す(`useCopcViewer.ts`が`opfs.describeInsufficientSpaceWeb`で
-  // 文言化する。受け入れ条件「容量不足の表示が空ける方法を示す」)。
   const breakdown = await opfs.getOpfsUsageBreakdown();
   const persisted = await opfs.isPersisted();
   return {
@@ -138,16 +101,6 @@ async function checkInsufficientSpace(
   };
 }
 
-/**
- * M4-14: 複数ファイル版の`checkInsufficientSpace`。各ファイルの点数が
- * わかれば合計して見積もり、1つでも読めなければ(壊れたヘッダー等)安全側に
- * 倒してファイルサイズの合計から見積もる(単一ファイル版と同じ考え方。
- * 一部だけ点数で・残りをファイルサイズで見積もると係数の意味が食い違うため、
- * 「全部わかるか、全部わからないか」の二択にしている)。
- *
- * M4-17: `pointCountEstimator` is given per file because a mixed selection has files of several formats
- * (LAS merge: always the LAS estimator; point merge: the estimator of each file's own format).
- */
 async function checkInsufficientSpaceMulti(
   files: File[],
   pointCountEstimator: (file: File) => Promise<number | null>,
@@ -174,11 +127,6 @@ async function checkInsufficientSpaceMulti(
   };
 }
 
-/**
- * `Worker`から実際に使うメソッドだけを切り出した最小限のインターフェース。
- * テストでは本物の`Worker`(wasmやWorkerスレッドを必要とする)の代わりに、
- * これを満たす偽物を注入できる(`WebSource`のコンストラクタ引数参照)。
- */
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
@@ -186,7 +134,6 @@ export interface WorkerLike {
 }
 
 function createRealWorker(): WorkerLike {
-  // `type: "module"`でないとWorker内でESM importが使えない(pcv-wasmの生成物がESM)。
   return new Worker(new URL("./copc.worker.ts", import.meta.url), {
     type: "module",
   });
@@ -194,7 +141,6 @@ function createRealWorker(): WorkerLike {
 
 type ProgressCallback = (progress: ConversionProgress) => void;
 
-/** How a conversion ended, as the Worker says it (`convert-done` / `convert-failed`). */
 type ConvertEnd =
   | {
       kind: "done";
@@ -206,7 +152,6 @@ type ConvertEnd =
     }
   | { kind: "failed"; message: string; cancelled: boolean };
 
-/** What a `start*` method returns: a ready/failed outcome at once, or a running conversion with its end promise. */
 type ConversionStarted = { kind: "converting"; end: Promise<ConvertEnd> };
 type WebStart = Exclude<ConversionOutcome, { kind: "converting" }> | ConversionStarted;
 
@@ -223,42 +168,23 @@ export class WebSource implements DataSource {
   private nextFileSequence = 0;
   private lastBytesRead = 0;
 
-  // M4-6b: waiters of running conversions, by request id. Unlike open/readNode (one request, one answer, the
-  // `pending` map), one conversion gets several answers: `convert-progress` many times, then `convert-done` or
-  // `convert-failed` once (see `handleResponse`).
   private readonly convertPending = new Map<
     number,
     { resolve: (end: ConvertEnd) => void; onProgress: ProgressCallback }
   >();
-  /** Request id of the running conversion or tool (null if none). `cancelConversion` sends the cancel to it.
-   *  One Worker runs one job at a time (ADR-0012: "one Worker first"). */
   private activeConvertId: number | null = null;
 
-  /**
-   * `createWorker`はテストのために差し替えられるようにしてある
-   * (通常の利用では省略し、既定の`createRealWorker`が本物のWorkerを起動する)。
-   */
   constructor(createWorker: () => WorkerLike = createRealWorker) {
     this.worker = createWorker();
     this.worker.onmessage = (event) => this.handleResponse(event.data);
   }
 
-  /**
-   * ドラッグ&ドロップ/`<input type="file">`で得た`File`を登録し、
-   * `open()`にそのまま渡せるキーを返す。
-   */
   registerFile(file: File): string {
     const key = makeFileKey(this.nextFileSequence++);
     this.localFiles.set(key, file);
     return key;
   }
 
-  /**
-   * `DataSource.prepareToOpen` for the Web. One `File`: a COPC opens as it is, anything else goes to the
-   * conversion route of its format. Several `File`s: the merge route. When a conversion starts, this waits for
-   * the Worker's `convert-done` / `convert-failed`, reads the output back from OPFS and registers it.
-   * `tempDir` is not used (OPFS has no temp directory setting).
-   */
   async prepareToOpen(items: string[] | File[], options: PrepareOptions): Promise<PrepareOutcome> {
     const files: File[] = [];
     for (const item of items) {
@@ -270,16 +196,9 @@ export class WebSource implements DataSource {
     const isMulti = files.length > 1;
     const onProgress: ProgressCallback = (progress) => options.onProgress?.(progress);
 
-    // M4-6b: decide by the header, not the extension (`copc-header.ts`, same idea as Rust
-    // `copc_detect.rs`). A COPC opens as it is; raw LAS/LAZ is converted in OPFS on the Web too.
     if (!isMulti && (await isCopcFile(first))) {
       return { kind: "ready", path: this.registerFile(first), conversion: null };
     }
-    // M4-9: decide the format first, then the conversion route. (A real-device bug: every non-COPC
-    // file used to go to the LAS/LAZ route, so PCD was wrongly judged "not enough space".)
-    // PCD, PLY and E57 share one route (R7); everything else goes to the LAS/LAZ route.
-    // M4-17: several files take the LAS merge when all are LAS/LAZ (it keeps every attribute), and the point
-    // merge when at least one is PLY/PCD/E57 (`needsPointMerge`).
     const format = detectSourceFormatByName(first.name);
     const names = files.map((f) => f.name);
     const usesPointFileRoute = isMulti
@@ -296,9 +215,6 @@ export class WebSource implements DataSource {
     const end = await started.end;
     if (end.kind === "failed") return toConversionFailureOutcome(end.message, end.cancelled);
 
-    // Read the OPFS output back as a `File` and open it through the same route as a local file
-    // (`registerFile` -> `open`). The download URL is made here too (OPFS content cannot be fetched from outside
-    // the app); the caller revokes it if the layer cannot be opened.
     const file = await opfs.getConvertedFile(end.outputName);
     if (!file) {
       const text = "変換結果をOPFSから読み出せませんでした";
@@ -310,7 +226,6 @@ export class WebSource implements DataSource {
       conversion: {
         outputName: end.suggestedFileName,
         platform: "web",
-        // M4-14: several files have no single extension, so use the same wording as the desktop build.
         sourceFormat: end.stageTimings.inputFileCount > 1 ? multiSourceFormatLabel(names) : extensionOfFileName(first.name),
         stageTimings: end.stageTimings,
         warnings: end.warnings,
@@ -342,7 +257,6 @@ export class WebSource implements DataSource {
     }
     this.lastBytesRead = response.bytesRead;
     return {
-      // Workerが割り当てた世代番号がそのままcloudId。readNode/closeに渡す。
       cloudId: response.generation,
       info: toCloudInfo(response.info),
       nodes: response.nodes.map(toHierarchyNodeInfo),
@@ -353,8 +267,6 @@ export class WebSource implements DataSource {
     const id = this.nextRequestId++;
     const response = await this.send(buildReadNodeRequest(id, key, cloudId));
     if (response.type === "readNode-stale") {
-      // Worker側が「閉じた／知らないcloudId」と判定した。エラーではなく、呼び出し側（NodeLoader）が黙って捨てるべき
-      // 結果なので、専用の型で伝える（stale-node-error.ts参照）。
       throw new StaleNodeRequestError(key);
     }
     if (response.type !== "readNode-result") {
@@ -364,8 +276,6 @@ export class WebSource implements DataSource {
     return response.buffer;
   }
 
-  // --- G2: cross-section view ---
-  /** Reads the points of an open cross-section layer (`cloudId` from `open()`) as `(s, z)` points, at most `cap` (0 = default). */
   async readSectionProfile(cloudId: number, line: SectionLineInput, cap: number): Promise<SectionPoints> {
     const response = await this.send(buildSectionProfileRequest(this.nextRequestId++, cloudId, line, cap));
     if (response.type !== "section-profile-result") {
@@ -374,8 +284,6 @@ export class WebSource implements DataSource {
     return decodeSectionProfile(response.buffer);
   }
 
-  // --- G2: section line ---
-  /** Waiters per section-line request id (own responses, see `web-protocol.ts`). */
   private readonly sectionLinePending = new Map<
     number,
     {
@@ -385,10 +293,6 @@ export class WebSource implements DataSource {
     }
   >();
 
-  /**
-   * Computes the ground line of a cross section from the SOURCE layer (`cloudId`). Progress is reported as per mille
-   * (`totalPoints` is 1000); `cancelConversion()` stops it (the error text is "キャンセルされました").
-   */
   async computeSectionLine(
     cloudId: number,
     line: SectionLineInput,
@@ -415,27 +319,10 @@ export class WebSource implements DataSource {
     }
   }
 
-  /**
-   * 直近のopen/readNodeまでにWorkerが実際に読んだ合計バイト数。
-   * 「ファイル全体を読んでいないこと」をブラウザのdevtoolsやUIから確認する
-   * 手がかりとして公開している(DataSourceインターフェースの一部ではない)。
-   */
   getLastBytesRead(): number {
     return this.lastBytesRead;
   }
 
-  /**
-   * M4-6b: start converting a raw LAS/LAZ to COPC. `prepareToOpen` calls this only after `isCopcFile`
-   * (`copc-header.ts`) said the file is not a COPC yet (same division of work as the desktop
-   * `start_las_conversion`).
-   *
-   * Returns the same branches as the desktop build (`src-tauri/src/conversion.rs`; `alreadyCopc` is decided
-   * before this call), plus `opfsUnavailable` (a browser without OPFS), which only the Web build has.
-   * `converting` carries `end`, the promise of the Worker's final answer.
-   *
-   * `isMobile` (M4-11) is decided on the main thread and passed in, because `matchMedia` is not available in
-   * the Worker.
-   */
   async startConversion(file: File, isMobile: boolean, onProgress: ProgressCallback): Promise<WebStart> {
     const fingerprint = { name: file.name, size: file.size, lastModified: file.lastModified };
 
@@ -456,14 +343,6 @@ export class WebSource implements DataSource {
     return this.beginConversion(id, buildConvertStartRequest(id, file, isMobile), onProgress);
   }
 
-  /**
-   * M4-9 / R7 / M4-17: start converting raw PCD, PLY or E57 files to COPC. One file is the single-file
-   * conversion; several files (at least one of them PLY/PCD/E57, any LAS/LAZ mixed in) are merged into one
-   * COPC by the point merge. Same division of work as `startConversion` (LAS/LAZ), but the free-space check
-   * uses the point count from each file header (PCD `POINTS`, PLY `element vertex`, E57 `recordCount` in the
-   * XML, LAS header) instead of the file size times 11, which comes from compressed LAZ and is far off for
-   * uncompressed formats (a real-device bug). The formats come from `detectSourceFormatByName`.
-   */
   async startPointFileConversion(files: File[], isMobile: boolean, onProgress: ProgressCallback): Promise<WebStart> {
     const isMulti = files.length > 1;
     const fingerprints = files.map((f) => ({ name: f.name, size: f.size, lastModified: f.lastModified }));
@@ -480,14 +359,11 @@ export class WebSource implements DataSource {
       return { kind: "opfsUnavailable" };
     }
 
-    // Files are read in name order, so the output does not depend on the selection order (the same rule
-    // as the desktop build and the cache key, `cacheKeyForMulti`).
     const sorted = [...files].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const formats: PointFileFormat[] = [];
     const formatOf = new Map<File, PointFileFormat>();
     for (const file of sorted) {
       const format = detectSourceFormatByName(file.name);
-      // `prepareToOpen`'s caller refuses unknown extensions first; this is the safety net.
       if (format === "unknown") throw new Error(`対応していない形式のファイルです: ${file.name}`);
       formats.push(format);
       formatOf.set(file, format);
@@ -503,11 +379,6 @@ export class WebSource implements DataSource {
     return this.beginConversion(id, buildPointFileConvertStartRequest(id, sorted, formats, isMobile), onProgress);
   }
 
-  /**
-   * M4-14: start merging several LAS/LAZ files into one COPC. Same division of work as `startConversion`,
-   * but there is no `alreadyCopc` check: `prepareToOpen` sends one file to the single-file route, so there
-   * are always two or more files here.
-   */
   async startMultiConversion(files: File[], isMobile: boolean, onProgress: ProgressCallback): Promise<WebStart> {
     const fingerprints = files.map((f) => ({
       name: f.name,
@@ -532,10 +403,6 @@ export class WebSource implements DataSource {
     return this.beginConversion(id, buildConvertMultiStartRequest(id, files, isMobile), onProgress);
   }
 
-  /**
-   * Registers the waiter for `id` BEFORE the request is posted (so no answer can be missed), then posts it.
-   * `end` settles when the Worker answers `convert-done` or `convert-failed` for this id.
-   */
   private beginConversion(id: number, request: WorkerRequest, onProgress: ProgressCallback): ConversionStarted {
     const end = new Promise<ConvertEnd>((resolve) => {
       this.convertPending.set(id, { resolve, onProgress });
@@ -545,10 +412,6 @@ export class WebSource implements DataSource {
     return { kind: "converting", end };
   }
 
-  // --- L2-C: point-cloud tools (extraction, merge) ---
-
-  /** Waiters per tool request id. Kept separate from conversion (`convertPending`): a tool result is
-   *  not a conversion result (no breakdown, no download link; see `web-protocol.ts`). */
   private readonly toolPending = new Map<
     number,
     {
@@ -558,7 +421,6 @@ export class WebSource implements DataSource {
     }
   >();
 
-  /** Looks up the registered `File` for a key ("file:N") passed to `open()`. */
   private fileForToolInput(path: string): File {
     const classified = classifyOpenPath(path);
     const file = classified.kind === "file" ? this.localFiles.get(classified.fileKey) : undefined;
@@ -568,7 +430,6 @@ export class WebSource implements DataSource {
     return file;
   }
 
-  /** Sends a tool request and waits for `tool-done` / `tool-failed`. The output is registered and returned as a key. */
   private async runTool(
     id: number,
     request: WorkerRequest,
@@ -588,19 +449,13 @@ export class WebSource implements DataSource {
         outputPath: this.registerFile(file),
         pointCount: done.pointCount,
         warnings: done.warnings,
-        dtm: done.dtm, // G1-T15
+        dtm: done.dtm,
       };
     } finally {
       if (this.activeConvertId === id) this.activeConvertId = null;
     }
   }
 
-  /**
-   * Creates a new COPC (on OPFS) from only the points of an open COPC (`path` = the key passed to `open()`)
-   * that match `filter`. Passing the returned `outputPath` (a registered key) to `open()` makes a new layer.
-   * With zero points it throws (the text is "選んだ範囲に点がありません", shown on screen as is). Cancel with `cancelConversion()`
-   * (the error text is "キャンセルされました").
-   */
   async extractToCopc(
     path: string,
     filter: ExtractFilter,
@@ -610,7 +465,6 @@ export class WebSource implements DataSource {
     if (!(await opfs.isOpfsAvailable())) {
       throw new Error("このブラウザでは点群ツールを使えません(OPFSが使えません)");
     }
-    // The output is at most as large as the source, so estimate space from the source point count (safe side).
     const insufficient = await checkInsufficientSpace(file, estimatePointCountForLasFile);
     if (insufficient) throw new Error("空き容量が足りないため、点群ツールを実行できません");
     const id = this.nextRequestId++;
@@ -621,26 +475,18 @@ export class WebSource implements DataSource {
     );
   }
 
-  // --- G3: thinning and outlier filters ---
-
-  /**
-   * Thins an open COPC (`path` = the key passed to `open()`) into a new COPC on OPFS. `request` lengths are in the
-   * file's unit. Zero kept points throws ("残る点がありません"). Cancel with `cancelConversion()`.
-   */
   async thinCopc(path: string, request: ThinRequest, options?: ToolOptions): Promise<ToolResult> {
     const file = await this.checkedToolInput(path);
     const id = this.nextRequestId++;
     return await this.runTool(id, buildThinStartRequest(id, file, request, `間引き: ${file.name}`), options);
   }
 
-  /** Removes outliers (ROR or SOR) from an open COPC into a new COPC on OPFS. SOR reads the file twice. Same errors as `thinCopc`. */
   async filterCopc(path: string, request: FilterRequest, options?: ToolOptions): Promise<ToolResult> {
     const file = await this.checkedToolInput(path);
     const id = this.nextRequestId++;
     return await this.runTool(id, buildFilterStartRequest(id, file, request, `フィルタ: ${file.name}`), options);
   }
 
-  /** The input file of a thinning / filter run, after the OPFS and free-space checks (the output is at most as large as the source). */
   private async checkedToolInput(path: string): Promise<File> {
     const file = this.fileForToolInput(path);
     if (!(await opfs.isOpfsAvailable())) {
@@ -650,15 +496,7 @@ export class WebSource implements DataSource {
     if (insufficient) throw new Error("空き容量が足りないため、点群ツールを実行できません");
     return file;
   }
-  // ---
 
-  // --- G1: DTM ---
-
-  /**
-   * Classifies the ground of an open COPC (`path` = the key passed to `open()`) with CSF and makes a DTM from it: a new
-   * COPC on OPFS (`outputPath`, a registered key) and the DTM files as downloads. `request` lengths are in the file's
-   * unit. Progress is per mille. Cancel with `cancelConversion()`. Zero ground points throws.
-   */
   async dtmCopc(path: string, request: DtmRequest, options?: ToolOptions): Promise<DtmResult> {
     const file = await this.checkedToolInput(path);
     const id = this.nextRequestId++;
@@ -690,11 +528,7 @@ export class WebSource implements DataSource {
       },
     };
   }
-  // ---
 
-  // --- G1: rasterize ---
-
-  /** Waiters of the export (`raster-done`). Progress and failure use the `tool-*` messages with the same id. */
   private readonly rasterPending = new Map<
     number,
     {
@@ -704,10 +538,6 @@ export class WebSource implements DataSource {
     }
   >();
 
-  /**
-   * Reads the upper levels of an open COPC (`path` = the key passed to `open()`) and keeps them in the Worker while
-   * the Rasterize window is open. Close with `closeRasterPreview`.
-   */
   async openRasterPreview(path: string): Promise<RasterPreviewSession> {
     const file = this.fileForToolInput(path);
     const id = this.nextRequestId++;
@@ -718,7 +548,6 @@ export class WebSource implements DataSource {
     return { id, info: response.info };
   }
 
-  /** Draws the preview for `request` from the kept points (no file is read). */
   async renderRasterPreview(sessionId: number, request: RasterRequest): Promise<RasterPreviewImage> {
     const response = await this.send(buildRasterPreviewRenderRequest(this.nextRequestId++, sessionId, request));
     if (response.type !== "raster-preview-image") {
@@ -727,7 +556,6 @@ export class WebSource implements DataSource {
     return decodePreviewImage(response.buffer);
   }
 
-  /** Frees the kept points. Failures are only logged: the window is closing anyway. */
   async closeRasterPreview(sessionId: number): Promise<void> {
     try {
       await this.send(buildRasterPreviewCloseRequest(this.nextRequestId++, sessionId));
@@ -736,10 +564,6 @@ export class WebSource implements DataSource {
     }
   }
 
-  /**
-   * Exports the GeoTIFF of an open COPC (`path` = the key passed to `open()`): every point is read. The file is
-   * returned as a download (`download`). Cancel with `cancelConversion()`.
-   */
   async exportRasterGeoTiff(path: string, request: RasterExportRequest, options?: ToolOptions): Promise<RasterExportResult> {
     const file = this.fileForToolInput(path);
     const id = this.nextRequestId++;
@@ -762,13 +586,7 @@ export class WebSource implements DataSource {
       if (this.activeConvertId === id) this.activeConvertId = null;
     }
   }
-  // ---
 
-  /**
-   * Merges several open COPC files (keys passed to `open()`) into one COPC (on OPFS).
-   * Files without a CRS are let through and the reason is returned in `warnings`. Throws if files that
-   * both have a CRS differ.
-   */
   async mergeCopcs(paths: string[], options?: ToolOptions & { isMobile?: boolean }): Promise<ToolResult> {
     if (paths.length < 2) throw new Error("合成するレイヤーが2つ未満です");
     const files = paths.map((p) => this.fileForToolInput(p));
@@ -786,11 +604,6 @@ export class WebSource implements DataSource {
     );
   }
 
-  /**
-   * Cancels the running conversion or tool. Does nothing if none is running. A fire-and-forget message: it
-   * takes effect between read batches (it cannot interrupt the post-processing stage; see
-   * crates/pcv-wasm/src/convert.rs). The answer comes as `convert-failed` with `cancelled: true`.
-   */
   cancelConversion(): void {
     if (this.activeConvertId === null) return;
     this.worker.postMessage(buildConvertCancelRequest(this.activeConvertId));
@@ -822,7 +635,6 @@ export class WebSource implements DataSource {
       });
       return;
     }
-    // --- G2: section line ---
     if (response.type === "section-line-progress") {
       this.sectionLinePending.get(response.id)?.onProgress?.({
         pointsRead: Math.round(response.fraction * 1000),
@@ -845,17 +657,15 @@ export class WebSource implements DataSource {
     if (response.type === "tool-progress") {
       const progress = { pointsRead: response.pointsRead, totalPoints: response.totalPoints };
       this.toolPending.get(response.id)?.onProgress?.(progress);
-      this.rasterPending.get(response.id)?.onProgress?.(progress); // G1
+      this.rasterPending.get(response.id)?.onProgress?.(progress);
       return;
     }
-    // --- G1: rasterize ---
     if (response.type === "raster-done") {
       const waiting = this.rasterPending.get(response.id);
       this.rasterPending.delete(response.id);
       waiting?.resolve(response);
       return;
     }
-    // ---
     if (response.type === "tool-done") {
       const waiting = this.toolPending.get(response.id);
       this.toolPending.delete(response.id);
@@ -863,7 +673,7 @@ export class WebSource implements DataSource {
         outputName: response.outputName,
         pointCount: response.pointCount,
         warnings: response.warnings,
-        dtm: response.dtm, // G1-T15
+        dtm: response.dtm,
       });
       return;
     }
@@ -871,11 +681,9 @@ export class WebSource implements DataSource {
       const waiting = this.toolPending.get(response.id);
       this.toolPending.delete(response.id);
       waiting?.reject(new Error(response.message));
-      // --- G1: rasterize --- (the export fails with the same message)
       const rasterWaiting = this.rasterPending.get(response.id);
       this.rasterPending.delete(response.id);
       rasterWaiting?.reject(new Error(response.message));
-      // ---
       return;
     }
     if (response.type === "convert-failed") {
@@ -888,7 +696,6 @@ export class WebSource implements DataSource {
 
     const pending = this.pending.get(response.id);
     if (!pending) {
-      // 対応するリクエストが無い応答は無視する(万一の重複配送等への保険)。
       return;
     }
     this.pending.delete(response.id);

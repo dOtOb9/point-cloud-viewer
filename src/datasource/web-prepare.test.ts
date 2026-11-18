@@ -1,5 +1,3 @@
-// Tests for WebSource.prepareToOpen. The OPFS helpers, the COPC header check and the point-count
-// estimators are replaced, so no browser storage or Worker is needed (same fake Worker as web.test.ts).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const opfsMock = vi.hoisted(() => ({
@@ -73,7 +71,6 @@ function doneResponse(id: number, extra: Partial<ConvertDoneResponse> = {}): Wor
   };
 }
 
-/** Waits until the conversion request has reached the Worker (the checks before it are async). */
 async function waitForRequest(worker: FakeWorker): Promise<number> {
   await vi.waitFor(() => expect(worker.sent).toHaveLength(1));
   return worker.sent[0].id;
@@ -96,7 +93,6 @@ beforeEach(() => {
   opfsMock.estimateQuota.mockResolvedValue({ quota: 1024 ** 4, usage: 0 });
   opfsMock.getOpfsUsageBreakdown.mockResolvedValue({ cachedConversionsTotalBytes: 0, staleScratchTotalBytes: 0 });
   opfsMock.isPersisted.mockResolvedValue(true);
-  // jsdom has no object URLs; the download link only needs some string.
   URL.createObjectURL = vi.fn(() => "blob:test");
 });
 
@@ -253,7 +249,6 @@ describe("WebSource.prepareToOpen", () => {
     expect(outcome.conversion.sourceFormat).toBe("las/laz(複数ファイル)");
   });
 
-  // M4-17: a selection with at least one PLY/PCD/E57 takes the point merge, in name order.
   it("several files with a PLY take the point merge route, sorted by name, one format each", async () => {
     const { source, worker } = makeSource();
     const files = [
