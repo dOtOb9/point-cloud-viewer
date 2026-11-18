@@ -5,16 +5,9 @@ import { isToolRunning, selectedPointCloudLayer } from "../toolbar-state";
 
 interface Props {
   viewer: CopcViewerState;
-  /** Opens the thinning dialog (`ThinDialog`, mounted by AppShell). */
   onOpen: () => void;
 }
 
-/**
- * G3 / ADR-0018: "間引き". Makes a new layer with fewer points (one original point per grid cell or voxel) from the selected
- * point-cloud layer; the source layer is hidden when it worked, never rewritten.
- *
- * Disabled unless a point-cloud layer is selected, or while a tool is computing. The tooltip tells which case applies.
- */
 export function ThinButton({ viewer, onOpen }: Props) {
   const layer = selectedPointCloudLayer(viewer);
   return (

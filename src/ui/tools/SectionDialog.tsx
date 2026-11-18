@@ -9,26 +9,16 @@ import { OptionRow } from "../dialogs/OptionRow";
 import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_PRIMARY_BUTTON_CLASS, DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 
-// L2-F: the cross-section dialog (a plain form), opened after the two points of the section line are picked.
-
 const SECTION_LINE_PRESETS: { value: SectionLinePreset; label: string; note: string }[] = [
   { value: "standard", label: "標準", note: "（平地や緩やかな地形）" },
   { value: "steep", label: "急勾配", note: "（斜面が多い地形。時間がかかる）" },
 ];
 
-/** Round for the input boxes (2 decimals; the box is for typing, not for showing a measurement). */
 function rounded(value: number): string {
   return String(Math.round(value * 100) / 100);
 }
 
-/**
- * Cross section: thickness of the slab and the height range, after the two points of the line were picked.
- * Values are typed in the display unit (settings, "単位"; default m) and converted to the file's unit with the
- * layer's CRS factors. If the file's unit is unknown the numbers are taken as the file's unit.
- * The default thickness is 1 (in the display unit); the default height range is the whole z range of the layer.
- */
 export function SectionDialog({ viewer, tool }: { viewer: CopcViewerState; tool: LayerToolState }) {
-  // Mounted only while open, so the fields start from the defaults each time.
   if (!tool.sectionReady) return null;
   return <SectionDialogBody viewer={viewer} tool={tool} />;
 }
@@ -43,7 +33,6 @@ function SectionDialogBody({ viewer, tool }: { viewer: CopcViewerState; tool: La
   const unitText = units.horizontalToMeter === null || units.verticalToMeter === null ? UNKNOWN_UNIT_NOTE : unitSymbol(display);
 
   const [thickness, setThickness] = useState("1");
-  // G2-4: the CSF preset for the ground line (default: standard).
   const [preset, setPreset] = useState<SectionLinePreset>("standard");
   const [heightMin, setHeightMin] = useState(() => rounded(toDisplay(range.min)));
   const [heightMax, setHeightMax] = useState(() => rounded(toDisplay(range.max)));
@@ -99,7 +88,6 @@ function SectionDialogBody({ viewer, tool }: { viewer: CopcViewerState; tool: La
         </label>
       </div>
       <p className="text-xs opacity-70">高さの既定は、このレイヤーの高さの範囲ぜんぶです。</p>
-      {/* G2-4: the ground line of the section is made with CSF; the preset is the owner's "標準 / 急勾配". */}
       <fieldset className="flex flex-col gap-1" data-testid="section-line-preset">
         <legend className="mb-1 text-xs opacity-70">断面線（地表の線）の作り方</legend>
         {SECTION_LINE_PRESETS.map((option) => (

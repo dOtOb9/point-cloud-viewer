@@ -10,9 +10,6 @@ import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_PRIMARY_BUTTON_CLASS, DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 import { OptionRow } from "../dialogs/OptionRow";
 
-// G3: the thinning dialog (a plain form). The preset values live in src/app/thin-filter.ts; this file only shows them
-// and calls `thinLayer` (src/app/point-cloud-tools.ts) when "間引く" is pressed.
-
 const METHODS: { value: ThinMethod; label: string; note: string }[] = [
   { value: "grid", label: "グリッド（2D）", note: "（平面を正方形のセルに区切り、セルごとに1点）" },
   { value: "voxel", label: "ボクセル（3D）", note: "（空間を立方体に区切り、立方体ごとに1点）" },
@@ -24,12 +21,10 @@ const GRID_KEEPS: { value: GridKeep; label: string }[] = [
   { value: "highest", label: "最も高い点" },
 ];
 
-/** Round for the input box (3 decimals; the box is for typing). */
 function rounded(value: number): string {
   return String(Math.round(value * 1000) / 1000);
 }
 
-/** Thinning of the selected point-cloud layer. Mounted only while open, so the fields start from the presets each time. */
 export function ThinDialog({ viewer, onClose }: { viewer: CopcViewerState; onClose: () => void }) {
   const [display] = useDisplayUnit();
   const layer = selectedPointCloudLayer(viewer);

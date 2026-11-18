@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-//
-// L1-D: レイヤー欄の操作（チェックで表示切替、行クリックで選択、右クリックのメニューから削除、Escで閉じる）。
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";

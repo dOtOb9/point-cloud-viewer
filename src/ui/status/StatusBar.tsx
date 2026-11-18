@@ -4,17 +4,6 @@ import { useStore } from "../../state/useStore";
 import { formatCrsShort } from "../common/crs-format";
 import { glassSurfaceClass } from "../common/glass";
 
-/**
- * ADR-0017 (UIシェル再構築): 画面下部の「ステータスバー」。1行だけ。
- *
- * タスクシートの指定: 表示点数/点予算、fps、CRS、読み込み進捗。
- * デスクトップの点群/GIS系ソフトのステータスバーを参照に、詳細は出さず
- * 見出しの数値だけをここに置く(詳細はLayerStatsDetails.tsxの折りたたみへ)。
- *
- * エラーログを開くボタンもここに置く(タスクシートの指定:
- * 「opened from the banner and from the status bar」)。このセッションで
- * 1件以上エラーが起きていれば件数を出す(0件のときは目立たせない)。
- */
 export function StatusBar({
   viewer,
   glassEnabled,
@@ -27,16 +16,12 @@ export function StatusBar({
   glassEnabled: boolean;
   onOpenErrorLog: () => void;
   onOpenConversion: () => void;
-  /** True when the tool progress dialog was collapsed (outside click / Esc); the tool may still be running. */
   toolDialogCollapsed: boolean;
   onOpenToolProgress: () => void;
 }) {
   const stats = viewer.stats;
   const projectionMode = useStore(viewContext.projection);
 
-  // 読み込み進捗: 変換中は変換の割合、それ以外はストリーミング読み込みの
-  // ロード中/キュー待ちノード数を出す(「進捗」の意味がこの2つに分かれる
-  // ため、状態に応じて出し分ける)。
   let loadProgressLabel: string;
   if (viewer.status.kind === "converting" && viewer.conversionProgress?.phase === "reading") {
     const pct = (viewer.conversionProgress.pointsRead / Math.max(1, viewer.conversionProgress.totalPoints)) * 100;
@@ -49,7 +34,6 @@ export function StatusBar({
     loadProgressLabel = "待機なし";
   }
 
-  // A running point-cloud tool whose progress dialog is collapsed: show its ratio and let the user reopen the dialog.
   const tool = viewer.toolProgress;
   const toolLabel =
     tool && tool.totalPoints > 0 ? `ツール実行中 ${Math.min(100, (tool.pointsRead / tool.totalPoints) * 100).toFixed(0)}%` : "ツール実行中…";
@@ -58,7 +42,6 @@ export function StatusBar({
     <div
       className={`pointer-events-auto absolute inset-x-0 bottom-0 z-20 flex min-h-11 items-center gap-3 overflow-hidden px-3 py-1.5 text-xs shadow-lg md:gap-4 ${glassSurfaceClass(glassEnabled)}`}
     >
-      {/* 狭幅(<768px)では1行に収めるため、見出しを省いて短くする(md以上は従来の文言)。 */}
       <span className="whitespace-nowrap">
         <span className="hidden md:inline">表示点数: </span>
         <span className="md:hidden">点 </span>
@@ -66,23 +49,19 @@ export function StatusBar({
         {viewer.pointBudget.toLocaleString()}
       </span>
       {stats?.idleBoosting ? (
-        // HQ-2: カメラが止まったので、点予算を上限まで上げて読み込み・描画している最中。
         <span className="whitespace-nowrap" data-testid="idle-boost">
           最大まで読み込み中
         </span>
       ) : null}
       <span className="whitespace-nowrap">fps:{stats ? stats.fps.toFixed(0) : "―"}</span>
-      {/* TP-1 (UX-1): the viewpoint and the projection; the narrow form drops the heading. */}
       {stats && stats.layerCount > 0 ? (
         <span className="whitespace-nowrap" data-testid="view-status">
           <span className="hidden md:inline">{viewStatusText(stats.viewPreset, projectionMode, false)}</span>
           <span className="md:hidden">{viewStatusText(stats.viewPreset, projectionMode, true)}</span>
         </span>
       ) : null}
-      {/* CRS: 短い形(EPSGコード)。狭幅では省く(詳細は左パネルで見られる)。 */}
       <span className="hidden whitespace-nowrap md:inline">CRS: {viewer.selectedLayer ? formatCrsShort(viewer.selectedLayer.info.crs) : "―"}</span>
       {viewer.status.kind === "converting" ? (
-        // 変換中はクリックで変換ダイアログを開き直せる(外側クリック・Escで閉じても変換は続くため)。
         <button type="button" onClick={onOpenConversion} className="min-h-8 min-w-0 truncate rounded bg-secondary px-2 text-on-secondary">
           {loadProgressLabel}
         </button>
@@ -97,7 +76,6 @@ export function StatusBar({
       <button
         type="button"
         onClick={onOpenErrorLog}
-        // AN-3: 新しいエラーが届くとkeyが変わって作り直され、1回だけ脈打つ(件数が増えないとき=同じ文言の連投は脈打たない)。
         key={viewer.errorHistory.length}
         className={`ml-auto min-h-11 min-w-11 shrink-0 whitespace-nowrap rounded px-2 py-0.5 ${viewer.errorHistory.length > 0 ? "pcv-pulse-once bg-error text-on-error" : "hover:bg-black/5 dark:hover:bg-white/10"}`}
       >

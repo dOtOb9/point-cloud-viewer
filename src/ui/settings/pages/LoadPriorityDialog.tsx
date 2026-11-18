@@ -1,7 +1,6 @@
 import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
 
-/** 読み込み優先: 画面中央を優先して読み込む強さと、重みの下限。(L2-A: リボンのダイアログから設定の専用ページへ移した) */
 export function LoadPriorityDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   return (
     <SettingsPageDialog {...page} title="読み込み優先">

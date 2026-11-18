@@ -33,13 +33,6 @@ import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
 import { glassSurfaceClass } from "../common/glass";
 
-// G2-3: the 2D cross-section panel (bottom right; full width at the bottom on narrow screens).
-// It only shows the state in `viewer.sectionView` and passes the mouse / touch / wheel input to the functions of
-// src/app/section-view.ts. The drawing is src/renderer/section-2d.ts.
-// G2-5: left-drag (mouse) or one-finger trace (touch) edits the section line; the three buttons undo, redo and go back
-// to the computed line. The path being traced is drawn by `SectionMarks`.
-
-/** Small text buttons of the panel header, in the tertiary grey (no ✕ icon: UI rule). */
 const TEXT_BUTTON_CLASS = "min-h-9 rounded bg-tertiary px-3 text-xs text-on-tertiary hover:opacity-90";
 
 function toSectionPointer(e: ReactPointerEvent<HTMLElement>): SectionPointer {
@@ -63,7 +56,6 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
   const state = viewer.sectionView;
   const layer = state.openLayerId === null ? undefined : viewer.layers.find((l) => l.id === state.openLayerId);
 
-  // Tell the app the size of the drawing area, now and whenever it changes.
   const open = layer !== undefined;
   useEffect(() => {
     const area = areaRef.current;
@@ -75,7 +67,6 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
     return () => observer.disconnect();
   }, [open, ctx]);
 
-  // The wheel needs a non-passive listener to stop the page from scrolling.
   useEffect(() => {
     const area = areaRef.current;
     if (!open || !area) return;
@@ -88,18 +79,15 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
     return () => area.removeEventListener("wheel", onWheel);
   }, [open, ctx]);
 
-  // Units of the axis labels: the file's unit shown as m / ft like the measurements.
   const units = lengthUnitsFor(layer?.info.crs, display);
   const horizontalUnitScale = convertLength(1, units.horizontalToMeter, display);
   const verticalUnitScale = convertLength(1, units.verticalToMeter, display);
   const unitKnown = horizontalUnitScale !== null && verticalUnitScale !== null;
   const unitLabel = unitKnown ? unitSymbol(display) : UNKNOWN_UNIT_NOTE;
 
-  // Draw again whenever anything that changes the picture changes.
   const { points, panelSize } = state;
   const drawView = effectiveSectionView(state);
   const { scale, offsetX, offsetY } = drawView;
-  // G2-4: the ground line of the layer (absent until computed, and when computing failed).
   const groundLine = layer?.section?.line?.history.present.points ?? null;
   const groundProfile = (groundLine ? groundLineToProfile(groundLine) : null);
   const lineState = layer?.section?.line;
@@ -113,7 +101,6 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
       unitLabel,
       line: groundLine,
     });
-    // The last draw time, for measuring on a real screen (read it from the DOM; see TaskSheets/G2-T8-section-panel.md).
     canvas.dataset.drawMs = result.totalMs.toFixed(1);
     canvas.dataset.fillMs = result.fillMs.toFixed(1);
     canvas.dataset.lineSamples = String((groundLine?.length ?? 0) / 2);
@@ -121,10 +108,6 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
 
   if (!layer) return null;
 
-  // Narrow: sit above the layer drawer's toggle button (bottom-16, 44 px tall, so its top is at 6.75rem) and below the
-  // drawer itself (z-10), so both stay usable. The wide panel has no such neighbour.
-  // Enlarged: centred and large on any screen, above the drawer (z-10), its toggle and the toolbars, below the progress
-  // overlay (z-30) and the dialogs (z-40, z-50).
   const placement = state.enlarged
     ? "left-1/2 top-1/2 z-[25] h-[85%] w-[90%] -translate-x-1/2 -translate-y-1/2 rounded-xl"
     : narrow
@@ -236,10 +219,8 @@ export function SectionPanel({ viewer, glassEnabled }: { viewer: CopcViewerState
   );
 }
 
-/** Line height (px) of the two-line GL / slope label. */
 const LABEL_LINE_HEIGHT = 15;
 
-/** G2-6 / G2-8: the mouse cursor's `s` (a thin line and a dot on the ground line) and the GL / slope reading, as SVG over the canvas. */
 function SectionMarks({
   width,
   height,
@@ -262,7 +243,6 @@ function SectionMarks({
   const cursorZ = cursorS === null ? null : interpolateZ(line, cursorS);
   const cursor = cursorS !== null && cursorZ !== null ? sectionToScreen(view, cursorS, cursorZ) : null;
   const gl = reading ? sectionToScreen(view, reading.s, reading.z) : null;
-  // Keep the text inside the panel: right-align it when the marker is near the right edge.
   const alignEnd = gl !== null && gl.x > width - 230;
   const labelX = gl === null ? 0 : alignEnd ? gl.x - 9 : gl.x + 9;
   return (
@@ -292,7 +272,6 @@ function SectionMarks({
           <circle cx={gl.x} cy={gl.y} r={5} fill="#facc15" stroke="#000" strokeWidth={1.5} />
           <text
             x={labelX}
-            // Two lines (GL, then slope): the second line ends just above the marker.
             y={Math.max(14, gl.y - 9 - LABEL_LINE_HEIGHT)}
             textAnchor={alignEnd ? "end" : "start"}
             fontSize={12}

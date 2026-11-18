@@ -7,14 +7,6 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { sameFrame, type Frame } from "../tools/measure-frame";
 
-// G2-8: the ground line of the open cross section, drawn over the 3D view, with a dot at the `s` of the panel's mouse
-// cursor and a marker with the GL / slope text of the last right click (G2-6).
-// Same method as MeasureOverlay.tsx (TaskSheets/L2-layer-tools.md, "L2-D record"): the 3D points are projected to
-// the screen every frame with the renderer's latest viewProj and drawn as SVG. No WebGPU pipeline, so the line is always
-// drawn on top of the point cloud (accepted: TaskSheets/G1-raster-and-dtm.md 8.7).
-// The line is read from the layer state on every render (not copied), so edits and undo of G2-5 show up at once.
-// The conversion `(s, z)` -> 3D is src/app/section-3d.ts.
-
 const LINE_STYLE = { stroke: "var(--secondary)" };
 
 export function SectionLineOverlay({
@@ -37,7 +29,6 @@ export function SectionLineOverlay({
   const world = (axes && pairs ? groundLineToWorld(axes, pairs) : []);
   const profile = (pairs ? groundLineToProfile(pairs) : []);
 
-  // Read viewProj every frame while the line is shown; update the state only when it changed.
   useEffect(() => {
     if (!active) return;
     let raf = 0;
@@ -56,7 +47,6 @@ export function SectionLineOverlay({
 
   if (!active || !axes || !frame || world.length < 2) return null;
 
-  // Points behind the camera are skipped; the polyline is cut there (a break, not a line through them).
   const runs: string[] = [];
   let run: string[] = [];
   for (const p of world) {
@@ -94,7 +84,6 @@ export function SectionLineOverlay({
           <circle cx={gl.x} cy={gl.y} r={6} fill="#facc15" stroke="#000" strokeWidth={1.5} />
           <text
             x={gl.x + 10}
-            // Two lines (GL, then slope, 15 px apart): the second line ends just above the marker.
             y={gl.y - 10 - 15}
             fontSize={12}
             fontWeight={600}

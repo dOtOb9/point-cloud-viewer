@@ -1,12 +1,10 @@
 import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
 
-/** バイトを「約X.XGiB」の形にする(小数1桁)。UI は datasource を直接触らない規約のため、表示専用の整形はここに閉じる。 */
 function toGiBLabel(bytes: number): string {
   return `約${(bytes / 1024 ** 3).toFixed(1)}GiB`;
 }
 
-/** ブラウザの保存領域(OPFS。Webだけ)。使用量の内訳と、キャッシュ・一時ファイルの削除。 */
 export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   const info = viewer.opfsStorageInfo;
   return (

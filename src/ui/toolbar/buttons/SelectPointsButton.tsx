@@ -9,14 +9,6 @@ interface Props {
   layerTool: LayerToolState;
 }
 
-/**
- * L2-F / ADR-0018: "カット". Draw a polygon on the screen; the points of the chosen layer that
- * fall inside it become a new layer (the source layer is not rewritten).
- *
- * - Active while the select tool is running.
- * - Disabled when there is no point cloud (unless the tool is already running, so it can be
- *   stopped) or while another point-cloud tool is computing.
- */
 export function SelectPointsButton({ viewer, layerTool }: Props) {
   const active = layerTool.mode === "select";
   return (

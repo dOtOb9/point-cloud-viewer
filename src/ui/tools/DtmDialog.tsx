@@ -18,10 +18,6 @@ import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_PRIMARY_BUTTON_CLASS, DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 import { OptionRow } from "../dialogs/OptionRow";
 
-// G1-T15: the DTM dialog (a plain form). The preset values live in src/app/csf-params.ts and the request is built by
-// src/app/dtm.ts; this file only shows them and calls `makeDtm` (src/app/point-cloud-tools.ts) when "作る" is pressed.
-// The output format is NOT chosen here (owner's answer Q18): it is a setting, and this dialog only says what it is now.
-
 const PRESETS: { value: DtmPreset; label: string; note: string }[] = [
   { value: "standard", label: "標準", note: "（平地・市街地向け）" },
   { value: "steep", label: "急勾配", note: "（山地・斜面向け。布を細かく柔らかくして、繰り返しを増やす）" },
@@ -30,7 +26,6 @@ const PRESETS: { value: DtmPreset; label: string; note: string }[] = [
 
 type NumericKey = Exclude<keyof CsfParamsInMetres, "slopeSmooth">;
 
-/** The detail fields. `length`: shown in the display unit; `integer`: a whole number of 1 or more. */
 const FIELDS: { key: NumericKey; label: string; length: boolean; integer: boolean }[] = [
   { key: "clothResolution", label: "布の間隔", length: true, integer: false },
   { key: "rigidness", label: "布のかたさ（大きいほど硬い）", length: false, integer: true },
@@ -42,7 +37,6 @@ const FIELDS: { key: NumericKey; label: string; length: boolean; integer: boolea
   { key: "convergenceThreshold", label: "収束とみなす動き", length: true, integer: false },
 ];
 
-/** Round for the input box (3 decimals; the box is for typing). */
 function rounded(value: number): string {
   return String(Math.round(value * 1000) / 1000);
 }
@@ -55,7 +49,6 @@ function textsOf(values: CsfParamsInMetres): Texts {
   return texts;
 }
 
-/** The numbers the texts hold, or null when one is not a valid number. */
 function parseTexts(texts: Texts, slopeSmooth: boolean): CsfParamsInMetres | null {
   const values = { slopeSmooth } as CsfParamsInMetres;
   for (const f of FIELDS) {
@@ -68,7 +61,6 @@ function parseTexts(texts: Texts, slopeSmooth: boolean): CsfParamsInMetres | nul
   return values;
 }
 
-/** DTM of the selected point-cloud layer. Mounted only while open, so the fields start from the preset each time. */
 export function DtmDialog({ viewer, onClose }: { viewer: CopcViewerState; onClose: () => void }) {
   const [display] = useDisplayUnit();
   const [output] = useDtmOutput();

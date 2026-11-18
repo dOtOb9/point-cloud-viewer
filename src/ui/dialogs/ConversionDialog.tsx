@@ -4,10 +4,6 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "./Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
 
-/**
- * M4-11: Web版の「準備」段階の各ステップを文言にする
- * (以前は`LayerInfoSection.tsx`にあった。ADR-0017で進捗表示ごとこちらへ移動)。
- */
 function preparingStepLabel(preparing: PreparingStep): string {
   switch (preparing.step) {
     case "acquiringLock":
@@ -25,7 +21,6 @@ function preparingStepLabel(preparing: PreparingStep): string {
   }
 }
 
-/** 経過秒数を"1分23秒"のような読める形にする(小数は切り捨て)。 */
 function formatElapsed(seconds: number): string {
   const total = Math.floor(seconds);
   const m = Math.floor(total / 60);
@@ -33,18 +28,6 @@ function formatElapsed(seconds: number): string {
   return m > 0 ? `${m}分${s}秒` : `${s}秒`;
 }
 
-/**
- * ADR-0017: 長時間かかるLAS/LAZ→COPC変換の進捗ダイアログ(中央、タイトル「変換中」)。
- * ノードの逐次読み込みの進捗(連続的に変わる)はここではなくステータスバーに出す。
- *
- * - 変換中: ファイル名、進捗バー、いまの段階、経過時間。フッターは「キャンセル」。
- * - 変換が終わったら、同じダイアログが結果表示に変わる(フッターは「閉じる」)。
- *   変換結果は完了時に自動で開かれる(`src/app/open-files.ts`の`openFiles`が
- *   `prepareToOpen`の完了を待ってそのままレイヤーを足す)ため、「開く」ボタンは置かない
- *   (押すまでもなく開いている。押せるボタンが何もしないのは紛らわしい)。
- *   変換の内訳(コピー可)・ダウンロードリンクは左パネルの「レイヤー情報」にある
- *   (`data-testid`を持つ要素はそちらに残してある)。
- */
 export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewerState; open: boolean; onClose: () => void }) {
   const converting = viewer.status.kind === "converting";
   const progress = viewer.conversionProgress;
@@ -77,7 +60,6 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
 
       {converting ? (
         <div className="flex flex-col gap-2 text-sm">
-          {/* いまの段階(進行中なのでsecondary=橙で示す) */}
           <span className="self-start rounded bg-secondary px-2 py-0.5 text-xs text-on-secondary">
             段階: {progress === null || progress.phase === "preparing" ? "準備" : progress.phase === "reading" ? "読み込み" : "構築・書き出し"}
           </span>
@@ -93,7 +75,6 @@ export function ConversionDialog({ viewer, open, onClose }: { viewer: CopcViewer
               </p>
               <div className="h-2 w-full overflow-hidden rounded bg-tertiary/25">
                 <div
-                  // AN-3: 幅ではなくscaleXで伸ばす(transformだけ。レイアウトを再計算させない)。
                   className="h-full w-full origin-left bg-secondary transition-transform duration-(--motion-progress) ease-linear"
                   style={{ transform: `scaleX(${Math.min(1, progress.pointsRead / Math.max(1, progress.totalPoints))})` }}
                 />

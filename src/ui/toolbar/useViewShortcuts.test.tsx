@@ -1,7 +1,4 @@
 // @vitest-environment jsdom
-//
-// TP-1 F-10 / RP F-RP-5: the path from the layer list to "the view keys work" is tested end to end: the hook gets the
-// layers, syncViewEnabled decides whether a point cloud is open, and a key press changes the projection only then.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
@@ -74,16 +71,14 @@ describe("useViewShortcuts", () => {
     const rerender = mount(ctx, [pointCloud, measurement]);
     press("5");
     expect(ctx.projection.get()).toBe("orthographic");
-    rerender([measurement]); // the point-cloud layer was removed
+    rerender([measurement]);
     press("5");
-    expect(ctx.projection.get()).toBe("orthographic"); // unchanged
+    expect(ctx.projection.get()).toBe("orthographic");
     rerender([measurement, pointCloud]);
     press("5");
     expect(ctx.projection.get()).toBe("perspective");
   });
 
-  // Audit trendpoint-parity-PR R1 F-1: the view dialog stays open and has projection radio buttons. After clicking one,
-  // focus is on an <input type="radio">, which takes no typed text, so the view keys must still work.
   it("F-1 the keys still work while a radio button (the dialog's projection choice) has focus", () => {
     const ctx = createViewContext();
     mount(ctx, [pointCloud]);

@@ -32,7 +32,7 @@ import { StorageDialog } from "./pages/StorageDialog";
 import { TempDirDialog } from "./pages/TempDirDialog";
 import { ThemeDialog } from "./pages/ThemeDialog";
 import { UnitDialog } from "./pages/UnitDialog";
-import { DtmOutputDialog } from "./pages/DtmOutputDialog"; // G1-T15
+import { DtmOutputDialog } from "./pages/DtmOutputDialog";
 import { UpdateDialog } from "./pages/UpdateDialog";
 
 interface Props {
@@ -43,7 +43,6 @@ interface Props {
   viewer: CopcViewerState;
 }
 
-/** 一覧のボタン(アイコン+短い名前)。 */
 const PAGE_BUTTONS: Record<SettingsPageId, { icon: LucideIcon; label: string }> = {
   theme: { icon: Palette, label: "テーマ" },
   animation: { icon: Zap, label: "アニメーション" },
@@ -56,24 +55,16 @@ const PAGE_BUTTONS: Record<SettingsPageId, { icon: LucideIcon; label: string }> 
   loadPriority: { icon: Target, label: "読み込み優先" },
   edl: { icon: Sun, label: "陰影（EDL）" },
   unit: { icon: Ruler, label: "単位" },
-  dtmOutput: { icon: Mountain, label: "DTM の出力" }, // G1-T15
+  dtmOutput: { icon: Mountain, label: "DTM の出力" },
 };
 
-/**
- * 設定。L1-E (ADR-0017 追記2): 一覧は「アイコン+名前のボタン」の集合だけで、
- * ボタンを押すと一覧を閉じて、その項目専用のダイアログ(pages/*.tsx)が開く。
- * どちらを開いているかは `settings-nav.ts` の reducer が持つ(一覧と専用は同時に開かない)。
- * 設定画面は不透明(ADR-0005。`Dialog`自体が不透明)。
- */
 export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
   const [page, dispatch] = useReducer(settingsNavReducer, "list");
 
-  // 設定を開くたびに一覧から始める。描画前に戻す(前回の専用ダイアログが一瞬見えないように)。
   useLayoutEffect(() => {
     if (open) dispatch({ type: "reset" });
   }, [open]);
 
-  // M4-6追記: ブラウザの保存領域を開いたときにOPFSの使用量を取り直す。
   const { refreshOpfsStorageInfo } = viewer;
   useEffect(() => {
     if (open && page === "storage" && viewer.isBrowser) void refreshOpfsStorageInfo();

@@ -9,18 +9,6 @@ import { useDisplayUnit } from "../../state/useDisplayUnit";
 import { labelAnchorOnScreen, sameFrame, type Frame } from "./measure-frame";
 import { MeasurementShape } from "./MeasurementShape";
 
-// L2-D: an SVG laid over the 3D view that draws measurement lines, vertices and labels.
-//
-// Drawing choice (recorded in TaskSheets/L2-layer-tools.md, "L2-D record"):
-//  - Draw with DOM SVG instead of adding a WebGPU pipeline. Labels (numbers) need the DOM
-//    anyway, and drawing only the lines with WebGPU would make two systems. A measurement
-//    has a few lines, so updating a few dozen elements per frame is cheap. It also avoids
-//    touching the renderer (L2-B was working there).
-//  - The cost: lines cannot be hidden by the point cloud (always drawn on top). For
-//    measuring, not losing them matters more, so this is accepted.
-//  - Every frame, 3D points are projected again with the renderer's latest viewProj (f64).
-//    While the camera is still the viewProj does not change, so nothing is re-rendered.
-
 export function MeasureOverlay({
   viewer,
   measure,
@@ -36,7 +24,6 @@ export function MeasureOverlay({
   const getViewSnapshot = viewer.getViewSnapshot;
   const [displayUnit] = useDisplayUnit();
 
-  // Only while a measurement is on screen, read viewProj every frame. Update state only when it changed.
   useEffect(() => {
     if (!active) return;
     let raf = 0;
@@ -58,7 +45,6 @@ export function MeasureOverlay({
   const draft: Measurement | null = measure.mode !== null && measure.points.length > 0 ? { kind: measure.mode, points: [...measure.points], up: frame.up } : null;
   const draftUnits = lengthUnitsFor((viewer.selectedLayer ?? viewer.layers[0])?.info.crs, displayUnit);
 
-  // Labels that would overlap on screen are moved down (L2-F).
   const shifts = labelShifts(
     measureLayers.map((l) => (l.measurement ? labelAnchorOnScreen(l.measurement, frame) : null)),
     measureLayers.map((l) => (l.measurement ? measurementLabelLines(l.measurement, lengthUnitsFor(l.info.crs, displayUnit)).length : 0)),

@@ -1,7 +1,4 @@
 // @vitest-environment jsdom
-//
-// ADR-0017: 共通Dialogの振る舞い(Esc・暗幕クリックで閉じる・✕は無い・フォーカスが中に移り、閉じると戻る・
-// 閉じているときは何も描画しない)を確かめる。
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -62,7 +59,6 @@ describe("Dialog", () => {
     expect(document.activeElement).toBe(opener);
   });
 
-  // mousedown→clickの順でイベントを流す。暗幕=role="dialog"の親要素。
   const press = (down: Element, up: Element) => {
     act(() => {
       down.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
@@ -86,7 +82,6 @@ describe("Dialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  // 所有者の決定(2026-10-15): 暗幕は全ダイアログでぼかしに統一(暗くしすぎない)。
   it("暗幕はぼかしで、暗幕クリックで閉じる(パネル内では閉じない)", () => {
     const onClose = vi.fn();
     const { container } = setup(true, onClose);
@@ -105,12 +100,10 @@ describe("Dialog", () => {
     const { container } = setup(true, onClose);
     const panel = container.querySelector('[role="dialog"]') as Element;
     const backdrop = panel.parentElement as Element;
-    // 実ブラウザでは共通の祖先(暗幕)にclickが届き、targetは暗幕になる。
     press(panel, backdrop);
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  // Owner decision 2026-10-15: dialogs are glass too (ADR-0017 addendum).
   it("the panel is glass (blur + translucent tint), not opaque white/slate", () => {
     const { container } = setup(true, () => {});
     const panel = container.querySelector('[role="dialog"]') as HTMLElement;

@@ -1,15 +1,6 @@
 import { useEffect, useRef } from "react";
 import { moveDrag, shouldSuppressClick, startDrag, type DragState } from "./toolbar-drag";
 
-/**
- * L1-A: ツールバーの横スクロールに「マウス左ボタンのドラッグ」と「ホイール縦回転→横」を足す。
- * 判定そのものは toolbar-drag.ts(純粋関数)。ここはDOMイベントとの接続だけ。
- * タッチは素のoverflow-xで動くので扱わない(pointerType==="mouse"のときだけ働く)。
- *
- * ポインタキャプチャは使わず、押している間だけwindowにmove/upを付ける。
- * キャプチャするとclickの宛先が変わり、閾値未満のクリックまで壊れうるため。
- * ドラッグ後のclickは、返り値のonClickCaptureが握りつぶす。
- */
 export function useToolbarDragScroll() {
   const ref = useRef<HTMLDivElement>(null);
   const suppressClick = useRef(false);
@@ -34,7 +25,6 @@ export function useToolbarDragScroll() {
       if (drag) suppressClick.current = shouldSuppressClick(drag);
       drag = null;
       stop();
-      // clickはpointerupの直後に同期で来る。ボタンの外で離してclickが来ない場合に備え、その後で解除する。
       setTimeout(() => {
         suppressClick.current = false;
       }, 0);
@@ -47,7 +37,6 @@ export function useToolbarDragScroll() {
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     };
-    // 縦のホイールを横スクロールに変える。passive:falseが要るのでReactのonWheelではなく直接付ける。
     const onWheel = (e: WheelEvent) => {
       if (el.scrollWidth <= el.clientWidth) return;
       if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;

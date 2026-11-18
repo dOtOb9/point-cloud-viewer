@@ -15,7 +15,6 @@ const TIFF_LABELS: Record<TiffKind, string> = {
   values: "値のまま（float32。標高の数値。解析用）",
 };
 
-/** G1-T15: which DTM files the DTM tool makes (owner's answer Q18: chosen here, not in the DTM dialog). */
 export function DtmOutputDialog(page: PageProps) {
   const [output, setOutput] = useDtmOutput();
   return (

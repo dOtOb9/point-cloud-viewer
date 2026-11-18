@@ -8,27 +8,14 @@ import { ToolbarButton } from "../toolbar/ToolbarButton";
 import { AppearanceDialog } from "../dialogs/AppearanceDialog";
 import { ColorModeDialog } from "../dialogs/ColorModeDialog";
 
-/**
- * L2-A: レイヤー情報の下に置く「選択中のレイヤーへの操作」ボタン列(着色・見た目・削除)。
- * 見た目はツールバーと同じ「アイコン+名前」(`ToolbarButton`を再利用)。選択中のレイヤーが対象で、
- * レイヤーが無いときは全部グレーで押せない。削除が右クリックしないと見つからない、という
- * 所有者の指摘への答え(常に見えるボタンにする)。右クリック・長押しのメニュー(LayerList)も残す。
- *
- * ダイアログ(着色・見た目)の開閉状態はここが持つ。レイヤーパネルは transform で滑って出入りし、
- * その中に置くと `position: fixed` の基準がパネルになってしまうため、`document.body` へ portal で出す。
- *
- * 「移動」はそのレイヤーへカメラを移す(`viewer.focusLayer`。L2-B)。並びは着色・見た目・移動・削除。
- */
 export function LayerActions({ viewer }: { viewer: CopcViewerState }) {
   const [dialog, setDialog] = useState<"color" | "appearance" | null>(null);
   const layer = viewer.selectedLayer;
   const hasLayer = layer !== null;
-  // L2-F: a measurement layer has no points, so coloring and appearance do not apply (move and delete do).
   const pointCloudSelected = layer !== null && !isMeasureLayer(layer);
   const { removeLayer, focusLayer } = viewer;
   const selectedId = layer?.id ?? null;
 
-  // Delete キーで選択中のレイヤーを消す。入力欄にフォーカスがあるときは効かない。
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (selectedId === null) return;

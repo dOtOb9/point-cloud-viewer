@@ -1,7 +1,6 @@
 import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
 
-/** M3-8: レンダースケールの選択肢。自由入力にしないのは、極端な値(0や負数)で画面が壊れるのを避けるため。 */
 const RENDER_SCALE_OPTIONS = [0.25, 0.5, 0.75, 1.0] as const;
 
 export function RenderScaleDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {

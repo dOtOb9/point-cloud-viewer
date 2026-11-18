@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-//
-// ADR-0017追記: リボンから開く3つのダイアログで値を変えると、viewerのsetterが呼ばれることを確かめる。
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -13,7 +11,6 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-/** ダイアログが読み書きする項目だけを持つ偽のviewer。 */
 function fakeViewer(hasColor = true, layerName: string | null = "a.copc.laz") {
   const setters = {
     setLayerColorMode: vi.fn(),
@@ -86,7 +83,6 @@ describe("ColorModeDialog and AppearanceDialog", () => {
     expect(slider?.value).toBe("4");
     act(() => {
       if (!slider) return;
-      // React は value のネイティブ setter 経由でないと onChange を拾わない。
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(slider, "9");
       slider.dispatchEvent(new Event("input", { bubbles: true }));
     });

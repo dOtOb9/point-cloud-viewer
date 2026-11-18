@@ -1,13 +1,6 @@
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
 import { glassSurfaceClass } from "../common/glass";
 
-/**
- * M3-2 / M3-4: 新しいバージョンがあるときだけ出す通知。デスクトップ・Android共通
- * (適用手段の違いは`useUpdateCheck`の`openRelease`内に閉じている。このコンポーネント
- * はプラットフォームを意識しない)。
- *
- * インストールが利用者の手作業であることを明記する(ADR-0004: 自動では適用しない)。
- */
 export function UpdateNotice({ update, glassEnabled }: { update: UpdateCheckState; glassEnabled: boolean }) {
   if (update.status !== "available" || !update.latest) return null;
 

@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-//
-// G0-3: collapsing the tool progress dialog (outside click / Esc) must not cancel the tool; only the cancel button does.
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";

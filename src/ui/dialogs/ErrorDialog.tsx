@@ -16,7 +16,6 @@ function formatTimestamp(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
-/** ダイアログに並べる1件分。`GpuErrorEntry`か、`viewer.error`(文字列だけ)の2種類を同じ形にする。 */
 interface Item {
   key: string;
   heading: string;
@@ -35,31 +34,14 @@ function itemsFrom(entries: GpuErrorEntry[], withTime: boolean): Item[] {
 
 interface Props {
   open: boolean;
-  /** "current": いま出ているエラー(閉じるとそれらを消す)。"history": このセッションの全履歴。 */
   mode: "current" | "history";
   onClose: () => void;
-  /** 「履歴を見る」(currentモードの本文から履歴表示へ切り替える)。 */
   onShowHistory: () => void;
   current: GpuErrorEntry[];
   history: GpuErrorEntry[];
-  /** `viewer.error`(画面内に出ている短いエラー文)。gpuのエントリに既に含まれていれば出さない。 */
   viewerError: string | null;
 }
 
-/**
- * ADR-0017: エラーを出す中央ダイアログ(タイトル「エラー」、フッター: コピー・閉じる)。
- *
- * ADR-0011の「画面最前面の不透明なバナー」を置き換えた(所有者の要望で、
- * 設定・変換と同じ中央ダイアログに揃えた)。ADR-0011が守った要件は引き継ぐ:
- * 本文は要約せずそのまま・複数あっても最初のエラーを隠さず縦に並べる・
- * 不透明(`Dialog`自体が不透明)・最前面(`layer="top"`)・テーマに依らず警告色の
- * タイトルバー。バナーは廃止し、代わりにステータスバーの「ログ」ボタンが
- * 履歴モードで同じダイアログを開く。
- *
- * 「閉じる」(✕・Esc含む)はcurrentモードでは現在のエラーを消す
- * (`viewer.dismissGpuError`)。履歴(`viewer.errorHistory`)は消えないので、
- * 閉じたあとでもログから読み返せる。
- */
 export function ErrorDialog({ open, mode, onClose, onShowHistory, current, history, viewerError }: Props) {
   const [copied, setCopied] = useState(false);
 
@@ -114,7 +96,6 @@ export function ErrorDialog({ open, mode, onClose, onShowHistory, current, histo
             <li key={item.key} className="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-700">
               <p className="font-semibold">{item.heading}</p>
               {item.detail && <p className="opacity-60">{item.detail}</p>}
-              {/* 本文は要約せずそのまま表示する(ADR-0011)。選択してコピーもできる。 */}
               <pre className="mt-1 select-text whitespace-pre-wrap break-words font-mono">{item.message}</pre>
             </li>
           ))}

@@ -2,7 +2,6 @@ import type { MeasureToolState } from "../../state/useMeasureTool";
 import { MEASURE_KIND_NAME } from "../../state/measure";
 import { glassSurfaceClass } from "../common/glass";
 
-/** Guide shown while measuring: what is measured, what to do next, and how to stop. */
 export function MeasureHud({ measure, glassEnabled }: { measure: MeasureToolState; glassEnabled: boolean }) {
   if (measure.mode === null) return null;
   const n = measure.points.length;

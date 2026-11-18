@@ -1,7 +1,4 @@
 // @vitest-environment jsdom
-//
-// TP-1: the view dialog and the view button. The dialog only shows the state and calls src/app/view.ts, so the
-// test passes a fake renderer through the context.
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";

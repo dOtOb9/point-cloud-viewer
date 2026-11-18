@@ -14,17 +14,12 @@ import { useStore } from "../../state/useStore";
 import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 
-// TP-1: the view dialog. It stays open after a press (the view moves at once, nothing to "apply") and sits at the
-// side so the result stays visible (UX-2). On a narrow screen it is a short strip at the bottom: the explanations are
-// hidden and the buttons are in a compact grid. The steps are in src/app/view.ts; this file only shows the state.
-
 const PROJECTIONS: ProjectionMode[] = ["perspective", "orthographic"];
 
 const VIEW_BUTTON_CLASS =
   "min-h-11 min-w-11 rounded border border-slate-300 px-2 py-2 text-sm whitespace-nowrap hover:bg-black/5 dark:border-slate-600 dark:hover:bg-white/10";
 const VIEW_BUTTON_ACTIVE_CLASS = "border-primary bg-primary/15 font-semibold";
 
-/** `context` is the app's view context; a test passes its own. */
 export function ViewDialog({
   viewer,
   onClose,

@@ -11,10 +11,6 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_PRIMARY_BUTTON_CLASS, DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 
-// G1-R3: the Rasterize window. React only shows the state (src/state/raster-window.ts) and calls the functions of
-// src/app/raster-window.ts. Left (top on a narrow screen): toggle buttons for what the raster holds, which points count,
-// the cell size and the kind of GeoTIFF. Right (bottom): the preview picture, redrawn as soon as a setting changes.
-
 const VALUE_BUTTONS: { value: RasterValueKind; label: string }[] = [
   { value: "rgbMean", label: "RGB" },
   { value: "zMean", label: "標高 平均" },
@@ -24,21 +20,13 @@ const VALUE_BUTTONS: { value: RasterValueKind; label: string }[] = [
   { value: "intensityMean", label: "強度" },
 ];
 
-// Sizes of the preview column (wide screens). The dialog is as wide as its content, so the column's width is
-// decided here: the picture is as tall as the dialog body allows, and the column is that tall x the aspect ratio,
-// but never wider than the room next to the settings.
-/** Dialog panel max height (`max-h-[85vh]` in Dialog.tsx) minus what is not the picture: title, footer, body padding,
- *  intro line, legend and a note of about 4 lines. Measured at 1400 x 900 (about 300 px) plus some room. */
 const PREVIEW_CHROME_PX = 320;
-/** Widest the column may be: `max-w-5xl` (1024) minus the panel padding (32), the settings column (288) and the gap (16). */
 const PREVIEW_MAX_WIDTH_PX = 688;
-/** Never smaller than this, so a very short window scrolls instead of showing a thumbnail. */
 const PREVIEW_MIN_HEIGHT_PX = 160;
 
 const CHECKERBOARD =
   "repeating-conic-gradient(#8884 0% 25%, transparent 0% 50%) 50% / 16px 16px";
 
-/** The ramp of the picture as a CSS gradient (low at the left). Same stops as the 3D view's elevation colours. */
 const LEGEND_GRADIENT = `linear-gradient(to right, ${ELEVATION_INTENSITY_RAMP.map(
   (s) => `rgb(${s.color.map((c) => Math.round(c * 255)).join(",")}) ${(s.t * 100).toFixed(1)}%`,
 ).join(", ")})`;
@@ -80,7 +68,6 @@ function ToggleRow<T extends string>({
   );
 }
 
-/** Number text for the legend ends: heights in the display unit, counts and intensity as they are. */
 function legendValue(value: number, kind: RasterValueKind, units: LengthUnits): string {
   if (kind === "count" || kind === "intensityMean") return Math.round(value).toLocaleString();
   const converted = convertLength(value, units.verticalToMeter, units.display);
@@ -99,7 +86,6 @@ function PreviewCanvas({ image }: { image: RasterPreviewImage }) {
   }, [image]);
   return (
     <div className="overflow-hidden rounded border border-black/10 dark:border-white/10" style={{ background: CHECKERBOARD }}>
-      {/* The parent column is sized to the picture, so the canvas is scaled up or down to it with CSS. */}
       <canvas
         ref={ref}
         data-testid="raster-canvas"
@@ -211,8 +197,6 @@ export function RasterWindow({ viewer, holder }: { viewer: CopcViewerState; hold
             </p>
           )}
           {image && (
-            // One column as wide as the picture; picture, legend and note share its width. On a narrow screen
-            // (stacked layout) it is the full width; from `md` up its width is `--preview-width`.
             <div
               className="flex w-full flex-col gap-2 md:w-[var(--preview-width)]"
               style={

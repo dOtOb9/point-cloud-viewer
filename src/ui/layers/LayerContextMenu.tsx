@@ -2,19 +2,12 @@ import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { OPAQUE_GLASS_SURFACE } from "../common/glass";
 
-// The small right-click / long-press menu of the layer list ("move to" and "delete").
-
 export interface MenuState {
   layerId: string;
   x: number;
   y: number;
 }
 
-/**
- * 「削除」だけの小さなメニュー。外側のクリック・Esc・スクロール・リサイズで閉じる。
- * レイヤーパネルは transform を持つ（滑って出入りする）ため、`position: fixed` がパネル基準になってしまう。
- * それを避けるため `document.body` へ portal で出す。
- */
 export function LayerContextMenu({
   menu,
   onFocus,

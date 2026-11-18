@@ -6,7 +6,6 @@ import { useDisplayUnit } from "../../state/useDisplayUnit";
 
 const FILE_NAMES = { geotiff: "GeoTIFF", landxml: "LandXML" } as const;
 
-/** One DTM file: a download link on the Web, a "save" button on desktop (the file is in the temp folder until then). */
 function DtmFileRow({ viewer, file, kind }: { viewer: CopcViewerState; file: DtmFile; kind: keyof typeof FILE_NAMES }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -34,10 +33,6 @@ function DtmFileRow({ viewer, file, kind }: { viewer: CopcViewerState; file: Dtm
   );
 }
 
-/**
- * G1-T15: the layer info of a layer made by the DTM tool: the grid, the counts, and the DTM files (save buttons on
- * desktop, download links on the Web). The files stay until the layer is removed or the app is closed.
- */
 export function DtmInfoSection({ viewer, dtm }: { viewer: CopcViewerState; dtm: DtmInfo }) {
   const [display] = useDisplayUnit();
   const layer = viewer.selectedLayer;

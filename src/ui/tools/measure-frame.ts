@@ -1,9 +1,6 @@
 import { labelAnchor, type Measurement } from "../../state/measure";
 import { projectPoint } from "../../renderer/screen-project";
 
-// The camera/canvas snapshot that one frame of the measurement overlay is drawn with,
-// and two small helpers on it. Shared by MeasureOverlay.tsx and MeasurementShape.tsx.
-
 export interface Frame {
   viewProj: number[];
   up: readonly [number, number, number];

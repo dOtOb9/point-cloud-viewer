@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-//
-// L1-E: 設定の専用ダイアログ。背景はラジオ、点予算は手動値と自動調整、フッターは戻るだけ(閉じるは外側クリック・Esc)。
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -84,7 +82,6 @@ describe("settings pages", () => {
     const { viewer, setters } = fakeViewer();
     const m = mount(<LoadPriorityDialog viewer={viewer} open onBack={() => {}} onClose={() => {}} />);
     const [strength, minWeight] = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="range"]'));
-    // Reactは値をプロトタイプのsetter経由で追跡するので、同じ経路で値を入れてからinputイベントを送る。
     const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     act(() => {
       setValue?.call(strength, "8");

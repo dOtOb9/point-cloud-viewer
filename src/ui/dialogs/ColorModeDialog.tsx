@@ -4,16 +4,12 @@ import { CloseButton } from "./CloseButton";
 import { Dialog } from "./Dialog";
 import { OptionRow } from "./OptionRow";
 
-// ADR-0017追記: レイヤー欄の「着色」ボタン(LayerActions.tsx)から開くダイアログ。
-// 値はその場で反映する(適用ボタンは無い)。触るのは`viewer`のsetterだけで、状態は`useCopcViewer`が持つ。
-
 interface DialogProps {
   viewer: CopcViewerState;
   open: boolean;
   onClose: () => void;
 }
 
-/** M2-2: 着色モードの並び・ラベル。`colormap.ts`の`COLOR_MODES`の並びと合わせてある。 */
 const COLOR_MODE_LABELS: Record<ColorMode, string> = {
   rgb: "RGB",
   elevation: "標高",
@@ -22,10 +18,6 @@ const COLOR_MODE_LABELS: Record<ColorMode, string> = {
 };
 
 
-/**
- * 着色ダイアログ: 色の付け方を1つ選ぶ。L1-D: 変えるのは**選択中のレイヤー**だけ（着色はレイヤーごと）。
- * レイヤーが無いときは選べない旨を出す。
- */
 export function ColorModeDialog({ viewer, open, onClose }: DialogProps) {
   const layer = viewer.selectedLayer;
   return (
@@ -41,7 +33,6 @@ export function ColorModeDialog({ viewer, open, onClose }: DialogProps) {
       <fieldset className="flex flex-col gap-1">
         <legend className="mb-1 text-xs opacity-70">点の色の付け方</legend>
         {(Object.keys(COLOR_MODE_LABELS) as ColorMode[]).map((mode) => {
-          // レイヤーが無ければ全部選べない。RGBを持たないレイヤーではRGBを選べない。
           const lacksRgb = mode === "rgb" && layer !== null && !layer.info.hasColor;
           const disabled = layer === null || lacksRgb;
           return (

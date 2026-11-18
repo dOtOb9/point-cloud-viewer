@@ -4,12 +4,6 @@ import { MIN_POLYGON_VERTICES, type LayerToolState } from "../../state/useLayerT
 import { projectPoint } from "../../renderer/screen-project";
 import { glassSurfaceClass } from "../common/glass";
 
-// L2-F: what is drawn over the 3D view while "カット" or "断面" is on, plus the guide at the bottom.
-//  - Polygon: the vertices are stored in canvas pixels, so they are drawn as they are (the polygon is
-//    thrown away when the camera moves, see useLayerTool.ts).
-//  - Section: the two picked points are 3D, so they are projected again every frame with the renderer's
-//    latest viewProj (same approach as MeasureOverlay.tsx). Frames are polled only while a point exists.
-
 const STROKE = "#38bdf8";
 
 interface Frame {
@@ -27,7 +21,6 @@ export function LayerToolOverlay({
   viewer: CopcViewerState;
   tool: LayerToolState;
   canvasRef: RefObject<HTMLCanvasElement | null>;
-  /** Same device-profile flag as the toolbar: false falls back to an opaque tint. */
   glassEnabled: boolean;
 }) {
   const [frame, setFrame] = useState<Frame | null>(null);

@@ -8,7 +8,6 @@ const UNIT_LABELS: Record<DisplayUnit, string> = {
   foot: "フィート",
 };
 
-/** L2-D: display unit (meters or feet) for measurement results and the layer-info bounding box. */
 export function UnitDialog(page: PageProps) {
   const [unit, setUnit] = useDisplayUnit();
   return (

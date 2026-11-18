@@ -15,20 +15,15 @@ import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_PRIMARY_BUTTON_CLASS, DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
 import { OptionRow } from "../dialogs/OptionRow";
 
-// G3: the outlier-filter dialog (a plain form). The preset values and the estimate of the SOR search range live in
-// src/app/thin-filter.ts; this file only shows them and calls `filterLayer` when "実行" is pressed.
-
 const METHODS: { value: FilterMethod; label: string; note: string }[] = [
   { value: "ror", label: "ROR（半径）", note: "（半径の中に近傍の点が少ない点を消す）" },
   { value: "sor", label: "SOR（統計）", note: "（近傍までの距離が全体より大きく外れた点を消す）" },
 ];
 
-/** Round for the input box (3 decimals; the box is for typing). */
 function rounded(value: number): string {
   return String(Math.round(value * 1000) / 1000);
 }
 
-/** Outlier removal for the selected point-cloud layer. Mounted only while open, so the fields start from the presets each time. */
 export function FilterDialog({ viewer, onClose }: { viewer: CopcViewerState; onClose: () => void }) {
   const [display] = useDisplayUnit();
   const layer = selectedPointCloudLayer(viewer);
@@ -40,7 +35,6 @@ export function FilterDialog({ viewer, onClose }: { viewer: CopcViewerState; onC
   const [minNeighbors, setMinNeighbors] = useState(String(THIN_FILTER_PRESETS.ror.minNeighbors));
   const [k, setK] = useState(String(THIN_FILTER_PRESETS.sor.k));
   const [nSigma, setNSigma] = useState(String(THIN_FILTER_PRESETS.sor.nSigma));
-  // The default search range comes from the layer's point spacing (src/app/thin-filter.ts).
   const [searchRadius, setSearchRadius] = useState(() => (layer ? rounded(defaultSorSearchRadius(layer.info, units)) : ""));
 
   const numbers = {

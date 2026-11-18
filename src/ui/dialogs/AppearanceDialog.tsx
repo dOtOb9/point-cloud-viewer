@@ -5,26 +5,17 @@ import { CloseButton } from "./CloseButton";
 import { Dialog } from "./Dialog";
 import { OptionRow } from "./OptionRow";
 
-// ADR-0017追記: レイヤー欄の「見た目」ボタン(LayerActions.tsx)から開くダイアログ。
-// 値はその場で反映する(適用ボタンは無い)。触るのは`viewer`のsetterだけで、状態は`useCopcViewer`が持つ。
-
 interface DialogProps {
   viewer: CopcViewerState;
   open: boolean;
   onClose: () => void;
 }
 
-/** 点の形の選択肢。 */
 const POINT_SHAPE_LABELS: Record<PointShape, string> = {
   round: "丸",
   square: "四角",
 };
 
-/**
- * 見た目ダイアログ（L2-B）: **選択中のレイヤー**の点の形と点の大きさ。着色ダイアログと同じく、
- * 変わるのは選択中のレイヤーだけ。EDL は画面全体にかける処理でレイヤーごとにできないので、
- * ここには置かない（設定のページにある）。
- */
 export function AppearanceDialog({ viewer, open, onClose }: DialogProps) {
   const layer = viewer.selectedLayer;
   return (

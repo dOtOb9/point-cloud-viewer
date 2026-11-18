@@ -4,21 +4,6 @@ function fmt3(v: readonly [number, number, number]): string {
   return `[${v.map((x) => x.toFixed(2)).join(", ")}]`;
 }
 
-/**
- * ADR-0017 (UIシェル再構築): 以前`InfoPanel.tsx`にあった詳細統計
- * (描画点数/ロード状況/fps、モバイル最適化の現在値、カメラ姿勢)を
- * そのまま移した。機能は削っていない。
- *
- * 右パネル(InfoPanel)自体は今回の再構築で廃止した(新しいレイアウトは
- * 「上部リボン+左レイヤーツリー+下部ステータスバー」で、右パネルが無い。
- * タスクシート参照)。fps・描画点数のヘッドライン値はステータスバー
- * (`StatusBar.tsx`)に出すが、ここにある詳細(ロード中/キュー/キャッシュの
- * ノード数、カメラのpitch/yaw/upAxis/eye、モバイル最適化の現在値)は
- * 1行のステータスバーには収まらないため、左パネルの折りたたみ式
- * (`<details>`)として残した(「既存の機能を全て到達可能にする」という
- * タスクシートの要求のため)。既定で閉じておき、普段は目に入らないように
- * している。
- */
 export function LayerStatsDetails({ viewer }: { viewer: CopcViewerState }) {
   if (!viewer.stats) return null;
   const stats = viewer.stats;

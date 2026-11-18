@@ -9,7 +9,6 @@ const BACKGROUND_MODE_LABELS: Record<BackgroundMode, string> = {
   sky: "空",
 };
 
-/** 背景(ラジオボタン)とグリッドのオン/オフ。 */
 export function BackgroundDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   return (
     <SettingsPageDialog {...page} title="背景とグリッド">

@@ -2,7 +2,6 @@ import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { OptionRow } from "../../dialogs/OptionRow";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
 
-/** 点予算: 手動の値と「自動調整する」。 */
 export function PointBudgetDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   return (
     <SettingsPageDialog {...page} title="点予算">

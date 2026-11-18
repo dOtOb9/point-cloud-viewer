@@ -3,10 +3,6 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { Dialog } from "../dialogs/Dialog";
 import { DIALOG_BUTTON_CLASS } from "../dialogs/dialog-styles";
 
-/**
- * Progress of the running point-cloud tool, with a cancel button. Shown while `viewer.toolProgress` is set and `open`.
- * Outside click / Esc only collapses it (`onCollapse`); the status bar reopens it. Only the cancel button cancels.
- */
 export function ToolProgressDialog({ viewer, open, onCollapse }: { viewer: CopcViewerState; open: boolean; onCollapse: () => void }) {
   const progress = viewer.toolProgress;
   const ratio = progress && progress.totalPoints > 0 ? Math.min(1, progress.pointsRead / progress.totalPoints) : 0;

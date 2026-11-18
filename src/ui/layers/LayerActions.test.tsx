@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-//
-// L2-A: レイヤー操作のボタン列。レイヤーが無いときは無効、あれば削除ボタンと Delete キーで消せる。
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";

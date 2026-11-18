@@ -3,8 +3,6 @@ import { projectPoint, projectSegment } from "../../renderer/screen-project";
 import type { LengthUnits } from "../../state/units";
 import { labelAnchorOnScreen, type Frame } from "./measure-frame";
 
-// Draws one measurement (lines, vertices, label) as SVG elements inside MeasureOverlay's <svg>.
-
 const STROKE = "#fbbf24";
 const STROKE_SELECTED = "#f97316";
 
@@ -46,7 +44,6 @@ export function MeasurementShape({
   selected: boolean;
   closed: boolean;
   withLabel: boolean;
-  /** Move the label down by this many px so it does not sit on another measurement's label (L2-F). */
   labelShiftY?: number;
 }) {
   const stroke = selected ? STROKE_SELECTED : STROKE;

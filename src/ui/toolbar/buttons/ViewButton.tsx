@@ -5,14 +5,9 @@ import { hasPointCloud } from "../toolbar-state";
 
 interface Props {
   viewer: CopcViewerState;
-  /** Opens the view dialog (`ViewDialog`, mounted by AppShell). */
   onOpen: () => void;
 }
 
-/**
- * TP-1: "視点". Opens the dialog to fit all, go to a fixed viewpoint (top, front, ...) and switch the projection.
- * Disabled while there is no point-cloud layer. The tooltip lists the keys (UX-4).
- */
 export function ViewButton({ viewer, onOpen }: Props) {
   const enabled = hasPointCloud(viewer);
   return (

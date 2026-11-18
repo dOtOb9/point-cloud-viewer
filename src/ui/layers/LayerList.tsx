@@ -3,20 +3,11 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import { isFileOpenBusy } from "../../state/viewer-status";
 import { LayerContextMenu, type MenuState } from "./LayerContextMenu";
 
-// L1-D: レイヤー欄の一覧。各行は「表示チェック + 名前」。
-// - チェックボックス: 表示・非表示
-// - 行クリック: 選択（選択中は左の緑線）
-// - ダブルクリック: そのレイヤーへカメラを移す（L2-B）
-// - 右クリック（タッチ端末では長押し）: 小さなメニュー「移動」「削除」
-
-/** 長押しとみなすまでの時間(ms)。タッチ端末で右クリックの代わりにメニューを出す（未検証の初期値）。 */
 const LONG_PRESS_MS = 500;
-/** 長押し中にこれ以上指が動いたら、スクロールとみなして長押しをやめる(px)。 */
 const LONG_PRESS_MOVE_TOLERANCE = 8;
 
 export function LayerList({ viewer }: { viewer: CopcViewerState }) {
   const [menu, setMenu] = useState<MenuState | null>(null);
-  // 長押しの判定用。タイマーと、押し始めた位置。
   const pressRef = useRef<{ timer: number; x: number; y: number } | null>(null);
 
   const cancelPress = () => {
@@ -25,7 +16,6 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
       pressRef.current = null;
     }
   };
-  // アンマウント時にタイマーが残らないようにする。
   useEffect(() => cancelPress, []);
 
   const loading = isFileOpenBusy(viewer.status);
@@ -45,14 +35,11 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
               key={layer.id}
               aria-selected={selected || alsoSelected}
               data-testid="layer-row"
-              // L2-F: Ctrl/Cmd click adds or removes a layer, Shift click selects a range; a plain click selects just this one.
-              // The action buttons below act on the one chosen last (`selectedLayerId`).
               onClick={(e) => {
                 if (e.ctrlKey || e.metaKey) viewer.toggleLayerSelection(layer.id);
                 else if (e.shiftKey) viewer.selectLayerRange(layer.id);
                 else viewer.selectLayer(layer.id);
               }}
-              // ダブルクリックでそのレイヤーへカメラを移す（1回目のクリックで選択も済んでいる）。
               onDoubleClick={() => viewer.focusLayer(layer.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -60,7 +47,6 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
                 setMenu({ layerId: layer.id, x: e.clientX, y: e.clientY });
               }}
               onPointerDown={(e) => {
-                // マウスは右クリック(contextmenu)に任せる。タッチ・ペンだけ長押しでも同じメニューを出す。
                 if (e.pointerType === "mouse") return;
                 cancelPress();
                 const x = e.clientX;
@@ -80,13 +66,10 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
               }}
               onPointerUp={cancelPress}
               onPointerCancel={cancelPress}
-              // L2-A: 選択の有無で左線の太さが変わると文字がずれるため、全行に同じ太さの左線を付け、
-              // 選択していない行は透明にする（余白・高さは全行で同じ）。
               className={`flex min-h-11 cursor-pointer select-none items-center gap-2 rounded border-l-[3px] px-2 py-1.5 text-xs ${
                 selected
                   ? "border-l-primary bg-black/5 dark:bg-white/10"
-                  : // Selected together with the primary (L2-F): a lighter version of the same look.
-                    alsoSelected
+                  : alsoSelected
                     ? "border-l-primary/40 bg-black/[0.03] dark:bg-white/5"
                     : "border-l-transparent"
               }`}
@@ -97,7 +80,6 @@ export function LayerList({ viewer }: { viewer: CopcViewerState }) {
                 title="表示・非表示"
                 checked={layer.visible}
                 onChange={(e) => viewer.setLayerVisible(layer.id, e.target.checked)}
-                // チェックの操作で行の選択や長押しが起きないようにする。
                 onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
                 className="h-5 w-5 shrink-0 accent-primary"

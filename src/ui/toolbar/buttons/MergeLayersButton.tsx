@@ -4,13 +4,6 @@ import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { ToolbarButton } from "../ToolbarButton";
 import { isToolRunning, selectedPointCloudCount } from "../toolbar-state";
 
-/**
- * L2-F / ADR-0018: "合成". Merges the point-cloud layers selected with Ctrl/Shift click
- * in the layer list into one new layer (the source layers are not rewritten).
- *
- * Disabled unless two or more point-cloud layers are selected, or while a tool is computing.
- * The tooltip tells which of the two cases applies.
- */
 export function MergeLayersButton({ viewer }: { viewer: CopcViewerState }) {
   const count = selectedPointCloudCount(viewer);
   return (

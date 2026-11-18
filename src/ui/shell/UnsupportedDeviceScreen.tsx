@@ -1,13 +1,3 @@
-/**
- * M3-5: WebGPUが使えない端末で、白画面のまま放置せず「未対応」と明示する画面。
- *
- * ADR-0002でWebGL2フォールバックを書かないと決めたため、WebGPUが取れない環境では
- * 本当に何も描画できない。何も出さなければ「壊れている」と区別が付かないので、
- * 必要条件と診断情報(M0-2のプローブが返す`reason`、加えて問い合わせに使えるよう
- * userAgent等)をここに出す。ADR-0004が挙げた条件(Chrome 121+ / Android 12以上 /
- * Qualcomm・ARM GPU)は、この画面の中でのみ言及する静的な文言でよい
- * (実機で満たすかどうかの確定はM3-7、実機作業)。
- */
 export function UnsupportedDeviceScreen({ reason }: { reason: string }) {
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-slate-950 p-6 text-slate-100">
