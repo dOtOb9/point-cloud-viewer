@@ -7,8 +7,6 @@ import {
   peekPlyPointCount,
 } from "./point-count-estimate";
 
-/** 最小限のLASヘッダーバイト列を組み立てる(テスト専用。`copc-header.test.ts`
- *  が組み立てるヘッダーと同じ考え方で、見る場所(VLRではなく点数)が違う)。 */
 function buildLasHeader(options: {
   minorVersion: number;
   headerSize: number;
@@ -37,7 +35,7 @@ describe("peekLasPointCount", () => {
     const bytes = buildLasHeader({
       minorVersion: 4,
       headerSize: 375,
-      legacyPointCount: 0, // 1.4かつpoint format 6-10等で0になりうる
+      legacyPointCount: 0,
       extendedPointCount: 364_384_576n,
     });
     expect(peekLasPointCount(bytes)).toBe(364_384_576);
@@ -131,27 +129,25 @@ describe("peekPlyPointCount", () => {
 });
 
 describe("E57 point count", () => {
-  /** A paged E57-like file: 48 byte header, then the XML, every 1020 data bytes followed by 4 CRC bytes. */
   function buildPagedE57(xml: string): File {
     const xmlBytes = new TextEncoder().encode(xml);
     const logical = new Uint8Array(48 + xmlBytes.length);
     logical.set(xmlBytes, 48);
     const pageCount = Math.ceil(logical.length / 1020);
-    const physical = new Uint8Array(pageCount * 1024).fill(0xff); // 0xff: the CRC bytes must be dropped
+    const physical = new Uint8Array(pageCount * 1024).fill(0xff);
     for (let page = 0; page < pageCount; page++) {
       physical.set(logical.subarray(page * 1020, page * 1020 + 1020), page * 1024);
     }
     const header = new DataView(physical.buffer);
     physical.set(new TextEncoder().encode("ASTM-E57"), 0);
     header.setBigUint64(16, BigInt(physical.length), true);
-    header.setBigUint64(24, 48n, true); // XML starts at physical 48 (inside page 0)
+    header.setBigUint64(24, 48n, true);
     header.setBigUint64(32, BigInt(xmlBytes.length), true);
     header.setBigUint64(40, 1024n, true);
     return new File([physical], "scan.e57");
   }
 
   it("sums recordCount over all scans, across page boundaries", async () => {
-    // Padding comments push the second scan into a later page, so the CRC removal matters.
     const xml =
       `<e57Root><data3D><vectorChild><points type="CompressedVector" fileOffset="1" recordCount="1200">` +
       `</points><!--${"x".repeat(2500)}--><points type="CompressedVector" fileOffset="2" recordCount="34"></points>` +

@@ -1,6 +1,3 @@
-// conversion-dto.ts のテスト。`src-tauri/src/conversion.rs`が返すsnake_caseの
-// JSONを、camelCase型へ正しく詰め替えられることを確認する。
-
 import { describe, expect, it } from "vitest";
 import {
   toConversionOutcome,
@@ -60,9 +57,6 @@ describe("toConversionProgress", () => {
     expect(toConversionProgress(dto)).toEqual({ phase: "postProcessing", elapsedSecs: 42.0 });
   });
 
-  // M4-11(TaskSheets/M4-import-and-conversion.md): Web版だけが送る「準備」
-  // 段階の各ステップ。`src/datasource/copc.worker.ts`が送るDTOの形を
-  // そのまま確認する。
   describe("preparing(Web版だけの拡張)", () => {
     it("acquiring_lockをacquiringLockへ変換する", () => {
       const dto: ConversionProgressDto = { phase: "preparing", preparing: { step: "acquiring_lock" } };

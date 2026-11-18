@@ -1,20 +1,5 @@
-// M4-9追記(`TaskSheets/M4-import-and-conversion.md`): Web版で選んだファイルが
-// どの形式かを、変換を試みる前に判定する。
-//
-// 所有者の実機不具合(PCDを開くと「空き容量が足りません」と出る)の原因の一つ:
-// Web版は`isCopcFile`でCOPCでないと分かったファイルを、形式を確かめずすべて
-// LAS/LAZ変換の経路(`WebSource.startConversion`)に回していた。PCD(sofi.pcd、
-// 9.47GB)はLAS/LAZではないため、ファイルサイズ×11というLAS/LAZ向けの見積もりが
-// 大きく外れた値になり、誤って「空き容量不足」と判定されていた。
-//
-// 拡張子で判定する(`crates/pcv-convert/src/import/mod.rs`の`detect_format`と
-// 同じ考え方・同じ大文字小文字を区別しない判定)。`isCopcFile`(ヘッダーで
-// 判定)とは役割が違う: こちらは「どの変換経路に回すか」、`isCopcFile`は
-// 「そもそも変換が要るか」を判定する。
-
 export type SourceFormat = "lasLaz" | "pcd" | "ply" | "e57" | "unknown";
 
-/** ファイル名の拡張子から形式を判定する(大文字小文字を区別しない)。 */
 export function detectSourceFormatByName(fileName: string): SourceFormat {
   const dotIndex = fileName.lastIndexOf(".");
   if (dotIndex === -1) return "unknown";
@@ -34,14 +19,8 @@ export function detectSourceFormatByName(fileName: string): SourceFormat {
   }
 }
 
-/** File name extensions every build can open (lower case, no dot). Web and desktop open the same formats. */
 export const OPENABLE_EXTENSIONS = ["las", "laz", "e57", "ply", "pcd"] as const;
 
-/**
- * M4-17: does a selection of several files take the "point merge" route? Yes when at least one file is
- * PLY / PCD / E57. A selection of LAS/LAZ only keeps the older LAS merge (it keeps classification, GPS time and
- * so on). An unknown extension does not decide the route: it stays with the LAS merge, which reports it.
- */
 export function needsPointMerge(fileNames: string[]): boolean {
   return fileNames.some((name) => {
     const format = detectSourceFormatByName(name);
@@ -49,10 +28,6 @@ export function needsPointMerge(fileNames: string[]): boolean {
   });
 }
 
-/**
- * M4-17: the "format" text of the breakdown for several files. All LAS/LAZ gives "las/laz(複数ファイル)" (as
- * before); anything else gives "複数ファイル(形式混在)", the same text the desktop build shows for the point merge.
- */
 export function multiSourceFormatLabel(fileNames: string[]): string {
   return needsPointMerge(fileNames) ? "複数ファイル(形式混在)" : "las/laz(複数ファイル)";
 }

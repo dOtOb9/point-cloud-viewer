@@ -1,7 +1,3 @@
-// copc-dto.ts のテスト。TauriSource(open_copc)とWebSource(pcv-wasm)が返す
-// snake_caseのJSONを、DataSourceのcamelCase型へ正しく詰め替えられることを確認する。
-// Worker/wasmには依存しない純粋関数なので、実際のバックエンドなしでテストできる。
-
 import { describe, expect, it } from "vitest";
 import { toCloudInfo, toHierarchyNodeInfo, type CloudInfoDto, type HierarchyNodeDto } from "./copc-dto";
 

@@ -43,7 +43,6 @@ isCopcFileで先に判定済みの想定)", () => {
   });
 });
 
-// M4-17: which route a selection of several files takes.
 describe("needsPointMerge", () => {
   it("is false for LAS/LAZ only (the LAS merge keeps every attribute)", () => {
     expect(needsPointMerge(["a.las", "b.LAZ", "c.copc.laz"])).toBe(false);

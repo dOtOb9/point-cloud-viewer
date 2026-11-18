@@ -1,15 +1,5 @@
-// Rust側 (`open_copc` / `pcv-wasm`の`info()`/`hierarchy()`) が返すJSONの形と、
-// DataSourceのTypeScript側camelCase型を相互変換する。TauriSourceとWebSourceの
-// 両方が同じ変換ロジックを使うので、ここに1箇所だけ置く(片方でしか直さない、
-// という食い違いを防ぐため)。
-//
-// フィールド名はRust側のserdeデフォルト(snake_case)のまま受け取る。
-// `src-tauri/src/copc_state.rs`の`open_copc`と`crates/pcv-wasm/src/dto.rs`が
-// 同じ形のJSONを返すことを前提にしている(片方だけ形を変えたら両方直すこと)。
-
 import type { CloudInfo, CrsInfo, HierarchyNodeInfo } from "./DataSource";
 
-/** Rust側の`CrsInfoDto`(Tauri・Web共通)。値が無いOptionはnull(Tauri/JSON)かundefined(Web/wasm)で来る。 */
 export interface CrsInfoDto {
   epsg?: number | null;
   name: string;
@@ -36,7 +26,6 @@ export interface HierarchyNodeDto {
   bounds_max: [number, number, number];
 }
 
-/** null(Tauriのserde_json)とundefined(wasmのserde-wasm-bindgen)を、どちらも「キー無し」にそろえる。 */
 export function toCrsInfo(dto: CrsInfoDto): CrsInfo {
   const crs: CrsInfo = { name: dto.name, kind: dto.kind };
   if (dto.epsg !== null && dto.epsg !== undefined) crs.epsg = dto.epsg;

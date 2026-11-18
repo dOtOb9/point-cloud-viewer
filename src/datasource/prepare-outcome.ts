@@ -1,7 +1,3 @@
-// Pure helpers for `DataSource.prepareToOpen`: turn a `ConversionOutcome` (what the `start*` functions return)
-// into a `PrepareOutcome`, with the error texts. No Tauri, no React, so it is unit-tested.
-// (The Web "not enough space" text, `describeInsufficientSpaceWeb`, is in opfs.ts because it reads OPFS numbers.)
-// Used by: tauri.ts, web.ts.
 import type { PrepareOutcome } from "./DataSource";
 import type { ConversionOutcome } from "./conversion-dto";
 import { describeInsufficientSpaceWeb } from "./opfs";
@@ -13,10 +9,6 @@ const OPFS_UNAVAILABLE_SINGLE =
 const OPFS_UNAVAILABLE_MULTI =
   "お使いのブラウザはOPFS(File System Access API)に対応していないため、Web版では変換できません。デスクトップ版でまとめてCOPC(.copc.laz)に変換してから開いてください。";
 
-/**
- * `isMulti`: the texts of "OPFS unavailable" differ between the single-file and the multi-file route.
- * A conversion that really started (`kind: "converting"`) is not handled here: the source waits for it.
- */
 export function toPrepareOutcome(
   outcome: Exclude<ConversionOutcome, { kind: "converting" }>,
   isMulti: boolean,
@@ -51,16 +43,11 @@ export function toPrepareOutcome(
   }
 }
 
-/**
- * A conversion that ended without a result (the "failed" / "cancelled" event of either build). The status line
- * gets the bare message; the error log gets the message with a prefix, so it reads on its own in the banner.
- */
 export function toConversionFailureOutcome(message: string, cancelled: boolean): PrepareOutcome {
   if (cancelled) return { kind: "cancelled" };
   return { kind: "failed", summary: message, details: `変換に失敗しました: ${message}` };
 }
 
-/** Error text for the desktop "not enough disk space" outcome (sizes in GiB, one decimal). */
 export function describeInsufficientSpaceDesktop(requiredBytes: number, availableBytes: number): string {
   const toGiB = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
   return `空き容量が足りません(必要: 約${toGiB(requiredBytes)}GiB、空き: 約${toGiB(availableBytes)}GiB)。設定から一時ファイルの置き場所を変更できます。`;
