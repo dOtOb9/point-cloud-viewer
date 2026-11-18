@@ -267,26 +267,24 @@ export async function getConvertedFile(outputName: string): Promise<File | null>
   }
 }
 
-async function attempt(action: () => Promise<unknown>): Promise<boolean> {
+async function ignoreFailure(action: () => Promise<unknown>): Promise<void> {
   try {
     await action();
-    return true;
   } catch {
-    return false;
+    return;
   }
 }
 
-function attemptSync(action: () => void): boolean {
+function ignoreFailureSync(action: () => void): void {
   try {
     action();
-    return true;
   } catch {
-    return false;
+    return;
   }
 }
 
 export async function removeOutputFile(outputName: string): Promise<void> {
-  await attempt(async () => {
+  await ignoreFailure(async () => {
     const dir = await getConvertedDir();
     await dir.removeEntry(outputName);
   });
@@ -347,22 +345,22 @@ async function collectReadableCachedConversions(into: CachedConversionEntry[]): 
   const dir = await getConvertedDir();
   for await (const [name, handle] of dir.entries()) {
     if (handle.kind !== "file" || !name.endsWith(".meta.json")) continue;
-    await attempt(async () => into.push(await readCachedConversionEntry(dir, name, handle)));
+    await ignoreFailure(async () => into.push(await readCachedConversionEntry(dir, name, handle)));
   }
 }
 
-const SIZE_OF_A_DIR_IN_USE_BY_ANOTHER_TAB = 0;
+const SIZE_WHEN_UNREADABLE = 0;
 
 export async function getOpfsUsageBreakdown(): Promise<OpfsUsageBreakdown> {
   const root = await navigator.storage.getDirectory();
 
   const cachedConversions: CachedConversionEntry[] = [];
-  await attempt(() => collectReadableCachedConversions(cachedConversions));
+  await ignoreFailure(() => collectReadableCachedConversions(cachedConversions));
 
   const staleScratchDirs: StaleScratchDirEntry[] = [];
   for await (const [name, handle] of root.entries()) {
     if (handle.kind !== "directory" || !isScratchDirName(name)) continue;
-    const sizeBytes = await dirTotalBytes(handle).catch(() => SIZE_OF_A_DIR_IN_USE_BY_ANOTHER_TAB);
+    const sizeBytes = await dirTotalBytes(handle).catch(() => SIZE_WHEN_UNREADABLE);
     staleScratchDirs.push({ name, sizeBytes });
   }
 
@@ -379,7 +377,7 @@ export async function removeCachedConversionEntry(
 ): Promise<void> {
   const dir = await getConvertedDir();
   for (const name of [entry.metaFileName, entry.outputName]) {
-    await attempt(() => dir.removeEntry(name));
+    await ignoreFailure(() => dir.removeEntry(name));
   }
 }
 
@@ -388,7 +386,7 @@ export async function clearAllCachedConversions(): Promise<void> {
   const names: string[] = [];
   for await (const name of dir.keys()) names.push(name);
   for (const name of names) {
-    await attempt(() => dir.removeEntry(name));
+    await ignoreFailure(() => dir.removeEntry(name));
   }
 }
 
@@ -406,7 +404,7 @@ export async function openHandlePool<H>(
     }
   } catch (err) {
     for (const handle of handles) {
-      attemptSync(() => closeOne(handle));
+      ignoreFailureSync(() => closeOne(handle));
     }
     throw err;
   }
@@ -439,7 +437,7 @@ export async function createScratchPool(
     );
     return { dirName, handles };
   } catch (err) {
-    await attempt(() => root.removeEntry(dirName, { recursive: true }));
+    await ignoreFailure(() => root.removeEntry(dirName, { recursive: true }));
     throw err;
   }
 }
@@ -452,12 +450,12 @@ export async function createOutputHandle(outputName: string): Promise<FileSystem
 
 export function closeHandles(handles: readonly FileSystemSyncAccessHandle[]): void {
   for (const handle of handles) {
-    attemptSync(() => handle.close());
+    ignoreFailureSync(() => handle.close());
   }
 }
 
 export async function removeScratchDir(dirName: string): Promise<void> {
-  await attempt(async () => {
+  await ignoreFailure(async () => {
     const root = await navigator.storage.getDirectory();
     await root.removeEntry(dirName, { recursive: true });
   });
@@ -470,7 +468,7 @@ export function isScratchDirName(name: string): boolean {
 export async function removeScratchDirByName(name: string): Promise<void> {
   if (!isScratchDirName(name)) return;
   const root = await navigator.storage.getDirectory();
-  await attempt(() => root.removeEntry(name, { recursive: true }));
+  await ignoreFailure(() => root.removeEntry(name, { recursive: true }));
 }
 
 export async function cleanupStaleScratchDirs(): Promise<void> {
@@ -480,12 +478,12 @@ export async function cleanupStaleScratchDirs(): Promise<void> {
     if (isScratchDirName(name)) staleNames.push(name);
   }
   for (const name of staleNames) {
-    await attempt(() => root.removeEntry(name, { recursive: true }));
+    await ignoreFailure(() => root.removeEntry(name, { recursive: true }));
   }
 }
 
 export async function cleanupStaleScratchDirsWithoutStoppingTheJob(): Promise<void> {
-  await attempt(cleanupStaleScratchDirs);
+  await ignoreFailure(cleanupStaleScratchDirs);
 }
 
 export const CONVERSION_LOCK_NAME = "pcv-web-conversion";
