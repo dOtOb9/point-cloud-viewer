@@ -179,3 +179,15 @@
 #### 触ったファイル
 
 - `crates/pcv-core/**`・`crates/pcv-wasm/**`（`.rs`・`Cargo.toml`・`clippy.toml`）、`src/wasm/pcv-wasm/`（生成物）、`scripts/comment-baseline.json`、このシートの記録
+
+### 実装の記録 R1 追補（作業役）
+
+- 追加の指示（コメントを名前に移すときは「何が起きるか」を名前にし、使い手のいない戻り値を作らない／テストの数値の理由も定数名に移す）で見直した
+- R1 で足した名前: 値を返す関数（`is_a_range_response_and_not_the_whole_file`・`gamma_with_the_sign_of_gsi_grid_conv`）の戻り値は全部使われている。void の関数は足していない。変えた名前は無い
+- テストの数値に名前を付けた（値は変えていない）:
+  - `csf.rs`: `ONLY_THE_CLOTH_EDGE_AROUND_THE_BUILDING_AND_THE_OUTLIER_MAY_BE_LOST`（0.98）、`STEEP_SLOPE_DEG`・`HEAVY_CANOPY_GROUND_FRACTION`・`MEASURED_RECALL_GAIN_ABOUT_0_19_ASSERTED_AS`・`PRECISION_MAY_DROP_AT_MOST`、`CAP_FAR_BELOW_THE_CLOTH`・`CAP_JUST_ABOVE_2004_SQUARED_PARTICLES_OF_1000_M_AT_0_5_M_PLUS_MARGIN`、`EXTENT_GIVING_996_CELLS_PLUS_4_MARGIN_IS_1000_PARTICLES_PER_SIDE`
+  - `dtm/tests.rs`: `POINTS_PER_NODE`・`POINTS_PER_ADVANCE`・`ONE_ADVANCE_PLUS_THE_LAST_NODE`、`PARTICLE_CAP_BELOW_THE_ABOUT_15_THOUSAND_OF_60_M_AT_0_5_M`・`CELL_CAP_BELOW_THE_3721_OF_60_M_AT_1_M`・`CAP_THAT_DOES_NOT_STOP_IT`
+  - `section_line/tests.rs`: `MANY_MORE_POINTS_THAN_CELLS`・`CELLS_OF_A_20_BY_10_M_CORRIDOR_AT_1_M`。`outlier.rs`: `ONLY_THE_SUMMATION_ORDER_DIFFERS`。`tiles.rs`: `ROOM_FOR_THE_ESTIMATE_ERROR`・`PERIMETER_POINTS_PER_M_OF_MARGIN_AT_ONE_POINT_PER_M2`
+  - `raster/preview.rs`: `POINTS_PER_NODE`・`CAP_SMALLER_THAN_THE_ROOT_NODE`・`CAP_THE_UPPER_LEVELS_FIT_IN`。`profile/tests.rs`: `WALL_SIDE_GIVING_40_000_POINTS`・`CAP_FAR_BELOW_THE_WALL`。`extract/all_points_tests.rs`: `SIDE_GIVING_1600_POINTS`・`NODE_SIZE_GIVING_MANY_NODES`
+  - `convert.rs`: `ABOUT_SIX_LAZ_CHUNKS_OF_POINTS`・`BATCH_THAT_CROSSES_CHUNK_BOUNDARIES`・変数 `three_workers`。`e57_import.rs`: `FEED_LIKE_BATCH_THAT_DOES_NOT_DIVIDE_THE_SCAN`。`ply_import.rs`: `TOO_SMALL_TO_HOLD_THE_FILE_BYTES`。`tests/buffered_file_reader_reduces_read_calls.rs`: `MEASURED_ABOUT_90_PERCENT_SO_ASSERT_OVER_HALF`・`SAME_AS_READ_BUFFER_BYTES_IN_CONVERT_RS`（`READ_BUFFER_BYTES` から改名、使い手 4）・`ROOM_FOR_THE_HEADER_READS`
+- 確かめ方: `cargo test -p pcv-core`（192 passed、1 ignored）、`cargo test --manifest-path crates/pcv-wasm/Cargo.toml`（lib 58 passed、1 ignored）、pcv-wasm の wasm32 の clippy（`-D warnings`、終了コード 0）。テストの中だけの変更なので wasm の生成物は変わらない
