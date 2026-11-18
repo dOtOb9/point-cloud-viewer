@@ -45,7 +45,7 @@
 | `src-tauri/Cargo.toml` の `[lib] name = "pcv_tauri_lib"` | `_lib` の接尾辞は bin の名前とぶつからないため（Windows でだけ問題になる。rust-lang/cargo#8519。Tauri のひな形のコメント） | ここ |
 | `src-tauri/Cargo.toml` の `percent-encoding` | フロントの `convertFileSrc` が引数全体を `encodeURIComponent` するので `/` が `%2F` で届き、`parse_pcv_path` でデコードする。`url` が既に同じ版を入れているので、新しいクレートは増えない | ここ |
 | `crates/pcv-convert/src/import/convert.rs` のテスト・`tests/streaming_conversion.rs`・`tests/import_merge_memory_is_bounded.rs` の小さいメモリ予算（64 KiB・256 KiB） | 小さい予算にすると octree がディスク上で分けられる。既定ではメモリの中で終わり、その経路を通らない（ADR-0019）（監査 F-1） | 定数 `MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK`（3 ファイルに1つずつ） |
-| `src-tauri/src/lib.rs` の `pcv://` の応答の `Access-Control-Allow-Origin: *` | 開発中は devUrl `http://localhost:1420` から fetch するので `pcv://` とオリジンが違い、無いと "Failed to fetch"（`tauri::app::register_uri_scheme_protocol` のドキュメント）（監査 F-2） | 関数 `allow_fetch_from_dev_server_origin`、テスト `every_pcv_response_allows_fetch_from_the_dev_server_origin_localhost_1420_which_differs_from_pcv` |
+| `src-tauri/src/lib.rs` の `pcv://` の応答の `Access-Control-Allow-Origin: *` | 開発中は devUrl `http://localhost:1420` から fetch するので `pcv://` とオリジンが違い、無いと "Failed to fetch"（`tauri::app::register_uri_scheme_protocol` のドキュメント）（監査 F-2） | 関数 `allow_fetch_from_dev_server_origin`、テスト `every_pcv_response_allows_fetch_from_the_dev_server_origin` |
 | `crates/pcv-convert/src/import/ply.rs:scale_channel_to_u16` ほか | 8 bit（0〜255）を 16 bit（0〜65535）へ過不足なく写す（255 × 257 = 65535） | 定数 `U8_TO_U16_FULL_RANGE_FACTOR` |
 | `crates/pcv-convert/src/import/pcd.rs:MAX_BINARY_COMPRESSED_UNCOMPRESSED_BYTES` | 512 MiB は実測でなく見積もり。`pcd-rs` の展開は展開後の大きさの2倍のバッファを同時に持つので、ピークが 1〜1.5 GiB に収まり、RAM 4 GB の Android（ADR-0006 の基準）でも動く見込み、という判断 | ここ |
 | `src-tauri/src/conversion.rs:RASTER_MAX_CELLS_DESKTOP` | 1 セル最大 36 バイト（RGB）で約 2.3 GB の格子（見積もり。測ったのは 30.7M セルの RGB でピーク 1.29 GiB） | ここ（値の選び方は `TaskSheets/G1-T6-rasterize-tool.md`） |
@@ -85,7 +85,7 @@
 ### 監査の指摘への対応（CM-5 R1 の APPROVE の後、CM-5-RP R1）
 
 - F-1（should）: 3 ファイルの小さいメモリ予算を定数 `MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK` にした（300daac）。テストは同じ値で走る
-- F-2（should）: `pcv://` の4つの応答の CORS ヘッダを関数 `allow_fetch_from_dev_server_origin` に出し、4つの応答が全部ヘッダを持つことをテスト `every_pcv_response_allows_fetch_from_the_dev_server_origin_localhost_1420_which_differs_from_pcv` で確かめる（bbcf472）。ヘッダを足す順番が `status` の前に変わったが、HTTP のヘッダの集合は同じ
+- F-2（should）: `pcv://` の4つの応答の CORS ヘッダを関数 `allow_fetch_from_dev_server_origin` に出し、4つの応答が全部ヘッダを持つことをテスト `every_pcv_response_allows_fetch_from_the_dev_server_origin` で確かめる（bbcf472）。ヘッダを足す順番が `status` の前に変わったが、HTTP のヘッダの集合は同じ
 - 構成の負債（should）: `import/convert.rs` の `PROGRESS_REPORT_STRIDE` を消して `streaming.rs` のものを使う（2294929）。下のスクリプトで見つけた同じ形の `READ_BATCH_SIZE`（`merge.rs`・`import/las.rs`）も `streaming.rs` の1つにした（`pub(crate)`）。examples の `READ_BATCH_SIZE` はクレートの外なので残した
 - F-3（nit）: リターン別の旧点数に `LEGACY_POINTS_BY_RETURN_UNUSED_IN_LAS_1_4` を足した（38f1a78）
 - F-4（nit）: `statvfs` の2つ目の `unsafe` の前にも `// SAFETY:` の1行を置き、1つ目の行は `zeroed` の根拠に書き直した（61394b7）

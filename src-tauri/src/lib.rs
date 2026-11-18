@@ -205,8 +205,7 @@ mod tests {
     use pcv_core::NodeKey;
 
     #[test]
-    fn every_pcv_response_allows_fetch_from_the_dev_server_origin_localhost_1420_which_differs_from_pcv(
-    ) {
+    fn every_pcv_response_allows_fetch_from_the_dev_server_origin() {
         let responses = [
             octet_stream_response(vec![1, 2, 3]),
             bad_request_response("bad"),
