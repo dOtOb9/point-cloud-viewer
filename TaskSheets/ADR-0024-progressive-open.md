@@ -49,13 +49,13 @@
 | `src/renderer/node-cache.ts:69` | `removeByPrefix` | キーを指定してバッファを捨てる口は無い（レイヤーを消すときだけ）。`NodeCache.remove` を足す理由 |
 | `src/renderer/animation.ts:30` | `nodeFadeFactor` | まだ描いていないノード（`firstDrawnAtMs === null`）は 0 から始まる。後継が前の世代の値を引き継がないと点滅する |
 | `src/renderer/device-profile.ts:90` | `DESKTOP_POINT_CACHE_MEMORY_BUDGET_BYTES` | デスクトップのキャッシュ予算は 1 GiB（`pointBudgetMax` 約 2,684 万点の元） |
-| `crates/pcv-convert/src/streaming.rs:270` | `convert_and_timings` | 単一 LAS/LAZ の入口。進捗は件数だけを渡す |
-| `crates/pcv-convert/src/merge.rs:506` | `merge_paths_and_timings` | 複数 LAS の入口（別の読み手） |
+| `crates/pcv-convert/src/streaming.rs:114` | `convert_and_timings` | 単一 LAS/LAZ の入口。進捗は件数だけを渡す |
+| `crates/pcv-convert/src/merge.rs:360` | `merge_paths_and_timings` | 複数 LAS の入口（別の読み手） |
 | `vendor/copc-writer/src/writer.rs:759` | `memory_budget_bytes` | 変換のメモリ内予算は開始時の値を一度だけ割って使う。途中では変えられない |
 
 ## 数えた物
 
-- 変換の入口（デスクトップ）: `grep -rn "pub fn convert_and_timings|pub fn merge_paths_and_timings|pub fn convert_paths_to_copc_and_timings|pub fn convert_to_copc_and_timings" crates/pcv-convert/src` の結果は 4 行（`import/merge.rs:75`、`import/mod.rs:156`、`merge.rs:506`、`streaming.rs:270`）。Web は `crates/pcv-wasm` の別の読み手で 1 系統（`convert.rs` の `finish` など）。計 5 つ
+- 変換の入口（デスクトップ）: `grep -rn "pub fn convert_and_timings|pub fn merge_paths_and_timings|pub fn convert_paths_to_copc_and_timings|pub fn convert_to_copc_and_timings" crates/pcv-convert/src` の結果は 4 行（`import/merge.rs:47`、`import/mod.rs:96`、`merge.rs:360`、`streaming.rs:114`）。Web は `crates/pcv-wasm` の別の読み手で 1 系統（`convert.rs` の `finish` など）。計 5 つ
 - 点予算を使う者: `selectNodesForLayers` の呼び出しは `point-cloud-renderer.ts` の 1 か所（全レイヤーで 1 つの予算）。レイヤーごとの予算は無い
 
 ## 整合の確認
