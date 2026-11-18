@@ -117,3 +117,11 @@
 
 - F-1（should）: `tauri.ts` の `readNode` の `panicMessageFromBackend` を `errorMessageFromBackend` にした（400 の `ReadNodeError::Normal` の本文も受けるため。使い手は同じ関数の中の 1 か所）。表の `tauri.ts:readNode` の行も直した
 - F-2（nit）: `TaskSheets/RECURRENCE.md` の CM-2 の節のコミットを、付け替え後のハッシュ `6613450` に直した
+
+### 監査の記録
+
+| ラウンド | 監査役 | 判定 | 主な指摘 |
+|---|---|---|---|
+| R1 | ループ | APPROVE | F-1 [should] `attempt`・`attemptSync` の名前から「失敗を捨てる」が読めず、使われない boolean を返す → `ignoreFailure`・`ignoreFailureSync`（void）。F-2〜F-4 [nit]。構成の負債: `src/state/useOpfsStorage.ts:102` の `clearOpfsScratchDirs` がロックの外で掃除を呼ぶ（別タスクへ） |
+| RP R1 | ループ | APPROVE | AGENTS.md に「コメントを名前に移すときは何が起きるかを名前に」。nit: lint にできないという主張の根拠を添える |
+| PR R1 | PR・CI | APPROVE | CI run 44268928501 は緑。F-1 [should] `panicMessageFromBackend` は 400 も受ける → `errorMessageFromBackend`（2950747）。F-2・F-3 [nit] RECURRENCE のハッシュと見出し。直した後の CI は下のマージ前の run で確かめる |
