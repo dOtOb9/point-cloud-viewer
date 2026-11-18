@@ -7,7 +7,7 @@
 
 ## メインが決めたこと（所有者の判断が要れば覆す）
 
-- **例外**（消さない・検査で許す）は、道具が読む指示だけ: `eslint-disable*`・`@ts-expect-error`・`@ts-ignore`・`/// <reference …>`・`@vitest-environment`・shebang（`#!`）・`// @ts-check`。
+- **例外**（消さない・検査で許す）は、道具が読む指示だけ: `eslint-disable*`・`@ts-expect-error`・`/// <reference …>`・`@vitest-environment`・shebang（`#!`）・`// @ts-check`。
   加えて、`unsafe` ブロック・`unsafe impl` の**直前の1行**の `// SAFETY: …`（Rust で `unsafe` の理由を書く慣習。消すと安全の根拠がどこにも無くなる）
 - Rust の文書コメント（`///`・`//!`）も消す。外部プラグイン向けの API の説明（ADR-0023）は、コードのコメントでなく `docs/book/` に書く
 - **対象外**: `vendor/`（上流のコード）、生成物（`src/wasm/`、`*.generated.tsx`）、Markdown・HTML の文書（`docs/`・`TaskSheets/`）
