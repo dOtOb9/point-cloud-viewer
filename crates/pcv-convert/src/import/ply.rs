@@ -5,6 +5,8 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use super::point::{PointSource, RawPoint};
 use super::ImportError;
 
+const U8_TO_U16_FULL_RANGE_FACTOR: u16 = 257;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PlyError {
     #[error("入出力エラー: {0}")]
@@ -239,7 +241,7 @@ impl VertexLayout {
 fn scale_channel_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
-            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(257)
+            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(U8_TO_U16_FULL_RANGE_FACTOR)
         }
         _ => value.round().clamp(0.0, 65535.0) as u16,
     }
@@ -248,7 +250,7 @@ fn scale_channel_to_u16(value: f64, ty: ScalarType) -> u16 {
 fn scale_intensity_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
-            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(257)
+            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(U8_TO_U16_FULL_RANGE_FACTOR)
         }
         ScalarType::Float32 | ScalarType::Float64 => {
             (value.clamp(0.0, 1.0) * 65535.0).round() as u16
