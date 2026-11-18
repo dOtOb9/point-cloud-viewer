@@ -1,8 +1,3 @@
-// `test`フィールド(vitestの設定)の型を効かせるため、defineConfigは"vite"ではなく
-// "vitest/config"から取る(vite本体のUserConfigに`test`を足した上位互換の型で、
-// `vite build`/`vite dev`にもそのまま使える。トリプルスラッシュ参照
-// (`/// <reference types="vitest/config" />`)でも同じことができるが、
-// eslintの@typescript-eslint/triple-slash-referenceに引っかかるためimport形式にした)。
 import { defineConfig, configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -10,23 +5,17 @@ import tailwindcss from "@tailwindcss/vite";
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
-// GitHub Pagesはリポジトリのサブパス(https://<owner>.github.io/point-cloud-viewer/)で
-// 配信されるため、そのときだけ`base`をサブパスに変える。Tauri版のビルド
-// (`npm run tauri build`。frontendDistをwebviewが配信する)は既定の"/"のままでよい
-// (これまでどおり動く。TaskSheets/ADR-0012-web-worker-sync-io.md参照)。
-// `.github/workflows/pages.yml`がビルド時にこの環境変数を立てる。
 const isGithubPagesBuild = process.env.GITHUB_PAGES_BUILD === "true";
+const GITHUB_PAGES_SUBPATH = "/point-cloud-viewer/";
 
-// https://vite.dev/config/
+const AGENT_WORKTREES_THAT_COPY_THIS_REPOSITORY = ".claude/**";
+const PLAYWRIGHT_SPECS_RUN_BY_NPM_RUN_E2E = "e2e/**";
+
 export default defineConfig(() => ({
-  base: isGithubPagesBuild ? "/point-cloud-viewer/" : "/",
+  base: isGithubPagesBuild ? GITHUB_PAGES_SUBPATH : "/",
   plugins: [react(), tailwindcss()],
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
@@ -39,24 +28,11 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
   },
 
   test: {
-    // `.claude/worktrees/`配下にエージェント用の別worktree(このリポジトリ自身の
-    // フルコピー)が作られることがあり、既定のexcludeだけではそこにあるテストまで
-    // 拾ってしまう(ルートでnpm testを実行すると、worktree分が二重に数えられて
-    // 件数が実際より大きく出る)。vitestのconfigDefaults.excludeは指定すると
-    // 丸ごと上書きされる仕様なので、既定値を展開した上で`.claude/**`を追加する
-    // (既定の除外(node_modules等)を消さない)。
-    //
-    // `e2e/**`: Playwright(`playwright.config.ts`)のE2Eテストは`*.spec.ts`という
-    // vitestの既定パターンにも一致してしまう。vitestとPlaywrightのテストランナーは
-    // 別物(E2Eは`npm run e2e`でPlaywrightから実行する)なので、vitestからは
-    // 除外する(除外しないと`npm test`が「test()はここで呼べない」エラーで
-    // 落ちる。実際に確認済み)。
-    exclude: [...configDefaults.exclude, ".claude/**", "e2e/**"],
+    exclude: [...configDefaults.exclude, AGENT_WORKTREES_THAT_COPY_THIS_REPOSITORY, PLAYWRIGHT_SPECS_RUN_BY_NPM_RUN_E2E],
   },
 }));
