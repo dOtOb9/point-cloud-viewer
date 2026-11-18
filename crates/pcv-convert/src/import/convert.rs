@@ -8,14 +8,12 @@ use copc_writer::{
 };
 
 use crate::stage_timings::ConversionStageTimings;
-use crate::streaming::ReadProgress;
+use crate::streaming::{ReadProgress, PROGRESS_REPORT_STRIDE};
 
 use super::point::{PointSource, RawPoint};
 use super::{ImportError, ImportSummary};
 
 const POINT_FORMAT_IGNORED_BY_COPC_WRITER_WHICH_PICKS_6_OR_7_FROM_COLOR: u8 = 0;
-
-const PROGRESS_REPORT_STRIDE: u64 = 4096;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_import<S: PointSource>(
