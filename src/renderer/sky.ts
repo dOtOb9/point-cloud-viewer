@@ -69,6 +69,7 @@
 // （詳細はdraw()のコメント参照）。
 
 import type { Vec3 } from "./up-axis";
+import skyWgsl from "./shaders/sky.wgsl?raw";
 
 export type BackgroundMode = "sky" | "solid-dark" | "solid-light";
 
@@ -113,73 +114,7 @@ const SKY_COLORS: SkyColors = {
   horizonLine: [0.7, 0.74, 0.78],
 };
 
-const SKY_SHADER_SRC = /* wgsl */ `
-struct SkyUniforms {
-  // カメラ基底（JS側(f64)でmat4.tsのcameraBasis()から求める。draw()のコメント参照）。
-  // ワールド空間の行列やeyeの絶対座標はここには無い。
-  forward: vec4<f32>,      // xyzだけ使う。カメラの視線方向(eye->target正規化)
-  rightScaled: vec4<f32>,  // xyzだけ使う。right * tan(fovY/2) * アスペクト比
-  upScaled: vec4<f32>,     // xyzだけ使う。up * tan(fovY/2)
-  upAxis: vec4<f32>,       // xyzだけ使う。M2-0b: 上方向はここでも1箇所（このuniform）を経由する
-  zenithColor: vec4<f32>,  // rgbだけ使う
-  horizonColor: vec4<f32>,
-  groundColor: vec4<f32>,
-  horizonLineColor: vec4<f32>,
-};
-@group(0) @binding(0) var<uniform> u: SkyUniforms;
-
-struct VertexOut {
-  @builtin(position) clipPosition: vec4<f32>,
-  // NDC座標（位置）。線形補間が正しいのはこれだけ（ファイル冒頭の教訓1参照。
-  // 方向ベクトルを直接ここに乗せて補間してはいけない）。
-  @location(0) ndc: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
-  // 画面全体を覆う巨大三角形（頂点バッファ不要）。
-  var positions = array<vec2<f32>, 3>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>(3.0, -1.0),
-    vec2<f32>(-1.0, 3.0),
-  );
-  var out: VertexOut;
-  let p = positions[vertexIndex];
-  out.clipPosition = vec4<f32>(p, 0.0, 1.0);
-  out.ndc = p;
-  return out;
-}
-
-@fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-  // このピクセルのレイ方向を、画素ごとに基底から直接組み立てる（NDCがいくつでも
-  // 厳密。ファイル冒頭の「対策（2回目）」参照）。
-  let dir = normalize(u.forward.xyz + in.ndc.x * u.rightScaled.xyz + in.ndc.y * u.upScaled.xyz);
-
-  let up = normalize(u.upAxis.xyz);
-  let t = dot(dir, up); // 1: 天頂, 0: 地平線, -1: 真下
-
-  var color: vec3<f32>;
-  if (t >= 0.0) {
-    // 地平線寄りの角度で急に暗くなるよう、指数を掛けて空らしいグラデーションにする。
-    let k = pow(clamp(t, 0.0, 1.0), 0.7);
-    color = mix(u.horizonColor.rgb, u.zenithColor.rgb, k);
-  } else {
-    // 地平線の下: 空だけだと下を向いたときに背景が消えるため、別の色(ground)へ落とす。
-    let k = clamp(-t, 0.0, 1.0);
-    color = mix(u.horizonColor.rgb, u.groundColor.rgb, k);
-  }
-
-  // 地平線を明示する細い線（M2-0c補強）。グラデーションの濃淡だけでは境界として
-  // 読めなかったという実機報告への対策。tのスクリーン空間微分(fwidth)を線幅の
-  // 基準にすることで、距離やズームによらずおよそ同じ太さの線になる。
-  let lineWidth = max(fwidth(t), 0.0005) * 1.5;
-  let lineFactor = 1.0 - smoothstep(0.0, lineWidth, abs(t));
-  color = mix(color, u.horizonLineColor.rgb, lineFactor);
-
-  return vec4<f32>(color, 1.0);
-}
-`;
+const SKY_SHADER_SRC = skyWgsl;
 
 const SKY_UNIFORM_FLOATS =
   4 * 3 /* forward/rightScaled/upScaled */ + 4 /* upAxis */ + 4 * 4 /* colors (zenith/horizon/ground/horizonLine) */;

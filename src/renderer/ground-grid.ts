@@ -46,6 +46,7 @@
 // `upScaled`はカメラ基底（`mat4.ts`の`cameraBasis()`）から求める。
 
 import type { Vec3 } from "./up-axis";
+import groundGridWgsl from "./shaders/ground-grid.wgsl?raw";
 
 /** 既定はオン。策定時はオフだったが、実機フィードバックを受けて空(sky.ts)と
  *  合わせてオンに変更した。経緯はTaskSheets/M2-shading-and-ui.md M2-0cに記録して
@@ -100,119 +101,7 @@ export function floorMod(a: number, m: number): number {
   return a - Math.floor(a / m) * m;
 }
 
-const GRID_SHADER_SRC = /* wgsl */ `
-struct GridUniforms {
-  // カメラ基底（sky.tsと同じ方式。ワールド空間の行列やeyeの絶対座標は
-  // ここには無い。ファイル冒頭のコメント参照）。
-  viewForward: vec4<f32>,      // xyzだけ使う。カメラの視線方向(eye->target正規化)
-  viewRightScaled: vec4<f32>,  // xyzだけ使う。right * tan(fovY/2) * アスペクト比
-  viewUpScaled: vec4<f32>,     // xyzだけ使う。up * tan(fovY/2)
-  upAxis: vec4<f32>,           // xyzだけ使う。シーンの上方向（グリッド平面の法線）
-  // グリッド平面に沿った水平基底（up-axis.tsのhorizontalBasis。カメラ基底とは別物、
-  // シーンのupAxisに直交する）。グリッド線の格子座標(uCoord/vCoord)を作るのに使う。
-  gridRight: vec4<f32>,    // xyzだけ使う
-  gridForward: vec4<f32>,  // xyzだけ使う
-  // x: 平面の高さ(カメラからの相対値。groundHeight - eyeHeight), y: セルサイズ,
-  // z: フェード距離, w: 1なら平行投影(TP-1。0なら透視)。平行投影のときは
-  // viewRightScaled/viewUpScaledが「画面の端までの実寸(ワールド単位)」を表す
-  // (right * アスペクト比 * 見える高さの半分 / up * 見える高さの半分)。
-  params: vec4<f32>,
-  // x: カメラ位置のgridRight成分をセルサイズで割った余り, y: 同gridForward成分の余り,
-  // z, w: 未使用。ワールド座標の絶対値の代わりにこれを使う（ファイル冒頭のコメント）。
-  phase: vec4<f32>,
-  lineColor: vec4<f32>, // rgb: 線の色, a: 最大不透明度
-};
-@group(0) @binding(0) var<uniform> u: GridUniforms;
-
-struct VertexOut {
-  @builtin(position) clipPosition: vec4<f32>,
-  // NDC座標（位置）。線形補間が正しいのはこれだけ（sky.tsファイル冒頭の教訓1参照。
-  // 方向ベクトルを直接ここに乗せて補間してはいけない）。
-  @location(0) ndc: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
-  // 画面全体を覆う巨大三角形（頂点バッファ不要。sky.tsと同じ手法）。
-  var positions = array<vec2<f32>, 3>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>(3.0, -1.0),
-    vec2<f32>(-1.0, 3.0),
-  );
-  var out: VertexOut;
-  let p = positions[vertexIndex];
-  out.clipPosition = vec4<f32>(p, 0.0, 1.0);
-  out.ndc = p;
-  return out;
-}
-
-@fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-  // このピクセルのレイ方向を、画素ごとに基底から直接組み立てる（NDCがいくつでも
-  // 厳密。sky.tsファイル冒頭の「対策（2回目）」参照）。カメラを原点とする座標系
-  // (カメラ相対)ですべて計算する。eyeの絶対座標そのものは登場しない。
-  // TP-1: 透視では全レイがカメラ位置から出て方向が画素ごとに違う。平行投影では全レイの方向が
-  // 視線と同じで、出発点が画素ごとに視線に直交する向きへずれる(rayOrigin。カメラ相対)。
-  let orthographic = u.params.w > 0.5;
-  var dir = normalize(u.viewForward.xyz);
-  var rayOrigin = vec3<f32>(0.0, 0.0, 0.0);
-  if (orthographic) {
-    rayOrigin = in.ndc.x * u.viewRightScaled.xyz + in.ndc.y * u.viewUpScaled.xyz;
-  } else {
-    dir = normalize(u.viewForward.xyz + in.ndc.x * u.viewRightScaled.xyz + in.ndc.y * u.viewUpScaled.xyz);
-  }
-  let up = normalize(u.upAxis.xyz);
-
-  let relGroundHeight = u.params.x; // 平面の高さ(カメラからの相対値)
-  let cellSize = u.params.y;
-  let fadeDistance = u.params.z;
-
-  // レイと水平面の交点（カメラ相対）。denomがほぼ0ならレイが面とほぼ平行
-  // （地平線を真横に見ている）で交点が定まらない。
-  let denom = dot(dir, up);
-  if (abs(denom) < 1e-6) {
-    discard;
-  }
-  let t = (relGroundHeight - dot(rayOrigin, up)) / denom;
-  // 交点がカメラの後ろ（＝面は視線の逆側）。平行投影では、カメラの面より後ろにも描くので
-  // (投影行列のニアが負。projection.ts)、後ろでも捨てない。
-  if (t <= 0.0 && !orthographic) {
-    discard;
-  }
-
-  // カメラから交点までの差分（カメラ相対なので、これがそのまま交点の座標）。
-  let hitRel = rayOrigin + dir * t;
-  let hitU = dot(hitRel, u.gridRight.xyz);
-  let hitV = dot(hitRel, u.gridForward.xyz);
-
-  // グリッドの位相はカメラ位置の余り(u.phase)にhitRelを足して作る。世界座標の
-  // 整数部（大きい）を経由しないので、f32でも精度が落ちない。整数個のcellSizeが
-  // 混じっていてもfract()で消えるので、位相さえ合っていれば結果は変わらない。
-  let uCoord = (u.phase.x + hitU) / cellSize;
-  let vCoord = (u.phase.y + hitV) / cellSize;
-
-  // アンチエイリアスされた格子線。fwidth()でスクリーン空間の変化率を求め、
-  // それを線幅の基準にすることで、距離やズームによらずおよそ同じ太さになる
-  // （モアレを避けるため、近傍のセルの半分の位置(0.5)を中心に線を引く）。
-  let du = max(fwidth(uCoord), 1e-6);
-  let dv = max(fwidth(vCoord), 1e-6);
-  let lineU = 1.0 - min(abs(fract(uCoord - 0.5) - 0.5) / du, 1.0);
-  let lineV = 1.0 - min(abs(fract(vCoord - 0.5) - 0.5) / dv, 1.0);
-  let intensity = max(lineU, lineV);
-
-  // 遠方はフェードさせ、格子が密集してモアレになるのを避ける（カメラ相対なので
-  // 交点までの距離はhitRelの長さそのもの）。平行投影では「遠い」ことに意味が無いので、
-  // 視線からの横ずれ(画面の中心からの実寸)で測る。
-  let dist = select(length(hitRel), length(rayOrigin), orthographic);
-  let fade = 1.0 - smoothstep(fadeDistance * 0.5, fadeDistance, dist);
-
-  let alpha = intensity * fade * u.lineColor.a;
-  if (alpha <= 0.001) {
-    discard;
-  }
-  return vec4<f32>(u.lineColor.rgb, alpha);
-}
-`;
+const GRID_SHADER_SRC = groundGridWgsl;
 
 const GRID_UNIFORM_FLOATS =
   4 * 3 /* viewForward/viewRightScaled/viewUpScaled */ +

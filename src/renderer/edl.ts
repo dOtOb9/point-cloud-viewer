@@ -68,6 +68,8 @@
 //
 // 検算: ndcDepth=0(近クリップ)でlinearDepth=near、ndcDepth=1(遠クリップ)で
 // linearDepth=farになる。下のテストで確認している。
+import edlWgsl from "./shaders/edl.wgsl?raw";
+
 
 /** EDLの既定のオン/オフ。既定はオン（タスクシートの指示通り）。 */
 export const DEFAULT_EDL_ENABLED = true;
@@ -195,110 +197,10 @@ function wgslFloat(value: number): string {
   return value.toFixed(4);
 }
 
-const EDL_SHADER_SRC = /* wgsl */ `
-struct EdlUniforms {
-  strength: f32,        // 強さ。0で無効(元の色のまま)
-  radiusPx: f32,        // 近傍として見る距離(スクリーンピクセル)
-  near: f32,
-  far: f32,
-  viewportWidth: f32,
-  viewportHeight: f32,
-  // TP-1: 0 = perspective. > 0 = orthographic, and the orbit distance used as the reference length
-  // (near/far are then the orthographic eye-distance range). See edl.ts edlLogDepthOrtho().
-  orthoRef: f32,
-  _pad1: f32,
-};
-@group(0) @binding(0) var<uniform> u: EdlUniforms;
-// 点群だけをオフスクリーンに描いた色と深度（sky.ts/ground-grid.tsのファイル冒頭
-// コメント、およびこのファイル冒頭の「空・グリッドとの分離」参照）。
-// textureLoadで整数ピクセル座標を直接読むので、サンプラーは要らない
-// (フィルタリングをしない=補間による誤差が入らない、というメリットもある)。
-@group(0) @binding(1) var pointColor: texture_2d<f32>;
-@group(0) @binding(2) var pointDepth: texture_depth_2d;
-
-struct VertexOut {
-  @builtin(position) clipPosition: vec4<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
-  // 画面全体を覆う巨大三角形（頂点バッファ不要。sky.ts/ground-grid.tsと同じ手法）。
-  // このパスはNDC位置以外何も要らない(方向ベクトルの復元は不要)ので、
-  // sky.ts/ground-grid.tsが踏んだ「方向ベクトルの線形補間」の罠はそもそも関係ない。
-  var positions = array<vec2<f32>, 3>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>(3.0, -1.0),
-    vec2<f32>(-1.0, 3.0),
-  );
-  var out: VertexOut;
-  out.clipPosition = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
-  return out;
-}
-
-// NDC深度(0..1)をカメラからの実距離に戻す。edl.tsのlinearizeDepth()と同じ式
-// （TypeScript版はvitestで検証済み。WGSL側は手での再実装であり、GPUが無いと
-// 直接はテストできない。式が一致していることは目視で保つ）。
-fn linearizeDepth(ndcDepth: f32) -> f32 {
-  return (u.near * u.far) / (u.far - ndcDepth * (u.far - u.near));
-}
-
-// TP-1: the value compared between neighbours. Same as edl.ts edlLogDepth() / edlLogDepthOrtho().
-fn logDepth(ndcDepth: f32) -> f32 {
-  if (u.orthoRef > 0.0) {
-    let eyeDistance = u.near + ndcDepth * (u.far - u.near);
-    return eyeDistance / (u.orthoRef * 0.6931472);
-  }
-  return log2(linearizeDepth(ndcDepth));
-}
-
-@fragment
-fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
-  let dims = vec2<i32>(textureDimensions(pointDepth));
-  let coord = vec2<i32>(i32(fragCoord.x), i32(fragCoord.y));
-
-  let ownDepthNdc = textureLoad(pointDepth, coord, 0);
-  if (ownDepthNdc >= 1.0) {
-    // このピクセルには点が1つも描かれていない(オフスクリーンパスのクリア値=
-    // 遠クリップのまま)。discardして何も書かない＝空・グリッド・単色の背景が
-    // そのまま残る。EDLの陰影が点群にしか掛からないのはこの判定による
-    // (タスクシートの必須要件。ファイル冒頭の「空・グリッドとの分離」参照)。
-    discard;
-  }
-
-  let color = textureLoad(pointColor, coord, 0);
-  let ownLog = logDepth(ownDepthNdc);
-
-  // 8方向の近傍と比べる(Potreeと同じ本数)。近傍座標は画面端でクランプし、
-  // 範囲外アクセス（textureLoadの範囲外は0を返す仕様で、深度0=近クリップ=
-  // 「異常に手前」という誤った値になってしまう）を避ける。
-  var neighbourOffsets = array<vec2<f32>, 8>(
-    vec2<f32>(1.0, 0.0), vec2<f32>(-1.0, 0.0), vec2<f32>(0.0, 1.0), vec2<f32>(0.0, -1.0),
-    vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, -1.0),
-  );
-
-  var responseSum: f32 = 0.0;
-  for (var i = 0; i < 8; i = i + 1) {
-    let offset = vec2<i32>(round(neighbourOffsets[i] * u.radiusPx));
-    let neighbourCoord = clamp(coord + offset, vec2<i32>(0, 0), dims - vec2<i32>(1, 1));
-    let neighbourDepthNdc = textureLoad(pointDepth, neighbourCoord, 0);
-    if (neighbourDepthNdc < 1.0) {
-      // 近傍にも点がある場合だけ寄与を足す。近傍が背景(点が無い)場合は無視する
-      // (edl.tsのedlShadingFactor()コメント参照。除外しない場合、背景の深度=遠方を
-      // 「大きな凹み」と誤検出してしまう)。
-      // メートルではなくlog2の差（距離の比）で比べる。edl.tsのedlShadingFactor()と同じ式
-      // （平行投影のときの比べる値はlogDepth()参照）。
-      responseSum = responseSum + max(0.0, ownLog - logDepth(neighbourDepthNdc));
-    }
-  }
-  let response = responseSum / 8.0;
-
-  // スケール定数(EDL_RESPONSE_SCALE)と下限(EDL_MIN_SHADE)はedl.tsの定数を埋め込んでいる
-  // (TypeScript版edlShadingFactor()と同じ式。edl.ts冒頭のコメント参照)。
-  let shade = max(${wgslFloat(EDL_MIN_SHADE)}, exp(-response * ${wgslFloat(EDL_RESPONSE_SCALE)} * u.strength));
-
-  return vec4<f32>(color.rgb * shade, 1.0);
-}
-`;
+const EDL_SHADER_SRC =
+  `const EDL_MIN_SHADE: f32 = ${wgslFloat(EDL_MIN_SHADE)};\n` +
+  `const EDL_RESPONSE_SCALE: f32 = ${wgslFloat(EDL_RESPONSE_SCALE)};\n` +
+  edlWgsl;
 
 /**
  * EDLの合成パス。点群だけを描いたオフスクリーンの色+深度テクスチャを読み、

@@ -13,7 +13,7 @@ const LIMIT = 800;
 /** Files already over LIMIT, with the most lines they may have. Only ever lowered. */
 const BASELINE: Record<string, number> = {
   "src/datasource/copc.worker.ts": 1376,
-  "src/renderer/gpu-resources.ts": 1235,
+  "src/renderer/gpu-resources.ts": 1015,
   "src/renderer/point-cloud-renderer.ts": 1309,
 };
 
@@ -125,5 +125,23 @@ describe("which typing check a key uses", () => {
   });
   it("the view keys use isTypingTarget", () => {
     expect(FILES.find(([p]) => p === "src/app/view.ts")?.[1] ?? "").toContain("isTypingTarget(");
+  });
+});
+
+export function hasWgslEntryPoint(text: string): boolean {
+  return /@(vertex|fragment|compute)\b/.test(text);
+}
+
+describe("shaders stay in src/renderer/shaders/*.wgsl", () => {
+  it("finds a WGSL entry point in a TypeScript string, marked or not", () => {
+    expect(hasWgslEntryPoint("const SHADER = /* wgsl */ `\n@compute @workgroup_size(1)\nfn main() {}\n`;")).toBe(true);
+    expect(hasWgslEntryPoint("const SRC = `\n@vertex\nfn vs_main() {}\n`;")).toBe(true);
+    expect(hasWgslEntryPoint('const s = "@fragment fn fs_main() {}";')).toBe(true);
+    expect(hasWgslEntryPoint("import skyWgsl from \"./shaders/sky.wgsl?raw\";")).toBe(false);
+  });
+
+  it("no TypeScript source outside tests has a WGSL entry point (@vertex, @fragment, @compute)", () => {
+    const offenders = FILES.filter(([path, text]) => !isTest(path) && hasWgslEntryPoint(text)).map(([path]) => path);
+    expect(offenders, "put the shader in src/renderer/shaders/<name>.wgsl and import it with ?raw").toEqual([]);
   });
 });
