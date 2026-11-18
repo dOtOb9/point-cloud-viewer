@@ -36,7 +36,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::File;
 
 use crate::file_reader::FileRangeReader;
-use crate::stats::Stats;
+use crate::stats::BytesReadCounter;
 
 /// The largest raster the Web build accepts (cells). Everything is in the Worker's wasm
 /// memory (4 GiB at most), so it is a quarter of the desktop's. See
@@ -52,7 +52,10 @@ fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
 }
 
 fn open_source(file: File) -> Source {
-    BufReader::with_capacity(READ_BUFFER_BYTES, FileRangeReader::new(file, Stats::new()))
+    BufReader::with_capacity(
+        READ_BUFFER_BYTES,
+        FileRangeReader::new(file, BytesReadCounter::new()),
+    )
 }
 
 /// What the headers say that both classes need: layout facts, extent and CRS.

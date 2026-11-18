@@ -1,21 +1,3 @@
-//! L2-C: Web version of "write only the points of a COPC file that match a condition
-//! into a new COPC file" (point selection, cross section).
-//!
-//! The read side is the same as on desktop (`crates/pcv-convert/src/extract.rs`):
-//! `pcv_core::extract::ExtractPoints` reads only the nodes that intersect the
-//! condition and holds one node of points at a time. The write side is the same as
-//! the Web conversion (`convert.rs`): `SpillWriter` then
-//! `write_copc_from_spill_with_fs_and_timings` (temporary files and output on OPFS).
-//! No new octree / writer code.
-//!
-//! Cancellation also works like the conversion (see the top of `convert.rs`): the
-//! caller (the TypeScript Worker) calls `feed` repeatedly with small batches and
-//! yields to the event loop in between. It cannot be cancelled during `finish`
-//! (octree build and write).
-//!
-//! With zero points, `finish` fails (with "選んだ範囲に点がありません") before it
-//! starts writing.
-
 use std::io::BufReader;
 use std::path::Path;
 use std::time::Duration;
@@ -33,13 +15,11 @@ use web_time::Instant;
 use crate::convert::handles_from_js_array;
 use crate::file_reader::FileRangeReader;
 use crate::opfs::OpfsScratchFs;
-use crate::stats::Stats;
+use crate::stats::BytesReadCounter;
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
-/// Read-ahead buffer of the source reader. One node (one LAZ chunk) fits in a single read, so it is small.
 const READ_BUFFER_BYTES: usize = 256 * 1024;
 
-/// Same text as the desktop `ExtractError::EmptySelection`.
 const EMPTY_SELECTION_MESSAGE: &str = "選んだ範囲に点がありません";
 
 pub(crate) type Source = BufReader<FileRangeReader>;
@@ -48,16 +28,11 @@ fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
 
-/// Progress returned by `feed`.
 #[derive(Serialize)]
 pub struct ExtractFeedDto {
-    /// Points read so far.
     pub points_scanned: u64,
-    /// Total points of the nodes that will be read (denominator of progress).
     pub candidate_points: u64,
-    /// Matching points written.
     pub points_matched: u64,
-    /// Reading is finished (go on to `finish`).
     pub done: bool,
 }
 
@@ -76,13 +51,14 @@ pub struct WasmExtractor {
 }
 
 pub(crate) fn open_source(file: File) -> Source {
-    BufReader::with_capacity(READ_BUFFER_BYTES, FileRangeReader::new(file, Stats::new()))
+    BufReader::with_capacity(
+        READ_BUFFER_BYTES,
+        FileRangeReader::new(file, BytesReadCounter::new()),
+    )
 }
 
 #[wasm_bindgen]
 impl WasmExtractor {
-    /// `file` is the source COPC; `filter` is the `ExtractFilter` JSON (shape in `src/datasource/tools.ts`).
-    /// The scratch-file pool and output handle are the same ones the conversion (`WasmConverter`) uses.
     #[wasm_bindgen(constructor)]
     pub fn new(
         file: File,
@@ -96,7 +72,6 @@ impl WasmExtractor {
             .map_err(|e| JsValue::from_str(&format!("抽出の条件が正しくありません: {e}")))?;
         let file_size_bytes = file.size() as u64;
 
-        // Read the header (layout and output metadata) with `las`; no point data is read.
         let header_reader = las::Reader::new(open_source(file.clone()))
             .map_err(|e| JsValue::from_str(&format!("ヘッダーを読めませんでした: {e}")))?;
         let layout = StreamingLayout::from_las_header(header_reader.header());
@@ -125,7 +100,6 @@ impl WasmExtractor {
         })
     }
 
-    /// Takes up to `batch_size` points and writes them to the spill. Go to `finish` when `done`.
     pub fn feed(&mut self, batch_size: u32) -> Result<JsValue, JsValue> {
         let spill = self
             .spill
@@ -164,7 +138,6 @@ impl WasmExtractor {
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }
 
-    /// Builds the octree and writes the OPFS output. Fails (writing nothing) for zero points.
     pub fn finish(mut self) -> Result<JsValue, JsValue> {
         let spill = self
             .spill

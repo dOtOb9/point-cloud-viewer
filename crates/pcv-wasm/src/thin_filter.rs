@@ -1,16 +1,3 @@
-//! G3-5: Web version of thinning and the outlier filters (ROR, SOR). It writes the kept points of a COPC
-//! file into a new COPC file on OPFS.
-//!
-//! The work is `pcv_core::thin_filter_job::ThinFilterJob`, the same decision functions as the desktop
-//! `pcv_convert::thin_filter`. A Worker cannot be told to stop while a long call runs, so the Worker calls
-//! `advance` repeatedly (one tile of the source per call) and yields to the event loop between calls,
-//! where a cancel message is handled. This is the same shape as `WasmExtractor::feed`. The write side
-//! is the same as `extract.rs`: `SpillWriter`, then `write_copc_from_spill_with_fs_and_timings`.
-//!
-//! Memory: one tile (+ margin) of the source, plus the spill on OPFS. `advance` does not keep the tile.
-//! It cannot be cancelled during `finish` (octree build and write). With zero kept points, `finish`
-//! fails with "残る点がありません" (the desktop `ThinFilterError::EmptyResult` text) before writing.
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -29,27 +16,19 @@ use crate::extract::{open_source, Source};
 use crate::opfs::OpfsScratchFs;
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
-/// Target points per tile core. Smaller than the desktop's 2,000,000 because a Worker has less memory
-/// (a tile holds full point records and the filter's grid).
 const TILE_CAP_POINTS: u64 = 500_000;
 
-/// Same text as the desktop `ThinFilterError::EmptyResult`.
 const EMPTY_RESULT_MESSAGE: &str = "残る点がありません";
 
 fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
 
-/// Progress returned by `advance`.
 #[derive(Serialize)]
 pub struct ThinFilterStepDto {
-    /// Core points handled so far (every point once per pass).
     pub points_read: u64,
-    /// The header's point count times the number of passes.
     pub total_points: u64,
-    /// Points written so far.
     pub points_kept: u64,
-    /// Reading is finished (go on to `finish`).
     pub done: bool,
 }
 
@@ -78,7 +57,6 @@ impl WasmThinFilter {
     ) -> Result<WasmThinFilter, JsValue> {
         let file_size_bytes = file.size() as u64;
 
-        // Read the header (layout and output metadata) with `las`; no point data is read.
         let header_reader = las::Reader::new(open_source(file.clone()))
             .map_err(|e| JsValue::from_str(&format!("ヘッダーを読めませんでした: {e}")))?;
         let layout = StreamingLayout::from_las_header(header_reader.header());
@@ -109,9 +87,6 @@ impl WasmThinFilter {
 
 #[wasm_bindgen]
 impl WasmThinFilter {
-    /// Thinning. `file` is the source COPC; `request` is the `ThinRequest` JSON (shape in
-    /// `src/datasource/thin-filter.ts`, lengths in the file's unit). The scratch-file pool and output handle
-    /// are the same ones the conversion uses.
     #[wasm_bindgen(js_name = forThin)]
     pub fn for_thin(
         file: File,
@@ -133,7 +108,6 @@ impl WasmThinFilter {
         )
     }
 
-    /// Outlier filter (ROR or SOR). `request` is the `FilterRequest` JSON. Otherwise like `forThin`.
     #[wasm_bindgen(js_name = forFilter)]
     pub fn for_filter(
         file: File,
@@ -155,7 +129,6 @@ impl WasmThinFilter {
         )
     }
 
-    /// Handles one tile of the source and writes its kept points to the spill. Go to `finish` when `done`.
     pub fn advance(&mut self) -> Result<JsValue, JsValue> {
         let spill = self
             .spill
@@ -182,7 +155,6 @@ impl WasmThinFilter {
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }
 
-    /// Builds the octree and writes the OPFS output. Fails (writing nothing) for zero points.
     pub fn finish(mut self) -> Result<JsValue, JsValue> {
         let spill = self
             .spill

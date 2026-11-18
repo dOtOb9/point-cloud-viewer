@@ -40,7 +40,7 @@ use crate::convert::handles_from_js_array;
 use crate::file_reader::FileRangeReader;
 use crate::opfs::OpfsScratchFs;
 use crate::point_merge::{InputInfo, MergedPoints, OpenFile, PointFormat, PointStream};
-use crate::stats::Stats;
+use crate::stats::BytesReadCounter;
 
 /// Same value and reason as `READ_BUFFER_BYTES` in `convert.rs` (fewer JS round trips).
 const READ_BUFFER_BYTES: usize = 4 * 1024 * 1024;
@@ -157,7 +157,7 @@ impl WasmPointFileConverter {
             let (Some(format), Some(file)) = (parsed_formats.get(i), parsed_files.get(i)) else {
                 return Err(format!("ファイル番号{i}が範囲外"));
             };
-            let source = FileRangeReader::new(file.clone(), Stats::new());
+            let source = FileRangeReader::new(file.clone(), BytesReadCounter::new());
             let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
             PointStream::open(*format, buffered)
         });

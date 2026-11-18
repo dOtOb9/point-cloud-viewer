@@ -1,10 +1,3 @@
-//! ローカルファイル(`File`)を、読んだ範囲だけ取り出す`Read + Seek`にする。
-//!
-//! `FileReaderSync::read_as_array_buffer`はWeb Worker専用のAPI(メインスレッドには
-//! 存在しない)で、名前の通り**同期的に**Blobを読める。`File.slice(start, end)`で
-//! 欲しい範囲だけを指すBlobを作ってから同期読みすることで、ファイル全体を
-//! メモリに載せずに済む(TaskSheets/ADR-0012-web-worker-sync-io.md 参照)。
-
 use std::io::{self, Read, Seek, SeekFrom};
 
 use web_sys::{File, FileReaderSync};
@@ -12,14 +5,14 @@ use web_sys::{File, FileReaderSync};
 use crate::range_math::{
     clamp_range, resolve_seek_from_current, resolve_seek_from_end, resolve_seek_from_start,
 };
-use crate::stats::Stats;
+use crate::stats::BytesReadCounter;
 use crate::util::js_err_to_io;
 
 pub struct FileRangeReader {
     file: File,
     size: u64,
     pos: u64,
-    stats: Stats,
+    stats: BytesReadCounter,
 }
 
 // SAFETY: wasm32-unknown-unknown without atomics is single-threaded, so the `File` (a `JsValue`) never crosses threads; `Send` only satisfies `CopcFile<R: Send>`.
@@ -28,7 +21,7 @@ unsafe impl Send for FileRangeReader {}
 unsafe impl Sync for FileRangeReader {}
 
 impl FileRangeReader {
-    pub fn new(file: File, stats: Stats) -> Self {
+    pub fn new(file: File, stats: BytesReadCounter) -> Self {
         let size = file.size() as u64;
         Self {
             file,
@@ -38,8 +31,6 @@ impl FileRangeReader {
         }
     }
 
-    /// ファイル全体のバイト数。「全体を読んでいないこと」の確認に使う
-    /// (`WasmCopcFile::total_size`参照)。
     pub fn total_size(&self) -> u64 {
         self.size
     }

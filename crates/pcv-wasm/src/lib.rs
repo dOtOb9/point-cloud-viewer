@@ -47,7 +47,7 @@ use std::io::{Read, Seek};
 
 use file_reader::FileRangeReader;
 use http_reader::HttpRangeReader;
-use stats::Stats;
+use stats::BytesReadCounter;
 use wasm_bindgen::prelude::*;
 use web_sys::File;
 
@@ -106,7 +106,7 @@ fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
 #[wasm_bindgen]
 pub struct WasmCopcFile {
     inner: pcv_core::CopcFile<Box<dyn ReadSeek>>,
-    stats: Stats,
+    stats: BytesReadCounter,
     /// 元の入力(ファイル/URL)の全体バイト数。`Box<dyn ReadSeek>`に包む前の
     /// 具体型から一度だけ取り出しておく(包んだ後は型消去されて取れないため)。
     total_size: u64,
@@ -118,7 +118,7 @@ impl WasmCopcFile {
     /// `FileReaderSync`を使うため、この呼び出し自体もWorker内でしか動かない。
     #[wasm_bindgen(js_name = openFile)]
     pub fn open_file(file: File) -> Result<WasmCopcFile, JsValue> {
-        let stats = Stats::new();
+        let stats = BytesReadCounter::new();
         let reader = FileRangeReader::new(file, stats.clone());
         let total_size = reader.total_size();
         let inner = pcv_core::CopcFile::from_reader(Box::new(reader) as Box<dyn ReadSeek>)
@@ -134,7 +134,7 @@ impl WasmCopcFile {
     /// 最初のRangeプローブの時点でエラーになる(`http_reader::HttpRangeReader::new`参照)。
     #[wasm_bindgen(js_name = openUrl)]
     pub fn open_url(url: String) -> Result<WasmCopcFile, JsValue> {
-        let stats = Stats::new();
+        let stats = BytesReadCounter::new();
         let reader = HttpRangeReader::new(url, stats.clone())?;
         let total_size = reader.total_size();
         let inner = pcv_core::CopcFile::from_reader(Box::new(reader) as Box<dyn ReadSeek>)

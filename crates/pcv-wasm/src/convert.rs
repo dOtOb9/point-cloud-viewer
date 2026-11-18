@@ -169,7 +169,7 @@ use web_time::Instant;
 
 use crate::file_reader::FileRangeReader;
 use crate::opfs::OpfsScratchFs;
-use crate::stats::Stats;
+use crate::stats::BytesReadCounter;
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
 fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
@@ -269,7 +269,7 @@ fn missing_crs_warnings(names: &[String], result_crs: &CrsId) -> Vec<String> {
 #[wasm_bindgen(js_name = inspectLasHeaderSummary)]
 pub fn inspect_las_header_summary(file: File) -> Result<JsValue, JsValue> {
     let file_size_bytes = file.size() as u64;
-    let stats = Stats::new();
+    let stats = BytesReadCounter::new();
     let source = FileRangeReader::new(file, stats);
     let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
     let reader = las::Reader::new(buffered).map_err(to_js_error)?;
@@ -355,7 +355,7 @@ impl WasmConverter {
         // 直後に`FileRangeReader::new`へ所有権が渡るため、先に読んでおく。
         let file_size_bytes = file.size() as u64;
         let file_name = file.name();
-        let stats = Stats::new();
+        let stats = BytesReadCounter::new();
         let source = FileRangeReader::new(file, stats);
         // 読み込みのバッファリング(モジュール冒頭のドキュメント参照):
         // FileRangeReaderを直接渡すと、lasクレートが点ごとに行う小さい
@@ -436,7 +436,7 @@ impl WasmConverter {
     #[wasm_bindgen(js_name = openNextFile)]
     pub fn open_next_file(&mut self, file: File) -> Result<(), JsValue> {
         let file_name = file.name();
-        let stats = Stats::new();
+        let stats = BytesReadCounter::new();
         let source = FileRangeReader::new(file, stats);
         let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
         let reader = las::Reader::new(buffered).map_err(to_js_error)?;
@@ -672,7 +672,7 @@ impl LazRangeDecompressor {
     /// `decompress_laz_range`と同じ方針)。
     #[wasm_bindgen(constructor)]
     pub fn new(file: File, start_index: f64, count: f64) -> Result<LazRangeDecompressor, JsValue> {
-        let stats = Stats::new();
+        let stats = BytesReadCounter::new();
         let source = FileRangeReader::new(file, stats);
         let buffered = BufReader::with_capacity(READ_BUFFER_BYTES, source);
         let core = RangeDecompressorCore::open(buffered, start_index as u64, count as u64)

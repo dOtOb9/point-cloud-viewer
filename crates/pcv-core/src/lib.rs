@@ -1,12 +1,3 @@
-//! pcv-core: COPC読込・octree走査・解析アルゴリズムを担う crate。
-//!
-//! この crate は tauri に依存しない。ネイティブ (x86_64-pc-windows-msvc など) と
-//! wasm32-unknown-unknown の両方でビルドできることが Web 版バックエンドを成立させる条件
-//! (ADR-0001 参照)。
-//!
-//! M1-1でCOPCリーダーを実装した。採用クレートの選定理由は
-//! `TaskSheets/ADR-0003-copc-crate.md` を参照。
-
 mod color_depth;
 mod copc;
 pub mod crs;

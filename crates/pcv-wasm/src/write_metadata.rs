@@ -1,28 +1,5 @@
-//! M4-6b: 元のLASヘッダーから`copc_writer::CopcWriteMetadata`を組み立てる。
-//!
-//! デスクトップ版(`crates/pcv-convert/src/write_metadata.rs`)と役割は同じだが、
-//! **意図的に簡略化してある**。デスクトップ版の
-//! `resolved_wkt_crs_for_header`(`crates/pcv-convert/src/crs_override.rs`)は
-//! 「WKTがあればそれを使う」に加え「GeoTIFFキーだけならpcv-coreの座標系表
-//! (M4-5、平面直角座標系19系・UTM)からWKTを合成する」処理まで持つが、
-//! これを持ち込むには`pcv-wasm`が`pcv_core::crs`に依存する必要があり
-//! (依存自体は問題ない。`pcv-core`はwasm32でビルドできる、規約1)、
-//! M4-6bの受け入れ条件(OPFSでの変換経路)には含まれていないため、
-//! **範囲を絞った**。
-//!
-//! **したがって、Web版はWKTのCRS VLRを持つ入力はそのまま引き継ぐが、
-//! GeoTIFFキーだけの入力はCRSが失われる**(変換自体は失敗しない。
-//! `write_copc_from_spill_with_fs`が呼ぶ検証は`validate_streaming_layout_supported`
-//! であり、デスクトップ版の一括関数が使う`validate_las_conversion_supported`
-//! (GeoTIFFのみの入力を`Error::Unsupported`で拒否する)とは別の、より緩い
-//! 検証であることをソースで確認済み)。この制約は
-//! `TaskSheets/ADR-0006-conversion-strategy.md`のWeb版の節に記録する。
-
 use copc_writer::CopcWriteMetadata;
 
-/// 元のLASヘッダーから、変換に必要な最小限のメタデータを引き継ぐ。
-/// WKTのCRS VLRがあればそのまま使う。GeoTIFFキーだけの場合はCRSを持たない
-/// (モジュールドキュメント参照)。
 pub fn copc_write_metadata_from_source_header(header: &las::Header) -> CopcWriteMetadata {
     let transforms = header.transforms();
     let creation_date = header.date().map(|date| {
@@ -46,8 +23,6 @@ pub fn copc_write_metadata_from_source_header(header: &las::Header) -> CopcWrite
     metadata
 }
 
-/// WKTのVLRデータはヌル終端されていることがある(`crates/pcv-convert/src/
-/// crs_override.rs`の`decode_wkt_bytes`と同じ処理。デスクトップ版と揃えた)。
 fn decode_wkt_bytes(bytes: &[u8]) -> String {
     let trimmed = bytes.split(|&b| b == 0).next().unwrap_or(bytes);
     String::from_utf8_lossy(trimmed).into_owned()
