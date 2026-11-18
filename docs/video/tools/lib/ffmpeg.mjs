@@ -1,5 +1,3 @@
-// ffmpeg-static/ffprobe-staticの薄いラッパー。
-// spawnの結果を待つPromise化と、よく使うffprobe問い合わせだけをここに置く。
 import { spawn } from "node:child_process";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
@@ -7,11 +5,8 @@ import ffprobeStatic from "ffprobe-static";
 export const FFMPEG = ffmpegPath;
 export const FFPROBE = ffprobeStatic.path;
 
-/** @param {string} bin @param {string[]} args */
 function run(bin, args) {
   return new Promise((resolve, reject) => {
-    // stdin/stdoutは'ignore'にする(どちらも使わない。stdinを繋いだままにすると
-    // 子プロセスが読み取り待ちでハングする事故が起きたため明示的に切る)。
     const child = spawn(bin, args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (d) => {
@@ -28,12 +23,10 @@ function run(bin, args) {
   });
 }
 
-/** ffmpegを実行する。失敗したらstderrを含むErrorを投げる。 */
 export function ffmpeg(args) {
   return run(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", ...args]);
 }
 
-/** 動画/音声ファイルの長さ(秒)をffprobeで取る。 */
 export function probeDurationSec(filePath) {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -61,7 +54,6 @@ export function probeDurationSec(filePath) {
   });
 }
 
-/** ffprobeの完全なJSON出力(stream+format)を取る。レポート用。 */
 export function probeJson(filePath) {
   return new Promise((resolve, reject) => {
     const child = spawn(FFPROBE, ["-v", "error", "-show_format", "-show_streams", "-of", "json", filePath], {

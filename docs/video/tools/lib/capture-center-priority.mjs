@@ -1,15 +1,3 @@
-// 07-center-priorityだけを撮り直すための単独スクリプト。
-//
-// 最初の実装は「録画しながら設定画面を開いてスライダーを変える」を2回繰り返す
-// 形だったが、スライダーを0以外(4)にした直後に閉じるボタンのクリックが数十秒
-// 固まる事故が何度も起きた(centerPriorityStrengthを上げた直後、再読み込み中の
-// ノードの優先度計算が重くなりJSのメインスレッドが長時間ブロックされ、
-// Playwrightのクリックが処理されなくなっていると見ている。未確定・未調査)。
-//
-// 対策として、**設定の変更とUIクリックは録画していない間に済ませ**、録画中は
-// カメラのホイール操作だけを行う形に作り直した。強さ0の場面と4の場面を
-// 別々に録画し、最後にffmpegで連結して1本のfootageにする
-// (TaskSheets/VIDEO-intro.md参照)。
 import fs from "node:fs";
 import fs_p from "node:fs/promises";
 import path from "node:path";
@@ -37,11 +25,6 @@ function setRangeValue(el, v) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-/** strengthを設定画面のUI操作無しで直接スライダーへ反映し、設定画面は開かない
- *  (開閉のクリックそのものが固まる事故を避けるため、DOM操作だけで完結させる)。
- *  SettingsModalは`open`がfalseだとDOMから消えるコンポーネントなので、
- *  スライダーを操作するにはモーダルを開く必要はある。ただし「開く→評価→閉じる」を
- *  録画の外(このヘルパー関数内)だけで完結させ、録画中には一切触らない。 */
 async function setCenterPriorityStrength(page, value) {
   await page.locator('[data-ui-id="settings_button"]').click();
   await page.waitForSelector("#center-priority-strength", { state: "visible", timeout: 10_000 });
@@ -52,7 +35,6 @@ async function setCenterPriorityStrength(page, value) {
   await page.waitForTimeout(300);
 }
 
-/** カメラをホイールで動かしてLODの再読み込みを起こしつつ、durationMsだけ録画する。 */
 async function recordReload(page, label, durationMs) {
   const frameDir = path.join(TMP_FRAMES, label);
   await fs_p.rm(frameDir, { recursive: true, force: true });

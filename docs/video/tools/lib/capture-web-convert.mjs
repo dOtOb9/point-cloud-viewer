@@ -1,18 +1,3 @@
-// 04-web-convertだけを撮り直すための単独スクリプト。
-//
-// 最初の実装は「ファイルを開いた瞬間から変換完了まで、ずっとCDP screencastで
-// 録画し続ける」形だった。ところがautzen.pcd(319MB、1,065万点)の変換が
-// 録画しながらだと10分(waitForFunctionの上限)を超えても終わらなかった。
-// 録画を止めて同じ変換を試すと、M4-9の実測(桁違いに大きいsofiで171秒)から
-// 類推してもここまで長くはかからないはずで、**CDP screencastを常時オンにしておく
-// こと自体が、シングルスレッドのWASM変換とメインスレッドを奪い合って遅くしている
-// のではないか**という仮説に至った(未確定・未検証。本当にscreencastが原因かは
-// 切り分けていない)。
-//
-// 対策として、録画は「変換の進捗が見えている最初の数秒」と「完了後の内訳・結果表示」
-// の2つの短いクリップに分け、**変換が終わるのを待っている間は録画しない**形に
-// 作り直した。これで変換そのものの速度への影響を避けつつ、スクリプト全体の
-// 所要時間も大きく減った。
 import fs from "node:fs";
 import fs_p from "node:fs/promises";
 import path from "node:path";
@@ -69,10 +54,8 @@ async function main() {
     await input.setInputFiles(AUTZEN_PCD);
     await page.waitForTimeout(400);
 
-    // --- 変換が始まった直後(進捗が見えている状態)を数秒だけ録画する ---
     clipStart = await recordClip(page, "04-web-convert-start", 4000);
 
-    // --- ここは録画しない。busyが解けるまでポーリングで待つだけ ---
     console.log("  変換の完了を待機中(録画なし)…");
     const startWait = Date.now();
     let busy = await isBusy(page);
@@ -95,7 +78,6 @@ async function main() {
       await breakdown.scrollIntoViewIfNeeded().catch(() => {});
     }
 
-    // --- 完了後(内訳・結果表示)を数秒だけ録画する ---
     clipEnd = await recordClip(page, "04-web-convert-end", 4000);
   } finally {
     await browser.close();

@@ -1,6 +1,3 @@
-// build-report.jsonの各シーンの尺から、完成した intro-draft.mp4 の中で
-// そのシーンの「真ん中」にあたる時刻を計算し、1枚ずつ静止画として書き出す。
-// 検証(各シーンが実際に映っているか目視確認)専用の使い捨てスクリプト。
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";

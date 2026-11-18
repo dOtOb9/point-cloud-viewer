@@ -1,6 +1,3 @@
-// シーンのナレーション文からwavを作る。実体はlib/tts.ps1(WinRTのSpeechSynthesizer)。
-// 生成済みでテキストが変わっていなければ再生成しない(手戻りのたびに全シーンを
-// 合成し直すと遅いため。force:trueで強制再生成できる)。
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -15,10 +12,6 @@ function hashText(text) {
   return createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
 }
 
-/**
- * sceneId のナレーションwavを用意する。戻り値は書き出したwavの絶対パス。
- * narration が空文字のときは無音0.3秒のwavを作る(字幕だけのシーン用の保険)。
- */
 export async function synthesizeNarration(sceneId, narrationText, { force = false } = {}) {
   await fs.mkdir(NARRATION_DIR, { recursive: true });
   const wavPath = path.join(NARRATION_DIR, `${sceneId}.wav`);
@@ -33,7 +26,6 @@ export async function synthesizeNarration(sceneId, narrationText, { force = fals
         return wavPath;
       }
     } catch {
-      // 無ければ普通に作る
     }
   }
 

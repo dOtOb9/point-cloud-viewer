@@ -1,20 +1,4 @@
 #!/usr/bin/env node
-// Web版(vite preview)をheadedのchromiumで操作し、docs/video/footage/ に
-// 実機映像(mp4)を書き出す。対象は「自分たちで撮れる」とdesignで決めた5カット
-// (01-hook / 04-web-convert / 05-color-modes / 06-edl / 07-center-priority)。
-// Windows実機・Android実機・大規模データのカットは所有者にしか撮れないため対象外
-// (docs/video/cards/*-placeholder.htmlのままになる)。
-//
-// 前提: `npm run build && npm run preview -- --port 4555 --strictPort --host 127.0.0.1` を
-// リポジトリルートで実行済み(wasmバインディングはコミット済みなので`npm run build:wasm`は不要)。
-// ポート4173ではなく4555を使うのは、同じマシンで動く別のツール(ui-forgeのpreview等)と
-// 衝突したため(TaskSheets/VIDEO-intro.md参照。--strictPortを付けていても、別ポートの
-// サーバーに繋いでしまい「canvasが出ない」で長時間ハマった)。
-// このスクリプト自身はpreviewサーバーを起動しない(ビルド成果物の鮮度をスクリプトが
-// 勝手に決めないため。起動済みか確認だけする)。
-//
-// WebGPUをheaded chromiumで有効にするフラグの組み合わせは事前に試して確認した
-// (このファイルのCHROMIUM_ARGS。TaskSheets/VIDEO-intro.mdに記録)。
 import fs from "node:fs";
 import fs_p from "node:fs/promises";
 import path from "node:path";
@@ -23,6 +7,8 @@ import { startScreencast, framesToMp4 } from "./lib/record.mjs";
 import { FOOTAGE_DIR, AUTZEN_COPC, AUTZEN_PCD, TOKYO_SHIBUYA_COPC } from "./lib/paths.mjs";
 
 const BASE_URL = process.env.PCV_PREVIEW_URL ?? "http://127.0.0.1:4555/";
+const SHOW_THE_FIRST_LOAD_STALLING_MS = 800;
+const PCD_CONVERSION_IN_THE_BROWSER_TOOK_OVER_3_MIN_SO_WAIT_MS = 600_000;
 const TMP_FRAMES = path.join(process.env.TEMP ?? "C:\\Windows\\Temp", "pcv-video-capture");
 
 const CHROMIUM_ARGS = [
@@ -47,15 +33,12 @@ async function assertPreviewRunning() {
 
 async function waitForCanvasReady(page) {
   await page.waitForSelector("canvas", { state: "visible", timeout: 15000 });
-  // WebGPU対応チェック画面("非対応")に落ちていないか確認。
   const unsupported = await page.locator("text=非対応").count();
   if (unsupported > 0) {
     throw new Error("UnsupportedDeviceScreenが表示された(WebGPUが使えていない)");
   }
 }
 
-/** 設定モーダルの開閉やホイール連打の後、file inputが消えている(原因未特定)ことが
- *  あったため、無ければ1回だけページを読み込み直して復旧を試みる。 */
 async function ensureFileInputPresent(page) {
   const count = await page.locator('input[type="file"]').count();
   if (count > 0) return;
@@ -71,13 +54,7 @@ async function openFile(page, absPath) {
 }
 
 async function waitForOpenDone(page, timeoutMs) {
-  // 「開いています…」「変換しています…」ボタン文言が消え、エラーも出ていないことを待つ。
-  // LayerPanel.tsxの実装通り、busy中はファイル選択inputがdisabledになるのでそれで判定する。
-  // setInputFiles直後はReactの再描画がまだ反映されていないことがあるため、
-  // 一呼吸置いてから監視を始める(でないとbusyになる前に「非busy」を誤検知する)。
   await page.waitForTimeout(400);
-  // 第2引数はpredicateへのarg。{timeout}だけを2引数目に渡すと既定の30秒タイムアウトの
-  // ままになる事故があったため、argにundefinedを明示して3引数目にoptionsを渡す。
   await page.waitForFunction(
     () => {
       const input = document.querySelector('input[type="file"]');
@@ -97,11 +74,6 @@ async function record(page, label, fn) {
   await fs_p.rm(frameDir, { recursive: true, force: true });
   const rec = await startScreencast(page, frameDir);
   console.log(`  [${label}] 録画開始`);
-  // fn()自体が固まる事故があった(center-priorityのスライダー操作で、大量のノード
-  // 再優先度付けがGPU/レンダーループを詰まらせ、CDPのscreencastが応答しなくなる
-  // ケースがあったと見ている。未特定)。ここで25秒の上限を設け、超えたら
-  // その時点までに撮れたフレームだけで動画化する(1カットの事故で撮影全体を
-  // 止めない)。
   const fnResult = await Promise.race([
     fn().then(() => "ok"),
     new Promise((resolve) => setTimeout(() => resolve("timeout"), 25_000)),
@@ -132,18 +104,12 @@ async function orbitAndZoom(page) {
     await page.waitForTimeout(60);
   }
   await page.mouse.up();
-  // ホイールでズームイン(弱め。強くしすぎると点群を通り過ぎて何も映らない
-  // 画角まで寄ってしまい、このシーンの後半や次のシーンの最初の画が真っ黒〜ほぼ空に
-  // なる事故があった。TaskSheets/VIDEO-intro.md参照)。
   for (let i = 0; i < 4; i++) {
     await page.mouse.wheel(0, -80);
     await page.waitForTimeout(90);
   }
 }
 
-/** カメラ視点をautzenの既定フィット view に戻す(サンプルを開き直すだけ。
- *  openFileは毎回カメラを点群のbounding boxに合わせて再フィットするため、
- *  「ズームしすぎて何も映らない」状態から次のシーンを安全に始め直せる)。 */
 async function resetView(page) {
   await openFile(page, AUTZEN_COPC);
   await waitForOpenDone(page, 30_000);
@@ -167,12 +133,6 @@ function setRangeValue(el, v) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-/** 中央優先度の強さを変える。録画が始まる前に(録画の外で)呼ぶこと。
- *  強さを0以外にした直後に設定を閉じるクリックをすると、再読み込み中のノードの
- *  優先度再計算が重くなりJSのメインスレッドが長時間ブロックされて、Playwrightの
- *  クリックが数十秒固まる事故が繰り返し起きた(未確定・未調査。
- *  TaskSheets/VIDEO-intro.md参照)。録画していない間にこの関数で値を変えておき、
- *  録画中は視点操作だけを行う設計にすることで回避する。 */
 async function setCenterPriorityStrength(page, value) {
   await openSettings(page);
   await page.waitForSelector("#center-priority-strength", { state: "visible", timeout: 10_000 });
@@ -183,7 +143,6 @@ async function setCenterPriorityStrength(page, value) {
   await page.waitForTimeout(300);
 }
 
-/** カメラをホイールで軽く動かしてLODの再読み込みを起こす(視点は実質同じ場所へ戻る)。 */
 async function reloadByWheel(page) {
   await page.mouse.wheel(0, 300);
   await page.waitForTimeout(150);
@@ -199,9 +158,6 @@ async function main() {
   if (!fs.existsSync(AUTZEN_COPC)) throw new Error(`データが無い: ${AUTZEN_COPC}`);
   if (!fs.existsSync(AUTZEN_PCD)) throw new Error(`データが無い: ${AUTZEN_PCD}`);
 
-  // つかみの場面(01-hook)は、数億点規模の公開データ(東京都デジタルツイン実現
-  // プロジェクト 区部点群データ)が用意できていればそれを使う。無ければautzenのまま
-  // (誇張しない言い回しでscenes.jsonを書いてある。TaskSheets/VIDEO-intro.md参照)。
   const hookSourceFile = fs.existsSync(TOKYO_SHIBUYA_COPC) ? TOKYO_SHIBUYA_COPC : AUTZEN_COPC;
   console.log(`01-hookの撮影に使うファイル: ${hookSourceFile}`);
 
@@ -214,20 +170,16 @@ async function main() {
     await page.goto(BASE_URL, { waitUntil: "load" });
     await waitForCanvasReady(page);
 
-    // --- 01-hook: 開いて回す・寄る(大規模データがあればそれを、無ければautzenを使う) ---
     console.log("=== 01-hook ===");
     await openFile(page, hookSourceFile);
     await waitForOpenDone(page, 60_000);
-    await page.waitForTimeout(800); // 初期ロードの詰まりを少し見せる
+    await page.waitForTimeout(SHOW_THE_FIRST_LOAD_STALLING_MS);
     results["01-hook"] = await record(page, "01-hook", async () => {
       await orbitAndZoom(page);
     });
 
-    // --- 05-color-modes: 標高→強度→分類→RGB ---
     console.log("=== 05-color-modes ===");
-    // 01-hookのズームでカメラが点群を通り過ぎている可能性があるため、視点を戻してから撮る。
     await resetView(page);
-    // "着色"ラベルの隣のselectを取る(LayerPanel.tsxの構造: <label>着色</label><select>...)
     const colorSelect = page.locator('label:has-text("着色") + select');
     const rgbDisabled = await colorSelect.locator('option[value="rgb"]').getAttribute("disabled");
     results["05-color-modes"] = await record(page, "05-color-modes", async () => {
@@ -243,27 +195,24 @@ async function main() {
       }
     });
 
-    // --- 06-edl: EDLオン/オフ ---
     console.log("=== 06-edl ===");
     await resetView(page);
     results["06-edl"] = await record(page, "06-edl", async () => {
       await openSettings(page);
       const edlCheckbox = page.locator('label:has-text("EDL（陰影") input[type="checkbox"]');
       const wasChecked = await edlCheckbox.isChecked();
-      await edlCheckbox.click(); // オフ(既定オンのはずなので)
+      const turnEdlOffFromItsDefaultOn = () => edlCheckbox.click();
+      const turnEdlBackOn = () => edlCheckbox.click();
+      await turnEdlOffFromItsDefaultOn();
       await closeSettings(page);
       await page.waitForTimeout(1500);
       await openSettings(page);
-      await edlCheckbox.click(); // 元に戻す(オン)
+      await turnEdlBackOn();
       await closeSettings(page);
       await page.waitForTimeout(1500);
       console.log(`  [06-edl] 既定チェック状態: ${wasChecked}`);
     });
 
-    // --- 07-center-priority: 強さ0と4で同じ視点から読み込み直す ---
-    // 値の変更(設定画面の開閉)は録画の外で行い、録画中はホイール操作だけにする
-    // (理由はsetCenterPriorityStrengthのコメント参照)。0の場面と4の場面を別々に
-    // 録画し、最後に連結する。
     console.log("=== 07-center-priority ===");
     await resetView(page);
     await setCenterPriorityStrength(page, "0");
@@ -289,13 +238,11 @@ async function main() {
       results["07-center-priority"] = outPath;
     }
 
-    // --- 04-web-convert: autzen.pcdをブラウザだけで変換 ---
     console.log("=== 04-web-convert ===");
     results["04-web-convert"] = await record(page, "04-web-convert", async () => {
       await openFile(page, AUTZEN_PCD);
-      await waitForOpenDone(page, 600_000); // ブラウザでのPCD変換は実測で3分を超えることがあった
+      await waitForOpenDone(page, PCD_CONVERSION_IN_THE_BROWSER_TOOK_OVER_3_MIN_SO_WAIT_MS);
       await page.waitForTimeout(500);
-      // 変換の内訳パネルが出ていれば少し見せる
       const breakdown = page.locator("text=変換の内訳");
       if ((await breakdown.count()) > 0) {
         await breakdown.scrollIntoViewIfNeeded().catch(() => {});

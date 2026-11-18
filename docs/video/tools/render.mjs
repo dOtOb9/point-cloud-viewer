@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-// docs/video/scenes.json から docs/video/out/intro-draft.mp4 を作り直すメインスクリプト。
-// `npm run build`(= `node render.mjs`)で実行する。
-//
-// 流れ: シーンごとに (1) ナレーションwavをTTSで用意 → (2) 画面素材(card/footage/placeholder)を
-// シーン尺に合わせて切り出し・ループ・早送り → (3) 字幕を焼き込む → (4) ナレーションを乗せる
-// → 最後に全シーンを連結する。
 import fs from "node:fs/promises";
 import path from "node:path";
 import { synthesizeNarration } from "./lib/tts.mjs";
@@ -57,10 +51,6 @@ async function main() {
 
   await closeCardBrowser();
 
-  // 全シーンを連結する。concat demuxerはすべて同じコーデック設定(libx264/yuv420p/30fps,
-  // aac/48kHz/stereo)で作っているのでそのまま繋がるはずだが、確実性を優先して
-  // 最終段だけ明示的に再エンコードする(1回の動画ビルドでかかる時間より、
-  // 「繋がらなかった」を後から調べる時間の方が高くつくため)。
   const listPath = path.join(tmpDir, "final-concat.txt");
   const listContent = sceneMp4s.map((p) => `file '${p.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n");
   await fs.writeFile(listPath, listContent, "utf8");
