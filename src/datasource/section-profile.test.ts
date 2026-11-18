@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decodeSectionProfile } from "./section-profile";
 
-/** Build a buffer in the layout `crates/pcv-core/src/profile.rs` writes. */
 function build(points: { s: number; z: number; rgbc: [number, number, number, number] }[], flags: number): ArrayBuffer {
   const buffer = new ArrayBuffer(24 + points.length * 12);
   const view = new DataView(buffer);
@@ -38,7 +37,6 @@ describe("decodeSectionProfile", () => {
     expect(decoded.zRange).toEqual({ min: -2, max: 10 });
     expect([decoded.floats[0], decoded.floats[1]]).toEqual([1.5, 10]);
     expect([decoded.floats[3], decoded.floats[4]]).toEqual([4, -2]);
-    // Little endian: r | g << 8 | b << 16 | classification << 24.
     expect(decoded.words[2]).toBe((1 | (2 << 8) | (3 << 16) | (6 << 24)) >>> 0);
     expect(decoded.words[5] >>> 24).toBe(2);
   });

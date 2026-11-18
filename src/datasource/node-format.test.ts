@@ -1,23 +1,14 @@
-// node-format.ts のテスト。M2-2で追加した`computeIntensityRange`を検証する
-// （強度カラーマップのレンジを実データから動的に決めるための下請け関数、
-// src/renderer/colormap.tsの`extendRange`と組み合わせて使う）。
-
 import { describe, expect, it } from "vitest";
 import { computeIntensityRange, NODE_POINT_STRIDE, type ParsedNode } from "./node-format";
 
-/**
- * テスト用に、指定したintensity列を持つ`pointsBytes`を組み立てる。
- * position/color/classificationは着色レンジの計算に無関係なのでダミー値でよい。
- */
 function makeNode(intensities: readonly number[]): ParsedNode {
   const bytes = new Uint8Array(intensities.length * NODE_POINT_STRIDE);
   const view = new DataView(bytes.buffer);
   intensities.forEach((intensity, i) => {
     const offset = i * NODE_POINT_STRIDE;
-    // position(12B)・color(4B)は0埋めのままでよい。
     view.setUint16(offset + 16, intensity, true);
-    view.setUint8(offset + 18, 0); // classification
-    view.setUint8(offset + 19, 0); // padding
+    view.setUint8(offset + 18, 0);
+    view.setUint8(offset + 19, 0);
   });
   return {
     pointCount: intensities.length,
@@ -45,8 +36,6 @@ describe("computeIntensityRange", () => {
   });
 
   it("先頭以外のバイトオフセットにあるバッファでも正しく読む(byteOffset != 0)", () => {
-    // pointsBytesが常にArrayBufferの先頭から始まるとは限らない
-    // (parseNodeBufferはヘッダ32Bの後ろをスライスして返す)ことを想定した確認。
     const inner = makeNode([10, 20, 30]);
     const padded = new Uint8Array(8 + inner.pointsBytes.byteLength);
     padded.set(inner.pointsBytes, 8);

@@ -4,7 +4,6 @@ import { sectionLineRequestFor } from "../app/csf-params";
 import { decodeSectionLine } from "./section-line";
 import type { SectionLineInput } from "./section-profile";
 
-/** Build a buffer in the layout `crates/pcv-core/src/section_line.rs` writes. */
 function build(samples: [number, number][], groundPoints: number, cells: number): ArrayBuffer {
   const buffer = new ArrayBuffer(16 + samples.length * 8);
   const view = new DataView(buffer);

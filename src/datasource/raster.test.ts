@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decodePreviewImage, exportRangeOf, PREVIEW_HEADER_BYTES } from "./raster";
 
-/** Builds the buffer the way `PreviewImage::to_bytes` in Rust lays it out (the Rust test `to_bytes_has_the_documented_layout` pins that side). */
 function buffer(width: number, height: number, range: [number, number] | null, pixels: number[]): ArrayBuffer {
   const out = new ArrayBuffer(PREVIEW_HEADER_BYTES + pixels.length);
   const view = new DataView(out);

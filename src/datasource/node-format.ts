@@ -1,41 +1,18 @@
-// ノードのバイナリレイアウト（ヘッダ32B + 点20B）のパーサ。M1-2で決めた形式。
-// Rust側の実装は crates/pcv-core/src/node_format.rs にある。並びを変えるときは
-// 両方を同じコミットで直すこと。
-//
-// このファイルはReactもTauriのAPIも知らない。ArrayBufferとDataViewだけを扱う
-// 純粋な関数なので、datasource からも renderer からもそのまま使える。
-
-/** ヘッダのmagic。ASCII "PCVN"。 */
 export const NODE_MAGIC = "PCVN";
-/** ヘッダのバージョン。Rust側の`node_format::VERSION`と一致させる。 */
 export const NODE_VERSION = 1;
-/** ヘッダのバイト数。 */
 export const NODE_HEADER_BYTES = 32;
-/** 1点あたりのバイト数。 */
 export const NODE_POINT_STRIDE = 20;
 
-/** Flag bit: the color attribute is present. Bit 1 (intensity) and bit 2 (classification) are set by the Rust side
- *  (`node_format`) but this reader does not use them, so they have no constants here. */
 export const NODE_FLAG_COLOR = 1 << 0;
 
 export interface ParsedNode {
   pointCount: number;
-  /** ノードローカル座標の原点（世界座標、f32相当に丸め済み）。 */
   origin: readonly [number, number, number];
   flags: number;
   hasColor: boolean;
-  /**
-   * ヘッダを除いた点配列そのもの（`pointCount * NODE_POINT_STRIDE` バイト）。
-   * コピーせず元のArrayBufferを参照するだけなので、GPU頂点バッファへ
-   * そのまま渡せる。
-   */
   pointsBytes: Uint8Array;
 }
 
-/**
- * M1-2のバイナリ形式をパースする。ヘッダの `magic` / `version` /
- * `stride` を検証し、想定と違えば例外を投げて弾く。
- */
 export function parseNodeBuffer(buffer: ArrayBuffer): ParsedNode {
   if (buffer.byteLength < NODE_HEADER_BYTES) {
     throw new Error(
@@ -72,8 +49,6 @@ export function parseNodeBuffer(buffer: ArrayBuffer): ParsedNode {
   ];
   const flags = view.getUint32(28, true);
 
-  // 読み出した点数がヘッダの point_count と一致することの確認
-  // (実際のバイト長から逆算した点数と、ヘッダが申告する点数を突き合わせる)。
   const expectedBytes = NODE_HEADER_BYTES + pointCount * NODE_POINT_STRIDE;
   if (buffer.byteLength !== expectedBytes) {
     throw new Error(
@@ -92,18 +67,6 @@ export function parseNodeBuffer(buffer: ArrayBuffer): ParsedNode {
   };
 }
 
-/**
- * ノード内の点のintensity(u16、点配列オフセット16)の最小値・最大値を求める。
- *
- * M2-2のカラーマップ（強度モード）で使う。強度はセンサー・ファイルごとに
- * 実際の値域が大きく異なり（u16のフルレンジ0-65535を使うとは限らない）、
- * `CloudInfo`のような固定のメタデータからは分からないため、実際に読み込んだ
- * 点のintensityから動的にレンジを求める必要がある（`src/renderer/colormap.ts`の
- * `extendRange`と組み合わせて使う想定: 呼び出し側がノードを読み込むたびに
- * この関数でノード内のmin/maxを求め、`extendRange`で全体のレンジへ広げていく）。
- *
- * 点が1つも無いノードでは範囲が定義できないため`null`を返す。
- */
 export function computeIntensityRange(node: ParsedNode): { min: number; max: number } | null {
   if (node.pointCount === 0) return null;
 
