@@ -269,8 +269,8 @@ export class TauriSource implements DataSource {
       throw new StaleNodeRequestError(key);
     }
     if (!res.ok) {
-      const panicMessageFromBackend = await res.text().catch(() => "");
-      throw new Error(panicMessageFromBackend || `pcv://${segment} failed: ${res.status}`);
+      const errorMessageFromBackend = await res.text().catch(() => "");
+      throw new Error(errorMessageFromBackend || `pcv://${segment} failed: ${res.status}`);
     }
     return await res.arrayBuffer();
   }
