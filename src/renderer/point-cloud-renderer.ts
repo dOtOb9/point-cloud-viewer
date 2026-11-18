@@ -57,7 +57,7 @@ import {
   type SceneBounds,
 } from "./scene-bounds";
 import { defaultRenderSettings, readDeviceProfileInput, type PointShape } from "./device-profile";
-import { computeCanvasBackingSize } from "./render-scale";
+import { computeCanvasBackingSize, MIN_RENDER_SCALE } from "./render-scale";
 import { prefersReducedMotion, resolveMotionEnabled } from "./animation";
 
 const AUTO_POINT_BUDGET_MIN = 200_000;
@@ -543,7 +543,7 @@ export class PointCloudRenderer {
   }
 
   setRenderScale(scale: number): void {
-    this.renderScale = Math.max(0.05, scale);
+    this.renderScale = Math.max(MIN_RENDER_SCALE, scale);
     this.applyCanvasSize();
   }
 

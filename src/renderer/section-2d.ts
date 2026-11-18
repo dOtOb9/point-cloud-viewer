@@ -67,7 +67,7 @@ export function niceTicks(min: number, max: number, targetCount: number): number
   if (!(max > min) || !Number.isFinite(min) || !Number.isFinite(max)) return [];
   const step = niceStep(max - min, targetCount);
   const ticks: number[] = [];
-  for (let k = Math.ceil(min / step); k * step <= max && ticks.length < 1000; k++) ticks.push(k * step);
+  for (let k = Math.ceil(min / step); k * step <= max && ticks.length < MAX_TICKS; k++) ticks.push(k * step);
   return ticks;
 }
 
@@ -77,6 +77,9 @@ export function formatTick(value: number, step: number): string {
 }
 
 const LABEL_HEIGHT_PX = 14;
+const MAX_TICKS = 1000;
+const CSS_PX_PER_HORIZONTAL_TICK = 90;
+const CSS_PX_PER_VERTICAL_TICK = 50;
 
 export interface DrawSectionOptions {
   dpr: number;
@@ -170,7 +173,7 @@ function drawAxes(
   const hScale = options.horizontalUnitScale;
   const vScale = options.verticalUnitScale;
 
-  const sTicks = niceTicks(sMin * hScale, sMax * hScale, Math.max(2, Math.floor(cssWidth / 90)));
+  const sTicks = niceTicks(sMin * hScale, sMax * hScale, Math.max(2, Math.floor(cssWidth / CSS_PX_PER_HORIZONTAL_TICK)));
   const sStep = sTicks.length > 1 ? sTicks[1] - sTicks[0] : 1;
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
@@ -187,7 +190,7 @@ function drawAxes(
     ctx.fillText(formatTick(t, sStep), view.offsetX + (t / hScale) * view.scale, cssHeight - 2);
   }
 
-  const zTicks = niceTicks(zMin * vScale, zMax * vScale, Math.max(2, Math.floor(cssHeight / 50)));
+  const zTicks = niceTicks(zMin * vScale, zMax * vScale, Math.max(2, Math.floor(cssHeight / CSS_PX_PER_VERTICAL_TICK)));
   const zStep = zTicks.length > 1 ? zTicks[1] - zTicks[0] : 1;
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";

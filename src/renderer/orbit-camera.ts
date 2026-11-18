@@ -43,6 +43,9 @@ const MAX_DISTANCE = 1e9;
 export const MIN_PITCH = -Math.PI / 2 + 0.01;
 export const MAX_PITCH = Math.PI / 2 - 0.01;
 const MIN_PAN_DISTANCE_RATIO = 0.0005;
+const PAN_SPEED_PER_PIXEL_AND_DISTANCE = 0.0015;
+const TAP_MAX_MOVE_PX = 10;
+const DBLCLICK_IGNORED_AFTER_TOUCH_FLY_MS = 600;
 
 export class OrbitCamera {
   target: [number, number, number];
@@ -272,7 +275,7 @@ export class OrbitCamera {
     const right = normalize(cross(forward, this.upAxis));
     const up = normalize(cross(right, forward));
 
-    const speed = Math.max(this.distance, this.minPanDistance) * 0.0015;
+    const speed = Math.max(this.distance, this.minPanDistance) * PAN_SPEED_PER_PIXEL_AND_DISTANCE;
     const move: [number, number, number] = [
       -right[0] * dxScreen * speed + up[0] * dyScreen * speed,
       -right[1] * dxScreen * speed + up[1] * dyScreen * speed,
@@ -387,7 +390,7 @@ export function attachOrbitControls(
 
     if (wasOnlyPointer && e.type === "pointerup" && e.pointerType === "touch" && tapDown) {
       const moved = Math.hypot(e.clientX - tapDown.x, e.clientY - tapDown.y);
-      if (moved < 10 && e.timeStamp - tapDown.t < DOUBLE_TAP_MAX_INTERVAL_MS) {
+      if (moved < TAP_MAX_MOVE_PX && e.timeStamp - tapDown.t < DOUBLE_TAP_MAX_INTERVAL_MS) {
         const prev = lastTap;
         if (
           prev &&
@@ -409,7 +412,7 @@ export function attachOrbitControls(
   };
 
   const onDoubleClick = (e: MouseEvent) => {
-    if (e.timeStamp - lastTouchFlyAt < 600) return;
+    if (e.timeStamp - lastTouchFlyAt < DBLCLICK_IGNORED_AFTER_TOUCH_FLY_MS) return;
     const rect = canvas.getBoundingClientRect();
     options.onFlyTo?.(e.clientX - rect.left, e.clientY - rect.top);
   };

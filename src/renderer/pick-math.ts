@@ -4,6 +4,9 @@ export const COARSE_HALF = 4;
 export const REFINE_HALF = 2;
 
 const DEPTH_BITS = 24;
+const PERSPECTIVE_MIN_MARGIN_STEPS = 4;
+const ORTHOGRAPHIC_MARGIN_STEPS = 32;
+const ORTHOGRAPHIC_MIN_MARGIN_FRACTION = 0.002;
 
 export function depthToEyeDistance(depth: number, near: number, far: number): number {
   return (near * far) / (far - depth * (far - near));
@@ -18,13 +21,13 @@ export function depthQuantumAt(z: number, near: number, far: number): number {
 }
 
 export function refineDepthRange(z: number, near: number, far: number): { near: number; far: number } {
-  const margin = Math.max(z / 2, 4 * depthQuantumAt(z, near, far));
+  const margin = Math.max(z / 2, PERSPECTIVE_MIN_MARGIN_STEPS * depthQuantumAt(z, near, far));
   return { near: Math.max(near, z - margin), far: Math.min(far, z + Math.max(z, margin)) };
 }
 
 export function refineDepthRangeOrtho(z: number, near: number, far: number): { near: number; far: number } {
   const range = far - near;
-  const margin = Math.max(32 * range * 2 ** -DEPTH_BITS, 0.002 * range);
+  const margin = Math.max(ORTHOGRAPHIC_MARGIN_STEPS * range * 2 ** -DEPTH_BITS, ORTHOGRAPHIC_MIN_MARGIN_FRACTION * range);
   return { near: Math.max(near, z - margin), far: Math.min(far, z + margin) };
 }
 

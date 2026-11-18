@@ -1,3 +1,5 @@
+export const MIN_RENDER_SCALE = 0.05;
+
 export interface CanvasBackingSize {
   width: number;
   height: number;
