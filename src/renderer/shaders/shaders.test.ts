@@ -16,4 +16,13 @@ describe("shader files that the TypeScript side completes", () => {
     expect(edlWgsl).toContain("EDL_RESPONSE_SCALE");
     expect(edlWgsl).not.toMatch(/const EDL_/);
   });
+
+  it("no shader file keeps two blank lines in a row where a comment or a template value was removed", () => {
+    const shaders = import.meta.glob<string>("./*.wgsl", { query: "?raw", import: "default", eager: true });
+    const doubleBlankLines = Object.entries(shaders)
+      .filter(([, text]) => /\r?\n[ \t]*\r?\n[ \t]*\r?\n/.test(text))
+      .map(([path]) => path);
+    expect(Object.keys(shaders).length).toBe(5);
+    expect(doubleBlankLines).toEqual([]);
+  });
 });

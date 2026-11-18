@@ -34,7 +34,6 @@ struct VertexOut {
   @location(2) @interpolate(flat) fade: f32,
 };
 
-
 fn classificationColor(code: u32) -> vec3<f32> {
   switch code {
     case 0u:  { return vec3<f32>(0.6, 0.6, 0.6); }

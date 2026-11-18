@@ -60,13 +60,13 @@ export function sampleRamp(stops: readonly RampStop[], t: number): RGB {
 
 const BLUE_FOR_LOW: RGB = [0, 0, 1];
 const GREEN: RGB = [0, 1, 0];
-const YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY: RGB = [1, 1, 0];
+const YELLOW_BETWEEN_GREEN_AND_RED: RGB = [1, 1, 0];
 const RED_FOR_HIGH: RGB = [1, 0, 0];
 
 export const ELEVATION_INTENSITY_RAMP: readonly RampStop[] = [
   { t: 0, color: BLUE_FOR_LOW },
   { t: 1 / 3, color: GREEN },
-  { t: 2 / 3, color: YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY },
+  { t: 2 / 3, color: YELLOW_BETWEEN_GREEN_AND_RED },
   { t: 1, color: RED_FOR_HIGH },
 ];
 

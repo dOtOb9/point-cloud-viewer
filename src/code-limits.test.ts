@@ -127,7 +127,7 @@ describe("which typing check a key uses", () => {
   });
 });
 
-export function hasWgslEntryPoint(text: string): boolean {
+function hasWgslEntryPoint(text: string): boolean {
   return /@(vertex|fragment|compute)\b/.test(text);
 }
 

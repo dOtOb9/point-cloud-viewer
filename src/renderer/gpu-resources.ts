@@ -32,6 +32,10 @@ const UNIFORM_BUFFER_SIZE = roundUpToMultiple(
   WGSL_UNIFORM_STRUCT_ALIGNMENT_BYTES,
 );
 
+const NODE_UNIFORM_FLOAT_INDEX = { pointSizePx: 16, viewportWidth: 17, viewportHeight: 18, originZ: 19, fade: 20 };
+
+function ignoreBecauseDeviceLostNeverRejects(): void {}
+
 function roundUpToMultiple(value: number, multiple: number): number {
   return Math.ceil(value / multiple) * multiple;
 }
@@ -136,8 +140,7 @@ export class GpuResources {
     };
     device.lost
       .then((info) => this.handleDeviceLost(info))
-      .catch(() => {
-      });
+      .catch(ignoreBecauseDeviceLostNeverRejects);
 
     this.device = device;
     this.context = context;
@@ -575,11 +578,11 @@ export class GpuResources {
     const model = translation(node.origin[0], node.origin[1], node.origin[2]);
     const mvp = multiply(viewProj, model);
     uniformData.set(mvp, 0);
-    uniformData[16] = scaledPointSizePx;
-    uniformData[17] = width;
-    uniformData[18] = height;
-    uniformData[19] = node.origin[2];
-    uniformData[20] = fade;
+    uniformData[NODE_UNIFORM_FLOAT_INDEX.pointSizePx] = scaledPointSizePx;
+    uniformData[NODE_UNIFORM_FLOAT_INDEX.viewportWidth] = width;
+    uniformData[NODE_UNIFORM_FLOAT_INDEX.viewportHeight] = height;
+    uniformData[NODE_UNIFORM_FLOAT_INDEX.originZ] = node.origin[2];
+    uniformData[NODE_UNIFORM_FLOAT_INDEX.fade] = fade;
     device.queue.writeBuffer(node.uniformBuffer, 0, uniformData.buffer, uniformData.byteOffset, uniformData.byteLength);
 
     pass.setBindGroup(0, node.bindGroup);
