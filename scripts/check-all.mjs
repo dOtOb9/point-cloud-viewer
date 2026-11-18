@@ -1,12 +1,21 @@
-// One command that runs the checks CI runs (so "done" means the same locally and in CI): `npm run check:all`.
-// It runs every step even when one fails, then lists the results (the first failure alone hides the rest).
-// On Windows the working directory is given with an upper-case drive letter: vitest fails every file when it is
-// started from `c:\...` (AGENTS.md). The steps are the ones of the `frontend` and `rust` jobs in .github/workflows/ci.yml
-// that need no extra setup; wasm / e2e / tauri builds are left to CI.
 import { spawnSync } from "node:child_process";
 
-let cwd = process.cwd();
-if (/^[a-z]:/.test(cwd)) cwd = cwd[0].toUpperCase() + cwd.slice(1);
+const USAGE = `usage: node scripts/check-all.mjs   (npm run check:all)
+
+Runs the checks of the frontend and rust jobs of .github/workflows/ci.yml that need no extra setup, every step even
+when one fails, then lists OK / FAILED for each (the first failure alone would hide the rest).
+wasm, e2e and tauri builds are left to CI.`;
+
+if (process.argv.includes("--help")) {
+  console.log(USAGE);
+  process.exit(0);
+}
+
+function withUpperCaseDriveLetterBecauseVitestFailsFromLowerCase(path) {
+  return /^[a-z]:/.test(path) ? path[0].toUpperCase() + path.slice(1) : path;
+}
+
+const cwd = withUpperCaseDriveLetterBecauseVitestFailsFromLowerCase(process.cwd());
 
 const STEPS = [
   ["typecheck", "npm run typecheck"],

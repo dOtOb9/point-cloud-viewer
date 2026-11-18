@@ -1,37 +1,20 @@
-// Checks that a new ADR (number >= 24) says which code it depends on, and that the code really is there.
-//   node scripts/check-adr.mjs                       (all TaskSheets/ADR-*.md with number >= 24)
-//   node scripts/check-adr.mjs [--base <ref>] <files>
-// Required in the ADR (template: TaskSheets/ADR-TEMPLATE.md):
-//   "## 依存するコードの確認": a table with >= 3 rows `| `path:line` | `symbol` | what the ADR relies on |`.
-//   "## 整合の確認": a section that names ADR-0022 and ADR-0023.
-//   "## 数えた物": what the ADR counted ("N paths", "all consumers") with the command and its output, or "なし".
-// How strict a row is:
-//   always: the file exists, the line exists, `symbol` is 3+ characters, not a language keyword or generic word, and the file
-//           declares or defines it ("function name", "name(", "name:", "name ="); the "前提" cell (3rd column) is not empty.
-//   strict (the ADR is a proposal, or it changed since --base): the symbol must also appear as a whole word within 20 lines
-//           of the stated line. An accepted ADR that nobody touches is not failed when unrelated code above it moves.
-// Why: PF-0 (ADR-0024) was approved only after four rounds in which the design contradicted the code it stands on
-// (renderer "unchanged", generation keys vs parentKey / hierarchyByKey). See TaskSheets/RECURRENCE.md.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const FIRST_CHECKED_ADR = 24;
-const WINDOW = 20;
+const STRICT_SYMBOL_DISTANCE_LINES = 20;
 const MIN_ROWS = 3;
 const MIN_SYMBOL_LENGTH = 3;
 const MIN_PREMISE_LENGTH = 8;
-// Words that match almost any file; a row that names only one of these proves nothing.
-const GENERIC = new Set(
+const WORDS_THAT_MATCH_ALMOST_ANY_FILE = new Set(
   (
-    // TypeScript / JavaScript keywords and ubiquitous built-ins
     "abstract any as async await boolean break case catch class const constructor continue debugger declare default delete do else enum " +
     "export extends false finally for from function get if implements import in instanceof interface is keyof let namespace never new null " +
     "number of override package private protected public readonly require return set static string super switch symbol this throw true try " +
     "type typeof undefined unknown var void while with yield Promise Array Object Math Map Set Date Error JSON length push map filter " +
     "forEach value data name id key keys values index count size " +
-    // Rust keywords and ubiquitous types
     "as break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self " +
     "static struct super trait true type unsafe use where while Option Result Vec String Box Some None Ok Err u8 u16 u32 u64 i32 i64 f32 f64 usize bool str main new"
   )
@@ -58,14 +41,12 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** True when `line` contains `symbol` as a whole word (not inside a longer identifier). */
 export function hasWord(line, symbol) {
   return new RegExp(`(?<![\\w$])${escapeRegExp(symbol)}(?![\\w$])`).test(line);
 }
 
 const DECLARATION = /\b(function|const|let|var|class|interface|type|enum|namespace|fn|struct|trait|impl|mod|static|def)\s+/;
 
-/** True when `line` declares or defines `symbol` (a declaration keyword before it, or the "name(" / "name:" / "name =" form). */
 export function isDeclaredOrDefined(line, symbol) {
   if (!hasWord(line, symbol)) return false;
   const esc = escapeRegExp(symbol);
@@ -73,17 +54,11 @@ export function isDeclaredOrDefined(line, symbol) {
   return new RegExp(`(?<![\\w$])${esc}\\s*[(:=]`).test(line);
 }
 
-/** The status word in the "状態" line ("提案", "採択", "却下"...), or null. */
 export function adrStatus(text) {
   const m = /^-?\s*状態:\s*\**\s*([^\s*（(]+)/m.exec(text);
   return m ? m[1] : null;
 }
 
-/**
- * Problems in one ADR. `fs` = { exists(path), read(path) } relative to the repository root (injected for tests).
- * `changed`: the ADR changed in this PR / since --base (makes the line-distance check strict, like a proposal).
- * Empty array = fine.
- */
 export function checkAdr(text, fs, { changed = false } = {}) {
   const problems = [];
   const strict = changed || adrStatus(text) === "提案";
@@ -109,7 +84,7 @@ export function checkAdr(text, fs, { changed = false } = {}) {
         problems.push(`${path}:${line}: \`${symbol}\` is shorter than ${MIN_SYMBOL_LENGTH} characters`);
         continue;
       }
-      if (GENERIC.has(symbol.toLowerCase())) {
+      if (WORDS_THAT_MATCH_ALMOST_ANY_FILE.has(symbol.toLowerCase())) {
         problems.push(`${path}:${line}: \`${symbol}\` is a keyword or a generic word that appears in almost any file; name the function, type or constant itself`);
         continue;
       }
@@ -135,10 +110,10 @@ export function checkAdr(text, fs, { changed = false } = {}) {
         continue;
       }
       if (strict) {
-        const from = Math.max(0, line - 1 - WINDOW);
-        const to = Math.min(lines.length, line + WINDOW);
+        const from = Math.max(0, line - 1 - STRICT_SYMBOL_DISTANCE_LINES);
+        const to = Math.min(lines.length, line + STRICT_SYMBOL_DISTANCE_LINES);
         if (!lines.slice(from, to).some((l) => hasWord(l, symbol))) {
-          problems.push(`${path}:${line}: \`${symbol}\` not found within ${WINDOW} lines (the code moved, or the ADR misreads it; fix the line or the ADR)`);
+          problems.push(`${path}:${line}: \`${symbol}\` not found within ${STRICT_SYMBOL_DISTANCE_LINES} lines (the code moved, or the ADR misreads it; fix the line or the ADR)`);
         }
       }
     }
@@ -170,8 +145,27 @@ function changedSince(baseRef) {
   }
 }
 
+const USAGE = `usage: node scripts/check-adr.mjs [--base <ref>] [ADR files...]
+
+Checks that a new ADR (number >= ${FIRST_CHECKED_ADR}) says which code it depends on, and that the code really is there.
+With no files: every TaskSheets/ADR-*.md numbered ${FIRST_CHECKED_ADR} or more. Template: TaskSheets/ADR-TEMPLATE.md.
+
+Required in the ADR:
+  "## 依存するコードの確認": a table with >= ${MIN_ROWS} rows | \`path:line\` | \`symbol\` | what the ADR relies on |
+  "## 整合の確認": a section that names ADR-0022 and ADR-0023
+  "## 数えた物": what the ADR counted, with the command and its output, or "なし"
+
+Every row: the file and the line exist, \`symbol\` has ${MIN_SYMBOL_LENGTH}+ characters, is not a keyword or a generic word,
+and the file declares or defines it; the 3rd column is not empty.
+Strict (the ADR is a proposal, or it changed since --base): the symbol must also appear within
+${STRICT_SYMBOL_DISTANCE_LINES} lines of the stated line. An accepted ADR nobody touches is not failed when unrelated code moves.`;
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
+  if (args.includes("--help")) {
+    console.log(USAGE);
+    process.exit(0);
+  }
   let baseRef = null;
   const baseAt = args.indexOf("--base");
   if (baseAt >= 0) {

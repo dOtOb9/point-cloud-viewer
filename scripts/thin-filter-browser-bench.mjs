@@ -1,13 +1,3 @@
-// G3-T16: times thinning / ROR / SOR in a real browser (Web build) and takes screenshots.
-// A developer tool, not part of CI. It needs a running `vite preview` of the Web build
-// (GITHUB_PAGES_BUILD=true npm run build, then npm run preview -- --port N --strictPort --host 127.0.0.1).
-//
-//   node scripts/thin-filter-browser-bench.mjs <port> <copc-file> <out-dir> <op>[,<op>...] [--headed]
-//
-// ops: grid1ft | ror | sor (autzen, ft) | voxel05m | ror05m | sordefault (metre files)    (lengths are the ones G3-T7 used on autzen: 1 ft, r = 3 ft with m = 4,
-//                              k = 8 / n = 2 / R = 15 ft; typed in metres, so the file's ft are exact)
-// Each op opens the file in a fresh page, runs the tool from the toolbar button and waits for the new layer.
-// It prints one JSON line per op: wall time from pressing the button to the new layer's row, kept points shown, crash flag.
 import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -15,17 +5,24 @@ import { join } from "node:path";
 const [port, file, outDir, opList] = process.argv.slice(2);
 const headed = process.argv.includes("--headed");
 if (!port || !file || !outDir || !opList) {
-  console.error("usage: node scripts/thin-filter-browser-bench.mjs <port> <copc-file> <out-dir> <ops> [--headed]");
+  console.error(`usage: node scripts/thin-filter-browser-bench.mjs <port> <copc-file> <out-dir> <op>[,<op>...] [--headed]
+
+G3-T16: times thinning / ROR / SOR in a real browser (Web build) and takes screenshots. Not part of CI.
+Needs a running vite preview of the Web build:
+  GITHUB_PAGES_BUILD=true npm run build, then npm run preview -- --port N --strictPort --host 127.0.0.1
+ops on autzen (ft): grid1ft, ror, sor (the lengths G3-T7 used: 1 ft; r = 3 ft, m = 4; k = 8, n = 2, R = 15 ft)
+ops on a metre file: voxel05m, ror05m, sordefault (the SOR search range left at its estimate),
+  zero (no point left, must end with that message), cancelror (cancelled 5 s after the start)
+Each op opens the file in a fresh page and prints one JSON line: wall time from the button to the new layer,
+kept points, crash flag.`);
   process.exit(2);
 }
 mkdirSync(outDir, { recursive: true });
 const baseUrl = `http://127.0.0.1:${port}/point-cloud-viewer/`;
 
 const OPS = {
-  // Failure paths on a metre file: zero points left (a huge neighbour count), and a cancel 5 s after the start.
   zero: { button: "filter-button", confirm: "filter-confirm", prefix: "フィルタ - ", expectText: "残る点がありません", fill: { "filter-radius": "0.5", "filter-min-neighbors": "100000" }, fillUnknownUnit: { "filter-radius": "0.5", "filter-min-neighbors": "100000" } },
   cancelror: { button: "filter-button", confirm: "filter-confirm", prefix: "フィルタ - ", expectText: "をキャンセルしました", cancelAfterMs: 5000, fill: { "filter-radius": "0.5", "filter-min-neighbors": "4" }, fillUnknownUnit: { "filter-radius": "0.5", "filter-min-neighbors": "4" } },
-  // Metre files (the Shibuya cut): sizes typed as they are. The SOR search range is left at its default (the estimate).
   voxel05m: { button: "thin-button", confirm: "thin-confirm", prefix: "間引き - ", methodName: "thin-method", method: "voxel", fill: { "thin-size": "0.5" }, fillUnknownUnit: { "thin-size": "0.5" } },
   ror05m: { button: "filter-button", confirm: "filter-confirm", prefix: "フィルタ - ", fill: { "filter-radius": "0.5", "filter-min-neighbors": "4" }, fillUnknownUnit: { "filter-radius": "0.5", "filter-min-neighbors": "4" } },
   sordefault: { button: "filter-button", confirm: "filter-confirm", prefix: "フィルタ - ", method: "sor", fill: {}, fillUnknownUnit: {} },
@@ -97,7 +94,6 @@ for (const opName of opList.split(",")) {
       await page.waitForTimeout(op.cancelAfterMs);
       await page.getByTestId("tool-cancel").click();
     }
-    // `expectText`: the run must END with this message in the error log and no new layer (zero points, cancel).
     const done = op.expectText ? page.getByText(op.expectText).first() : page.getByTestId("layer-row").filter({ hasText: op.prefix }).first();
     await done.waitFor({ timeout: 40 * 60_000 });
     seconds = (Date.now() - started) / 1000;

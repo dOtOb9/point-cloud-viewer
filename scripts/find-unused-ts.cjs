@@ -1,19 +1,20 @@
-// Lists code under src/ that nothing calls (R10, TaskSheets/R10-remove-unused-code.md).
-// Usage: node scripts/find-unused-ts.cjs <repository root>
-//
-// Uses the TypeScript language service's "find all references" on:
-// - exported functions, classes, interfaces, types and constants,
-// - members of exported interfaces in src/state (the hooks' types),
-// - public methods and properties of exported classes.
-// UNUSED    = no reference at all. TEST-ONLY = referenced only from *.test.ts files.
-// For a hook member, the Pick list in viewer-types.ts, the assembly in useCopcViewer.ts and the hook's own file do not count,
-// so a member passed between hooks inside useCopcViewer.ts can show up as UNUSED: check those by hand.
-// Limits: a call made through a string (scripts/igpu-bench/bench.mjs calls renderer getters by name, e2e page.evaluate)
-// is invisible to it. grep e2e/, scripts/ and docs/ before deleting anything it lists.
-// It also misses a call through a structurally matching type: `NodeCache.get` is reported but `node-selection.ts` calls it
-// through the `NodeSelectionCache` interface (R10). Run `npx tsc --noEmit` after each deletion.
 const fs = require("fs");
 const path = require("path");
+const USAGE = `usage: node scripts/find-unused-ts.cjs <repository root>
+
+Lists code under src/ that nothing calls (R10, TaskSheets/R10-remove-unused-code.md), with the TypeScript language
+service's "find all references" on exported functions, classes, interfaces, types and constants, the members of
+exported interfaces in src/state, and the public methods and properties of exported classes.
+UNUSED = no reference at all. TEST-ONLY = referenced only from *.test.ts files.
+For a hook member, the Pick list in viewer-types.ts, the assembly in useCopcViewer.ts and the hook's own file do not
+count, so a member passed between hooks inside useCopcViewer.ts can show up as UNUSED: check those by hand.
+Not seen: a call made through a string (scripts/igpu-bench/bench.mjs calls renderer getters by name, e2e page.evaluate),
+and a call through a structurally matching type (NodeCache.get is called through NodeSelectionCache).
+grep e2e/, scripts/ and docs/ before deleting anything it lists, and run npx tsc --noEmit after each deletion.`;
+if (process.argv.includes("--help")) {
+  console.log(USAGE);
+  process.exit(0);
+}
 const root = path.resolve(process.argv[2] || ".");
 const ts = require(path.join(root, "node_modules/typescript"));
 const norm = (p) => p.split(path.sep).join("/");
@@ -46,8 +47,6 @@ function refsOf(file, pos) {
 }
 function report(file, name, pos, kind) {
   let refs = refsOf(file, pos);
-  // A hook member is "used" only if something other than its own hook (the return statement), the Pick list in
-  // viewer-types.ts and the assembly in useCopcViewer.ts reads it.
   if (kind === "member") refs = refs.filter((r) => r !== file && !r.endsWith("/src/state/viewer-types.ts") && !r.endsWith("/src/state/useCopcViewer.ts"));
   const nonTest = refs.filter((r) => !isTest(r));
   const rel = path.relative(root, file).split(path.sep).join("/");
@@ -68,7 +67,6 @@ for (const file of targets) {
     if (ts.isVariableStatement(node)) {
       for (const d of node.declarationList.declarations) if (ts.isIdentifier(d.name)) report(file, d.name.text, d.name.getStart(sf), "export");
     }
-    // Members of exported interfaces in src/state (the hook return types) and public class methods in src/datasource, src/renderer.
     if (ts.isInterfaceDeclaration(node) && file.includes("/src/state/")) {
       for (const m of node.members) if (m.name && ts.isIdentifier(m.name)) report(file, `${node.name.text}.${m.name.text}`, m.name.getStart(sf), "member");
     }

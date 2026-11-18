@@ -1,11 +1,3 @@
-// G1-T15: runs the DTM tool in a real browser (Web build): opens a COPC, makes a DTM, takes screenshots and saves the
-// downloaded GeoTIFF. A developer tool, not part of CI. It needs a running `vite preview` of the Web build
-// (GITHUB_PAGES_BUILD=true npm run build, then npm run preview -- --port N --strictPort --host 127.0.0.1).
-//
-//   node scripts/dtm-browser-check.mjs <port> <copc-file> <out-dir> [cell-size-in-display-unit] [--headed] [--format=geotiff|landxml|both] [--tiff=colored|values]
-//
-// It prints the adapter info (to tell a real GPU from SwiftShader), the time from pressing "作る" to the new layer, the
-// layer rows, the text of the DTM info, and saves: dtm-dialog.png, dtm-result.png, dtm.tif (the downloaded file).
 import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +8,12 @@ const format = option("format", "geotiff");
 const tiff = option("tiff", "colored");
 const headed = process.argv.includes("--headed");
 if (!port || !file || !outDir) {
-  console.error("usage: node scripts/dtm-browser-check.mjs <port> <copc-file> <out-dir> [cell-size] [--headed]");
+  console.error(`usage: node scripts/dtm-browser-check.mjs <port> <copc-file> <out-dir> [cell-size-in-display-unit] [--headed] [--format=geotiff|landxml|both] [--tiff=colored|values]
+
+G1-T15: runs the DTM tool in a real browser (Web build). Not part of CI. Needs a running vite preview of the Web build:
+  GITHUB_PAGES_BUILD=true npm run build, then npm run preview -- --port N --strictPort --host 127.0.0.1
+Prints the adapter info (a real GPU or SwiftShader), the time from "作る" to the new layer, the layer rows and the
+DTM info text, and saves dtm-dialog.png, dtm-result.png and dtm.tif (the downloaded file).`);
   process.exit(2);
 }
 mkdirSync(outDir, { recursive: true });
@@ -32,7 +29,6 @@ let crashed = false;
 page.on("crash", () => {
   crashed = true;
 });
-// The setting "DTM の出力形式" is kept in localStorage (src/state/dtm-setting.ts); set it before the page starts.
 await page.addInitScript(
   ([f, t]) => localStorage.setItem("pcv-dtm-output", JSON.stringify({ format: f, tiff: t })),
   [format, tiff],

@@ -1,6 +1,3 @@
-// Prints min-max per field over the repeated runs of each scenario written by web-first-open.mjs.
-//   node scripts/bench/summarize-runs.mjs <dir>        (reads <dir>/web-<scenario>-<n>.json and the matching .mem.csv)
-// A table cell in a task sheet must come from this output, not from one run remembered by eye.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseSamples, summarizeSamples } from "./summarize-samples.mjs";
@@ -11,7 +8,6 @@ export const FIELDS = [
   "t_first_draw_s", "t_settled_s", "settled_points", "wall_since_select_s", "peak_private_mib",
 ];
 
-/** { scenario -> { field -> [min, max, n] } } for runs named `<scenario>-<n>`. */
 export function summarizeRuns(runs) {
   const groups = new Map();
   for (const { name, json } of runs) {
@@ -38,7 +34,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     .filter((f) => /^web-.*\.json$/.test(f))
     .map((f) => {
       const json = JSON.parse(readFileSync(join(dir, f), "utf8"));
-      // The peak private memory comes from the strict CSV reader (an unreadable CSV is an error, never a skipped row).
       const csv = join(dir, f.replace(/\.json$/, ".mem.csv"));
       if (existsSync(csv)) json.peak_private_mib = summarizeSamples(parseSamples(readFileSync(csv, "utf8"))).peakPrivateMib;
       return { name: f.replace(/^web-/, "").replace(/\.json$/, ""), json };

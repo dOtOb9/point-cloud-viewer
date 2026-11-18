@@ -1,9 +1,3 @@
-// usage: PCV_BENCH_OUT=<dir> node scripts/bench/web-first-open.mjs <scenario> <timeoutSec> <file> [file...]
-// Start the built app first: GITHUB_PAGES_BUILD=true npm run build && npm run preview -- --port <PCV_BENCH_PORT> --strictPort
-// Pin it to the P cores (BENCH-measurement-cores.md): start node with ProcessorAffinity 0xFFF; Chromium inherits it. The result is
-// <dir>/web-<scenario>.json; read ranges with scripts/bench/summarize-runs.mjs, not by eye (PF-0 R2 F-1).
-// Opens the files in the built app (vite preview, default port 5311, PCV_BENCH_PORT) in a headed Chromium with the real GPU,
-// records first-draw / settled times and the browser process tree's private memory.
 import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -11,10 +5,23 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(new URL("../../package.json", import.meta.url));
 const { chromium } = require("@playwright/test");
 
+const USAGE = `usage: PCV_BENCH_OUT=<dir> node scripts/bench/web-first-open.mjs <scenario> <timeoutSec> <file> [file...]
+
+Opens the files in the built app (vite preview, port PCV_BENCH_PORT, default 5311) in a headed Chromium with the real
+GPU, and records the first-draw / settled times and the private memory of the browser's process tree.
+Start the app first: GITHUB_PAGES_BUILD=true npm run build && npm run preview -- --port <PCV_BENCH_PORT> --strictPort
+Pin node to the P cores (ProcessorAffinity 0xFFF, TaskSheets/BENCH-measurement-cores.md); Chromium inherits it.
+PCV_BENCH_OUT: a directory outside the repository (the profile and the CSV can be large).
+Result: <dir>/web-<scenario>.json. Read ranges with scripts/bench/summarize-runs.mjs, not by eye.`;
+
 const [scenario, timeoutSecStr, ...files] = process.argv.slice(2);
+if (!scenario || !timeoutSecStr || files.length === 0) {
+  console.error(USAGE);
+  process.exit(2);
+}
 const timeoutMs = Number(timeoutSecStr) * 1000;
 const PORT = Number(process.env.PCV_BENCH_PORT ?? "5311");
-const OUT_DIR = process.env.PCV_BENCH_OUT; // a directory OUTSIDE the repository (profile and CSV can be large)
+const OUT_DIR = process.env.PCV_BENCH_OUT;
 if (!OUT_DIR) throw new Error("set PCV_BENCH_OUT to a directory outside the repository");
 const OUT = `${OUT_DIR}\\web-${scenario}`;
 const userDir = `${OUT_DIR}\\profile-${scenario}`;
@@ -25,7 +32,6 @@ const ctx = await chromium.launchPersistentContext(userDir, {
   args: ["--enable-unsafe-webgpu", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--window-size=1300,800"],
 });
 const browserPid = (ctx.browser()?.process?.()?.pid) ?? null;
-// the persistent context has no browser(); find the chrome root from the launched processes instead
 let rootPid = browserPid;
 if (!rootPid) {
   const out = execFileSync("powershell", ["-NoProfile", "-Command",

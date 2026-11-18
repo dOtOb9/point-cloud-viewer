@@ -1,29 +1,12 @@
-// Checks that the file paths and relative links written in the architecture documents exist.
-// RF-0 had this as a shell one-liner in a task sheet; it is a script now so that CI runs it
-// (`npm run check:docs`) and a path in these documents cannot go stale unnoticed.
-//
-// Scope: it only proves that a written path exists. It does NOT prove that the sentence around it is true
-// (what a file does, versions, counts). Those are checked by hand against the code; see TaskSheets/RECURRENCE.md.
-//
-// Limits (what it does not see):
-//   - only the documents in DOCS;
-//   - only paths that start with src/ crates/ src-tauri/ TaskSheets/ docs/ e2e/ scripts/ vendor/ (not `foo.ts`
-//     alone, not `.github/...`), and not brace forms such as `src/{a,b}/x.ts`;
-//   - only links that look like `](./something)`; `](ADR-x.md)` and `](../x)` are not checked.
-// Text from a heading named "これから" (things decided but not built yet, e.g. src/plugins/) to the end of a
-// file is skipped: those paths do not exist yet on purpose.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DOCS = ["TaskSheets/ARCHITECTURE.md", "TaskSheets/ROADMAP.md", "CLAUDE.md"];
-// Decided in ADR-0022 / ADR-0023 but not built yet. Matched exactly. When one of them exists, the check fails
-// and says to remove it from this list, so the list cannot go stale.
 export const NOT_BUILT_YET = ["src/plugin-api", "src/plugins", "src/ui/kit", "src/core/plugin-host.ts", "src/app/tea.ts"];
 const PATH_RE = /(?:src|crates|src-tauri|TaskSheets|docs|e2e|scripts|vendor)\/[A-Za-z0-9_./*-]+/g;
 const LINK_RE = /\]\((\.\/[^)#\s]+)/g;
 
-/** Returns the lines to report: paths and links that do not exist, and NOT_BUILT_YET entries that now exist. */
 export function checkDocs(root, docs = DOCS, notBuiltYet = NOT_BUILT_YET) {
   const problems = [];
   for (const entry of notBuiltYet) {
@@ -36,7 +19,8 @@ export function checkDocs(root, docs = DOCS, notBuiltYet = NOT_BUILT_YET) {
 
     for (const match of body.matchAll(PATH_RE)) {
       const path = match[0].replace(/[.,]+$/, "").replace(/\/+$/, "");
-      if (path.includes("*")) continue; // a glob such as src/state/use*
+      const isGlob = path.includes("*");
+      if (isGlob) continue;
       if (notBuiltYet.includes(path)) continue;
       if (!existsSync(join(root, path))) problems.push(`${doc}: ${path}`);
     }
@@ -47,7 +31,20 @@ export function checkDocs(root, docs = DOCS, notBuiltYet = NOT_BUILT_YET) {
   return [...new Set(problems)];
 }
 
+const USAGE = `usage: node scripts/check-doc-paths.mjs   (npm run check:docs)
+
+Checks that the file paths and the relative links written in ${DOCS.join(", ")} exist.
+It proves only that a written path exists, not that the sentence around it is true (TaskSheets/RECURRENCE.md).
+Not seen: other documents; paths that do not start with src/ crates/ src-tauri/ TaskSheets/ docs/ e2e/ scripts/ vendor/
+(foo.ts alone, .github/...); brace forms such as src/{a,b}/x.ts; links other than ](./something).
+Text from a heading "## これから" to the end of a document is skipped (decided, not built yet).
+NOT_BUILT_YET lists paths decided in ADR-0022 / ADR-0023 but not built; the check fails once one of them exists.`;
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  if (process.argv.includes("--help")) {
+    console.log(USAGE);
+    process.exit(0);
+  }
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const problems = checkDocs(root);
   if (problems.length > 0) {

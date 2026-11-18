@@ -1,6 +1,4 @@
 // @vitest-environment node
-// Tests of scripts/check-doc-paths.mjs (`npm run check:docs`). This file is outside tsc's include ("src" only);
-// vitest and eslint still run it.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +11,6 @@ afterEach(() => {
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A throwaway repository root with the given files (path -> text). */
 function fakeRoot(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "pcv-docs-"));
   temps.push(root);
@@ -59,7 +56,6 @@ describe("check-doc-paths", () => {
   });
 
   it("the real documents are clean", () => {
-    // process.cwd() is the repository root when vitest runs from it.
     expect(checkDocs(process.cwd())).toEqual([]);
     expect(NOT_BUILT_YET.length).toBeGreaterThan(0);
   });

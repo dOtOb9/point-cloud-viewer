@@ -1,12 +1,3 @@
-// 内蔵GPU PC（ThinkBook）用の計測スクリプト（完全版）。所有者が ThinkBook のデスクトップで
-//   cd C:\pcv-bench; node bench.mjs                 （完全版。15分以内）
-//   cd C:\pcv-bench; node bench.mjs autzen-default  （名前に一致するセッションだけ。動作確認用）
-// と打つ。画面ありの Chromium を起動するので、ログイン中のデスクトップから実行すること
-// （SSH から起動すると GPU が見えない。TaskSheets/BENCH-igpu-thinkbook.md 参照）。
-// 点群データは C:\pcv-bench\data\ に置く（コミットしない）。
-//
-// 構成: 「セッション」= データ1つ + 設定1つ。セッションごとにブラウザを起動し直す（GPU が落ちても次へ進める）。
-// 1セッションの中で、視点3つ（全体見下ろし・街区・通り）を、止めたまま N 秒 → ドラッグ 5 秒で測る。
 import { chromium } from "playwright";
 import http from "node:http";
 import fs from "node:fs";
@@ -19,15 +10,15 @@ const PORT = 8765;
 const PAGE_URL = "https://dotob9.github.io/point-cloud-viewer/?pcvDebug";
 const DRAG_SEC = Number(process.env.BENCH_DRAG_SEC ?? 5);
 const LOAD_TIMEOUT_MS = 120000;
-const SESSION_TIMEOUT_MS = 240000; // 1セッションの上限。超えたら記録してブラウザを閉じ、次へ
-const TOTAL_BUDGET_MS = 14 * 60 * 1000; // これを超えたら残りのセッションは始めない
+const SESSION_TIMEOUT_MS = 240000;
+const TOTAL_BUDGET_MS = 14 * 60 * 1000;
+const LET_THE_HTTPS_PAGE_READ_LOOPBACK_WITHOUT_A_PERMISSION_PROMPT =
+  "--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,BlockInsecurePrivateNetworkRequests";
 const FILTER = process.argv[2] ?? "";
 
 const AUTZEN = "autzen-classified.copc.laz";
 const SHIBUYA = "tokyo-shibuya-merged-v2.copc.laz";
 
-// 設定の変え方: ページ内の renderer（?pcvDebug で window.__pcvRenderer に出る）のメソッドを直接呼ぶ。
-// big = 窓を ThinkBook の実画面の大きさにする（解像度は既定の 1.0 のまま）。画素数を変えたときの違いを見るため。
 const CONFIGS = {
   default: { idleSec: 25, note: "既定のまま。窓 1280x720" },
   scale05: { idleSec: 12, scale: 0.5, note: "解像度 0.5（画素数 1/4）。窓 1280x720" },
@@ -35,7 +26,6 @@ const CONFIGS = {
   big: { idleSec: 12, big: true, note: "解像度 1.0 のまま、窓を画面いっぱいにする（画素数が増える）" },
   edloff: { idleSec: 12, edlOff: true, note: "EDL オフ。窓 1280x720" },
 };
-// 時間の見積り: autzen 約 4 分、渋谷 約 6.5 分、合計 約 10〜11 分（読み込み待ちを含む）
 const SESSIONS = [
   { file: AUTZEN, cfg: "default" },
   { file: AUTZEN, cfg: "scale05" },
@@ -47,10 +37,9 @@ const SESSIONS = [
   { file: SHIBUYA, cfg: "edloff" },
 ].filter((s) => `${s.file === SHIBUYA ? "shibuya" : "autzen"}-${s.cfg}`.includes(FILTER));
 
-// 視点。渋谷は HQ-0 と同じ世界座標。autzen は座標を知らないので、開いた直後のカメラからの相対で決める。
 const VIEW_NAMES = ["overview", "block", "street"];
 function viewFor(file, name, initial) {
-  if (name === "overview") return null; // 開いた直後の視点に戻す
+  if (name === "overview") return null;
   if (file === SHIBUYA) {
     const t = [-12000, -37800, 40];
     return name === "block" ? { target: t, distance: 400, pitch: 0.6, yaw: 2.0 } : { target: t, distance: 40, pitch: 0.1, yaw: 0.5 };
@@ -67,7 +56,6 @@ const log = (...a) => console.log(new Date().toLocaleTimeString("ja-JP"), ...a);
 const results = { stamp, filter: FILTER, sessions: [], skipped: [] };
 const save = () => fs.writeFileSync(path.join(OUT, "result.json"), JSON.stringify(results, null, 1));
 
-// --- Range 対応・CORS 付きの配信サーバー（127.0.0.1 のみ） ---
 function startServer() {
   const server = http.createServer((req, res) => {
     const cors = {
@@ -75,7 +63,7 @@ function startServer() {
       "Access-Control-Allow-Headers": "Range, Content-Type",
       "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
       "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-      "Access-Control-Allow-Private-Network": "true", // https ページ → ループバックの取得用
+      "Access-Control-Allow-Private-Network": "true",
     };
     if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
     const name = path.basename(decodeURIComponent(req.url.split("?")[0]));
@@ -118,12 +106,9 @@ async function runSession(sess, session, consoleErrors) {
       args: [
         "--enable-unsafe-webgpu", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",
         conf.big ? "--start-maximized" : "--window-size=1300,800",
-        // https のページから http://127.0.0.1 を読むと、新しい Chromium は「ローカルネットワークへのアクセス」の許可待ちで
-        // 止まる（開発機で確認）。それを切る
-        "--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,BlockInsecurePrivateNetworkRequests",
+        LET_THE_HTTPS_PAGE_READ_LOOPBACK_WITHOUT_A_PERMISSION_PROMPT,
       ],
     });
-    // big は窓を最大化し、ビューポートの固定をやめる（実際の画面の大きさで描かせる）
     const page = await browser.newPage({ viewport: conf.big ? null : { width: 1280, height: 720 } });
     await page.bringToFront();
     page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
@@ -167,7 +152,6 @@ async function runSession(sess, session, consoleErrors) {
     });
     log(`[${sid}] device-profile:`, JSON.stringify(session.deviceProfile));
 
-    // 設定を変える
     await page.evaluate((c) => {
       const r = window.__pcvRenderer;
       if (c.scale) r.setRenderScale(c.scale);
@@ -224,7 +208,7 @@ async function runSession(sess, session, consoleErrors) {
         vr.ok = false; vr.error = String(e?.stack ?? e);
         log(`[${tag}] 失敗: ${String(e).slice(0, 300)}`);
         try { await withTimeout(page.screenshot({ path: path.join(OUT, `${tag}-error.png`) }), 10000, "screenshot"); } catch {}
-        if (/タイムアウト|crash|closed|disconnected/i.test(String(e))) throw e; // 固まった・落ちたらセッションを打ち切る
+        if (/タイムアウト|crash|closed|disconnected/i.test(String(e))) throw e;
       }
       save();
     }

@@ -1,9 +1,3 @@
-// A worker must not change the coordinator's part of a task sheet (AGENTS.md: "作業エージェントの決まり").
-//   node scripts/check-task-sheet.mjs <base-ref> [head-ref]
-// Compares every TaskSheets/*.md that has acceptance criteria ("**AC-<n>**") at <base-ref> with the same file at
-// [head-ref] (default: the working tree). The coordinator's lines outside the record sections must all still be there.
-// A record section is anything under a heading that contains "記録" ("## 記録", "### 実装の記録 R1", "### 監査の記録"), at any level.
-// <base-ref> = the commit before the loop started; if the coordinator fixed an AC during the loop, use the commit after that fix.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -16,39 +10,25 @@ function isRecordHeading(line) {
   return RECORD_HEADING.test(line);
 }
 
-/**
- * Lines outside the record sections. A record section starts at a heading whose text contains "記録", at any level,
- * and ends at the next heading of the same or a higher level (fewer or equal "#"). The record heading line itself is kept.
- */
 export function protectedLines(text) {
   const out = [];
-  let recordLevel = null; // heading level of the open record section, or null
+  let recordLevel = null;
   for (const line of text.split(/\r?\n/)) {
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {
       const level = heading[1].length;
-      if (recordLevel !== null && level <= recordLevel) recordLevel = null; // the record section ended
+      if (recordLevel !== null && level <= recordLevel) recordLevel = null;
       if (recordLevel === null && /記録/.test(heading[2])) {
         recordLevel = level;
         out.push(line);
         continue;
       }
     }
-    // A horizontal rule is only a separator: a worker's record is inserted before it, so it ends up inside the record section.
     if (recordLevel === null && !PLACEHOLDER.test(line.trim()) && !HORIZONTAL_RULE.test(line.trim())) out.push(line);
   }
   return out;
 }
 
-/**
- * Problems when `headText` replaces `baseText`. Empty = fine. Only files with an "**AC-" line are checked.
- * Rules for the coordinator's part (everything outside the record sections):
- *  1. every non-blank line must still be there,
- *  2. in the same order,
- *  3. and no new non-blank line may appear, except the heading of a record section (so "AC-4 ... but not for Web" appended
- *     under an AC, or a new "## Notes" section outside the record, is caught).
- * An AC swallowed by a record heading counts as removed (rule 1).
- */
 export function findProtectedChanges(baseText, headText) {
   if (!AC_LINE.test(baseText)) return [];
   const base = protectedLines(baseText);
@@ -66,7 +46,6 @@ export function findProtectedChanges(baseText, headText) {
     problems.push(`line added outside a record section (head line ${i + 1}): ${line.slice(0, 100)}`);
   });
   if (problems.length === 0) {
-    // Rule 2: the base lines, in order, must be a subsequence of the head lines.
     const wanted = base.filter((l) => l.trim() !== "");
     let k = 0;
     for (const line of head) {
@@ -81,10 +60,24 @@ function git(args) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
+const USAGE = `usage: node scripts/check-task-sheet.mjs <base-ref> [head-ref]
+
+A worker must not change the coordinator's part of a task sheet (AGENTS.md, 作業役の決まり).
+Compares every TaskSheets/*.md that has acceptance criteria ("**AC-<n>**") at <base-ref> with the same file at
+[head-ref] (default: the working tree). Outside the record sections, every non-blank line of <base-ref> must still be
+there, in the same order, and no new non-blank line may appear (except the heading of a record section).
+A record section starts at a heading that contains "記録" ("## 記録", "### 実装の記録 R1"), at any level, and ends at
+the next heading of the same or a higher level. A horizontal rule is only a separator.
+<base-ref> = the commit before the loop started; if the coordinator fixed an AC during the loop, the commit after that fix.`;
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [baseRef, headRef] = process.argv.slice(2);
+  if (baseRef === "--help") {
+    console.log(USAGE);
+    process.exit(0);
+  }
   if (!baseRef) {
-    console.error("usage: node scripts/check-task-sheet.mjs <base-ref> [head-ref]");
+    console.error(USAGE);
     process.exit(2);
   }
   const files = git(["ls-tree", "-r", "--name-only", baseRef, "TaskSheets"]).split("\n").filter((f) => f.endsWith(".md"));

@@ -2,7 +2,6 @@
 import { describe, expect, it } from "vitest";
 import { adrStatus, checkAdr, hasWord } from "./check-adr.mjs";
 
-// 60 lines; `parentKey` on line 3, `indexByKey` on line 5, `hierarchyByKey` on line 55 (far from line 3).
 const lines = Array.from({ length: 60 }, (_, i) => `// filler ${i + 1}`);
 lines[2] = "export function parentKey(key) {";
 lines[4] = "const indexByKey = new Map();";
@@ -42,8 +41,8 @@ describe("check-adr", () => {
   it("rejects generic short names and an empty premise (the loophole found in review)", () => {
     const rows = "| `src/x.ts:3` | `key` | x |\n| `src/x.ts:3` | `if` | x |\n| `src/x.ts:3` | `a` | x |\n| `src/x.ts:3` | `parentKey` |  |";
     const problems = checkAdr(adr(rows), fs);
-    expect(problems.filter((p) => /keyword or a generic word/.test(p))).toHaveLength(1); // key
-    expect(problems.filter((p) => /shorter than 3/.test(p))).toHaveLength(2); // if, a
+    expect(problems.filter((p) => /keyword or a generic word/.test(p))).toHaveLength(1);
+    expect(problems.filter((p) => /shorter than 3/.test(p))).toHaveLength(2);
     expect(problems.some((p) => /premise cell/.test(p))).toBe(true);
   });
 
@@ -58,7 +57,6 @@ describe("check-adr", () => {
   });
 
   it("requires the symbol to be declared or defined in the file, not only mentioned", () => {
-    // `filler` appears in every comment line of the file but is never declared.
     const rows = [
       "| `src/x.ts:3` | `filler` | only mentioned in comments |",
       "| `src/x.ts:5` | `indexByKey` | builds the index by key |",
@@ -74,9 +72,8 @@ describe("check-adr", () => {
   });
 
   it("checks the distance of the line only for a proposal or a changed ADR", () => {
-    // `hierarchyByKey` is in the file, but 52 lines away from line 3.
     const far = "| `src/x.ts:3` | `hierarchyByKey` | claims it is near parentKey |\n| `src/x.ts:5` | `indexByKey` | builds the index by key |\n| `src/x.ts:3` | `parentKey` | returns null for others |";
-    expect(checkAdr(adr(far, "採択"), fs)).toEqual([]); // an accepted ADR nobody touched: unrelated code moving must not fail it
+    expect(checkAdr(adr(far, "採択"), fs)).toEqual([]);
     expect(checkAdr(adr(far, "採択"), fs, { changed: true }).some((p) => /within 20 lines/.test(p))).toBe(true);
     expect(checkAdr(adr(far, "提案"), fs).some((p) => /within 20 lines/.test(p))).toBe(true);
   });
