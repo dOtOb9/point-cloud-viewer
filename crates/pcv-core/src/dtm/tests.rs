@@ -205,10 +205,14 @@ fn memory_does_not_grow_with_the_point_count() {
     lattice(60.0, 0.25, 2, |_, _| 0.0, &mut dense);
     assert!(dense.len() > 15 * sparse.len());
 
+    const POINTS_PER_NODE: u32 = 500;
+    const POINTS_PER_ADVANCE: u64 = 2_000;
+    const ONE_ADVANCE_PLUS_THE_LAST_NODE: usize =
+        POINTS_PER_ADVANCE as usize + POINTS_PER_NODE as usize;
     let measure = |points: Vec<CopcPointFields>| {
-        let (_dir, mut reader) = open_reader(points, 500);
+        let (_dir, mut reader) = open_reader(points, POINTS_PER_NODE);
         let mut job = DtmJob::new(&reader, None, &params(2_000_000, 2_000_000)).expect("job");
-        job.points_per_advance = 2_000;
+        job.points_per_advance = POINTS_PER_ADVANCE;
         let before = job.memory_bytes();
         let mut records = 0usize;
         loop {
@@ -227,22 +231,44 @@ fn memory_does_not_grow_with_the_point_count() {
         sparse_bytes, dense_bytes,
         "memory follows the area, not the points"
     );
-    assert!(dense_buffered <= 2_000 + 500, "buffered {dense_buffered}");
+    assert!(
+        dense_buffered <= ONE_ADVANCE_PLUS_THE_LAST_NODE,
+        "buffered {dense_buffered}"
+    );
     assert!(dense_buffered < dense_records / 10);
-    assert!(sparse_buffered <= 2_000 + 500);
+    assert!(sparse_buffered <= ONE_ADVANCE_PLUS_THE_LAST_NODE);
 }
 
 #[test]
 fn caps_refuse_before_any_point_is_read() {
     let (points, _, _) = town(|_, _| 0.0);
     let (_dir, reader) = open_reader(points, 5_000);
-    let err = DtmJob::new(&reader, None, &params(1_000, 2_000_000)).err();
+    const PARTICLE_CAP_BELOW_THE_ABOUT_15_THOUSAND_OF_60_M_AT_0_5_M: u64 = 1_000;
+    const CELL_CAP_BELOW_THE_3721_OF_60_M_AT_1_M: u64 = 100;
+    const CAP_THAT_DOES_NOT_STOP_IT: u64 = 2_000_000;
+    let err = DtmJob::new(
+        &reader,
+        None,
+        &params(
+            PARTICLE_CAP_BELOW_THE_ABOUT_15_THOUSAND_OF_60_M_AT_0_5_M,
+            CAP_THAT_DOES_NOT_STOP_IT,
+        ),
+    )
+    .err();
     let message = err.expect("refused").to_string();
     assert!(message.contains("DTM"), "{message}");
     assert!(message.contains("布"), "{message}");
     assert!(message.contains("CSF の解像度"), "{message}");
     assert!(!message.contains("ラスタ"), "{message}");
-    let err = DtmJob::new(&reader, None, &params(2_000_000, 100)).err();
+    let err = DtmJob::new(
+        &reader,
+        None,
+        &params(
+            CAP_THAT_DOES_NOT_STOP_IT,
+            CELL_CAP_BELOW_THE_3721_OF_60_M_AT_1_M,
+        ),
+    )
+    .err();
     let message = err.expect("refused").to_string();
     assert!(message.contains("DTM"), "{message}");
     assert!(message.contains("セルの大きさ"), "{message}");

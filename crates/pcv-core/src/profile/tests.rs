@@ -150,22 +150,35 @@ fn s_follows_a_to_b_and_z_follows_up_when_the_line_is_not_on_the_x_axis() {
 #[test]
 fn never_returns_more_than_the_cap_and_still_covers_the_whole_section() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut file = open(dir.path(), wall(200, 200), false);
+    const WALL_SIDE_GIVING_40_000_POINTS: u32 = 200;
+    const CAP_FAR_BELOW_THE_WALL: usize = 1000;
+    let mut file = open(
+        dir.path(),
+        wall(
+            WALL_SIDE_GIVING_40_000_POINTS,
+            WALL_SIDE_GIVING_40_000_POINTS,
+        ),
+        false,
+    );
     let line = SectionLine {
         a: [0.0, 0.0, 0.0],
         b: [199.0, 0.0, 0.0],
         up: [0.0, 0.0, 1.0],
     };
-    let bytes = read_section_profile(&mut file, &line, 1000).expect("profile");
+    let bytes = read_section_profile(&mut file, &line, CAP_FAR_BELOW_THE_WALL).expect("profile");
     let d = decode(&bytes);
-    assert!(d.points.len() <= 1000, "got {}", d.points.len());
+    assert!(
+        d.points.len() <= CAP_FAR_BELOW_THE_WALL,
+        "got {}",
+        d.points.len()
+    );
     assert!(
         d.points.len() > 500,
         "thinning kept too few: {}",
         d.points.len()
     );
     assert_eq!(d.flags & PROFILE_FLAG_THINNED, PROFILE_FLAG_THINNED);
-    assert!(bytes.len() <= PROFILE_HEADER_BYTES + 1000 * PROFILE_RECORD_BYTES);
+    assert!(bytes.len() <= PROFILE_HEADER_BYTES + CAP_FAR_BELOW_THE_WALL * PROFILE_RECORD_BYTES);
     assert!(
         d.s_range.0 <= 10.0 && d.s_range.1 >= 189.0,
         "{:?}",

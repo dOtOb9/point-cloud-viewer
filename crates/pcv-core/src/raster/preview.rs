@@ -420,15 +420,23 @@ mod tests {
     #[test]
     fn held_points_never_exceed_the_cap() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = make_copc(dir.path(), 60, 200);
-        let (store, _) = read_all(&path, 60, 50);
-        assert_eq!(store.len(), 50);
+        const POINTS_PER_NODE: u32 = 200;
+        const CAP_SMALLER_THAN_THE_ROOT_NODE: usize = 50;
+        const CAP_THE_UPPER_LEVELS_FIT_IN: usize = 1000;
+        let path = make_copc(dir.path(), 60, POINTS_PER_NODE);
+        let (store, _) = read_all(&path, 60, CAP_SMALLER_THAN_THE_ROOT_NODE);
+        assert_eq!(store.len(), CAP_SMALLER_THAN_THE_ROOT_NODE);
         assert!(store.is_truncated());
-        assert!(store.bytes_held() <= 50 * std::mem::size_of::<CoarsePoint>());
-        let (store, _) = read_all(&path, 60, 1000);
-        assert!(store.len() <= 1000);
+        assert!(
+            store.bytes_held()
+                <= CAP_SMALLER_THAN_THE_ROOT_NODE * std::mem::size_of::<CoarsePoint>()
+        );
+        let (store, _) = read_all(&path, 60, CAP_THE_UPPER_LEVELS_FIT_IN);
+        assert!(store.len() <= CAP_THE_UPPER_LEVELS_FIT_IN);
         assert!(!store.is_truncated());
-        assert!(store.bytes_held() <= 1000 * std::mem::size_of::<CoarsePoint>());
+        assert!(
+            store.bytes_held() <= CAP_THE_UPPER_LEVELS_FIT_IN * std::mem::size_of::<CoarsePoint>()
+        );
     }
 
     #[test]

@@ -623,8 +623,15 @@ mod tests {
         for cap in [900, 300, 100] {
             let (kept, stats) = sor_file(&path, cap, &s);
             assert_eq!(stats.count(), 3000, "every core point counted once");
-            assert!((stats.mean() - ref_stats.mean()).abs() <= 1e-9 * ref_stats.mean());
-            assert!((stats.std() - ref_stats.std()).abs() <= 1e-9 * ref_stats.std());
+            const ONLY_THE_SUMMATION_ORDER_DIFFERS: f64 = 1e-9;
+            assert!(
+                (stats.mean() - ref_stats.mean()).abs()
+                    <= ONLY_THE_SUMMATION_ORDER_DIFFERS * ref_stats.mean()
+            );
+            assert!(
+                (stats.std() - ref_stats.std()).abs()
+                    <= ONLY_THE_SUMMATION_ORDER_DIFFERS * ref_stats.std()
+            );
             assert_eq!(kept, reference, "cap {cap}");
         }
     }

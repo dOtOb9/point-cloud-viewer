@@ -689,8 +689,15 @@ mod tests {
         let pred = classify(&cloth, &pts);
         let (recall, precision) = recall_precision(&pred, &truth);
         eprintln!("scene A standard: recall {recall:.4} precision {precision:.4}");
-        assert!(recall >= 0.98, "recall {recall}");
-        assert!(precision >= 0.98, "precision {precision}");
+        const ONLY_THE_CLOTH_EDGE_AROUND_THE_BUILDING_AND_THE_OUTLIER_MAY_BE_LOST: f64 = 0.98;
+        assert!(
+            recall >= ONLY_THE_CLOTH_EDGE_AROUND_THE_BUILDING_AND_THE_OUTLIER_MAY_BE_LOST,
+            "recall {recall}"
+        );
+        assert!(
+            precision >= ONLY_THE_CLOTH_EDGE_AROUND_THE_BUILDING_AND_THE_OUTLIER_MAY_BE_LOST,
+            "precision {precision}"
+        );
         for (k, t) in tag.iter().enumerate() {
             let (x, y, _) = pts[k];
             match t {
@@ -754,13 +761,17 @@ mod tests {
             eprintln!(
                 "ramp {angle} deg, ground fraction {frac}: standard recall {r_std:.4} prec {p_std:.4}; steep recall {r_steep:.4} prec {p_steep:.4}"
             );
-            if angle >= 30.0 && frac == 0.1 {
+            const STEEP_SLOPE_DEG: f64 = 30.0;
+            const HEAVY_CANOPY_GROUND_FRACTION: f64 = 0.1;
+            const MEASURED_RECALL_GAIN_ABOUT_0_19_ASSERTED_AS: f64 = 0.1;
+            const PRECISION_MAY_DROP_AT_MOST: f64 = 0.05;
+            if angle >= STEEP_SLOPE_DEG && frac == HEAVY_CANOPY_GROUND_FRACTION {
                 assert!(
-                    r_steep > r_std + 0.1,
+                    r_steep > r_std + MEASURED_RECALL_GAIN_ABOUT_0_19_ASSERTED_AS,
                     "{angle}: steep {r_steep} std {r_std}"
                 );
                 assert!(
-                    p_steep > p_std - 0.05,
+                    p_steep > p_std - PRECISION_MAY_DROP_AT_MOST,
                     "{angle}: steep {p_steep} std {p_std}"
                 );
             }
@@ -811,12 +822,19 @@ mod tests {
             max_x: 1000.0,
             max_y: 1000.0,
         };
-        let err = Cloth::new(e, CsfParams::standard(), 1_000_000)
+        const CAP_FAR_BELOW_THE_CLOTH: u64 = 1_000_000;
+        const CAP_JUST_ABOVE_2004_SQUARED_PARTICLES_OF_1000_M_AT_0_5_M_PLUS_MARGIN: u64 = 4_100_000;
+        let err = Cloth::new(e, CsfParams::standard(), CAP_FAR_BELOW_THE_CLOTH)
             .err()
             .unwrap();
         assert!(err.contains("解像度"), "{err}");
         assert!(err.contains("範囲"), "{err}");
-        assert!(Cloth::new(e, CsfParams::standard(), 4_100_000).is_ok());
+        assert!(Cloth::new(
+            e,
+            CsfParams::standard(),
+            CAP_JUST_ABOVE_2004_SQUARED_PARTICLES_OF_1000_M_AT_0_5_M_PLUS_MARGIN
+        )
+        .is_ok());
     }
 
     #[test]
@@ -981,11 +999,12 @@ mod tests {
     #[ignore]
     #[allow(clippy::disallowed_methods)]
     fn timing() {
+        const EXTENT_GIVING_996_CELLS_PLUS_4_MARGIN_IS_1000_PARTICLES_PER_SIDE: f64 = 498.0;
         let e = XyExtent {
             min_x: 0.0,
             min_y: 0.0,
-            max_x: 498.0,
-            max_y: 498.0,
+            max_x: EXTENT_GIVING_996_CELLS_PLUS_4_MARGIN_IS_1000_PARTICLES_PER_SIDE,
+            max_y: EXTENT_GIVING_996_CELLS_PLUS_4_MARGIN_IS_1000_PARTICLES_PER_SIDE,
         };
         for threshold in [0.005f32, 0.0] {
             let params = CsfParams {
