@@ -1,13 +1,1 @@
-{
-  "crates/pcv-core/src/csf.rs": 188,
-  "crates/pcv-core/src/dtm.rs": 124,
-  "crates/pcv-core/src/dtm/landxml.rs": 30,
-  "crates/pcv-core/src/dtm/tests.rs": 38,
-  "crates/pcv-core/src/raster/color.rs": 47,
-  "crates/pcv-core/src/raster/geotiff.rs": 93,
-  "crates/pcv-core/src/raster/grid.rs": 95,
-  "crates/pcv-core/src/raster/output.rs": 29,
-  "crates/pcv-core/src/raster/preview.rs": 114,
-  "crates/pcv-core/src/section_line.rs": 98,
-  "crates/pcv-core/src/section_line/tests.rs": 20
-}
+{}

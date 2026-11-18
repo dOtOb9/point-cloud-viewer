@@ -1,6 +1,3 @@
-//! Tests of the section line on small synthetic COPC files written on the spot (same approach as
-//! `profile/tests.rs`). Distances are in metres; the cloth resolution is 0.5 unless a test says otherwise.
-
 use super::*;
 use crate::test_support::{field, write_copc};
 use copc_writer::CopcPointFields;
@@ -28,7 +25,6 @@ fn open(points: Vec<CopcPointFields>) -> (tempfile::TempDir, CopcFile) {
     (dir, file)
 }
 
-/// Ground on a lattice: x in `x_range`, y in `y_range`, spacing `step`, height `height(x)`.
 fn ground(
     x_range: (f64, f64),
     y_range: (f64, f64),
@@ -48,7 +44,6 @@ fn ground(
     points
 }
 
-/// Roof points of a building: a lattice at `z`, no ground below it.
 fn roof(x_range: (f64, f64), y_range: (f64, f64), z: f64, first_id: usize) -> Vec<CopcPointFields> {
     let mut points = Vec::new();
     let mut x = x_range.0;
@@ -66,7 +61,6 @@ fn roof(x_range: (f64, f64), y_range: (f64, f64), z: f64, first_id: usize) -> Ve
 struct Decoded {
     ground_points: u32,
     cells: u32,
-    /// (s, z)
     samples: Vec<(f32, f32)>,
 }
 
@@ -99,10 +93,7 @@ fn run(file: &mut CopcFile, line: &SectionLine, params: &SectionLineParams) -> D
 
 #[test]
 fn flat_ground_with_a_building_is_bridged() {
-    // Flat ground at z = 0 around the line; a 10 x 10 m building with an 8 m roof across the line and no
-    // ground points under it. The section line must stay at 0 under the roof (the TIN bridges the gap).
     let mut points = ground((-30.0, 130.0), (-35.0, 35.0), 0.5, |_| 0.0);
-    // Remove the ground under the building: the roof hides it in a real scan.
     points.retain(|p| !(p.x >= 45.0 && p.x <= 55.0 && p.y >= -5.0 && p.y <= 5.0));
     let first_id = points.len();
     points.extend(roof((45.0, 55.0), (-5.0, 5.0), 8.0, first_id));
@@ -116,7 +107,6 @@ fn flat_ground_with_a_building_is_bridged() {
             "line at s={s} is {z}, expected the ground (0)"
         );
     }
-    // The line is sampled across the building's whole width.
     let under_building = d
         .samples
         .iter()
@@ -131,7 +121,6 @@ fn flat_ground_with_a_building_is_bridged() {
 
 #[test]
 fn slope_is_followed() {
-    // z = 0.2 x (about 11 degrees).
     let points = ground((-30.0, 130.0), (-35.0, 35.0), 0.5, |x| 0.2 * x);
     let (_dir, mut file) = open(points);
     let d = run(&mut file, &line_x(100.0), &standard(2_000_000));
@@ -147,7 +136,6 @@ fn slope_is_followed() {
 
 #[test]
 fn line_is_cut_where_the_ground_ends() {
-    // Ground only for x in 20..80, but the section runs from 0 to 100. The polyline covers only 20..80.
     let points = ground((20.0, 80.0), (-30.0, 30.0), 0.5, |_| 3.0);
     let (_dir, mut file) = open(points);
     let d = run(&mut file, &line_x(100.0), &standard(2_000_000));
@@ -160,7 +148,6 @@ fn line_is_cut_where_the_ground_ends() {
 
 #[test]
 fn bridges_a_gap_in_the_ground() {
-    // No ground for x in 40..60 (a pit nobody scanned). There is no edge length limit: the TIN spans it.
     let mut points = ground((-30.0, 130.0), (-35.0, 35.0), 0.5, |_| 1.0);
     points.retain(|p| !(p.x > 40.0 && p.x < 60.0));
     let (_dir, mut file) = open(points);
@@ -171,7 +158,6 @@ fn bridges_a_gap_in_the_ground() {
 
 #[test]
 fn works_for_a_line_that_is_not_along_x() {
-    // The cloth is aligned with the section, not with the file's axes: a diagonal line over a slope in y.
     let mut points = Vec::new();
     for i in 0..=240 {
         for j in 0..=240 {
@@ -188,7 +174,6 @@ fn works_for_a_line_that_is_not_along_x() {
     let d = run(&mut file, &line, &standard(2_000_000));
     assert!(d.samples.len() > 100);
     for (s, z) in &d.samples {
-        // Along the diagonal, y = s / sqrt(2).
         let expected = 0.1 * f64::from(*s) / 2f64.sqrt();
         assert!(
             (f64::from(*z) - expected).abs() < 0.06,
@@ -199,8 +184,6 @@ fn works_for_a_line_that_is_not_along_x() {
 
 #[test]
 fn ground_points_are_bounded_by_the_cells_not_by_the_points() {
-    // 60,000 ground points in a small corridor (line 10 m, half width 5 m, resolution 1 m): the
-    // grid has 20 x 10 = 200 cells, so at most 200 points are kept however many points there are.
     let params = SectionLineParams {
         corridor_half_width: 5.0,
         csf: CsfParams {
@@ -229,7 +212,6 @@ fn ground_points_are_bounded_by_the_cells_not_by_the_points() {
 
 #[test]
 fn keeps_the_ground_point_nearest_the_cell_centre() {
-    // Two ground points in the cell with s in 10..10.5, t in 0..0.5: one at its corner, one at its centre.
     let mut points = ground((-30.0, 130.0), (-35.0, 35.0), 1.0, |_| 0.0);
     let corner = field(10.02, 0.02, 0.01, points.len() as f64);
     let centre = field(10.26, 0.24, 0.02, points.len() as f64 + 1.0);
@@ -238,7 +220,6 @@ fn keeps_the_ground_point_nearest_the_cell_centre() {
     let (_dir, mut file) = open(points);
     let mut job = SectionLineJob::new(&file, &line_x(100.0), &standard(2_000_000)).expect("job");
     while !job.advance(&mut file).expect("advance").done {}
-    // The cell grid starts at s = -20 (margin = half width) and t = -20, with a 0.5 m step.
     let ix = ((10.26 - job.s_lo) / 0.5).floor() as usize;
     let iy = ((0.24f64 + 20.0) / 0.5).floor() as usize;
     let cell = job.best[iy * job.grid_nx + ix];
@@ -249,7 +230,6 @@ fn keeps_the_ground_point_nearest_the_cell_centre() {
 fn refuses_a_corridor_over_the_cell_cap() {
     let points = ground((0.0, 10.0), (-5.0, 5.0), 1.0, |_| 0.0);
     let (_dir, file) = open(points);
-    // 540 x 40 m at 0.5 m is about 86,000 particles.
     let result = SectionLineJob::new(&file, &line_x(500.0), &standard(10_000));
     match result {
         Err(SectionLineError::Cloth(m)) => {
@@ -311,7 +291,6 @@ fn invalid_input_is_an_error() {
 fn no_points_in_the_corridor_is_an_error() {
     let points = ground((0.0, 10.0), (200.0, 210.0), 1.0, |_| 0.0);
     let (_dir, mut file) = open(points);
-    // The corridor (y within 20 of the x axis) holds no point of this file.
     let result = compute_section_line(&mut file, &line_x(10.0), &standard(2_000_000), &mut |_| {
         true
     });
