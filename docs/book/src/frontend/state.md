@@ -76,7 +76,7 @@ R11 で変換の購読の effect が無くなり、R12 で `useConversionSession
 | `stats-summary.ts` | 純粋: バックエンドのコンソールへ送る統計1行 | `formatStatsSummary` |
 
 hook は **依存を引数で受け取り**、お互いを import しません（例: `usePointCloudTools` は `addOpenedLayer` を引数で受ける）。
-各 hook の先頭のコメントを読めば、何に依存しているかが分かります。
+何に依存しているかは、各 hook の引数の型（`useLayers({ rendererRef, sourceRef, setStatus, reportError })` など）に全部出ています。`useCopcViewer.ts` で hook の呼び出しに F12 を押せば、その hook の本体へ飛べます。
 開く処理は hook ではなく `src/app/open-files.ts` の関数で、`useCopcViewer.ts` が `useFileOpen` に最新の値を渡し、`addOpenedLayer` を `usePointCloudTools` に渡します。
 
 ### 純粋関数のファイル（React に触れない。テストあり）
@@ -116,7 +116,7 @@ hook は **依存を引数で受け取り**、お互いを import しません�
 
 ## まず読むファイル
 
-- [`src/state/useCopcViewer.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useCopcViewer.ts) — 約200行。ここから各 hook へ。各 hook の先頭コメントに「次に読むファイル」が書いてある
+- [`src/state/useCopcViewer.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useCopcViewer.ts) — 約200行。ここから各 hook へ。hook の呼び出しで F12 を押して本体へ進む（上の表の「入口」の列が各ファイルの入口の関数）
 - [`src/state/useLayers.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useLayers.ts) — レイヤー操作の中心
 - [`src/app/open-files.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/app/open-files.ts) — ファイルを開く（React を使わない関数。一番長い関数がある）
 - [`src/state/useFileOpen.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/state/useFileOpen.ts) — `OpenFilesContext` を作って React につなぐ約50行

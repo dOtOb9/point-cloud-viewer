@@ -34,7 +34,7 @@
 - wasmでの時刻panic(`std::time::Instant::now`がwasm32で`unreachable`)。
   本番の変換経路が必ず失敗していたが、CIは`vendor/copc-writer`が
   ルートworkspaceのexclude対象で一切リント・テストされておらず素通りしていた
-  (`ci.yml`の`rust`ジョブのコメント、2026-10-07の緊急修正参照)
+  (2026-10-07の緊急修正。`ci.yml`の`rust`ジョブの理由は`TaskSheets/CM-3-remove-comments-app-ui-scripts.md`の「移した理由の記録」の`.github/workflows/ci.yml`の行)
 - `FileReaderSync`にバッファが無く、変換が1点ごとに重い処理を繰り返して
   実質止まって見えた(`crates/pcv-wasm/src/convert.rs`の「読み込みの
   バッファリング」節参照)
