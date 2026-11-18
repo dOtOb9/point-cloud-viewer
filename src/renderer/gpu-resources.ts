@@ -34,7 +34,7 @@ const UNIFORM_BUFFER_SIZE = roundUpToMultiple(
 
 const NODE_UNIFORM_FLOAT_INDEX = { pointSizePx: 16, viewportWidth: 17, viewportHeight: 18, originZ: 19, fade: 20 };
 
-function ignoreBecauseDeviceLostNeverRejects(): void {}
+function ignoreRejection(): void {}
 
 function roundUpToMultiple(value: number, multiple: number): number {
   return Math.ceil(value / multiple) * multiple;
@@ -140,7 +140,7 @@ export class GpuResources {
     };
     device.lost
       .then((info) => this.handleDeviceLost(info))
-      .catch(ignoreBecauseDeviceLostNeverRejects);
+      .catch(ignoreRejection);
 
     this.device = device;
     this.context = context;

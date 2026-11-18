@@ -7,13 +7,13 @@ export interface NodeLoadRequest {
   priority: number;
 }
 
-const CONCURRENCY_MEASURED_IN_ADR_0007 = 8;
-const MIN_CONCURRENCY_SO_FEW_CORES_DO_NOT_SERIALIZE = 4;
+const FALLBACK_CONCURRENT_REQUESTS = 8;
+const MIN_CONCURRENT_REQUESTS = 4;
 
 function defaultMaxConcurrent(): number {
   const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined;
-  if (!cores || !Number.isFinite(cores)) return CONCURRENCY_MEASURED_IN_ADR_0007;
-  return Math.max(MIN_CONCURRENCY_SO_FEW_CORES_DO_NOT_SERIALIZE, cores);
+  if (!cores || !Number.isFinite(cores)) return FALLBACK_CONCURRENT_REQUESTS;
+  return Math.max(MIN_CONCURRENT_REQUESTS, cores);
 }
 
 const DEFAULT_MAX_CONCURRENT = defaultMaxConcurrent();

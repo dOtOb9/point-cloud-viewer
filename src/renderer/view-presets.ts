@@ -16,13 +16,13 @@ export const VIEW_PRESET_LABELS: Record<ViewPresetId, string> = {
 
 export const ISOMETRIC_PITCH = (35 * Math.PI) / 180;
 const ISOMETRIC_YAW_OFFSET = Math.PI / 4;
-const UP_IS_AN_AXIS = 0.999;
+const AXIS_ALIGNED_UP_MIN_COMPONENT = 0.999;
 
 export function northOf(up: Vec3): [number, number, number] {
   const len = Math.hypot(up[0], up[1], up[2]) || 1;
   const u: [number, number, number] = [up[0] / len, up[1] / len, up[2] / len];
-  if (u[2] > UP_IS_AN_AXIS) return [0, 1, 0];
-  if (u[1] > UP_IS_AN_AXIS) return [0, 0, -1];
+  if (u[2] > AXIS_ALIGNED_UP_MIN_COMPONENT) return [0, 1, 0];
+  if (u[1] > AXIS_ALIGNED_UP_MIN_COMPONENT) return [0, 0, -1];
   return horizontalBasis(up).right;
 }
 
