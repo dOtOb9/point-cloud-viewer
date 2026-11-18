@@ -1,34 +1,3 @@
-//! G1-T15: the DTM tool. CSF classifies the ground of a whole cloud, the layer is written again with the
-//! ground marked, and a Delaunay TIN of a thinned set of ground points becomes a DTM (GeoTIFF grid and/or LandXML).
-//!
-//! The same recipe as the section line (`crate::section_line`), over the whole cloud instead of a corridor.
-//!
-//! # Steps (`DtmJob::advance` does them in small pieces)
-//!
-//! 1. Pass 1: every point of every node (coarse levels too; COPC levels hold disjoint points) goes to
-//!    `Cloth::add_point_for_ihv`. The cloth covers the XY extent of the header.
-//! 2. The cloth is simulated in batches of steps.
-//! 3. Pass 2: every point is classified and handed on in `take_records` (the caller writes it to a new COPC).
-//!    The rule (owner's answer Q7): CSF ground -> class 2; originally 2 but not ground -> 1 (unclassified);
-//!    anything else keeps its class (a building stays a building). At the same time, of the ground points only the
-//!    one nearest to each DTM cell centre is kept (plan 9.3, Q16), so at most one point per cell is held.
-//! 4. `finish`: a Delaunay TIN of the kept points (crate `spade`), no edge length limit (Q16). Under a building
-//!    there are no ground points, so a triangle bridges it. The grid and LandXML are made from the TIN.
-//!
-//! # Memory does not grow with the point count
-//!
-//! Points are never held: the cloth is about 17 B per particle, the best-point grid 16 B per DTM cell, the TIN one
-//! vertex per non-empty cell. They depend on the area, the cloth resolution and the DTM cell size, and both are
-//! refused above a cap before any point is read. The record buffer of pass 2 holds the points scanned by one
-//! `advance` call (see `POINTS_PER_ADVANCE`), and the caller drains it after every call. The reader holds one node.
-//!
-//! # Rows
-//!
-//! The GeoTIFF has row 0 at the north (`raster::grid`). The best-point grid is indexed from the south-west corner
-//! (`iy` grows with Y); `DtmSurface` samples cell centres through `GridSpec::cell_center`, so it does not matter.
-//!
-//! This file uses no `std::time` (it is built for wasm32 too).
-
 use std::io::{Read, Seek, Write};
 
 use copc_core::{LasPointRecord, VoxelKey};
@@ -44,24 +13,14 @@ mod landxml;
 
 pub use landxml::{utc_date_time, LandXmlOptions, LandXmlUnit};
 
-/// Largest number of cloth particles on desktop. First estimate (17 B per particle is about 680 MB); the measured
-/// basis is in `TaskSheets/G1-T15-dtm.md`.
 pub const DTM_MAX_PARTICLES_DESKTOP: u64 = 40_000_000;
-/// Largest number of cloth particles on the Web (wasm memory is 4 GiB at most, and the reader and the writer share it).
 pub const DTM_MAX_PARTICLES_WEB: u64 = 16_000_000;
-/// Largest number of DTM cells on desktop.
 pub const DTM_MAX_CELLS_DESKTOP: u64 = 40_000_000;
-/// Largest number of DTM cells on the Web.
 pub const DTM_MAX_CELLS_WEB: u64 = 8_000_000;
-/// Largest number of DTM cells on the Web when LandXML is asked for: the text is built in memory there (about 70 bytes
-/// per TIN vertex and face together, measured on desktop in `TaskSheets/G1-T15-dtm.md`).
 pub const DTM_MAX_CELLS_WEB_LANDXML: u64 = 2_000_000;
 
-/// Cloth steps per `advance` call in the simulation phase.
 const STEPS_PER_ADVANCE: u32 = 10;
-/// A pass reads whole nodes until at least this many points were scanned in one `advance` call.
 const POINTS_PER_ADVANCE: u64 = 200_000;
-/// Class codes written by pass 2 (ASPRS).
 const CLASS_UNCLASSIFIED: u8 = 1;
 const CLASS_GROUND: u8 = 2;
 
@@ -73,7 +32,6 @@ pub enum DtmError {
     Grid(#[from] RasterError),
     #[error("DTM の計算: {0}")]
     Cloth(String),
-    /// A cap of the DTM tool was hit; the text names the DTM setting to change (not the raster tool's).
     #[error("{0}")]
     TooLarge(String),
     #[error("点を読めませんでした: {0}")]
@@ -90,26 +48,19 @@ pub enum DtmError {
     Cancelled,
 }
 
-/// What the caller chooses. Lengths are in the file's unit.
 #[derive(Debug, Clone, Copy)]
 pub struct DtmParams {
     pub csf: CsfParams,
-    /// Side of a DTM cell.
     pub cell_size: f64,
-    /// Largest number of cloth particles (refused above it, before any point is read).
     pub max_particles: u64,
-    /// Largest number of DTM cells (refused above it).
     pub max_cells: u64,
-    /// The unit the user typed the sizes in; only used to word the cap messages.
     pub display_unit: Option<DisplayUnit>,
 }
 
-/// The unit shown on screen (m or ft), so a cap message can name a size the way the user typed it.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayUnit {
     pub symbol: DisplaySymbol,
-    /// Length of one display unit in the file's unit; `None` when the file's unit is unknown.
     pub file_units_per_display_unit: Option<f64>,
 }
 
@@ -130,11 +81,8 @@ impl DisplaySymbol {
     }
 }
 
-/// How cap messages name a size: the scale between the file's unit and the shown unit.
 struct SizeWording {
-    /// File units per shown unit (1.0 when the file's unit is named instead).
     scale: f64,
-    /// "m" / "ft", or `None` to say "点群ファイルの単位".
     symbol: Option<&'static str>,
 }
 
@@ -155,7 +103,6 @@ impl SizeWording {
         }
     }
 
-    /// A suggested minimum, already in the shown unit: "20 ft 以上", or "6（点群ファイルの単位）以上".
     fn at_least(&self, shown: f64) -> String {
         match self.symbol {
             Some(symbol) => format!("{shown} {symbol} 以上"),
@@ -163,13 +110,11 @@ impl SizeWording {
         }
     }
 
-    /// The setting the user typed, given in the file's unit: "1.64 ft", or just "0.5" when the unit is not shown.
     fn setting_text(&self, file_value: f64) -> String {
         let Some(symbol) = self.symbol else {
             return file_value.to_string();
         };
         let v = file_value / self.scale;
-        // 4 significant digits hide the noise of the round trip (0.5 m -> ft -> 1.6404199...).
         let shown = if v.is_finite() && v != 0.0 {
             let exp = v.abs().log10().floor() as i32 - 3;
             with_exponent((v / 10f64.powi(exp)).round(), exp)
@@ -180,20 +125,16 @@ impl SizeWording {
     }
 }
 
-/// What the frontend sends (JSON). Lengths are in the file's unit; the CSF values come from the presets of
-/// `src/app/csf-params.ts`, converted there.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DtmRequest {
     pub csf: CsfParamsInput,
     pub cell_size: f64,
     pub output: DtmOutputOptions,
-    /// The unit shown on screen; absent in old requests (the cap messages then say "点群ファイルの単位").
     #[serde(default)]
     pub display_unit: Option<DisplayUnit>,
 }
 
-/// Which files to make (the setting "DTM の出力形式", owner's answer Q18).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DtmOutputOptions {
@@ -201,13 +142,11 @@ pub struct DtmOutputOptions {
     pub landxml: bool,
     #[serde(default)]
     pub tiff: TiffKind,
-    /// The file's horizontal unit, written into LandXML.
     #[serde(default)]
     pub unit: LandXmlUnit,
 }
 
 impl DtmRequest {
-    /// The parameters for `DtmJob::new`. The caps differ between desktop and Web.
     pub fn to_params(self, max_particles: u64, max_cells: u64) -> DtmParams {
         let c = self.csf;
         DtmParams {
@@ -229,7 +168,6 @@ impl DtmRequest {
         }
     }
 
-    /// Checks the output choice (at least one file).
     pub fn validate(&self) -> Result<(), DtmError> {
         if !self.output.geotiff && !self.output.landxml {
             return Err(DtmError::Invalid(
@@ -241,24 +179,17 @@ impl DtmRequest {
     }
 }
 
-/// Progress after one `advance` call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DtmProgress {
-    /// 0.0 to 1.0 over the passes and the simulation (the TIN and the files are not counted).
     pub fraction: f32,
-    /// Every point was read, classified and handed on; call `finish`.
     pub done: bool,
 }
 
-/// The best ground point of one DTM cell so far. `dist2` is infinite for an empty cell.
 #[derive(Debug, Clone, Copy)]
 struct BestCell {
-    /// Position in cells from the grid's west edge (x) and south edge (y).
     fx: f32,
     fy: f32,
-    /// Height minus `z_base`.
     z: f32,
-    /// Squared distance to the cell centre, in cells.
     dist2: f32,
 }
 
@@ -277,15 +208,10 @@ enum Phase {
     Done,
 }
 
-/// How CSF and the source file agree on "ground" (class 2), counted over pass 2. It is only a rough guide: a source
-/// classification is not the truth either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GroundAgreement {
-    /// Ground in the source and by CSF.
     pub both: u64,
-    /// Ground by CSF only.
     pub csf_only: u64,
-    /// Ground in the source only.
     pub source_only: u64,
     pub neither: u64,
 }
@@ -300,20 +226,17 @@ impl GroundAgreement {
         }
     }
 
-    /// Of the points CSF calls ground, the share the source calls ground too (`None` when CSF found none).
     pub fn precision(&self) -> Option<f64> {
         let csf = self.both + self.csf_only;
         (csf > 0).then(|| self.both as f64 / csf as f64)
     }
 
-    /// Of the points the source calls ground, the share CSF finds (`None` when the source has none).
     pub fn recall(&self) -> Option<f64> {
         let source = self.both + self.source_only;
         (source > 0).then(|| self.both as f64 / source as f64)
     }
 }
 
-/// A vertex of the TIN.
 struct GroundVertex {
     x: f64,
     y: f64,
@@ -327,49 +250,42 @@ impl HasPosition for GroundVertex {
     }
 }
 
-/// A DTM computation that runs in small steps. See the module documentation.
 pub struct DtmJob {
     spec: GridSpec,
     epsg: Option<u32>,
-    /// Subtracted from heights before the cloth sees them, so f32 stays precise for large coordinates.
     z_base: f64,
-    /// Every node with point data, in hierarchy order. Both passes read the same list.
     nodes: Vec<VoxelKey>,
     next_node: usize,
     cloth: Cloth,
     phase: Phase,
     max_iterations: u32,
     iterations_done: u32,
-    /// One entry per DTM cell, index `iy * width + ix` with `iy` counted from the south.
     best: Vec<BestCell>,
-    /// Classified points of pass 2 not yet taken by the caller.
     out: Vec<LasPointRecord>,
     points_total: u64,
     points_read: u64,
     points_ground: u64,
-    /// How CSF and the source agree on "ground" (see `GroundAgreement`).
     agreement: GroundAgreement,
     max_buffered_points: usize,
-    /// A pass reads whole nodes until this many points were scanned in one `advance` call.
     points_per_advance: u64,
 }
 
-/// `digits` * 10^`exp` as the double nearest to that decimal (7.1, not 71 * 0.1 = 7.1000000000000005).
 fn with_exponent(digits: f64, exp: i32) -> f64 {
     format!("{digits}e{exp}")
         .parse()
         .unwrap_or(digits * 10f64.powi(exp))
 }
 
-/// Rounds up to 2 significant digits (0.137 -> 0.14, 12.01 -> 13).
+const KEEP_ALREADY_ROUND_VALUES: f64 = 1e-9;
+
 fn round_up_2_digits(x: f64) -> f64 {
     let exp = x.log10().floor() as i32 - 1;
-    // The small slack keeps a value that is already round (0.3 / 0.01 = 30.000000000000004) as it is.
-    with_exponent((x / 10f64.powi(exp) - 1e-9).ceil(), exp)
+    with_exponent(
+        (x / 10f64.powi(exp) - KEEP_ALREADY_ROUND_VALUES).ceil(),
+        exp,
+    )
 }
 
-/// The smallest size, rounded up to 2 digits, for which `fits` holds. `start` is a guess from
-/// the area; the size grows by about 1 % per step until it fits. `None` if nothing fits soon.
 fn smallest_fitting(start: f64, fits: impl Fn(f64) -> bool) -> Option<f64> {
     if !start.is_finite() || start <= 0.0 {
         return None;
@@ -385,8 +301,6 @@ fn smallest_fitting(start: f64, fits: impl Fn(f64) -> bool) -> Option<f64> {
 }
 
 impl DtmJob {
-    /// Checks the input and the caps, lays out the cloth and lists the nodes. No point is read.
-    /// `epsg` is written into the GeoTIFF / LandXML (`None`: the files carry no CRS).
     pub fn new<R: Read + Seek + Send>(
         reader: &CopcReader<R>,
         epsg: Option<u32>,
@@ -405,8 +319,6 @@ impl DtmJob {
                 rows,
                 max_cells,
             }) => {
-                // The raster tool's text talks about "ラスタ"; say it is the DTM cell size instead.
-                // The size is searched in the shown unit; it is converted back only for the real check.
                 let w = SizeWording::new(params.display_unit);
                 let start = (width * height / max_cells as f64).sqrt() / w.scale;
                 let text = match smallest_fitting(start, |c| grid_for(c * w.scale).is_ok()) {
@@ -431,8 +343,6 @@ impl DtmJob {
             max_x: h.max_x,
             max_y: h.max_y,
         };
-        // The CSF settings and the extent were checked above, so the only way `Cloth::new` fails
-        // here is the particle cap (its own text is shared with the section tool, so it is replaced).
         let cloth_for = |resolution: f64| {
             let mut csf = params.csf;
             csf.cloth_resolution = resolution;
@@ -496,54 +406,42 @@ impl DtmJob {
         })
     }
 
-    /// The DTM grid.
     pub fn grid(&self) -> &GridSpec {
         &self.spec
     }
 
-    /// Points of the hierarchy (what the header promises); pass 2 hands on exactly this many.
     pub fn points_total(&self) -> u64 {
         self.points_total
     }
 
-    /// Points read in the current pass so far.
     pub fn points_read(&self) -> u64 {
         self.points_read
     }
 
-    /// Points classified as ground so far (pass 2).
     pub fn points_ground(&self) -> u64 {
         self.points_ground
     }
 
-    /// CSF against the source classification, over the points classified so far.
     pub fn ground_agreement(&self) -> GroundAgreement {
         self.agreement
     }
 
-    /// Bytes held by the cloth and the best-point grid. They follow the area and the two cell sizes; no point is
-    /// counted here, so this must not change with the number of points (a test checks it). The node list
-    /// (`node_count()` keys, 16 B each) grows with the node count only.
     pub fn memory_bytes(&self) -> usize {
         self.cloth.memory_bytes() + self.best.len() * std::mem::size_of::<BestCell>()
     }
 
-    /// Number of nodes of the hierarchy (what pass 1 and pass 2 each read).
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Most points held at once (the record buffer or one node), for the memory test.
     pub fn max_buffered_points(&self) -> usize {
         self.max_buffered_points
     }
 
-    /// Takes the classified points made by the last `advance` calls (empty before pass 2).
     pub fn take_records(&mut self) -> Vec<LasPointRecord> {
         std::mem::take(&mut self.out)
     }
 
-    /// Does one small piece of work. Call until `done`; in pass 2 drain `take_records` after every call.
     pub fn advance<R: Read + Seek + Send>(
         &mut self,
         reader: &mut CopcReader<R>,
@@ -593,7 +491,6 @@ impl DtmJob {
         }
     }
 
-    /// Reads nodes until about `POINTS_PER_ADVANCE` points were scanned. Returns true when all nodes were read.
     fn read_nodes<R: Read + Seek + Send>(
         &mut self,
         reader: &mut CopcReader<R>,
@@ -603,7 +500,6 @@ impl DtmJob {
         while self.next_node < self.nodes.len() && scanned < self.points_per_advance {
             let key = self.nodes[self.next_node];
             self.next_node += 1;
-            // The node's points are dropped at the end of each iteration.
             let points = reader.read_node(key)?;
             scanned += points.len() as u64;
             self.points_read += points.len() as u64;
@@ -623,7 +519,6 @@ impl DtmJob {
                     self.points_ground += 1;
                     self.keep_if_ground(p.x, p.y, z);
                 } else if record.classification == CLASS_GROUND {
-                    // Owner's answer Q7: a point the source called ground but CSF did not becomes "unclassified".
                     record.classification = CLASS_UNCLASSIFIED;
                 }
                 self.out.push(record);
@@ -633,7 +528,6 @@ impl DtmJob {
         Ok(self.next_node >= self.nodes.len())
     }
 
-    /// Pass 2 for a ground point: remember it if it is nearer to its cell's centre than the point kept so far.
     fn keep_if_ground(&mut self, x: f64, y: f64, z: f64) {
         let fx = (x - self.spec.origin_x) / self.spec.cell_size;
         let fy = (y - self.spec.origin_y) / self.spec.cell_size;
@@ -641,7 +535,6 @@ impl DtmJob {
             return;
         }
         let (w, h) = (self.spec.width as usize, self.spec.height as usize);
-        // The max edge belongs to the last column / row, like `GridSpec::cell_index`.
         let ix = (fx.floor() as usize).min(w - 1);
         let iy = (fy.floor() as usize).min(h - 1);
         if fx > w as f64 || fy > h as f64 {
@@ -660,7 +553,6 @@ impl DtmJob {
         }
     }
 
-    /// Builds the TIN of the kept ground points. Call after `advance` reported `done`.
     pub fn finish(self) -> Result<DtmSurface, DtmError> {
         if self.phase != Phase::Done {
             return Err(DtmError::Invalid(
@@ -683,7 +575,6 @@ impl DtmJob {
                 z: f64::from(c.z) + z_base,
             })
             .collect();
-        // The grid of best points is not needed any more; free it before the TIN is built.
         drop(best);
         if vertices.is_empty() {
             return Err(DtmError::NoGround);
@@ -700,7 +591,6 @@ impl DtmJob {
     }
 }
 
-/// The finished DTM: a TIN and the grid it is sampled on.
 pub struct DtmSurface {
     spec: GridSpec,
     epsg: Option<u32>,
@@ -717,7 +607,6 @@ impl DtmSurface {
         self.epsg
     }
 
-    /// Number of cells that held a ground point (= TIN vertices).
     pub fn ground_cells(&self) -> usize {
         self.ground_cells
     }
@@ -726,15 +615,12 @@ impl DtmSurface {
         self.tin.num_inner_faces()
     }
 
-    /// Height at (x, y), or `None` outside the TIN's convex hull.
     pub fn height_at(&self, x: f64, y: f64) -> Option<f64> {
         self.tin
             .barycentric()
             .interpolate(|v| v.data().z, Point2::new(x, y))
     }
 
-    /// The height of every cell centre in image order (row 0 = north); `NODATA` outside the hull.
-    /// Four bytes per cell, so it follows the cell count only.
     fn grid_values(&self) -> Vec<f32> {
         let barycentric = self.tin.barycentric();
         (0..self.spec.cell_count() as usize)
@@ -747,8 +633,6 @@ impl DtmSurface {
             .collect()
     }
 
-    /// Writes the GeoTIFF. `Colored`: the heights through the elevation ramp (min to max of the grid), NoData
-    /// transparent. `Values`: float32 with `GDAL_NODATA`.
     pub fn write_geotiff<W: Write>(&self, out: &mut W, kind: TiffKind) -> Result<(), DtmError> {
         let values = self.grid_values();
         match kind {
@@ -776,7 +660,6 @@ impl DtmSurface {
         Ok(())
     }
 
-    /// Writes the TIN as LandXML 1.2, streaming (the text is never built in memory as a whole).
     pub fn write_landxml<W: Write>(
         &self,
         out: &mut W,
@@ -798,9 +681,6 @@ impl DtmSurface {
     }
 }
 
-/// Runs a whole job on one reader and hands every classified point to `sink`. `on_progress` is called after every
-/// step with the fraction; returning `false` cancels. Used by the tests and the measuring example; the desktop and
-/// the Web drive `DtmJob` themselves because their writers take the points differently.
 pub fn run_dtm<R: Read + Seek + Send>(
     reader: &mut CopcReader<R>,
     epsg: Option<u32>,

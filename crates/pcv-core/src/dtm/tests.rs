@@ -1,6 +1,3 @@
-//! Tests of the DTM job on small synthetic COPC files written on the spot (same approach as
-//! `section_line/tests.rs`). Distances are in metres. The cloth resolution is 0.5 and the DTM cell 1.0.
-
 use std::io::Cursor;
 
 use super::*;
@@ -31,14 +28,12 @@ fn open_reader(
     (dir, reader)
 }
 
-/// A point with a class, the id in `gps_time`.
 fn point(x: f64, y: f64, z: f64, class: u8, id: usize) -> CopcPointFields {
     let mut p = field(x, y, z, id as f64);
     p.classification = class;
     p
 }
 
-/// A lattice at `height(x, y)` with the given class and spacing, over the box `[0, size]`.
 fn lattice(
     size: f64,
     step: f64,
@@ -60,8 +55,6 @@ fn inside_building(x: f64, y: f64) -> bool {
     (20.0..=30.0).contains(&x) && (20.0..=30.0).contains(&y)
 }
 
-/// Ground (class 2) with no ground under a 10 m building whose roof (class 6) is 8 m up, and a clump of
-/// vegetation (class 5) between 2 and 6 m up. Returns the points and the ids of the roof and the vegetation.
 fn town(height: impl Fn(f64, f64) -> f64 + Copy) -> (Vec<CopcPointFields>, Vec<usize>, Vec<usize>) {
     let mut points = Vec::new();
     lattice(60.0, 0.5, 2, height, &mut points);
@@ -92,7 +85,6 @@ fn town(height: impl Fn(f64, f64) -> f64 + Copy) -> (Vec<CopcPointFields>, Vec<u
         }
         x += 0.5;
     }
-    // The lattice lost the points under the building, so renumber: the id of every point is its index.
     for (i, p) in points.iter_mut().enumerate() {
         p.gps_time = i as f64;
     }
@@ -101,7 +93,6 @@ fn town(height: impl Fn(f64, f64) -> f64 + Copy) -> (Vec<CopcPointFields>, Vec<u
 
 struct Run {
     surface: DtmSurface,
-    /// Class written for each point id (`gps_time` of the record).
     classes: std::collections::HashMap<usize, u8>,
     written: u64,
     read_total: u64,
@@ -132,7 +123,6 @@ fn run(points: Vec<CopcPointFields>, max_per_node: u32) -> Run {
     }
 }
 
-/// Cell centres away from the outer ring (the TIN's hull does not reach the corners of the outer cells).
 fn interior_cells(surface: &DtmSurface) -> Vec<(f64, f64)> {
     let g = surface.grid();
     (0..g.cell_count() as usize)
@@ -152,7 +142,6 @@ fn flat_ground_with_a_building_and_vegetation() {
         let z = r.surface.height_at(*x, *y).expect("inside the hull");
         assert!(z.abs() < 0.05, "z at ({x}, {y}) is {z}, expected 0");
     }
-    // Under the building there is no ground point; the TIN bridges it.
     let under = r.surface.height_at(25.0, 25.0).expect("under the building");
     assert!(under.abs() < 0.05, "under the building: {under}");
     for id in roof {
@@ -165,7 +154,6 @@ fn flat_ground_with_a_building_and_vegetation() {
 
 #[test]
 fn slope_is_followed() {
-    // z = 0.2 x (about 11 degrees).
     let (points, _, _) = town(|x, _| 0.2 * x);
     let r = run(points, 5_000);
     for (x, y) in interior_cells(&r.surface) {
@@ -180,15 +168,11 @@ fn slope_is_followed() {
 
 #[test]
 fn classification_follows_the_owners_rule() {
-    // Q7: CSF ground -> 2; originally 2 but not ground -> 1; anything else keeps its class.
     let (mut points, roof, vegetation) = town(|_, _| 0.0);
-    // A point the source called ground, floating 3 m above the ground.
     let floating = points.len();
     points.push(point(5.25, 5.25, 3.0, 2, floating));
-    // A real ground point the source left unclassified (1).
     let unclassified = points.len();
     points.push(point(10.25, 10.25, 0.0, 1, unclassified));
-    // A real ground point the source called "low point" (7): it is ground by CSF, so it becomes 2.
     let low = points.len();
     points.push(point(12.25, 12.25, 0.0, 7, low));
     let r = run(points, 5_000);
@@ -205,7 +189,6 @@ fn classification_follows_the_owners_rule() {
 
 #[test]
 fn every_point_is_read_and_written() {
-    // Small nodes make a deep tree, so there are coarse levels with points in them.
     let (points, _, _) = town(|_, _| 0.0);
     let expected = points.len() as u64;
     let r = run(points, 300);
@@ -218,7 +201,6 @@ fn every_point_is_read_and_written() {
 fn memory_does_not_grow_with_the_point_count() {
     let mut sparse = Vec::new();
     lattice(60.0, 1.0, 2, |_, _| 0.0, &mut sparse);
-    // 16 times the points, same extent.
     let mut dense = Vec::new();
     lattice(60.0, 0.25, 2, |_, _| 0.0, &mut dense);
     assert!(dense.len() > 15 * sparse.len());
@@ -245,7 +227,6 @@ fn memory_does_not_grow_with_the_point_count() {
         sparse_bytes, dense_bytes,
         "memory follows the area, not the points"
     );
-    // The buffer holds one `advance` call's worth (2000 points plus the last node), not the cloud.
     assert!(dense_buffered <= 2_000 + 500, "buffered {dense_buffered}");
     assert!(dense_buffered < dense_records / 10);
     assert!(sparse_buffered <= 2_000 + 500);
@@ -255,14 +236,12 @@ fn memory_does_not_grow_with_the_point_count() {
 fn caps_refuse_before_any_point_is_read() {
     let (points, _, _) = town(|_, _| 0.0);
     let (_dir, reader) = open_reader(points, 5_000);
-    // Cloth: 60 m at 0.5 m is about 124 x 124 = 15 thousand particles.
     let err = DtmJob::new(&reader, None, &params(1_000, 2_000_000)).err();
     let message = err.expect("refused").to_string();
     assert!(message.contains("DTM"), "{message}");
     assert!(message.contains("布"), "{message}");
     assert!(message.contains("CSF の解像度"), "{message}");
     assert!(!message.contains("ラスタ"), "{message}");
-    // DTM cells: 61 x 61 = 3721 at 1 m.
     let err = DtmJob::new(&reader, None, &params(2_000_000, 100)).err();
     let message = err.expect("refused").to_string();
     assert!(message.contains("DTM"), "{message}");
@@ -270,7 +249,6 @@ fn caps_refuse_before_any_point_is_read() {
     assert!(!message.contains("ラスタ"), "{message}");
 }
 
-/// The number written just before 「（点群ファイルの単位）」 in a cap message.
 fn suggested_size(message: &str) -> f64 {
     let head = message
         .split("（点群ファイルの単位）")
@@ -317,7 +295,6 @@ fn suggested_cloth_resolution_fits_the_cap() {
     assert!(DtmJob::new(&reader, None, &p).is_ok(), "{message}");
 }
 
-/// Parameters whose sizes the user typed in `symbol`, `k` file units per shown unit.
 fn params_shown_in(
     max_particles: u64,
     max_cells: u64,
@@ -332,7 +309,6 @@ fn params_shown_in(
     p
 }
 
-/// The number written just before `marker` in a message.
 fn number_before(message: &str, marker: &str) -> f64 {
     let head = message.split(marker).next().expect("split");
     let digits: String = head
@@ -349,10 +325,10 @@ fn number_before(message: &str, marker: &str) -> f64 {
 
 #[test]
 fn cell_message_in_feet_fits_when_converted_back() {
-    const FT: f64 = 0.3048; // the file is in metres, the screen in feet
+    const METRES_PER_FOOT: f64 = 0.3048;
     let (points, _, _) = town(|_, _| 0.0);
     let (_dir, reader) = open_reader(points, 5_000);
-    let p = params_shown_in(2_000_000, 100, DisplaySymbol::Foot, Some(FT));
+    let p = params_shown_in(2_000_000, 100, DisplaySymbol::Foot, Some(METRES_PER_FOOT));
     let message = DtmJob::new(&reader, None, &p)
         .err()
         .expect("refused")
@@ -361,30 +337,28 @@ fn cell_message_in_feet_fits_when_converted_back() {
     assert!(message.contains(" ft 以上"), "{message}");
     assert!(!message.contains("点群ファイルの単位"), "{message}");
     let shown = number_before(&message, " ft 以上");
-    // 60 m cannot be 10 x 10 cells of 1 m, so the answer is in feet and larger than 1 m = 3.28 ft.
     assert!(shown > 3.2, "{message}");
     let mut fits = p;
-    fits.cell_size = shown * FT;
+    fits.cell_size = shown * METRES_PER_FOOT;
     assert!(DtmJob::new(&reader, None, &fits).is_ok(), "{message}");
 }
 
 #[test]
 fn cloth_message_in_feet_fits_when_converted_back() {
-    const FT: f64 = 0.3048;
+    const METRES_PER_FOOT: f64 = 0.3048;
     let (points, _, _) = town(|_, _| 0.0);
     let (_dir, reader) = open_reader(points, 5_000);
-    let p = params_shown_in(1_000, 2_000_000, DisplaySymbol::Foot, Some(FT));
+    let p = params_shown_in(1_000, 2_000_000, DisplaySymbol::Foot, Some(METRES_PER_FOOT));
     let message = DtmJob::new(&reader, None, &p)
         .err()
         .expect("refused")
         .to_string();
     println!("{message}");
     assert!(message.contains(" ft 以上"), "{message}");
-    // The setting is shown as typed: 0.5 m of CSF resolution is about 1.64 ft.
     assert!(message.contains("CSF の解像度 1.64 ft"), "{message}");
     let shown = number_before(&message, " ft 以上");
     let mut fits = p;
-    fits.csf.cloth_resolution = shown * FT;
+    fits.csf.cloth_resolution = shown * METRES_PER_FOOT;
     assert!(DtmJob::new(&reader, None, &fits).is_ok(), "{message}");
 }
 
@@ -407,7 +381,6 @@ fn same_unit_gives_the_same_number_as_before() {
         number_before(&shown, " m 以上"),
         number_before(&plain, "（点群ファイルの単位）")
     );
-    // The cloth message keeps the number too.
     let plain = DtmJob::new(&reader, None, &params(1_000, 2_000_000))
         .err()
         .expect("refused")
@@ -504,11 +477,9 @@ fn values_geotiff_reads_back() {
         panic!("not float32");
     };
     assert_eq!(v.len() as u64, g.cell_count());
-    // A cell in the middle: the height at its centre (row 0 is the north row).
     let (col, row) = (g.width as usize / 2, g.height as usize / 2);
     let (x, _) = g.cell_center(row * g.width as usize + col);
     assert!((f64::from(v[row * g.width as usize + col]) - 0.2 * x).abs() < 0.05);
-    // The corner cell is outside the hull or not; either way NODATA is the documented value.
     assert!(v.iter().all(|&h| h == NODATA || h.is_finite()));
 }
 
@@ -527,7 +498,6 @@ fn colored_geotiff_reads_back() {
         panic!("not 8 bit");
     };
     assert_eq!(v.len() as u64, g.cell_count() * 4);
-    // Low x (west) is blue, high x (east) is red, in the middle row.
     let row = g.height as usize / 2;
     let px = |col: usize| &v[(row * g.width as usize + col) * 4..][..4];
     let west = px(3);
@@ -539,7 +509,6 @@ fn colored_geotiff_reads_back() {
 
 #[test]
 fn landxml_points_are_north_east_elevation() {
-    // A small cloud with a known point: (x, y, z) = (10.25, 20.75, 3.5) on a plane z = 3.5.
     let mut points = Vec::new();
     lattice(30.0, 0.5, 2, |_, _| 3.5, &mut points);
     let r = run(points, 5_000);
@@ -592,9 +561,6 @@ fn landxml_points_are_north_east_elevation() {
     for [_, _, z] in &points {
         assert!((z - 3.5).abs() < 1e-3);
     }
-    // The grid is 30 wide in x and 30 high in y: make the extents different to tell N from E. Here both are 0..30,
-    // so check order with the point ids instead: every kept point lies in 0..=30 and, per cell, the first number
-    // (northing) is the y of the cell. Rebuild one cell from the surface and compare.
     let first_vertex = r.surface.tin.vertices().next().expect("vertex");
     let d = first_vertex.data();
     let [n, e, z] = points[0];
@@ -603,7 +569,6 @@ fn landxml_points_are_north_east_elevation() {
 
 #[test]
 fn landxml_order_differs_from_xy_when_x_and_y_differ() {
-    // A cloud 40 m in x and 10 m in y: northing (the first number) is at most 10, easting at most 40.
     let mut points = Vec::new();
     for i in 0..=80 {
         for j in 0..=20 {
@@ -653,12 +618,10 @@ fn utc_date_time_of_known_instants() {
         utc_date_time(0),
         ("1970-01-01".to_string(), "00:00:00".to_string())
     );
-    // 2026-10-22 12:34:56 UTC.
     assert_eq!(
         utc_date_time(1_792_672_496),
         ("2026-10-22".to_string(), "12:34:56".to_string())
     );
-    // A leap day.
     assert_eq!(
         utc_date_time(951_782_400),
         ("2000-02-29".to_string(), "00:00:00".to_string())
@@ -689,7 +652,6 @@ fn ground_agreement_precision_and_recall() {
     a.add(false, true);
     a.add(true, false);
     a.add(false, false);
-    // CSF ground: 10, of which 8 agree. Source ground: 9, of which 8 are found.
     assert_eq!(a.precision(), Some(0.8));
     assert_eq!(a.recall(), Some(8.0 / 9.0));
 }
