@@ -60,6 +60,36 @@
 | `scripts/bench/sampler.ps1`・`run-native.ps1` | CSV は桁区切り無し（PF-0 で "1,040" が2列に割れ、1 GiB 超の値が全部消えた）。サンプラーは E コア（0xFF000）に置き、測る側を P コア（0xFFF）に固定する。使い方 `run-native.ps1 -Exe <exe> -ArgLine <args> -Tag <name> -OutDir <dir> [-TempDir <dir>] [-MinFreeGB 25]`、`sampler.ps1 -RootPid <pid> -Csv <path>` | ここ |
 | `scripts/download-tokyo-23ku-tiles.ps1`・`las-header-report.ps1`・`docs/video/tools/lib/tts.ps1` | 使い方（`-ListFile`・`-OutDir`・`-ExistingDir`、`-Dir`・`-ListFile`、`-Text`・`-OutPath`）。図郭1枚は zip 約 0.12GB＋展開 約 0.2GB、並列分に +2GB。出典は東京都デジタルツイン実現プロジェクト「区部点群データ」（CC BY 4.0）。tts は WinRT の SpeechSynthesis（PowerShell 5.1 に await が無いので Task 経由） | ここ |
 | `docs/video/tools/*.mjs` | 撮影の事故の回避（設定の変更は録画の外、CDP screencast を変換中に止める、`stopScreencast` が固まるので上限で諦める、scale/pad の幅と高さは別の引数、ffmpeg の stdin を切る）。経緯は TaskSheets/VIDEO-intro.md | 名前 `SHOW_THE_FIRST_LOAD_STALLING_MS`・`PCD_CONVERSION_IN_THE_BROWSER_TOOK_OVER_3_MIN_SO_WAIT_MS`・`turnEdlOffFromItsDefaultOn`。残りはここ |
+| `src/app/section-3d.ts:sectionAxes` | Rust の `SectionAxes::new`（`crates/pcv-core/src/profile.rs`）と `sectionBox`（`src/state/tool-math.ts`）と同じ組み立てでないと、パネルの `(s, z)` と 3D の線がずれる | テスト「matches SectionAxes of crates/pcv-core/src/profile.rs and sectionBox of src/state/tool-math.ts, so the panel's (s, z) and the 3D line agree」（期待値は Rust の式 `along` = A→B から `up` の成分を除いた単位ベクトル、`z = dot(p, up)` で手で求めた） |
+| `src/ui/shell/AppShell.tsx:layerPanelStartsOpenExceptOnANarrowScreenWhereTheDrawerWouldCoverThePoints` | 狭い画面ではドロワーが点群を覆うので最初は閉じる。広い画面で最初から開くのは、E2E がデスクトップ幅で「変換の内訳」（`conversion-breakdown`）の表示を待つため | 関数名（狭い画面）とここ（E2E） |
+| `src/ui/common/portal-target.ts:outsideTheSlidingLayerPanelSoFixedPositionIsTheViewport`（新規。`LayerActions.tsx`・`LayerContextMenu.tsx`） | レイヤーパネルは transform で滑って出入りするので、中に置くと `position: fixed` の基準がパネルになる。それを避けて `document.body` に portal で出す | 関数名 |
+| `src/state/useCopcViewer.ts`（型の再エクスポート） | 消したコメントは「src/ui が renderer・datasource の型を state 経由で受け取るため（規約3）の再エクスポート」と書いていたが、d05c858 の時点で再エクスポートは `CopcViewerState` だけで、古くなっていた。src/ui は `CopcViewerState` を `useCopcViewer` から import する | ここ |
+| `src/app/open-files.ts:OpenFilesContext.setConversionProgress`・`setConvertingFileName` | 進捗とファイル名を `ViewerStatus` の `converting` に入れない（R5）。Web の進捗（"preparing"）は状態が "converting" に変わる前に届くことがあり、失えない。ダイアログは変換が終わった後（"ready"）もファイル名を出し、ファイル名は状態がまだ "opening" のうちに決まる | ここ |
+| `src/app/point-cloud-tools.ts:computeSectionLine`・`src/state/layers.ts:SectionInfo.sourceLayerId` | 断面の地表線は、薄く切り出したレイヤーでなく元のレイヤー（`sourceLayerId`）の点から計算する。cloth の計算には線の周りの点が要り、薄い切り出しには無い | ここ |
+| `src/ui/settings/pages/RenderScaleDialog.tsx:FIXED_RENDER_SCALES_SO_ZERO_OR_NEGATIVE_CANNOT_BREAK_THE_VIEW` | 自由入力にせず決め打ちの選択肢にしたのは、0 や負の値で画面が壊れるのを避けるため | 名前（旧 `RENDER_SCALE_OPTIONS`、使い手 1） |
+| `src/state/useCopcViewer.ts`（`status`・クリップボード・`setInitError`） | `status` は、ほとんどの hook が書くので `useCopcViewer` に置く。内訳のコピーは `navigator.clipboard` が無い（HTTPS でない等）と失敗するが、画面を壊さずログだけにする。`setInitError` は effect が依存するので安定させる | ここ |
+| `src/state/useFileOpen.ts`・`usePointCloudTools.ts`・`useSectionView.ts`（コンテキスト） | コンテキストは描画のたびに作り直し、イベントの手順が拾った時点の値を使う。ref の getter は呼んだときに読む（ref は最初の描画の後に埋まる）。ロック（`openLock`・`toolLock`）とセクションの読み込みの番号は、アプリの間ずっと1つのオブジェクトで、後の描画で作ったコンテキストとも共有する | ここ |
+| `src/app/section-view.ts:openSectionPanel`・ポインタの処理 | ツールが終わるのは始まってから長い後なので、コンテキストは古い描画のものでよいように getter・setter・番号だけを読み、状態の値は読まない。パンは押した位置を基準にするので、パンになる前の移動も含める | ここ |
+| `src/app/section-math.ts:TOUCH_LONG_PRESS_MS` | 指の長押し（500 ms）はマウス（300 ms）より少し長くして誤操作を避ける | ここ |
+| `src/state/useRendererLifecycle.ts` | `rendererRef`・`sourceRef` を `useCopcViewer` で作るのは、`useDisplaySettings` が `rendererRef` を、このフックがその `onStats` を要るため。effect は1回だけ走るので、渡すコールバックは安定していなければならない。WebSource と TauriSource を選ぶのはここだけ（ADR-0012） | ここ |
+| `src/state/useLayers.ts:nextLayerId` | 番号は消したレイヤーの分も再利用しない（renderer のキーがぶつからないように）。一覧は React の state と ref の2つに持ち、書くのは `commitLayers` だけ | ここ |
+| `src/state/measure.ts` | 面積は重心を引いてから靴紐の公式で計算する（60 万台の座標で二乗が大きくなり精度が落ちないように）。水平成分は二乗の差でなく直接組み立てる（桁落ちが少ない） | ここ |
+| `src/state/tool-math.ts:projectToNdc` | renderer の `viewProj` は原点のずらしを含まない（ノードごとに f32 でかける）ので、そのまま Rust に送れる | ここ |
+| `src/state/units.ts` | 単位が不明（null）のときは換算せず、数値に「座標の単位（m かどうか不明）」を添える。m と書かない | ここ |
+| `src/state/useTheme.ts` | 既定は OS に従う（ADR-0005）。設定で手動に固定できるのは、所有者が実機で両テーマを見比べるため（エージェントは OS のモードを切り替えて確かめられない）。ADR の決定は覆していない | ここ |
+| `src/state/useUpdateCheck.ts` | 署名鍵を作らない（ADR-0004 追記4）ので、デスクトップも Android と同じ「GitHub Releases を fetch → 同意したらリリースページを開く」。`tauri dev` では確認しない。`checkingEnabled` は state にせず毎回導出する（effect の中で同期の setState を避ける。react-hooks/set-state-in-effect）。オフラインで失敗しても起動は止めない | ここ |
+| `src/ui/common/useTransitionMount.ts`・`src/ui/shell/AppShell.tsx`（前回の値との比較） | 閉じるアニメーションを見せるため、DOM に居る（`mounted`）と見せている（`shown`）を分ける。開くときは2回の rAF で別のフレームにしてから `shown` にする。「変換が始まった」「新しいエラー」の検出は、effect で setState せず、前回の値を state に持って描画中に比べる（React の推奨。set-state-in-effect を避ける） | ここ |
+| `src/ui/dialogs/Dialog.tsx` | 暗幕のクリックで閉じるのは mousedown と click の両方が暗幕の上のときだけ（パネルで押して外で離すテキスト選択・スライダーでは閉じない）。Esc はパネルに付けるので、重なっても最前面だけが閉じる。モバイル（`glassEnabled=false`）ではぼかしを切る（GPU に重い）。上端線の色のクラス名は文字列のまま書く（Tailwind が検出できるように） | ここ |
+| `src/ui/layers/LayerList.tsx`（左線） | 選択の有無で左線の太さが変わると文字がずれるので、全行に同じ太さの左線を付け、選択していない行は透明にする | ここ |
+| `src/ui/layers/LayerPanel.tsx` | パネルと開閉ボタンは絶対配置＋transform で動かす（flex だとパネルが DOM から消えた瞬間にボタンが飛ぶ）。狭い画面のドロワーでガラスが読みにくいリスク（ADR-0005）は、点群がほぼ覆われるので小さいと判断した（未検証） | ここ |
+| `src/ui/dialogs/ColorModeDialog.tsx` | 消したコメントは「`colormap.ts` の `COLOR_MODES` の並びに合わせてある」と書いていたが、`COLOR_MODES` は今は無い（古くなっていた）。並びは `ColorMode` 型（`src/renderer/colormap.ts`）の並びと同じ | ここ |
+| `src/ui/dialogs/ConversionDialog.tsx` | 「開く」ボタンを置かない。変換の結果は完了時に `openFiles` がそのままレイヤーに足すので、押せるボタンが何もしないと紛らわしい | ここ |
+| `src/ui/settings/pages/EdlDialog.tsx`・`AppearanceDialog.tsx` | EDL は画面全体にかける処理でレイヤーごとにできないので設定に置く。強さの setter は無い（`src/renderer/edl.ts` の固定値）ので、オン・オフだけ | ここ |
+| `src/ui/settings/pages/StorageDialog.tsx` | UI は datasource を直接触らない規約なので、バイトの表示用の整形はここに閉じる | ここ |
+| `src/ui/shell/UnsupportedDeviceScreen.tsx` | WebGL2 のフォールバックを書かない（ADR-0002）ので、WebGPU が無いと何も描けない。白い画面と区別するため、条件と診断情報を出す | ここ |
+| `src/ui/layers/LayerStatsDetails.tsx` | 詳細の統計は1行のステータスバーに収まらないので、左パネルの折りたたみ（既定で閉じる）に残す（既存の機能を全部届く所に置く要求） | ここ |
+| `src/ui/status/StatusBar.tsx` | 「進捗」は変換中は変換の割合、それ以外はノードの読み込み数を出す。変換中はクリックで変換ダイアログを開き直せる（外側クリック・Esc で閉じても変換は続く） | ここ |
+| `src/ui/settings/pages.test.tsx`・`src/ui/dialogs/LayerViewDialogs.test.tsx` | React は value をプロトタイプの setter 経由で追うので、テストは同じ経路で値を入れてから input イベントを送る | ここ |
 
 ## 記録
 
@@ -99,3 +129,16 @@
 - YAML・TOML・`.gitattributes`・PowerShell の残り: `grep -n -E '^\s*#([^!]|$)|\s#\s' .github/workflows/ci.yml .github/workflows/pages.yml .github/workflows/release.yml Cargo.toml .gitattributes scripts/download-tokyo-23ku-tiles.ps1 scripts/las-header-report.ps1 scripts/bench/run-native.ps1 scripts/bench/sampler.ps1 docs/video/tools/lib/tts.ps1` が 0 件（終了コード 1）。消したのは行頭が `#` の行だけで、`run: |`・`body: |` の中の本文は変わっていない（base の行と比べた）
 - `npm run check:all`、`node scripts/check-task-sheet.mjs d05c858`
 - 確かめていないこと: CI のワークフロー（YAML のコメントの行を消しただけだが、GitHub 上で走らせていない）、E2E（`npx playwright test --list` で 6 件が読み込めることだけ見た）、`docs/video/tools` の撮影（`node --check` だけ）、`scripts/igpu-bench/bench.mjs`・`dtm-browser-check.mjs`・`thin-filter-browser-bench.mjs`・`ui-shots.mjs` の実行（使い方の表示だけ見た）、PowerShell のスクリプトの実行
+
+### 監査の指摘への対応 R2（作業役）
+
+- F-1（must、消えた「なぜ」）: 指摘の7件を直した。
+  1. `sectionAxes` は、Rust と同じ式で手で求めた期待値と `sectionBox` の軸の両方に合うことを確かめるテストを `src/app/section-3d.test.ts` に足した（名前に「matches SectionAxes of crates/pcv-core/src/profile.rs」）。Rust 側に同じ入力のテストを足すのは CM-4 の範囲なので足していない
+  2. `layerPanelStartsOpenExceptOnANarrowScreenWhereTheDrawerWouldCoverThePoints`（関数名）と表（E2E の理由）
+  3. `outsideTheSlidingLayerPanelSoFixedPositionIsTheViewport`（`src/ui/common/portal-target.ts`、使い手 2）
+  4・5・6 は表（4 は消したコメント自体が古くなっていた）
+  7. `RENDER_SCALE_OPTIONS`→`FIXED_RENDER_SCALES_SO_ZERO_OR_NEGATIVE_CANNOT_BREAK_THE_VIEW`（使い手 1）
+  - 見直し: `git diff d05c858 -U0 -- src/state src/ui src/app` の消した行のうち、because・ため・ので・never・must・otherwise・so that・avoid・避け・未検証・measured・実測 を含む 151 行を読み、コードから読めない理由を表に 23 行足した（上の表の `src/state/useCopcViewer.ts`（`status`…）の行から下）。ほかは「何をするか」の説明で、名前・型・テスト名で読めると判断した
+  - 名前の無い数値: `C:\workspace\pcv-wt-CM-5\scripts\removed-comments-near-literals.mjs d05c858 src/app src/state src/ui` を読み取りだけで使った（このブランチにはコピーしていない）。本番のコードで理由が抜けていたもの（`TOUCH_LONG_PRESS_MS`・Dialog の色のクラス名）を表に足した。テストの中の数値は入力のデータなので残した
+- F-2（should、消したコメントを指す文書）: `docs/book/src/frontend/state.md` の「各 hook の先頭のコメントを読めば」（79 行目）を引数の型と F12 で辿る説明に、「まず読むファイル」（119 行目）を表の「入口」の列を指す文に書き換えた。`TaskSheets/ADR-0016-e2e-web-conversion.md` の「`ci.yml` の `rust` ジョブのコメント」をこのシートの表の ci.yml の行に向けた。`docs/book/src/rust/pcv-convert.md:151` は CM-5 の範囲なので触っていない
+- F-3（nit）: `saveSettingIfStorageAllows` の `catch` を `catch { return; }` にした
