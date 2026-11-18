@@ -1,13 +1,13 @@
 import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
 
-const FIXED_RENDER_SCALES_SO_ZERO_OR_NEGATIVE_CANNOT_BREAK_THE_VIEW = [0.25, 0.5, 0.75, 1.0] as const;
+const RENDER_SCALE_CHOICES = [0.25, 0.5, 0.75, 1.0] as const;
 
 export function RenderScaleDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   return (
     <SettingsPageDialog {...page} title="描画の解像度">
       <div className="flex gap-2">
-        {FIXED_RENDER_SCALES_SO_ZERO_OR_NEGATIVE_CANNOT_BREAK_THE_VIEW.map((scale) => (
+        {RENDER_SCALE_CHOICES.map((scale) => (
           <button
             key={scale}
             type="button"

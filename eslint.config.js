@@ -103,10 +103,10 @@ function pluginZones() {
   return zones;
 }
 
-const AGENT_WORKTREES_THAT_COPY_THIS_REPOSITORY = ".claude";
+const AGENT_WORKTREES = ".claude";
 
 export default tseslint.config(
-  { ignores: ["dist", "src-tauri", "target", AGENT_WORKTREES_THAT_COPY_THIS_REPOSITORY, "**/*.generated.tsx"] },
+  { ignores: ["dist", "src-tauri", "target", AGENT_WORKTREES, "**/*.generated.tsx"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx,mts,cts}"],

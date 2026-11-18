@@ -7,8 +7,8 @@ import { startScreencast, framesToMp4 } from "./lib/record.mjs";
 import { FOOTAGE_DIR, AUTZEN_COPC, AUTZEN_PCD, TOKYO_SHIBUYA_COPC } from "./lib/paths.mjs";
 
 const BASE_URL = process.env.PCV_PREVIEW_URL ?? "http://127.0.0.1:4555/";
-const SHOW_THE_FIRST_LOAD_STALLING_MS = 800;
-const PCD_CONVERSION_IN_THE_BROWSER_TOOK_OVER_3_MIN_SO_WAIT_MS = 600_000;
+const FIRST_LOAD_PAUSE_MS = 800;
+const PCD_CONVERSION_TIMEOUT_MS = 600_000;
 const TMP_FRAMES = path.join(process.env.TEMP ?? "C:\\Windows\\Temp", "pcv-video-capture");
 
 const CHROMIUM_ARGS = [
@@ -173,7 +173,7 @@ async function main() {
     console.log("=== 01-hook ===");
     await openFile(page, hookSourceFile);
     await waitForOpenDone(page, 60_000);
-    await page.waitForTimeout(SHOW_THE_FIRST_LOAD_STALLING_MS);
+    await page.waitForTimeout(FIRST_LOAD_PAUSE_MS);
     results["01-hook"] = await record(page, "01-hook", async () => {
       await orbitAndZoom(page);
     });
@@ -201,9 +201,9 @@ async function main() {
       await openSettings(page);
       const edlCheckbox = page.locator('label:has-text("EDL（陰影") input[type="checkbox"]');
       const wasChecked = await edlCheckbox.isChecked();
-      const turnEdlOffFromItsDefaultOn = () => edlCheckbox.click();
+      const turnEdlOff = () => edlCheckbox.click();
       const turnEdlBackOn = () => edlCheckbox.click();
-      await turnEdlOffFromItsDefaultOn();
+      await turnEdlOff();
       await closeSettings(page);
       await page.waitForTimeout(1500);
       await openSettings(page);
@@ -241,7 +241,7 @@ async function main() {
     console.log("=== 04-web-convert ===");
     results["04-web-convert"] = await record(page, "04-web-convert", async () => {
       await openFile(page, AUTZEN_PCD);
-      await waitForOpenDone(page, PCD_CONVERSION_IN_THE_BROWSER_TOOK_OVER_3_MIN_SO_WAIT_MS);
+      await waitForOpenDone(page, PCD_CONVERSION_TIMEOUT_MS);
       await page.waitForTimeout(500);
       const breakdown = page.locator("text=変換の内訳");
       if ((await breakdown.count()) > 0) {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { buildSyntheticLas } from "../scripts/make-test-las";
 
-const TIME_THE_RESULT_MUST_STAY_VISIBLE_MS = 2000;
+const STILL_VISIBLE_WAIT_MS = 2000;
 
 test("複数のLASファイルを一緒に選ぶとWeb版で1つにマージされ、点数が合計と一致する", async ({
   page,
@@ -43,7 +43,7 @@ test("複数のLASファイルを一緒に選ぶとWeb版で1つにマージさ�
 
     const breakdown = page.getByTestId("conversion-breakdown");
     await expect(breakdown).toBeVisible({ timeout: 60_000 });
-    await page.waitForTimeout(TIME_THE_RESULT_MUST_STAY_VISIBLE_MS);
+    await page.waitForTimeout(STILL_VISIBLE_WAIT_MS);
     await expect(breakdown).toBeVisible();
 
     await expect(breakdown).toContainText("入力ファイル数: 3");
@@ -108,7 +108,7 @@ test("LASとPLYを一緒に選ぶとWeb版で1つにマージされ、点数が�
 
     const breakdown = page.getByTestId("conversion-breakdown");
     await expect(breakdown).toBeVisible({ timeout: 60_000 });
-    await page.waitForTimeout(TIME_THE_RESULT_MUST_STAY_VISIBLE_MS);
+    await page.waitForTimeout(STILL_VISIBLE_WAIT_MS);
     await expect(breakdown).toBeVisible();
     await expect(breakdown).toContainText("入力ファイル数: 2");
     await expect(page.getByTestId("viewer-error")).toHaveCount(0);

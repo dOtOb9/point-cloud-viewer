@@ -36,7 +36,7 @@ import { StatusBar } from "../status/StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 import { UpdateNotice } from "../status/UpdateNotice";
 
-function layerPanelStartsOpenExceptOnANarrowScreenWhereTheDrawerWouldCoverThePoints(): boolean {
+function layerPanelStartsOpen(): boolean {
   return !(typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches);
 }
 
@@ -50,7 +50,7 @@ export function AppShell() {
   const measure = { ...measureRaw, toggle: (kind: Parameters<typeof measureRaw.toggle>[0]) => { layerToolRaw.stop(); measureRaw.toggle(kind); } };
   const layerTool = { ...layerToolRaw, toggle: (mode: Parameters<typeof layerToolRaw.toggle>[0]) => { measureRaw.stop(); layerToolRaw.toggle(mode); } };
 
-  const [layerOpen, setLayerOpen] = useState(layerPanelStartsOpenExceptOnANarrowScreenWhereTheDrawerWouldCoverThePoints);
+  const [layerOpen, setLayerOpen] = useState(layerPanelStartsOpen);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [thinFilterDialog, setThinFilterDialog] = useState<"thin" | "filter" | null>(null);
   const [dtmDialogOpen, setDtmDialogOpen] = useState(false);

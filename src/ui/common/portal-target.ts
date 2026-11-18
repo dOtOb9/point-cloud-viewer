@@ -1,3 +1,3 @@
-export function outsideTheSlidingLayerPanelSoFixedPositionIsTheViewport(): HTMLElement {
+export function portalOutsideLayerPanel(): HTMLElement {
   return document.body;
 }

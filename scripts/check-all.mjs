@@ -11,11 +11,11 @@ if (process.argv.includes("--help")) {
   process.exit(0);
 }
 
-function withUpperCaseDriveLetterBecauseVitestFailsFromLowerCase(path) {
+function withUpperCaseDriveLetter(path) {
   return /^[a-z]:/.test(path) ? path[0].toUpperCase() + path.slice(1) : path;
 }
 
-const cwd = withUpperCaseDriveLetterBecauseVitestFailsFromLowerCase(process.cwd());
+const cwd = withUpperCaseDriveLetter(process.cwd());
 
 const STEPS = [
   ["typecheck", "npm run typecheck"],

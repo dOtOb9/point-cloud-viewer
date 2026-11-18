@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
-const TIME_THE_RESULT_MUST_STAY_VISIBLE_MS = 2000;
+const STILL_VISIBLE_WAIT_MS = 2000;
 const XYZ_FLOAT_BYTES = 3 * 4;
 const RGB_UCHAR_BYTES = 3;
 
@@ -53,7 +53,7 @@ async function convertThroughTheOpenButton(page: Page, filePath: string): Promis
 
   const breakdown = page.getByTestId("conversion-breakdown");
   await expect(breakdown).toBeVisible({ timeout: 45_000 });
-  await page.waitForTimeout(TIME_THE_RESULT_MUST_STAY_VISIBLE_MS);
+  await page.waitForTimeout(STILL_VISIBLE_WAIT_MS);
   await expect(breakdown).toBeVisible();
   await expect(page.getByTestId("download-link")).toBeVisible();
   await expect(page.getByTestId("viewer-error")).toHaveCount(0);

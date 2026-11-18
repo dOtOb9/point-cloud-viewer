@@ -8,8 +8,8 @@ const host = process.env.TAURI_DEV_HOST;
 const isGithubPagesBuild = process.env.GITHUB_PAGES_BUILD === "true";
 const GITHUB_PAGES_SUBPATH = "/point-cloud-viewer/";
 
-const AGENT_WORKTREES_THAT_COPY_THIS_REPOSITORY = ".claude/**";
-const PLAYWRIGHT_SPECS_RUN_BY_NPM_RUN_E2E = "e2e/**";
+const AGENT_WORKTREES = ".claude/**";
+const PLAYWRIGHT_SPECS = "e2e/**";
 
 export default defineConfig(() => ({
   base: isGithubPagesBuild ? GITHUB_PAGES_SUBPATH : "/",
@@ -33,6 +33,6 @@ export default defineConfig(() => ({
   },
 
   test: {
-    exclude: [...configDefaults.exclude, AGENT_WORKTREES_THAT_COPY_THIS_REPOSITORY, PLAYWRIGHT_SPECS_RUN_BY_NPM_RUN_E2E],
+    exclude: [...configDefaults.exclude, AGENT_WORKTREES, PLAYWRIGHT_SPECS],
   },
 }));

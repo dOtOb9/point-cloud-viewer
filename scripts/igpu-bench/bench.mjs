@@ -12,7 +12,7 @@ const DRAG_SEC = Number(process.env.BENCH_DRAG_SEC ?? 5);
 const LOAD_TIMEOUT_MS = 120000;
 const SESSION_TIMEOUT_MS = 240000;
 const TOTAL_BUDGET_MS = 14 * 60 * 1000;
-const LET_THE_HTTPS_PAGE_READ_LOOPBACK_WITHOUT_A_PERMISSION_PROMPT =
+const LOCAL_NETWORK_CHECKS_OFF =
   "--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,BlockInsecurePrivateNetworkRequests";
 const FILTER = process.argv[2] ?? "";
 
@@ -106,7 +106,7 @@ async function runSession(sess, session, consoleErrors) {
       args: [
         "--enable-unsafe-webgpu", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",
         conf.big ? "--start-maximized" : "--window-size=1300,800",
-        LET_THE_HTTPS_PAGE_READ_LOOPBACK_WITHOUT_A_PERMISSION_PROMPT,
+        LOCAL_NETWORK_CHECKS_OFF,
       ],
     });
     const page = await browser.newPage({ viewport: conf.big ? null : { width: 1280, height: 720 } });

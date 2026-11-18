@@ -8,7 +8,7 @@ const STRICT_SYMBOL_DISTANCE_LINES = 20;
 const MIN_ROWS = 3;
 const MIN_SYMBOL_LENGTH = 3;
 const MIN_PREMISE_LENGTH = 8;
-const WORDS_THAT_MATCH_ALMOST_ANY_FILE = new Set(
+const GENERIC_WORDS = new Set(
   (
     "abstract any as async await boolean break case catch class const constructor continue debugger declare default delete do else enum " +
     "export extends false finally for from function get if implements import in instanceof interface is keyof let namespace never new null " +
@@ -84,7 +84,7 @@ export function checkAdr(text, fs, { changed = false } = {}) {
         problems.push(`${path}:${line}: \`${symbol}\` is shorter than ${MIN_SYMBOL_LENGTH} characters`);
         continue;
       }
-      if (WORDS_THAT_MATCH_ALMOST_ANY_FILE.has(symbol.toLowerCase())) {
+      if (GENERIC_WORDS.has(symbol.toLowerCase())) {
         problems.push(`${path}:${line}: \`${symbol}\` is a keyword or a generic word that appears in almost any file; name the function, type or constant itself`);
         continue;
       }

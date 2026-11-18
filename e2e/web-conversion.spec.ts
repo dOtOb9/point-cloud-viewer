@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { buildSyntheticLas } from "../scripts/make-test-las";
 
-const TIME_THE_RESULT_MUST_STAY_VISIBLE_MS = 2000;
+const STILL_VISIBLE_WAIT_MS = 2000;
 
 test("LASファイルを選ぶとWeb版で変換され、内訳とダウンロードが表示される", async ({ page }) => {
   const consoleMessages: string[] = [];
@@ -29,7 +29,7 @@ test("LASファイルを選ぶとWeb版で変換され、内訳とダウンロ�
     const breakdown = page.getByTestId("conversion-breakdown");
     await expect(breakdown).toBeVisible({ timeout: 45_000 });
 
-    await page.waitForTimeout(TIME_THE_RESULT_MUST_STAY_VISIBLE_MS);
+    await page.waitForTimeout(STILL_VISIBLE_WAIT_MS);
     await expect(breakdown).toBeVisible();
 
     const downloadLink = page.getByTestId("download-link");

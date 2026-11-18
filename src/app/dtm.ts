@@ -44,12 +44,12 @@ export function presetOf(values: CsfParamsInMetres, display: DisplayUnit): DtmPr
   return "custom";
 }
 
-const UNIT_FACTOR_TOLERANCE_FINER_THAN_THE_6E7_GAP_BETWEEN_THE_FEET = 1e-8;
+const UNIT_FACTOR_TOLERANCE = 1e-8;
 
 export function landXmlUnitFor(horizontalToMeter: number | null): LandXmlUnit {
   if (horizontalToMeter === null) return "unknown";
   const near = (target: number) =>
-    Math.abs(horizontalToMeter - target) < UNIT_FACTOR_TOLERANCE_FINER_THAN_THE_6E7_GAP_BETWEEN_THE_FEET;
+    Math.abs(horizontalToMeter - target) < UNIT_FACTOR_TOLERANCE;
   if (near(1)) return "meter";
   if (near(INTERNATIONAL_FOOT_IN_METERS)) return "foot";
   if (near(1200 / 3937)) return "usSurveyFoot";
