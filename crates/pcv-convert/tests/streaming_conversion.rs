@@ -4,6 +4,8 @@ use std::sync::Arc;
 use copc_writer::CopcWriterParams;
 use pcv_convert::streaming::{convert_path, AtomicCancel, ReadProgress};
 
+const MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK: u64 = 256 * 1024;
+
 fn write_synthetic_las_with_geotiff_crs(path: &std::path::Path, point_count: u32, epsg: u16) {
     let mut builder = las::Builder::from((1, 4));
     builder.point_format = las::point::Format::new(6).expect("format 6");
@@ -366,7 +368,7 @@ fn parallel_compress_point_set_matches_sequential() {
         &sequential_output,
         &spill_dir,
         &CopcWriterParams::new(50)
-            .with_memory_budget_bytes(256 * 1024)
+            .with_memory_budget_bytes(MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK)
             .with_parallel_node_compression(false),
         &not_cancelled(),
         no_progress_reporting,
@@ -378,7 +380,7 @@ fn parallel_compress_point_set_matches_sequential() {
         &parallel_output,
         &spill_dir,
         &CopcWriterParams::new(50)
-            .with_memory_budget_bytes(256 * 1024)
+            .with_memory_budget_bytes(MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK)
             .with_parallel_node_compression(true),
         &not_cancelled(),
         no_progress_reporting,

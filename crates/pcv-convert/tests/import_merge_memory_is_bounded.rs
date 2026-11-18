@@ -89,8 +89,11 @@ fn peak_of(run: impl FnOnce()) -> usize {
     (PEAK.with(Cell::get) - baseline).max(0) as usize
 }
 
+const MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK: u64 = 256 * 1024;
+
 fn params() -> CopcWriterParams {
-    CopcWriterParams::new(500).with_memory_budget_bytes(256 * 1024)
+    CopcWriterParams::new(500)
+        .with_memory_budget_bytes(MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK)
 }
 
 fn merge_peak(per_file: usize) -> usize {

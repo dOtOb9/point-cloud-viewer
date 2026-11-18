@@ -106,6 +106,8 @@ mod tests {
     use super::*;
     use crate::import::point::RawPoint;
 
+    const MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK: u64 = 64 * 1024;
+
     struct SyntheticSource {
         count: u32,
     }
@@ -149,7 +151,8 @@ mod tests {
             SyntheticSource { count: 5_000 },
             &output,
             &spill_dir,
-            &CopcWriterParams::new(500).with_memory_budget_bytes(64 * 1024),
+            &CopcWriterParams::new(500)
+                .with_memory_budget_bytes(MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK),
             &copc_core::NeverCancel,
             None,
             |_progress| {},
