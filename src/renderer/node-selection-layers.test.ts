@@ -1,12 +1,3 @@
-// 複数レイヤー（L1-C）のノード選択とキャッシュのテスト。WebGPUは使わない。
-//
-// 確かめること:
-//  - 1レイヤーのとき、従来の selectNodesForFrame と結果が同じ（キーの前置きを除いて）
-//  - 点予算は全レイヤーで1つを分け合う（レイヤーごとに分けない）
-//  - 手前のレイヤーのノードが、遠いレイヤーのノードより先に予算を取る（同じ優先度の物差しで比べている）
-//  - 選択に渡さなかった（=非表示の）レイヤーのノードは、toDraw にも wanted にも出ない
-//  - キーの前置きの組み立てと分解、NodeCache.removeByPrefix（レイヤー削除でGPUバッファを解放する）
-
 import { describe, expect, it } from "vitest";
 import type { HierarchyNodeInfo } from "../datasource/DataSource";
 import { frustumPlanes } from "./frustum";
@@ -23,7 +14,6 @@ function viewProj(): Mat4 {
   return multiply(proj, lookAt([0, 0, 10], [0, 0, 0], [0, 1, 0]));
 }
 
-/** 原点付近、カメラの正面に置いた小さな立方体ノード（子なしの1枚）。 */
 function node(key: string, centerZ: number, pointCount: number): HierarchyNodeInfo {
   return {
     key,
@@ -47,7 +37,6 @@ describe("selectNodesForLayers", () => {
 
   it("点予算は全レイヤーで1つを分け合う（レイヤーごとに予算を持たない）", () => {
     const vp = viewProj();
-    // 同じ形のレイヤーが2つ。1レイヤーなら3ノードとも入る予算(3000)を、2レイヤーで分け合う。
     const make = (): HierarchyNodeInfo[] => [node("a", 0, 1000), node("b", 1, 1000), node("c", 2, 1000)];
     const single = selectNodesForLayers([{ keyPrefix: "1:", hierarchy: make() }], frustumPlanes(vp), vp, W, H, 3000, EMPTY_CACHE);
     expect(single.wanted).toHaveLength(3);
@@ -64,16 +53,14 @@ describe("selectNodesForLayers", () => {
       3000,
       EMPTY_CACHE,
     );
-    // 合計の点数は予算以内。レイヤーごとに3000ずつ持っていれば6ノードになってしまう。
     expect(both.wanted).toHaveLength(3);
     expect(both.wanted.length * 1000).toBeLessThanOrEqual(3000);
   });
 
   it("手前のレイヤーのノードが、遠いレイヤーのノードより先に予算を取る", () => {
     const vp = viewProj();
-    const near = [node("n", 5, 1000)]; // カメラ(z=10)に近い
-    const far = [node("f", -20, 1000)]; // 遠い
-    // 予算は1ノード分。レイヤーの並びは遠い方が先でも、画面上で大きい方が選ばれる。
+    const near = [node("n", 5, 1000)];
+    const far = [node("f", -20, 1000)];
     const r = selectNodesForLayers(
       [
         { keyPrefix: "far:", hierarchy: far },
@@ -93,7 +80,6 @@ describe("selectNodesForLayers", () => {
     const vp = viewProj();
     const visible = [node("v", 0, 1000)];
     const hidden = [node("h", 0, 1000)];
-    // 呼び出し側（renderer）は見えているレイヤーだけを渡す。ここでは hidden を渡さない。
     const cache: NodeSelectionCache = {
       get: (key) => (key === "1:v" ? ({ key } as unknown as CachedNode) : undefined),
     };

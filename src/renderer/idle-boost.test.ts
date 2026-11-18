@@ -9,7 +9,6 @@ import {
 
 const MAX = 26_800_000;
 
-/** 1フレームぶんの入力を作る小さな道具。 */
 function step(
   state: IdleBoostState,
   nowMs: number,
@@ -54,7 +53,6 @@ describe("stepIdleBoost", () => {
       expect(r.aimdPaused).toBe(true);
       s = r.state;
     }
-    // 保存した値は、止まっている間に上書きされない
     expect(s.savedBudget).toBe(10_000_000);
   });
 
@@ -93,14 +91,11 @@ describe("stepIdleBoost", () => {
     const r = step(s, 2000, false, MAX, false);
     expect(r.action.kind).toBe("none");
     expect(r.state.boosting).toBe(false);
-    // その後オンに戻して動いても、古い保存値（10M）へ勝手に戻らない
     const r2 = step(r.state, 2100, true, MAX, true);
     expect(r2.action.kind).toBe("none");
   });
 
   it("止まる→動く→止まる を繰り返しても、AIMD の値は一方向にずれない", () => {
-    // 呼び出し側（point-cloud-renderer.ts）の動きを模擬する。
-    // 止まっている間は AIMD が止まる。AIMD の値は「動いている間」にだけ変わりうる。
     const aimdBudget = 12_000_000;
     let budget = aimdBudget;
     let s = INITIAL_IDLE_BOOST_STATE;
@@ -108,7 +103,6 @@ describe("stepIdleBoost", () => {
     const seen: number[] = [];
 
     for (let round = 0; round < 10; round++) {
-      // 動く（1秒）。ここで AIMD が、毎回同じ値に落ち着く（模擬: 変えない）
       for (let i = 0; i < 60; i++) {
         now += 16;
         const r = step(s, now, true, budget);
@@ -117,7 +111,6 @@ describe("stepIdleBoost", () => {
         expect(r.aimdPaused).toBe(false);
       }
       seen.push(budget);
-      // 止まる（3秒）。fps が落ちても AIMD は呼ばれない（aimdPaused を確かめる）
       for (let i = 0; i < 190; i++) {
         now += 16;
         const r = step(s, now, false, budget);
@@ -128,7 +121,6 @@ describe("stepIdleBoost", () => {
       }
       expect(budget).toBe(MAX);
     }
-    // 動き出した時点の点予算は、毎回 AIMD の値（12M）のまま。小さくも大きくもならない
     expect(seen.every((b) => b === aimdBudget)).toBe(true);
   });
 

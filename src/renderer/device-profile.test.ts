@@ -1,6 +1,3 @@
-// device-profile.tsのテスト（M3-8、受け入れ条件「モバイル判定と既定値の決定が
-// 純粋関数にあり、単体テストがある」に対応）。
-
 import { describe, expect, it } from "vitest";
 import {
   defaultRenderSettings,
@@ -44,8 +41,6 @@ describe("defaultRenderSettings (デスクトップ)", () => {
     expect(defaults.pointShape).toBe("round");
     expect(defaults.edlEnabled).toBe(true);
     expect(defaults.glassEnabled).toBe(true);
-    // ADR-0010の計算式(1GiB / (20バイト×2倍)) と同じ値であることを固定する。
-    // ADR-0010本文に書かれている実測値(26,843,545)と一致する。
     expect(defaults.pointBudgetMax).toBe(26_843_545);
     expect(defaults.pointBudgetStart).toBe(defaults.pointBudgetMax);
   });
@@ -69,11 +64,8 @@ describe("defaultRenderSettings (モバイル)", () => {
 
   it("点予算の上限はdeviceMemoryから算出され、デスクトップの上限より大幅に小さい", () => {
     const defaults = defaultRenderSettings({ deviceMemoryGiB: 4, pointerCoarse: true });
-    // 4GiB * (1/64) / (20バイト×2倍) = 67,108,864 / 40 = 1,677,721.6 → floor
     expect(defaults.pointBudgetMax).toBe(1_677_721);
     expect(defaults.pointBudgetStart).toBe(defaults.pointBudgetMax);
-    // 「4GBの端末で起動した瞬間に大量のノードを要求しない」がタスクシートの
-    // 目的なので、デスクトップの上限(26,843,545)より十分小さいことを確認する。
     expect(defaults.pointBudgetMax).toBeLessThan(26_843_545 / 10);
   });
 

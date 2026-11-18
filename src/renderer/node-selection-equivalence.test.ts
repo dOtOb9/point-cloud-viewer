@@ -1,8 +1,3 @@
-// 「根から子へたどる」新しい selectNodesForFrame が、「全ノードを走査する」旧実装と
-// 同じ結果（toDraw・wanted の集合と順序、priority の値）を返すことの確認。
-// 旧実装は参照実装としてこのファイルに残してある（本体からは消してある）。
-// ランダムな階層・カメラ・設定を多数作って比べる。WebGPU は使わない。
-
 import { describe, expect, it } from "vitest";
 import type { HierarchyNodeInfo } from "../datasource/DataSource";
 import { centerPriorityWeight } from "./center-priority";
@@ -17,7 +12,6 @@ import {
 } from "./node-selection";
 import { screenSpaceError, surfaceSpacingPixels } from "./screen-space-error";
 
-/** 旧実装（全ノード走査）。変更前の node-selection.ts の selectNodesForFrame をそのまま移した。 */
 function referenceSelect(
   hierarchy: readonly HierarchyNodeInfo[],
   planes: Plane[],
@@ -87,7 +81,6 @@ function referenceSelect(
   return { toDraw, wanted };
 }
 
-/** 再現できる乱数（mulberry32）。 */
 function makeRng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -99,14 +92,13 @@ function makeRng(seed: number): () => number {
   };
 }
 
-/** ランダムな八分木。子は親の立方体を8等分、途中のノードは確率で欠け、点数はゼロ近くも含む。 */
 function randomHierarchy(rng: () => number): HierarchyNodeInfo[] {
-  const maxDepth = Math.floor(rng() * 11); // 0..10
+  const maxDepth = Math.floor(rng() * 11);
   const size = 10 + rng() * 5000;
   const origin: [number, number, number] = [(rng() - 0.5) * 1000, (rng() - 0.5) * 1000, (rng() - 0.5) * 100];
-  const keepProb = 0.15 + rng() * 0.5; // 子を作る確率（深い木が爆発しないよう低めにする）
-  const missingProb = rng() < 0.5 ? 0 : rng() * 0.4; // 途中のノードが欠ける確率
-  const tieCounts = rng() < 0.3; // 点数を全部同じにして優先度の同順位を作る
+  const keepProb = 0.15 + rng() * 0.5;
+  const missingProb = rng() < 0.5 ? 0 : rng() * 0.4;
+  const tieCounts = rng() < 0.3;
   const nodes: HierarchyNodeInfo[] = [];
 
   const pointCountOf = (): number => {
@@ -137,7 +129,6 @@ function randomHierarchy(rng: () => number): HierarchyNodeInfo[] {
         }
   };
   build(0, 0, 0, 0, origin, size);
-  // hierarchy の並びは COPC の読み込み順に近い「深さ順」とは限らないので、時々混ぜる。
   if (rng() < 0.4) {
     for (let i = nodes.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -147,7 +138,6 @@ function randomHierarchy(rng: () => number): HierarchyNodeInfo[] {
   return nodes;
 }
 
-/** 見下ろし・寄り・ノードの内側・後ろ向きなど、様々なカメラの viewProj。 */
 function randomViewProj(rng: () => number, nodes: HierarchyNodeInfo[], aspect: number): Mat4 {
   const root = nodes[0];
   const c: [number, number, number] = [
@@ -161,15 +151,15 @@ function randomViewProj(rng: () => number, nodes: HierarchyNodeInfo[], aspect: n
   let target: [number, number, number] = c;
   let up: [number, number, number] = [0, 0, 1];
   if (mode === 0) {
-    eye = [c[0], c[1], c[2] + extent * (1 + rng() * 3)]; // 見下ろし
+    eye = [c[0], c[1], c[2] + extent * (1 + rng() * 3)];
     up = [0, 1, 0];
   } else if (mode === 1) {
-    eye = [c[0] + extent * (rng() - 0.5) * 0.2, c[1] - extent * (0.01 + rng() * 0.3), c[2] + extent * rng() * 0.2]; // 寄り
+    eye = [c[0] + extent * (rng() - 0.5) * 0.2, c[1] - extent * (0.01 + rng() * 0.3), c[2] + extent * rng() * 0.2];
   } else if (mode === 2) {
-    eye = [c[0] + (rng() - 0.5) * extent * 0.8, c[1] + (rng() - 0.5) * extent * 0.8, c[2] + (rng() - 0.5) * extent * 0.8]; // ノードの内側
+    eye = [c[0] + (rng() - 0.5) * extent * 0.8, c[1] + (rng() - 0.5) * extent * 0.8, c[2] + (rng() - 0.5) * extent * 0.8];
     target = [eye[0] + rng() - 0.5, eye[1] + rng() - 0.5, eye[2] + rng() - 0.5];
   } else if (mode === 3) {
-    eye = [c[0], c[1] - extent * 2, c[2] + extent]; // 後ろ向き（対象と反対を向く）
+    eye = [c[0], c[1] - extent * 2, c[2] + extent];
     target = [eye[0], eye[1] - 10, eye[2]];
   } else {
     eye = [c[0] + (rng() - 0.5) * extent * 4, c[1] + (rng() - 0.5) * extent * 4, c[2] + rng() * extent * 2];
@@ -203,7 +193,6 @@ describe("selectNodesForFrame: 旧実装（全ノード走査）との等価性"
       const total = nodes.reduce((a, b) => a + b.pointCount, 0);
       const budget = rng() < 0.3 ? 1e12 : Math.floor(total * rng());
 
-      // 一部のノードだけキャッシュ済みにする。
       const cachedKeys = new Set(nodes.filter(() => rng() < 0.3).map((x) => x.key));
       const cache: NodeSelectionCache = {
         get: (key) => (cachedKeys.has(key) ? ({ key } as unknown as CachedNode) : undefined),
@@ -218,7 +207,6 @@ describe("selectNodesForFrame: 旧実装（全ノード走査）との等価性"
       if (expected.toDraw.length + expected.wanted.length > 0) nonEmpty++;
       if (expected.toDraw.length + expected.wanted.length < nodes.length) withBothDroppedAndKept++;
     }
-    // 「全部空」「全部残る」ばかりの比較になっていないことを確かめる。
     expect(compared).toBe(CASES);
     expect(nonEmpty).toBeGreaterThan(CASES * 0.5);
     expect(withBothDroppedAndKept).toBeGreaterThan(CASES * 0.25);

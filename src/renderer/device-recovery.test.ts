@@ -1,6 +1,3 @@
-// device-recovery.tsのテスト(M3-8追加、受け入れ条件「復帰の判断を純粋関数に
-// 切り出して単体テストを付ける」に対応)。
-
 import { describe, expect, it } from "vitest";
 import {
   decideDeviceRecovery,
@@ -32,7 +29,6 @@ describe("decideDeviceRecovery", () => {
 
   it("窓より古い試行は数えない(時間が経てば復帰を再び試みられる)", () => {
     const attempts: DeviceRecoveryAttempt[] = [{ atMs: 0 }, { atMs: 1000 }, { atMs: 2000 }];
-    // 窓(60秒)が過ぎた後の再度の消失。
     const decision = decideDeviceRecovery(attempts, 2000 + LIMITS.windowMs + 1, LIMITS);
     expect(decision.shouldRecover).toBe(true);
   });
@@ -55,8 +51,6 @@ describe("recordDeviceRecoveryAttempt", () => {
   it("windowMsより古い履歴を取り除く", () => {
     const attempts: DeviceRecoveryAttempt[] = [{ atMs: 0 }, { atMs: 1000 }];
     const result = recordDeviceRecoveryAttempt(attempts, LIMITS.windowMs + 500, LIMITS);
-    // atMs=0は(windowMs+500) - 0 >= windowMsなので除外される。
-    // atMs=1000は(windowMs+500) - 1000 < windowMsなので残る。
     expect(result).toEqual([{ atMs: 1000 }, { atMs: LIMITS.windowMs + 500 }]);
   });
 
@@ -65,7 +59,6 @@ describe("recordDeviceRecoveryAttempt", () => {
     attempts = recordDeviceRecoveryAttempt(attempts, 0, LIMITS);
     attempts = recordDeviceRecoveryAttempt(attempts, 1000, LIMITS);
     attempts = recordDeviceRecoveryAttempt(attempts, 2000, LIMITS);
-    // 3回記録した直後、4回目の消失(3000ms時点)は上限に達しているため諦める。
     expect(decideDeviceRecovery(attempts, 3000, LIMITS).shouldRecover).toBe(false);
   });
 });

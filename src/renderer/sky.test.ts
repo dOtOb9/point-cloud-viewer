@@ -1,8 +1,3 @@
-// sky.ts のテスト（M2-0c）。
-//
-// SkyBackground自体はGPUDeviceを要る（webgpu-probe.tsと同様、実機のWebGPUが無いと
-// テストできない）。ここではGPUに依存しない純粋関数だけを担保する。
-
 import { describe, expect, it } from "vitest";
 import { clearColorForMode, DEFAULT_BACKGROUND_MODE, SOLID_DARK_CLEAR, SOLID_LIGHT_CLEAR } from "./sky";
 

@@ -10,7 +10,7 @@ describe("labelShifts", () => {
     const [a, b, c] = labelShifts([{ x: 100, y: 100 }, { x: 110, y: 105 }, { x: 105, y: 102 }], [2, 2, 1]);
     expect(a).toBe(0);
     expect(b).toBeGreaterThan(0);
-    expect(c).toBeGreaterThan(b); // clears both
+    expect(c).toBeGreaterThan(b);
   });
   it("gives 0 to an off-screen label and does not let it block others", () => {
     expect(labelShifts([null, { x: 5, y: 5 }], [2, 2])).toEqual([0, 0]);

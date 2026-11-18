@@ -1,6 +1,3 @@
-// mat4.ts のテスト。M1-5でinvert()を追加した際に、既存の行列演算と組み合わせて
-// 正しく逆行列になっているか（m * invert(m) が単位行列に戻るか）を確認する。
-
 import { describe, expect, it } from "vitest";
 import { cameraBasis, identity, invert, lookAt, multiply, perspective, type Mat4 } from "./mat4";
 import { ndcPointToWorldRay } from "./raycast";
@@ -33,11 +30,10 @@ describe("invert", () => {
   });
 
   it("特異行列（行列式が0）はnullを返す", () => {
-    // prettier-ignore
     const singular: Mat4 = [
       1, 0, 0, 0,
       0, 1, 0, 0,
-      0, 0, 0, 0, // z列がすべて0 → 行列式0
+      0, 0, 0, 0,
       0, 0, 0, 1,
     ];
     expect(invert(singular)).toBeNull();
@@ -63,17 +59,7 @@ describe("cameraBasis", () => {
     expect(forward[2]).toBeCloseTo(-1, 9);
   });
 
-  // 2回目の実機不具合の回帰テスト（「空やグリッドを入れると画面が真っ黒になる」。
-  // TaskSheets/M2-shading-and-ui.md M2-0c参照）。1回目の修正で採用した「全画面
-  // 三角形の3頂点のレイ方向を線形補間する」方式は、NDCが画面中心から70度以上
-  // 離れる三角形の頂点(NDC=3など)では弦を取ることになって長さが縮み、
-  // 「NaNは出ない」が「値は真値から大きくずれる/条件によってはNaNになる」という
-  // 形で壊れていた。前回の診断スクリプトはNaNの有無しか見ておらずこれを
-  // 見逃した反省を踏まえ、ここでは**基底から画素ごとに直接組み立てる新方式が、
-  // f64の真値（invert(viewProj)から直接求めた方向）と数値的に一致することを
-  // assertする**（「NaNが出ない」ではなく「値が正しい」を担保する）。
   it("基底(forward/rightScaled/upScaled)から組み立てたレイ方向は、NDCが±1に近い隅や中心でも真値(invert(viewProj))と一致する", () => {
-    // autzenの実座標・実際のFOV(60°)・NEAR/FAR(0.01/1e7)・アスペクト16:9で検証。
     const target: [number, number, number] = [637290.8, 851209.9, 510.7];
     const eye: [number, number, number] = [637290.8, 855031.2, 1692.8];
     const upAxis: [number, number, number] = [0, 0, 1];
@@ -93,7 +79,6 @@ describe("cameraBasis", () => {
     ];
     const upScaled: [number, number, number] = [up[0] * tanHalfFovY, up[1] * tanHalfFovY, up[2] * tanHalfFovY];
 
-    // 中心・上下端・4隅（NDCが±1に近い、視野の端に一番近い場所）。
     const points: readonly [number, number][] = [
       [0, 0],
       [0, 1],
@@ -114,10 +99,6 @@ describe("cameraBasis", () => {
       const truth = ndcPointToWorldRay(viewProj, nx, ny);
       expect(truth).not.toBeNull();
 
-      // f64での基底方式の誤差は実測で~1e-8程度（丸め誤差そのもの）。
-      // 1e-6（toBeCloseTo(x, 6)は差が0.5e-6未満であることを要求）は十分な余裕を
-      // 持って厳しく、かつ壊れていた補間方式の誤差(最大0.16程度、3〜4桁大きい)
-      // とは明確に区別できる閾値。
       expect(reconstructed[0]).toBeCloseTo(truth!.direction[0], 6);
       expect(reconstructed[1]).toBeCloseTo(truth!.direction[1], 6);
       expect(reconstructed[2]).toBeCloseTo(truth!.direction[2], 6);

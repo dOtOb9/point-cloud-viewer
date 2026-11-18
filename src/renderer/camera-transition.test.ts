@@ -1,4 +1,3 @@
-// AN-2 視点移動（全体表示・ダブルクリックで寄る）の単体テスト。
 import { describe, expect, it } from "vitest";
 import { OrbitCamera } from "./orbit-camera";
 import { TRANSITION_DURATION_MS, easeInOut, shortestAngleDelta } from "./animation";
@@ -63,7 +62,6 @@ describe("OrbitCamera.animateTo", () => {
     const b = new OrbitCamera([0, 0, 0], 100);
     a.animateTo({ target: [10, 20, 30], distance: 25, yaw: 1 });
     b.animateTo({ target: [10, 20, 30], distance: 25, yaw: 1 });
-    // 250msは30fps(7.5)では割り切れないので、中間は250ms=15フレーム/60fps と 250ms=36フレーム/144fps で比べる
     run(a, 250, 60);
     run(b, 250, 144);
     expect(a.target[0]).toBeCloseTo(b.target[0], 9);
@@ -129,11 +127,9 @@ describe("ダブルクリックで寄る行き先", () => {
   });
 
   it("実データの範囲(clip)で箱を切り、空中の面ではなくデータの上端に寄る", () => {
-    // 箱はx=10..110だが、実データはx=30..60だけ。切らなければ10に当たる
     const nodes = [box([10, -50, -50], [110, 50, 50])];
     expect(pickFlyToPoint(ray, nodes)).toEqual([10, 0, 0]);
     expect(pickFlyToPoint(ray, nodes, box([30, -50, -50], [60, 50, 50]))).toEqual([30, 0, 0]);
-    // 実データの範囲とまったく重ならない箱は無視する
     expect(pickFlyToPoint(ray, nodes, box([200, 0, 0], [300, 1, 1]))).toBeNull();
   });
 

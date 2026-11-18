@@ -6,7 +6,6 @@ import type { Vec3 } from "./up-axis";
 const Z_UP: Vec3 = [0, 0, 1];
 const Y_UP: Vec3 = [0, 1, 0];
 
-/** Where the eye ends up relative to the target for a preset, using the real OrbitCamera. */
 function eyeOffset(id: ViewPresetId, up: Vec3): [number, number, number] {
   const cam = new OrbitCamera([0, 0, 0], 100);
   cam.setUpAxis(up);
@@ -39,9 +38,7 @@ describe("viewPresetAngles (Z-up)", () => {
     expect(viewPresetAngles("top", Z_UP).pitch).toBe(MAX_PITCH);
   });
   it("top: north is the top of the screen (the view's up vector projects to +Y)", () => {
-    // Looking down, screen-up is the horizontal direction pointing away from the eye's horizontal offset.
     const o = eyeOffset("top", Z_UP);
-    // The tiny horizontal offset of the eye is on the south side, so "away from it" is north.
     expect(o[1]).toBeLessThan(0);
   });
   it("isometric: yaw 45 degrees from the front (south-east), pitch about 35 degrees", () => {
@@ -52,7 +49,7 @@ describe("viewPresetAngles (Z-up)", () => {
     const o = eyeOffset("isometric", Z_UP);
     expect(o[0]).toBeGreaterThan(0);
     expect(o[1]).toBeLessThan(0);
-    expect(o[0]).toBeCloseTo(-o[1], 6); // 45 degrees
+    expect(o[0]).toBeCloseTo(-o[1], 6);
     expect(o[2]).toBeCloseTo(Math.sin(ISOMETRIC_PITCH), 6);
   });
 });
@@ -69,8 +66,8 @@ describe("viewPresetAngles (Y-up data)", () => {
     expect(eyeOffset("top", Y_UP)[1]).toBeGreaterThan(0.9999);
     const o = eyeOffset("isometric", Y_UP);
     expect(o[1]).toBeCloseTo(Math.sin(ISOMETRIC_PITCH), 6);
-    expect(o[0]).toBeGreaterThan(0); // east
-    expect(o[2]).toBeGreaterThan(0); // south
+    expect(o[0]).toBeGreaterThan(0);
+    expect(o[2]).toBeGreaterThan(0);
   });
 });
 

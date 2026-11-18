@@ -1,12 +1,3 @@
-// up-axis.ts のテスト（M2-0b 段階1）。
-//
-// ここで担保したいこと:
-// - up=[0,1,0]（従来のY-up）のとき、horizontalBasisがorbit-camera.tsの旧来の式
-//   （[cosP*sin(yaw), sinP, cosP*cos(yaw)]）と代数的に一致する基底を返すこと
-//   （リファクタで見た目が変わっていないことの直接証拠）
-// - up=[0,0,1]（M2-0b 段階3で既定にするZ-up）でも、right/forwardが単位直交系になり、
-//   upとも直交すること（軸を変えても数式が壊れないこと）
-
 import { describe, expect, it } from "vitest";
 import { horizontalBasis } from "./up-axis";
 

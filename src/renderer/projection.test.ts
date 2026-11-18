@@ -1,6 +1,3 @@
-// TP-1: projection.ts, the orthographic matrix, and the consumers that must keep working with it
-// (picking math, EDL values, node selection, frustum culling, rays, screen projection).
-
 import { describe, expect, it } from "vitest";
 import {
   buildProjection,
@@ -26,7 +23,6 @@ const W = 1600;
 const H = 900;
 const ASPECT = W / H;
 
-/** A camera looking down at the target from above-south; Z is up. */
 function viewFor(target: [number, number, number], distance: number): number[] {
   const eye: [number, number, number] = [target[0], target[1] - distance * 0.6, target[2] + distance * 0.8];
   return lookAt(eye, target, [0, 0, 1]);
@@ -51,14 +47,12 @@ describe("orthographicMatrix / buildProjection", () => {
     const distance = 250;
     const persp = buildProjection("perspective", ASPECT, distance, 100);
     const ortho = buildProjection("orthographic", ASPECT, distance, 100);
-    // A point on the target plane, one half-height above the view center.
     const half = orthoHalfHeight(distance);
     const pointOnTargetPlane: [number, number, number] = [0, half, -distance];
     const cp = transformPoint(persp.matrix, pointOnTargetPlane);
     const co = transformPoint(ortho.matrix, pointOnTargetPlane);
     expect(cp[1] / cp[3]).toBeCloseTo(1, 9);
     expect(co[1] / co[3]).toBeCloseTo(1, 9);
-    // Horizontal too (same aspect handling).
     const cpx = transformPoint(persp.matrix, [half * ASPECT, 0, -distance]);
     const cox = transformPoint(ortho.matrix, [half * ASPECT, 0, -distance]);
     expect(cpx[0] / cpx[3]).toBeCloseTo(1, 9);
@@ -68,7 +62,7 @@ describe("orthographicMatrix / buildProjection", () => {
 
   it("the depth range is symmetric around the target and grows with the scene", () => {
     const r = orthoDepthRange(100, 500);
-    expect(r.near + r.far).toBeCloseTo(200, 9); // centered on distance 100
+    expect(r.near + r.far).toBeCloseTo(200, 9);
     expect(r.far - r.near).toBeCloseTo(4 * 500, 9);
     expect(orthoDepthRange(1000, 10).far - orthoDepthRange(1000, 10).near).toBeCloseTo(4000, 9);
   });
@@ -126,7 +120,7 @@ describe("refinedProjection (picking stage 2)", () => {
     const point: [number, number, number] = [-40000 + 12.3, -10000 + 4.5, 41.7];
     const cWorld = transformPoint(multiply(p.matrix, view), point);
     const zEye = -transformPoint(view, point)[2];
-    const r = refinedProjection(p, ASPECT, zEye + 3); // a rough distance a little off
+    const r = refinedProjection(p, ASPECT, zEye + 3);
     const vp = multiply(r.matrix, view);
     const c = transformPoint(vp, point);
     const ndcX = c[0] / c[3];
@@ -135,11 +129,9 @@ describe("refinedProjection (picking stage 2)", () => {
     const py = Math.floor(((1 - ndcY) / 2) * H);
     const size = 5;
     const win = windowViewProj(vp, px, py, size, W, H);
-    // The pixel containing the point is the window center (index 2,2). Its depth is the point's depth.
     const depth = c[2] / c[3];
     const back = unprojectWindowSample(win, 2, 2, size, depth);
     expect(back).not.toBeNull();
-    // Unprojection returns the point on the pixel center's ray at that depth: within one pixel of the point.
     const pixelWorld = (2 * p.halfHeight) / H;
     expect(Math.hypot(back![0] - point[0], back![1] - point[1], back![2] - point[2])).toBeLessThan(pixelWorld * 1.5);
     expect(cWorld[3]).toBeCloseTo(1, 12);
@@ -149,7 +141,6 @@ describe("refinedProjection (picking stage 2)", () => {
 describe("fitDistance", () => {
   it("wide screen with the 60 degree FOV: perspective gives the diagonal, orthographic 0.866 * diagonal", () => {
     expect(fitDistance("perspective", 100, ASPECT)).toBeCloseTo(100, 6);
-    // ortho: radius / tan(30 deg) = 50 / 0.577 = 86.6; the visible half height at that distance is 50
     const d = fitDistance("orthographic", 100, ASPECT);
     expect(orthoHalfHeight(d)).toBeCloseTo(50, 9);
   });
@@ -166,7 +157,6 @@ describe("fitDistance", () => {
       const proj = buildProjection(mode, ASPECT, distance, diagonal);
       const view = viewFor([0, 0, 0], distance);
       const vp = multiply(proj.matrix, view);
-      // Points on the sphere of radius diagonal / 2 around the target.
       for (const [x, y, z] of [[40, 0, 0], [-40, 0, 0], [0, 0, 40], [0, 0, -40], [0, 40, 0], [0, -40, 0]]) {
         const c = transformPoint(vp, [x, y, z]);
         expect(Math.abs(c[0] / c[3])).toBeLessThanOrEqual(1.0001);
@@ -187,13 +177,11 @@ describe("orthographic with the consumers that read the view-projection matrix",
     const center = screenPointToWorldRay(vp, W / 2, H / 2, W, H)!;
     const corner = screenPointToWorldRay(vp, 10, 10, W, H)!;
     for (let i = 0; i < 3; i++) expect(corner.direction[i]).toBeCloseTo(center.direction[i], 9);
-    // The center ray passes through the target.
     const t = (target[0] - center.origin[0]) * center.direction[0] +
       (target[1] - center.origin[1]) * center.direction[1] +
       (target[2] - center.origin[2]) * center.direction[2];
     const closest = [0, 1, 2].map((i) => center.origin[i] + center.direction[i] * t);
     expect(Math.hypot(closest[0] - target[0], closest[1] - target[1], closest[2] - target[2])).toBeLessThan(1e-3);
-    // The origin is on the near plane, which is behind the target by the depth range (R), so outside nearby boxes.
     const back = Math.hypot(center.origin[0] - target[0], center.origin[1] - target[1], center.origin[2] - target[2]);
     expect(back).toBeGreaterThan(1000);
   });
@@ -209,7 +197,7 @@ describe("orthographic with the consumers that read the view-projection matrix",
       [target[0] + 5, target[1] + 5 + offset, target[2] + 5],
     ];
     const nearBox = box(0);
-    const farViewDir = [0, 0.6, -0.8]; // away from the eye, along the view direction
+    const farViewDir = [0, 0.6, -0.8];
     const shifted: [number[], number[]] = [
       nearBox[0].map((v, i) => v + farViewDir[i] * 200),
       nearBox[1].map((v, i) => v + farViewDir[i] * 200),
@@ -221,12 +209,10 @@ describe("orthographic with the consumers that read the view-projection matrix",
   });
 
   it("the pixel size matches the half height: a 10 m wide box on the target plane is 10 * H / (2 * halfHeight) px wide", () => {
-    // A box wide in the screen-horizontal direction only would need the basis; use the pixels-per-world-unit instead.
     const min: [number, number, number] = [target[0] - 5, target[1] - 5, target[2] - 5];
     const max: [number, number, number] = [target[0] + 5, target[1] + 5, target[2] + 5];
     const px = projectedBoundsDiagonalPixels(vp, min, max, W, H);
     const pxPerUnit = H / (2 * proj.halfHeight);
-    // The screen diagonal of a box is between 10*sqrt(2) and 10*sqrt(3) world units times the scale.
     expect(px).toBeGreaterThan(10 * pxPerUnit);
     expect(px).toBeLessThan(10 * Math.sqrt(3) * pxPerUnit * 1.01);
   });
@@ -242,7 +228,7 @@ describe("orthographic with the consumers that read the view-projection matrix",
     const min: [number, number, number] = [target[0] - 20, target[1] - 20, target[2] - 20];
     const max: [number, number, number] = [target[0] + 20, target[1] + 20, target[2] + 20];
     const coarse = screenSpaceError(vp, min, max, 1000, W, H);
-    const fine = screenSpaceError(vp, min, max, 8000, W, H); // 8x points = half the spacing
+    const fine = screenSpaceError(vp, min, max, 8000, W, H);
     expect(fine).toBeCloseTo(coarse / 2, 6);
   });
 
@@ -251,9 +237,8 @@ describe("orthographic with the consumers that read the view-projection matrix",
     expect(aabbIntersectsFrustum(planes, [target[0] - 1, target[1] - 1, target[2] - 1], [target[0] + 1, target[1] + 1, target[2] + 1])).toBe(true);
     const side = 5 * proj.halfHeight * ASPECT;
     expect(aabbIntersectsFrustum(planes, [target[0] + side, target[1], target[2]], [target[0] + side + 1, target[1] + 1, target[2] + 1])).toBe(false);
-    // Behind the eye plane (view-space z > 0) but inside the orthographic depth range: still visible.
     const eye = [target[0], target[1] - distance * 0.6, target[2] + distance * 0.8];
-    const behind = [eye[0], eye[1] - 0.6 * 50, eye[2] + 0.8 * 50]; // 50 behind the eye along -forward
+    const behind = [eye[0], eye[1] - 0.6 * 50, eye[2] + 0.8 * 50];
     expect(aabbIntersectsFrustum(planes, [behind[0] - 1, behind[1] - 1, behind[2] - 1], [behind[0] + 1, behind[1] + 1, behind[2] + 1])).toBe(true);
   });
 
@@ -269,14 +254,12 @@ describe("orthographic with the consumers that read the view-projection matrix",
 });
 
 describe("orthographic zoom toward the cursor (OrbitCamera.zoom with orthoCursorZoomDirection)", () => {
-  /** Screen position (NDC) of a world point for the camera as it is now. */
   function ndcOf(cam: OrbitCamera, point: [number, number, number], sceneDiagonal: number) {
     const proj = buildProjection("orthographic", ASPECT, cam.distance, sceneDiagonal);
     const c = transformPoint(multiply(proj.matrix, cam.viewMatrix()), point);
     return [c[0] / c[3], c[1] / c[3]];
   }
 
-  /** The world point on the target plane under a cursor at (ndcX, ndcY). */
   function pointUnderCursor(cam: OrbitCamera, ndcX: number, ndcY: number): [number, number, number] {
     const { right, up } = cameraBasis(cam.eye(), cam.target, cam.getUpAxis());
     const half = orthoHalfHeight(cam.distance);
@@ -317,7 +300,6 @@ describe("orthographic zoom toward the cursor (OrbitCamera.zoom with orthoCursor
     const diag = 1000;
     const center: [number, number, number] = [0, 0, 0];
     const cam = new OrbitCamera([0, 0, 0], diag);
-    // Zoom out 20x about a cursor, turn 180 degrees, zoom in to 0.05 x the diagonal about the same cursor.
     const zoomAbout = (factor: number) => {
       const { right, up } = cameraBasis(cam.eye(), cam.target, cam.getUpAxis());
       cam.zoom(factor, orthoCursorZoomDirection(right, up, 0.7, 0.2, ASPECT, orthoHalfHeight(cam.distance), cam.distance));
@@ -328,7 +310,6 @@ describe("orthographic zoom toward the cursor (OrbitCamera.zoom with orthoCursor
     const target = cam.target;
     const offset = Math.hypot(target[0] - center[0], target[1] - center[1], target[2] - center[2]);
     const proj = buildProjection("orthographic", ASPECT, cam.distance, diag, offset);
-    // Every corner of the scene box has an eye distance inside [near, far].
     const view = cam.viewMatrix();
     for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
       const corner: [number, number, number] = [sx * diag / 2, sy * diag / 2, sz * diag / 2];

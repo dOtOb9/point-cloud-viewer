@@ -1,9 +1,3 @@
-// ground-grid.ts のテスト（M2-0c 補強B）。
-//
-// GroundGrid本体はGPUDevice依存のためテスト対象外（sky.tsと同じ扱い）。ここでは
-// 「グリッド間隔は固定値にせず、シーンのスケールから自動で決める」という
-// タスクシートの要求を担保する純粋関数(niceGridCellSize)だけを担保する。
-
 import { describe, expect, it } from "vitest";
 import { DEFAULT_GRID_ENABLED, floorMod, gridFadeDistance, niceGridCellSize } from "./ground-grid";
 
@@ -56,18 +50,13 @@ describe("gridFadeDistance", () => {
 });
 
 describe("floorMod", () => {
-  // 実機不具合の修正（グリッドが効かない）で導入した関数: グリッドの位相合わせに
-  // カメラ位置の絶対座標(f32にすると精度を失う/危険)ではなく、セルサイズで割った
-  // 余り（小さい値）を使うため。point-cloud-renderer.tsのdrawFrame()参照。
-
   it("正の値ではJSの%と同じ結果になる", () => {
     expect(floorMod(7, 3)).toBeCloseTo(1, 9);
     expect(floorMod(637290.8, 100)).toBeCloseTo(90.8, 6);
   });
 
   it("負の値でも常に[0, m)の範囲を返す（JSの%は負を返すことがあるので、それとは違う）", () => {
-    // JSの `-1 % 100` は `-1`（範囲外）。floorModは常に非負を返す必要がある。
-    expect(-1 % 100).toBe(-1); // 前提の確認: JSの%はそのままでは使えない
+    expect(-1 % 100).toBe(-1);
     expect(floorMod(-1, 100)).toBeCloseTo(99, 9);
     expect(floorMod(-851209.9, 100)).toBeCloseTo(90.1, 6);
   });

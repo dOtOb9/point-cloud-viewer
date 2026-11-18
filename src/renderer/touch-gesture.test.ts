@@ -1,7 +1,3 @@
-// touch-gesture.ts のテスト（M3-6）。
-// 「2本の指の座標列 → ズーム倍率・パン量」という純粋関数の入出力を直接検証する。
-// DOMやOrbitCameraには一切触れない。
-
 import { describe, expect, it } from "vitest";
 import { computeTwoPointerGesture, type TouchPoint } from "./touch-gesture";
 
@@ -18,7 +14,6 @@ describe("computeTwoPointerGesture", () => {
 
     const result = computeTwoPointerGesture(prev, curr);
 
-    // prevDist=100, currDist=200 → zoomFactor = 100/200 = 0.5
     expect(result.zoomFactor).toBeCloseTo(0.5, 9);
   });
 
@@ -34,7 +29,6 @@ describe("computeTwoPointerGesture", () => {
 
     const result = computeTwoPointerGesture(prev, curr);
 
-    // prevDist=100, currDist=50 → zoomFactor = 100/50 = 2
     expect(result.zoomFactor).toBeCloseTo(2, 9);
   });
 
@@ -88,7 +82,6 @@ describe("computeTwoPointerGesture", () => {
   });
 
   it("ピンチとパンが同時に起きても、両方が独立に計算される（現実の2本指操作を想定）", () => {
-    // 中点を(50,0)動かしつつ、同時に指の間隔を2倍に広げる。
     const prev: [TouchPoint, TouchPoint] = [
       { x: 0, y: 0 },
       { x: 100, y: 0 },
@@ -97,8 +90,6 @@ describe("computeTwoPointerGesture", () => {
       { x: 0, y: 0 },
       { x: 300, y: 0 },
     ];
-    // prevMid=(50,0), currMid=(150,0) → panDeltaX=100
-    // prevDist=100, currDist=300 → zoomFactor=100/300
 
     const result = computeTwoPointerGesture(prev, curr);
 

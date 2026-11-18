@@ -1,8 +1,3 @@
-// colormap.ts のテスト（M2-2）。
-//
-// GPUに依存しない純粋関数だけを担保する（edl.test.tsと同じ方針）。WGSL側への
-// 結線・実際の描画結果はGUIを持たないこの環境では検証できない。
-
 import { describe, expect, it } from "vitest";
 import {
   ELEVATION_INTENSITY_RAMP,
@@ -51,11 +46,9 @@ describe("extendRange", () => {
     range = extendRange(range, 20);
     expect(range).toEqual({ min: 10, max: 20 });
 
-    // 内側の値を渡してもレンジは変わらない。
     range = extendRange(range, 15);
     expect(range).toEqual({ min: 10, max: 20 });
 
-    // 下にも上にも広がる。
     range = extendRange(range, 5);
     range = extendRange(range, 25);
     expect(range).toEqual({ min: 5, max: 25 });
@@ -91,9 +84,7 @@ describe("sampleRamp", () => {
       { t: 0.5, color: [1, 0, 0] as RGB },
       { t: 1, color: [1, 1, 0] as RGB },
     ];
-    // t=0.25は最初の区間(0→0.5)の中点。
     expect(sampleRamp(threeStops, 0.25)).toEqual([0.5, 0, 0]);
-    // t=0.75は2番目の区間(0.5→1)の中点。
     expect(sampleRamp(threeStops, 0.75)).toEqual([1, 0.5, 0]);
   });
 
@@ -103,16 +94,13 @@ describe("sampleRamp", () => {
 });
 
 describe("ELEVATION_INTENSITY_RAMP: CloudCompare風の青→緑→黄→赤", () => {
-  // 所有者の要望「CloudCompareのように、青→緑→赤で標高とIntensityは表示しよう」。
-  // 緑→赤を直接つなぐと濁ったオリーブ色になるため(colormap.tsファイル冒頭の
-  // コメント参照)、CloudCompareと同じく黄色を挟んだ4点になっている。
   it("両端は青と赤、途中に緑と黄が来る", () => {
-    expect(ELEVATION_INTENSITY_RAMP[0].color).toEqual([0, 0, 1]); // 青
-    expect(ELEVATION_INTENSITY_RAMP[ELEVATION_INTENSITY_RAMP.length - 1].color).toEqual([1, 0, 0]); // 赤
+    expect(ELEVATION_INTENSITY_RAMP[0].color).toEqual([0, 0, 1]);
+    expect(ELEVATION_INTENSITY_RAMP[ELEVATION_INTENSITY_RAMP.length - 1].color).toEqual([1, 0, 0]);
 
     const middleColors = ELEVATION_INTENSITY_RAMP.slice(1, -1).map((stop) => stop.color);
-    expect(middleColors).toContainEqual([0, 1, 0]); // 緑
-    expect(middleColors).toContainEqual([1, 1, 0]); // 黄
+    expect(middleColors).toContainEqual([0, 1, 0]);
+    expect(middleColors).toContainEqual([1, 1, 0]);
   });
 
   it("制御点のtは0から1まで昇順である(sampleRampの前提)", () => {
@@ -167,11 +155,10 @@ describe("rampToWgslFunction", () => {
   it("ELEVATION_INTENSITY_RAMP(4制御点)の4色すべてを、生成したWGSLの中に見つけられる" +
     "(TS側の値がそのままWGSLへ埋め込まれていることの確認)", () => {
     const src = rampToWgslFunction("elevationOrIntensityRampColor", ELEVATION_INTENSITY_RAMP);
-    expect(src).toContain("vec3<f32>(0.0, 0.0, 1.0)"); // 青
-    expect(src).toContain("vec3<f32>(0.0, 1.0, 0.0)"); // 緑
-    expect(src).toContain("vec3<f32>(1.0, 1.0, 0.0)"); // 黄
-    expect(src).toContain("vec3<f32>(1.0, 0.0, 0.0)"); // 赤
-    // 4制御点なら区間は3つ、つまりif文は3つになるはず(sampleRampのロジックと対応)。
+    expect(src).toContain("vec3<f32>(0.0, 0.0, 1.0)");
+    expect(src).toContain("vec3<f32>(0.0, 1.0, 0.0)");
+    expect(src).toContain("vec3<f32>(1.0, 1.0, 0.0)");
+    expect(src).toContain("vec3<f32>(1.0, 0.0, 0.0)");
     expect((src.match(/if \(/g) ?? []).length).toBe(3);
   });
 
@@ -215,8 +202,6 @@ describe("resolveColorMode", () => {
   });
 });
 
-// G1-R1: the Rust raster ramp (crates/pcv-core/src/raster/color.rs) is a copy of ELEVATION_INTENSITY_RAMP.
-// The same table is in `ramp_matches_colormap_ts` there; if the stops change here, both tests must be updated together.
 describe("the Rust raster ramp", () => {
   const RUST_RAMP_SAMPLES: [number, [number, number, number]][] = [
     [0.0, [0, 0, 255]],

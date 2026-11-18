@@ -1,9 +1,7 @@
-// AN-2 カメラの動き（慣性・なめらかなズーム・視点移動）の単体テスト。
 import { describe, expect, it } from "vitest";
 import { OrbitCamera } from "./orbit-camera";
 import { INERTIA_TAU_MS, VelocityTracker } from "./animation";
 
-/** 合計totalMsを、1フレームfps分の1秒ずつ進める。 */
 function run(camera: OrbitCamera, totalMs: number, fps: number): void {
   const dt = 1000 / fps;
   const frames = Math.round(totalMs / dt);
@@ -21,7 +19,7 @@ describe("AN-2 慣性", () => {
       run(cam, 100, 60);
       const step = cam.yaw - before;
       expect(step).toBeGreaterThan(0);
-      expect(step).toBeLessThan(prevStep); // 毎回、進みが小さくなる
+      expect(step).toBeLessThan(prevStep);
       prevStep = step;
     }
     run(cam, 10_000, 60);
@@ -56,7 +54,6 @@ describe("AN-2 慣性", () => {
     const b = new OrbitCamera([0, 0, 0], 100);
     a.startRotateInertia(2, 0.3);
     b.startRotateInertia(2, 0.3);
-    // 500msは30fps(15フレーム)でも144fps(72フレーム)でもちょうど割り切れる
     run(a, 500, 30);
     run(b, 500, 144);
     const expectYaw = 2 * (INERTIA_TAU_MS / 1000) * (1 - Math.exp(-500 / INERTIA_TAU_MS));
@@ -84,9 +81,9 @@ describe("AN-2 なめらかなズーム", () => {
     cam.zoomSmooth(1.1);
     cam.zoomSmooth(1 / 1.1);
     expect(cam.isAnimating()).toBe(true);
-    expect(cam.distance).toBe(100); // まだ動いていない
+    expect(cam.distance).toBe(100);
     run(cam, 100, 60);
-    expect(cam.distance).toBeGreaterThan(100); // 途中
+    expect(cam.distance).toBeGreaterThan(100);
     expect(cam.distance).toBeLessThan(110);
     run(cam, 3000, 60);
     expect(cam.distance).toBeCloseTo(110, 6);

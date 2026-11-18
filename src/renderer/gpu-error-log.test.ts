@@ -1,8 +1,3 @@
-// gpu-error-log.ts のテスト。
-//
-// GpuErrorLogはWebGPUに一切依存しない純粋なクラスなので、GPUDeviceのモックは
-// 要らない。蓄積・重複抑制のロジックだけを直接検証する。
-
 import { describe, expect, it } from "vitest";
 import { GpuErrorLog } from "./gpu-error-log";
 
@@ -88,8 +83,6 @@ describe("GpuErrorLog", () => {
     expect(entry.firstAt).toBeLessThanOrEqual(after);
   });
 
-  // M3(ADR-0013): pcv://のノード読み出し失敗も同じログに乗せる。sourceを
-  // 指定しなければ既存の呼び出し元（GPUエラー）と同じ"gpu"になる。
   it("sourceを省略すると既定で\"gpu\"になる", () => {
     const log = new GpuErrorLog();
     log.report("boom", 100);

@@ -1,20 +1,9 @@
-// render-scale.tsのテスト（M3-8、受け入れ条件「レンダースケールのキャンバス
-// サイズ計算に単体テストがある(端数の丸め、最小1pxなど)」に対応）。
-//
-// 2026-09-24追記: devicePixelRatioを計算から外す修正（コーディネーターの
-// 指摘。render-scale.tsファイル冒頭のコメント参照）に伴い、
-// 「倍率1.0ならCSSサイズと完全に一致する(変更前と同じ)」ことを確認する
-// テストを必須項目として追加した。
-
 import { describe, expect, it } from "vitest";
 import { computeCanvasBackingSize } from "./render-scale";
 
 describe("computeCanvasBackingSize", () => {
   it("renderScale=1.0(デスクトップの既定)では、devicePixelRatioに関わらずCSSサイズと完全に一致する(変更前と同じ挙動)", () => {
     expect(computeCanvasBackingSize(1920, 1080, 1.0)).toEqual({ width: 1920, height: 1080 });
-    // 高DPR環境(例: 表示スケール150%、devicePixelRatio=1.5)でも、
-    // renderScale=1.0であればCSSサイズのまま変わらないことを確認する
-    // (以前の実装ではdevicePixelRatioを掛けており、ここが変わってしまっていた)。
     expect(computeCanvasBackingSize(800, 600, 1.0)).toEqual({ width: 800, height: 600 });
   });
 
@@ -24,9 +13,7 @@ describe("computeCanvasBackingSize", () => {
   });
 
   it("端数は四捨五入する(切り捨て・切り上げのどちらにも一貫して偏らない)", () => {
-    // 111 * 0.335 = 37.185 → 37
     expect(computeCanvasBackingSize(111, 111, 0.335).width).toBe(37);
-    // 111 * 0.339 = 37.629 → 38
     expect(computeCanvasBackingSize(111, 111, 0.339).width).toBe(38);
   });
 

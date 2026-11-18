@@ -9,7 +9,6 @@ describe("formatNodeLoadErrorMessage", () => {
   });
 
   it("Rustのpanicメッセージのような長い本文でも一切変更しない", () => {
-    // 実際にsrc-tauri/src/copc_state.rsのReadNodeError::Panickedが返す形に近い文字列。
     const raw = "ノード0-1-2-3の読み出し中にpanicが発生した: index out of bounds: the len is 4 but the index is 10";
     const error = new Error(raw);
     const message = formatNodeLoadErrorMessage("0-1-2-3", error);

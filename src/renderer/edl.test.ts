@@ -1,11 +1,3 @@
-// edl.ts のテスト（M2-1）。
-//
-// EdlPass本体はGPUDeviceを要る（sky.ts/ground-grid.tsと同様、実機のWebGPUが無いと
-// テストできない）。ここではGPUに依存しない純粋関数(linearizeDepth/edlShadingFactor)
-// だけを担保する。WGSL側（EDL_SHADER_SRC内の同名ロジック）はこれらのTypeScript版と
-// 同じ式を手で再実装したものであり、GPUが無い環境では直接検証できない
-// （edl.tsファイル冒頭のコメント参照）。
-
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_EDL_ENABLED,
@@ -17,12 +9,8 @@ import {
   linearizeDepth,
 } from "./edl";
 
-// 深度差はlog2で見る（距離の比。edl.tsの「log2にした理由」参照）ので、テストの深度差も
-// 「比」で作る。EDL_RESPONSE_SCALE・既定strengthが変わっても意図が崩れないよう、
-// 指数部がおよそ0.5〜5になる比を定数から逆算する（strength=1で試す）。
 const SMALL_RATIO = Math.pow(2, 0.5 / EDL_RESPONSE_SCALE);
 const LARGE_RATIO = Math.pow(2, 5 / EDL_RESPONSE_SCALE);
-// 同じ比を、近いカメラ(10m)と遠いカメラ(1000m)の両方で作る。
 const NEAR_DISTANCE = 10;
 const FAR_DISTANCE = 1000;
 
@@ -136,8 +124,6 @@ describe("edlShadingFactor", () => {
   });
 });
 
-// TP-1: orthographic projection. Depth is linear and the eye distance can be zero or negative (near < 0), so EDL
-// compares depth steps against the orbit distance instead of taking log2 of the eye distance.
 import { orthographicMatrix, transformPoint } from "./mat4";
 import { edlLogDepth, edlLogDepthOrtho, edlShadingFactorFromLogs, linearizeDepthOrtho } from "./edl";
 
@@ -165,7 +151,6 @@ describe("edlShadingFactorFromLogs / the two projections", () => {
 
   it("orthographic: the response depends on the step relative to the orbit distance, not on the eye plane", () => {
     const ref = 100;
-    // The same 2 m step seen with two different eye-plane positions gives the same shade.
     const a = edlShadingFactorFromLogs(edlLogDepthOrtho(-50 + 2, ref), [edlLogDepthOrtho(-50, ref)], 0.15);
     const b = edlShadingFactorFromLogs(edlLogDepthOrtho(900 + 2, ref), [edlLogDepthOrtho(900, ref)], 0.15);
     expect(a).toBeCloseTo(b, 9);
@@ -182,7 +167,6 @@ describe("edlShadingFactorFromLogs / the two projections", () => {
   });
 
   it("orthographic: matches the perspective value near the target plane (first order, the same zoom)", () => {
-    // Perspective at distance 100: a 1 m step -> log2(101/100). Orthographic with reference 100: 1 / (100 ln 2).
     const persp = edlLogDepth(101) - edlLogDepth(100);
     const ortho = edlLogDepthOrtho(101, 100) - edlLogDepthOrtho(100, 100);
     expect(ortho).toBeCloseTo(persp, 3);

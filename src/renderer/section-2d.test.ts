@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { SectionPoints } from "../datasource/section-profile";
 import { classificationPalette, drawGroundLine, fillSectionPixels, formatTick, GROUND_LINE_WIDTH_PX, niceStep, niceTicks, SMALL_DOT_MAX_POINTS } from "./section-2d";
 
-/** Points laid out like the Rust buffer: three 32-bit words per point (s, z as floats, packed r|g<<8|b<<16|class<<24). */
 function makePoints(list: { s: number; z: number; r?: number; g?: number; b?: number; cls?: number }[], hasColor: boolean): SectionPoints {
   const buffer = new ArrayBuffer(list.length * 12);
   const floats = new Float32Array(buffer);
@@ -32,7 +31,6 @@ describe("fillSectionPixels", () => {
     const points = makePoints([{ s: 3, z: 4, r: 200, g: 100, b: 50 }], true);
     const drawn = fillSectionPixels(pixels, 10, 10, points, IDENTITY, classificationPalette());
     expect(drawn).toBe(1);
-    // x = 3, y = 10 - 4 = 6
     for (const [x, y] of [[3, 6], [4, 6], [3, 7], [4, 7]]) expect(pixels[y * 10 + x]).toBe(rgba(200, 100, 50));
     expect(pixels.filter((v) => v !== 0)).toHaveLength(4);
   });
@@ -51,7 +49,7 @@ describe("fillSectionPixels", () => {
       [
         { s: -1, z: 5, r: 255 },
         { s: 5, z: -1, r: 255 },
-        { s: 9, z: 5, r: 255 }, // x = 9: the right pixel of a 2x2 dot would be outside
+        { s: 9, z: 5, r: 255 },
         { s: Number.NaN, z: 5, r: 255 },
       ],
       true,
@@ -72,7 +70,6 @@ describe("fillSectionPixels", () => {
     const buffer = new ArrayBuffer(count * 12);
     const floats = new Float32Array(buffer);
     const words = new Uint32Array(buffer);
-    // A pseudo-random scatter over a 1200 x 800 panel (a fixed generator, so every run draws the same thing).
     let seed = 12345;
     const next = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
     for (let i = 0; i < count; i++) {
@@ -118,9 +115,7 @@ describe("axes", () => {
   });
 });
 
-// --- G2: section line ---
 describe("drawGroundLine", () => {
-  /** A canvas context that only records what the line drawing asks for. */
   function recorder() {
     const calls: string[] = [];
     const raw = {
