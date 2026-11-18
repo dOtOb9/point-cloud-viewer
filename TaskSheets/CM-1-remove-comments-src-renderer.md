@@ -55,7 +55,7 @@
 | `animation.ts` の時間・減速の定数 | どれも未検証の初期値。減衰は `exp(-dt/tau)` で書き、フレームレートに依存しない | 既存のテスト `animation.test.ts`（30fps と 144fps の比較）、`TaskSheets/AN-animation.md` |
 | `colormap.ts:ELEVATION_INTENSITY_RAMP` | 緑と赤を直接補間すると中間が濁ったオリーブ色になるので黄を挟む（CloudCompare と同じ 4 点）。明度は単調でないが所有者の指定 | 名前: `YELLOW_BETWEEN_GREEN_AND_RED`（R2 で `YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY` から改名。黄を挟む理由はこの行）。経緯は `TaskSheets/M2-shading-and-ui.md` M2-2 |
 | `colormap.ts:ASPRS_CLASSIFICATION_COLORS` | 各コードの意味（地表・植生・建物・ノイズなど）。似た意味のコードは近い色相（植生 3〜5 は緑で明度だけ変える、ワイヤー関連 13・14・16 は黄土色）。7（Low Point noise）と 18（High Noise）は異常値として目立つマゼンタと赤。12（旧 Overlap Points）は 8 の灰色 0.5 と区別できるよう明度を 0.58 にずらした。表に無いコードはどの色とも被らないシアン（`UNKNOWN_CLASSIFICATION_COLOR`） | 名前: `ASPRS_CLASS` と、ここ |
-| `gpu-resources.ts:ignoreBecauseDeviceLostNeverRejects` | `device.lost` は `Promise<GPUDeviceLostInfo>` で本来 reject しない。念のため `.catch` を付けて、未処理の rejection でコンソールを汚さない（R2 F-2。以前は空の `() => {}` だけが残っていた） | 名前: `ignoreBecauseDeviceLostNeverRejects` |
+| `gpu-resources.ts:ignoreRejection` | `device.lost` は `Promise<GPUDeviceLostInfo>` で本来 reject しない。念のため `.catch` を付けて、未処理の rejection でコンソールを汚さない（R2 F-2。以前は空の `() => {}` だけが残っていた） | 名前: `ignoreRejection` |
 | `colormap.ts:FALLBACK_COLOR_MODE_WITHOUT_RGB` | RGB の無い点群の既定は標高（全点に必ず意味のある値があり、範囲がヘッダーから決まる）。強度はセンサー次第で意味が無いことがある | ここ（`TaskSheets/M2-shading-and-ui.md` M2-2） |
 | `scene-bounds.ts:elevationRangeFromCloudBounds` | 標高の範囲はノードの箱（立方体で Z が水平の広さまで伸びる）でなく LAS ヘッダーの範囲から作る（「標高が全部紫」の不具合） | 既存のテスト `scene-bounds.test.ts`「実機不具合の再現: ノードのセル範囲(立方体)を標高に使ってはいけない」 |
 | `pick-math.ts:refineDepthRange` | 2 段目の near/far は z/2〜2z。実機（NVIDIA、autzen、z≈8000）で 1 段目の距離が理論の量子化誤差の約 3 倍ずれ、余裕 4 段では外れた。原因は未特定 | ここ |
@@ -75,9 +75,9 @@
 | `ground-grid.ts:GRID_LINE_COLOR`・`GRID_MAX_ALPHA`(0.35)・`TARGET_CELLS_ACROSS_SCENE`(40)・`FADE_DISTANCE_RATIO`(1.5)・`niceGridCellSize` の 1.5・3.5・7.5 | 線は背景に薄く重ねるだけ（点群を邪魔しない）。間隔は対角線をおよそ 40 マスに割り、1-2-5 系列に丸める（軸の目盛りの定番の方法。例: 対角線 100m → 2m 刻み） | ここ |
 | `sky.ts` の色（`SKY_COLORS`・`SOLID_DARK_CLEAR` など） | 色は主観で、実機の感想で 2 回直した（白っぽい → 暗すぎ → その中間）。地面の色は地平線とはっきり分ける | `TaskSheets/M2-shading-and-ui.md` M2-0c |
 | `device-profile.ts:MOBILE_LOW_MEMORY_THRESHOLD_GIB`(4)・`MOBILE_RENDER_SCALE`(0.5)・`MOBILE_POINT_CACHE_MEMORY_FRACTION`(1/64)・`MOBILE_FALLBACK_DEVICE_MEMORY_GIB`(4)・`DESKTOP_POINT_CACHE_MEMORY_BUDGET_BYTES`(1GiB) | 4GiB は所有者の実機を基準にした判断。0.5 はタスクシートの指定。1/64 は 4GiB 端末で 64MiB、点予算の上限 約 168 万点になる保守的な値。1GiB は ADR-0010 の値をそのまま。モバイル側はどれも未検証の初期値 | `TaskSheets/M3-release-and-update.md` M3-8 |
-| `node-loader.ts:CONCURRENCY_MEASURED_IN_ADR_0007`(8)・`MIN_CONCURRENCY_SO_FEW_CORES_DO_NOT_SERIALIZE`(4) | コア数が取れないときは実測で裏付けのある 8。コア数を極端に少なく申告する環境で直列化しないよう下限 4 | 名前（R2）と `TaskSheets/ADR-0007-pcv-protocol-concurrency.md` |
+| `node-loader.ts:FALLBACK_CONCURRENT_REQUESTS`(8)・`MIN_CONCURRENT_REQUESTS`(4) | コア数が取れないときは実測で裏付けのある 8。コア数を極端に少なく申告する環境で直列化しないよう下限 4 | 名前（R2）と `TaskSheets/ADR-0007-pcv-protocol-concurrency.md` |
 | `pick-math.ts:PERSPECTIVE_MIN_MARGIN_STEPS`(4)・`ORTHOGRAPHIC_MARGIN_STEPS`(32)・`ORTHOGRAPHIC_MIN_MARGIN_FRACTION`(0.002)・`COARSE_HALF`(4) | 上の `refineDepthRange` の行の余裕（とても遠くで粗い 1 段が z/2 を超えるときの 4 段、平行投影の 32 段・範囲の 0.2%）。1 段目の窓は半径 4 で、点の幅が数ピクセルなので少しの隙間を許す | 名前（R2）と、ここ |
-| `up-axis.ts:UP_TOO_CLOSE_TO_Z_FOR_A_Z_SEED`(0.9)・`view-presets.ts:UP_IS_AN_AXIS`(0.999)・`MATCH_TOLERANCE`(0.02)・`ISOMETRIC_PITCH`(35°) | 上方向が Z に近いと種の Z と外積が 0 になるので種を X にする。上方向がちょうど Z（Y）なら地図の慣習の北を使う。0.02 ラジアン（約 1.1°）以内なら固定の視点にいるとみなす。等角の仰角は約 35° | 名前（R2）と、ここ |
+| `up-axis.ts:Z_SEED_MAX_ABS_UP_Z`(0.9)・`view-presets.ts:AXIS_ALIGNED_UP_MIN_COMPONENT`(0.999)・`MATCH_TOLERANCE`(0.02)・`ISOMETRIC_PITCH`(35°) | 上方向が Z に近いと種の Z と外積が 0 になるので種を X にする。上方向がちょうど Z（Y）なら地図の慣習の北を使う。0.02 ラジアン（約 1.1°）以内なら固定の視点にいるとみなす。等角の仰角は約 35° | 名前（R2）と、ここ |
 | `section-2d.ts:MAX_TICKS`(1000)・`CSS_PX_PER_HORIZONTAL_TICK`(90)・`CSS_PX_PER_VERTICAL_TICK`(50)・`SMALL_DOT_MAX_POINTS`(30 万)・`LABEL_HEIGHT_PX`(14) | 目盛りの数の上限（壊れた範囲で無限に回らない）、目盛りの間隔のおよその画面幅。30 万点を超えたら 1 点 1 ピクセル、以下なら 2x2（まばらな断面を見えるように）。ラベルは 11px の文字 | 名前（R2）と、ここ |
 | `layer-focus.ts:DEFAULT_POINT_SIZE_PX`(4)・`MAX_POINT_SIZE_PX`(32)、`idle-boost.ts:IDLE_BOOST_DELAY_MS`(500)、`screen-project.ts:LABEL_WIDTH_PX`(190)、`touch-gesture.ts:MIN_DISTANCE`(1e-3)、`raycast.ts:MIN_HIT_DISTANCE`(0.01)、`screen-space-error.ts:NEAR_W_EPSILON`(1e-6) | 4 は変更前の固定値と同じ（触らなければ見た目は変わらない）。500ms は未検証の初期値。190px は 12px のラベルのおよその幅。1e-3 は指が重なる瞬間の 0 除算よけ。0.01 は NEAR と同じ程度。1e-6 は 0 除算よけで、カメラのニアとは関係ない（元のコードから引き継いだ値） | ここ |
 | `src/renderer/*.test.ts` のテストの入力値 | テストの入力（距離・点数・フレーム間隔など）の説明のコメント。期待する性質はテストの名前にある。CM-5 の道具で 225 か所が出たが、テストの入力値には名前を付けていない | ここ（R2 で一覧を見て判断した） |
@@ -154,3 +154,13 @@
 
 - `npm run check:all`: typecheck・lint・check:circular・check:docs・check:comments・vitest（100 files 1126 tests passed）・cargo fmt (workspace)・cargo clippy (workspace)・cargo fmt (vendor/copc-writer) が全部 OK
 - `node scripts/check-task-sheet.mjs d05c858` → `task sheets OK (97 files compared with d05c858)`
+
+### 再発防止 RP R1（作業役）
+
+- F-7（nit）: 文の形の名前を、値の意味だけを表す名前にした（理由は上の表）。使い手はどれも同じファイルの中だけ（`git grep -c` で数えた）
+  - `node-loader.ts`: `CONCURRENCY_MEASURED_IN_ADR_0007` → `FALLBACK_CONCURRENT_REQUESTS`（2）、`MIN_CONCURRENCY_SO_FEW_CORES_DO_NOT_SERIALIZE` → `MIN_CONCURRENT_REQUESTS`（2）
+  - `up-axis.ts`: `UP_TOO_CLOSE_TO_Z_FOR_A_Z_SEED` → `Z_SEED_MAX_ABS_UP_Z`（2）
+  - `view-presets.ts`: `UP_IS_AN_AXIS` → `AXIS_ALIGNED_UP_MIN_COMPONENT`（3）
+  - `gpu-resources.ts`: `ignoreBecauseDeviceLostNeverRejects` → `ignoreRejection`（2。同じ形の理由の文だったので一緒に直した）
+  - 同じ形の他の名前: `git grep -ohE` で `src/` の 5 語以上の名前 49 個を出し、`_SO_`・`_FOR_A_`・`Because`・`_IS_AN_`・`_MEASURED_IN_` で絞ると上の 4 つだけだった（4 語の `UP_IS_AN_AXIS` は別に見つけていた）。表の名前も新しい名前に直した
+- 再発防止: `TaskSheets/RECURRENCE.md` に「## CM-1」の節、AGENTS.md の作業役の決まりに「名前は何か、理由は表」の行を足した

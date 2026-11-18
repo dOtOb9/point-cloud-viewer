@@ -100,6 +100,7 @@
   使い分け: 害のないキー（視点の F・1〜7）は `isTypingTarget`（文字を打つ欄＝テキストの input・textarea・select・contenteditable でだけ止め、クリックの後もフォーカスが残るラジオ・チェックボックス・スライダーの上では効かせる）、
   取り消せない・決めるキー（Delete でレイヤーを消す、計測と範囲選択のツールの Enter・Esc）は `isFormControl`（種類を問わずフォーム部品にフォーカスがあれば止める。安全な側。TP-1 の PR 監査 R2 F-1）
 - **コメントを名前に移すときは、何をするかより「何が起きるか」を名前にし、使い手のいない戻り値を作らない。** 例: コメントだけが中身だった空の `catch` は `ignoreFailure(() => …)`（`Promise<void>`）にする。`attempt`（成否の boolean を返すが誰も見ない）にはしない（CM-2 の監査 F-1。名前から「失敗を捨てる」が読めなかった）
+- **コメントを名前に移すとき、名前は「それが何か」（値の意味・単位）だけにし、「なぜその値か」は名前に入れずタスクシートの「移した理由」の表に書く。** 文の形の名前（`_SO_`・`_FOR_A_`・`_IS_AN_`・`Because`・`_MEASURED_IN_ADR_…` など、理由を接続詞でつないだもの）にしない。例: `MIN_CONCURRENCY_SO_FEW_CORES_DO_NOT_SERIALIZE` でなく `MIN_CONCURRENT_REQUESTS`、`YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY` でなく `YELLOW_BETWEEN_GREEN_AND_RED`（CM-1 の監査 F-3・F-7。名前の長さは機械で見ない: CM-1 の時点の `src/` の 5 語以上の名前 49 個のうち文の形は 4 個で、残りは単位や対象を並べた普通の名前だったため）
 
 ### 作業報告（Worker → Auditor）
 
