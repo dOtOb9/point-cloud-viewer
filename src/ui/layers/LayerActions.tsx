@@ -1,6 +1,7 @@
 import { Crosshair, Eye, Palette, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { outsideTheSlidingLayerPanelSoFixedPositionIsTheViewport } from "../common/portal-target";
 import { isMeasureLayer } from "../../state/layers";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import { shouldDeleteLayerOnKey } from "./layer-delete-key";
@@ -54,7 +55,7 @@ export function LayerActions({ viewer }: { viewer: CopcViewerState }) {
           <ColorModeDialog viewer={viewer} open={dialog === "color"} onClose={close} />
           <AppearanceDialog viewer={viewer} open={dialog === "appearance"} onClose={close} />
         </>,
-        document.body,
+        outsideTheSlidingLayerPanelSoFixedPositionIsTheViewport(),
       )}
     </>
   );

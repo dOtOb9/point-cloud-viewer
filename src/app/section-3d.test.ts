@@ -9,6 +9,7 @@ import {
   sectionToWorld,
 } from "./section-3d";
 import type { ProfileLine } from "./section-math";
+import { sectionBox } from "../state/tool-math";
 
 describe("sectionToWorld", () => {
   it("goes along A->B in x and up in z", () => {
@@ -32,6 +33,31 @@ describe("sectionToWorld", () => {
     const s = (w[0] - a[0]) * axes.along[0] + (w[1] - a[1]) * axes.along[1] + (w[2] - a[2]) * axes.along[2];
     expect(s).toBeCloseTo(42);
     expect(w[2]).toBeCloseTo(77);
+  });
+
+  it("matches SectionAxes of crates/pcv-core/src/profile.rs and sectionBox of src/state/tool-math.ts, so the panel's (s, z) and the 3D line agree", () => {
+    const a: [number, number, number] = [10, 20, 5];
+    const b: [number, number, number] = [40, 60, 25];
+    const up: [number, number, number] = [0, 0, 2];
+    const axes = sectionAxes(a, b, up)!;
+    expect(axes.along[0]).toBeCloseTo(0.6, 12);
+    expect(axes.along[1]).toBeCloseTo(0.8, 12);
+    expect(axes.along[2]).toBeCloseTo(0, 12);
+    expect(axes.up).toEqual([0, 0, 1]);
+
+    const box = sectionBox(a, b, up, 1, 0, 10)!;
+    for (let i = 0; i < 3; i++) {
+      expect(box.filter.axes[0][i]).toBeCloseTo(axes.along[i], 12);
+      expect(box.filter.axes[2][i]).toBeCloseTo(axes.up[i], 12);
+    }
+
+    const p = sectionToWorld(axes, 12, 7);
+    const rustS = (p[0] - a[0]) * 0.6 + (p[1] - a[1]) * 0.8;
+    const rustZ = p[2];
+    expect(p[0]).toBeCloseTo(17.2, 12);
+    expect(p[1]).toBeCloseTo(29.6, 12);
+    expect(rustS).toBeCloseTo(12, 12);
+    expect(rustZ).toBeCloseTo(7, 12);
   });
 
   it("works with y-up", () => {

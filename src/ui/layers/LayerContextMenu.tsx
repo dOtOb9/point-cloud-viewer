@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { outsideTheSlidingLayerPanelSoFixedPositionIsTheViewport } from "../common/portal-target";
 import { OPAQUE_GLASS_SURFACE } from "../common/glass";
 
 export interface MenuState {
@@ -67,6 +68,6 @@ export function LayerContextMenu({
         削除
       </button>
     </div>,
-    document.body,
+    outsideTheSlidingLayerPanelSoFixedPositionIsTheViewport(),
   );
 }
