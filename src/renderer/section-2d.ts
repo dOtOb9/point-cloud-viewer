@@ -1,28 +1,14 @@
-// G2-3: drawing of the 2D cross-section panel with Canvas 2D. No React, no WebGPU.
-//
-// The points are written straight into an `ImageData` (one pixel, or 2x2 pixels when there are few points) through a
-// `Uint32Array` view, which is much faster than 2 million `fillRect` calls. The axes, grid lines and labels are drawn
-// on top with ordinary Canvas 2D calls (a few dozen of them).
-// Not chosen: a second WebGPU pipeline (the renderer would grow and need its own error handling) and SVG (too slow
-// beyond a few tens of thousands of points). See TaskSheets/G1-raster-and-dtm.md section 8.3.
 import type { SectionPoints } from "../datasource/section-profile";
 import { classificationToColor } from "./colormap";
 
-/** screenX = offsetX + s * scale, screenY = offsetY - z * scale (the same as `SectionView` in src/app/section-math.ts). */
 export interface DrawView {
   scale: number;
   offsetX: number;
   offsetY: number;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Points -> pixels
-// ---------------------------------------------------------------------------------------------
-
-/** Above this many points a point is one pixel; below it 2x2 pixels, so a sparse section stays visible. */
 export const SMALL_DOT_MAX_POINTS = 300_000;
 
-/** Packed RGBA (little endian: byte 0 = r) of each ASPRS classification code 0..255, fully opaque. */
 export function classificationPalette(): Uint32Array {
   const palette = new Uint32Array(256);
   for (let code = 0; code < 256; code++) {
@@ -36,10 +22,6 @@ function packRgb(r: number, g: number, b: number): number {
   return ((0xff << 24) | (b << 16) | (g << 8) | r) >>> 0;
 }
 
-/**
- * Write the points into `pixels` (width x height, RGBA packed in a Uint32). Points outside are skipped.
- * `view` is in the same pixel units as `pixels`. Returns the number of points that landed inside.
- */
 export function fillSectionPixels(
   pixels: Uint32Array,
   width: number,
@@ -50,14 +32,14 @@ export function fillSectionPixels(
 ): number {
   const { floats, words, count, hasColor } = points;
   const dot = count > SMALL_DOT_MAX_POINTS ? 1 : 2;
-  const limitX = width - dot + 1; // a point with x < limitX has all its pixels inside
+  const limitX = width - dot + 1;
   const limitY = height - dot + 1;
   const { scale, offsetX, offsetY } = view;
   let drawn = 0;
   for (let i = 0; i < count; i++) {
     const x = offsetX + floats[i * 3] * scale;
     const y = offsetY - floats[i * 3 + 1] * scale;
-    if (!(x >= 0 && x < limitX && y >= 0 && y < limitY)) continue; // also false for NaN
+    if (!(x >= 0 && x < limitX && y >= 0 && y < limitY)) continue;
     const word = words[i * 3 + 2];
     const color = hasColor ? ((word & 0x00ffffff) | 0xff000000) >>> 0 : palette[word >>> 24];
     const index = (y | 0) * width + (x | 0);
@@ -72,11 +54,6 @@ export function fillSectionPixels(
   return drawn;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Axes
-// ---------------------------------------------------------------------------------------------
-
-/** A "nice" step (1, 2 or 5 times a power of ten) near `span / targetCount`. */
 export function niceStep(span: number, targetCount: number): number {
   if (!(span > 0) || !(targetCount > 0)) return 1;
   const raw = span / targetCount;
@@ -86,7 +63,6 @@ export function niceStep(span: number, targetCount: number): number {
   return nice * power;
 }
 
-/** Multiples of a nice step inside [min, max]: about `targetCount` of them. Empty for an invalid range. */
 export function niceTicks(min: number, max: number, targetCount: number): number[] {
   if (!(max > min) || !Number.isFinite(min) || !Number.isFinite(max)) return [];
   const step = niceStep(max - min, targetCount);
@@ -95,42 +71,27 @@ export function niceTicks(min: number, max: number, targetCount: number): number
   return ticks;
 }
 
-/** A tick label with only as many decimals as the step needs. */
 export function formatTick(value: number, step: number): string {
   const decimals = step >= 1 ? 0 : Math.min(6, Math.ceil(-Math.log10(step)));
-  // `+ 0` turns a "-0" into "0".
   return (value + 0).toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
-/** Height reserved for one axis label (11 px font). */
 const LABEL_HEIGHT_PX = 14;
 
 export interface DrawSectionOptions {
-  /** Device pixels per CSS pixel (the canvas is `cssWidth * dpr` wide). */
   dpr: number;
-  /** Display units per file unit on the horizontal / vertical axis (1 when the file's unit is unknown). */
   horizontalUnitScale: number;
   verticalUnitScale: number;
-  /** "m", "ft" or a note such as "単位不明", drawn at the end of each axis. */
   unitLabel: string;
-  // --- G2: section line ---
-  /** The ground line as `s, z` pairs in file units (see `SectionGroundLine`), drawn on top of the points. Absent: no line. */
   line?: Float32Array | null;
 }
 
 export interface DrawSectionResult {
-  /** Milliseconds spent writing the points into the pixel buffer. */
   fillMs: number;
-  /** Milliseconds for the whole call (fill, put on the canvas, axes). */
   totalMs: number;
-  /** Points that were inside the panel. */
   drawn: number;
 }
 
-/**
- * Draw the whole panel: points, then grid lines and labels on top.
- * `view` is in CSS pixels. The canvas's own pixel size is set here from its CSS size and `dpr`.
- */
 export function drawSection(
   canvas: HTMLCanvasElement,
   cssWidth: number,
@@ -159,20 +120,14 @@ export function drawSection(
   const fillMs = performance.now() - fillStart;
   ctx.putImageData(image, 0, 0);
 
-  // With no points the view is a meaningless fit of an empty range, so no axes either.
   if (points.count > 0) drawAxes(ctx, canvas, cssWidth, cssHeight, view, options);
-  // --- G2: section line --- on top of the points and the grid.
   if (options.line) drawGroundLine(ctx, options.line, view, options.dpr, getComputedStyle(canvas).getPropertyValue("--secondary").trim());
   return { fillMs, totalMs: performance.now() - start, drawn };
 }
 
-// --- G2: section line ---
-/** Width of the ground line in CSS pixels. */
 export const GROUND_LINE_WIDTH_PX = 2;
-/** The orange of the theme (`--secondary` in src/index.css) when the canvas cannot tell. */
 const GROUND_LINE_FALLBACK_COLOR = "#fb923c";
 
-/** The ground line as a 2 px polyline in the theme's secondary orange, over the points. `view` is in CSS pixels. */
 export function drawGroundLine(ctx: CanvasRenderingContext2D, line: Float32Array, view: DrawView, dpr: number, color: string): void {
   if (line.length < 4) return;
   ctx.save();
@@ -192,7 +147,6 @@ export function drawGroundLine(ctx: CanvasRenderingContext2D, line: Float32Array
   ctx.restore();
 }
 
-/** Grid lines and labels in the display unit, on top of the points. Text takes the canvas's CSS `color`. */
 function drawAxes(
   ctx: CanvasRenderingContext2D,
   canvas: HTMLCanvasElement,
@@ -209,7 +163,6 @@ function drawAxes(
   ctx.strokeStyle = color;
   ctx.lineWidth = 1;
 
-  // Visible range in file units, then in display units.
   const sMin = (0 - view.offsetX) / view.scale;
   const sMax = (cssWidth - view.offsetX) / view.scale;
   const zMax = view.offsetY / view.scale;
@@ -217,7 +170,6 @@ function drawAxes(
   const hScale = options.horizontalUnitScale;
   const vScale = options.verticalUnitScale;
 
-  // Vertical lines (s) with labels along the bottom edge.
   const sTicks = niceTicks(sMin * hScale, sMax * hScale, Math.max(2, Math.floor(cssWidth / 90)));
   const sStep = sTicks.length > 1 ? sTicks[1] - sTicks[0] : 1;
   ctx.textAlign = "center";
@@ -235,7 +187,6 @@ function drawAxes(
     ctx.fillText(formatTick(t, sStep), view.offsetX + (t / hScale) * view.scale, cssHeight - 2);
   }
 
-  // Horizontal lines (z) with labels along the left edge.
   const zTicks = niceTicks(zMin * vScale, zMax * vScale, Math.max(2, Math.floor(cssHeight / 50)));
   const zStep = zTicks.length > 1 ? zTicks[1] - zTicks[0] : 1;
   ctx.textAlign = "left";
@@ -251,12 +202,10 @@ function drawAxes(
   ctx.globalAlpha = 0.9;
   for (const t of zTicks) {
     const y = view.offsetY - (t / vScale) * view.scale;
-    // The label sits just above its line: keep it inside the drawable area (not cut at the top, not on the s labels).
     if (y < LABEL_HEIGHT_PX || y > cssHeight - LABEL_HEIGHT_PX) continue;
     ctx.fillText(formatTick(t, zStep), 3, y - 1);
   }
 
-  // The unit, once, at the top right.
   ctx.textAlign = "right";
   ctx.textBaseline = "top";
   ctx.fillText(options.unitLabel, cssWidth - 4, 3);

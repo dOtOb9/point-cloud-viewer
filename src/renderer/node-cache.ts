@@ -1,8 +1,3 @@
-// M1-4: 一度読んだノードはLRUで保持し、再取得しない。GPUバッファも合わせて解放する。
-//
-// JSの`Map`はキーの挿入順を保つ性質を使う。アクセス時に削除→再挿入することで
-// 「挿入順=最近使った順」を保ち、先頭（最も使われていないもの）から捨てればLRUになる。
-
 export interface CachedNode {
   key: string;
   origin: readonly [number, number, number];
@@ -10,16 +5,12 @@ export interface CachedNode {
   vertexBuffer: GPUBuffer;
   uniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
-  /** AN-1: 初めて描画対象になった時刻(ms)。nullはまだ一度も描いていない。
-   *  フェードイン係数の起点で、キャッシュから捨てて読み直せば新しいエントリになり再びnullから始まる。 */
   firstDrawnAtMs: number | null;
 }
 
 export class NodeCache {
   private entries = new Map<string, CachedNode>();
   private totalPoints = 0;
-  /** キャッシュに残しておく点数の上限。点予算そのものではなく、少し余裕を持たせた値にする
-   *  （視点が少し動いただけで直前まで見えていたノードを捨てて再取得する、を避けるため）。 */
   maxPoints: number;
 
   constructor(maxPoints: number) {
@@ -61,11 +52,6 @@ export class NodeCache {
     }
   }
 
-  /**
-   * 複数レイヤー（L1-C）: キーが`prefix`で始まるノード（=1つのレイヤーのノード）を
-   * すべて捨て、GPUバッファも解放する。`removeLayer`から呼ぶ。
-   * キャッシュ全体を一度なめるが、レイヤーを消すときだけなので問題ない。
-   */
   removeByPrefix(prefix: string): void {
     for (const [key, entry] of this.entries) {
       if (!key.startsWith(prefix)) continue;

@@ -38,17 +38,17 @@
 
 | 場所 | 識別子 | この ADR の前提（読んで確かめたこと） |
 |---|---|---|
-| `src/renderer/node-selection.ts:35` | `parentKey` | キーを `split("-")` して 4 つの整数として読む。他の形は `null`（世代つきのキーを混ぜると親子が切れる。`positionKey` が要る理由） |
-| `src/renderer/node-selection.ts:56` | `treeOf` | 階層ごとに 1 回、位置のキー → 配列の添字（`indexByKey`）で木を作る。重複したキーは後のものが勝つ。先祖の無いノードは roots |
-| `src/renderer/node-selection.ts:168` | `selectNodesForLayers` | 全レイヤーの候補を **1 つの点予算**で選ぶ（c + p ≤ B。切り替えの条件と下見の上限 B/2 の理由）。候補のキーは `keyPrefix + node.key` |
-| `src/renderer/point-cloud-renderer.ts:530` | `addLayer` | `LayerInput.hierarchy` を一度だけ `Layer` に写す。あとから変える口が無い（階層の差し替えの口が要る理由） |
-| `src/renderer/point-cloud-renderer.ts:538` | `hierarchyByKey` | `n.key` を索引にした Map。`key` が重複すると片方が消える（新旧の世代は `key` を変える理由） |
-| `src/renderer/point-cloud-renderer.ts:730` | `readLayerNode` | `"<通し番号>:<ノードキー>"` からレイヤーの `readNode` を引く。`readNode` の引数はノードキーそのもの |
-| `src/renderer/point-cloud-renderer.ts:1041` | `handleNodeLoaded` | 通し番号で消えたレイヤーかどうかだけを見て捨てる。階層に無いキーを捨てる確認は今は無い（足す確認） |
-| `src/renderer/point-cloud-renderer.ts:1174` | `updateStats` | 統計は全レイヤーの合計だけ。レイヤーごとの値は無い（`getLayerStats` を足す理由） |
-| `src/renderer/node-cache.ts:69` | `removeByPrefix` | キーを指定してバッファを捨てる口は無い（レイヤーを消すときだけ）。`NodeCache.remove` を足す理由 |
-| `src/renderer/animation.ts:30` | `nodeFadeFactor` | まだ描いていないノード（`firstDrawnAtMs === null`）は 0 から始まる。後継が前の世代の値を引き継がないと点滅する |
-| `src/renderer/device-profile.ts:90` | `DESKTOP_POINT_CACHE_MEMORY_BUDGET_BYTES` | デスクトップのキャッシュ予算は 1 GiB（`pointBudgetMax` 約 2,684 万点の元） |
+| `src/renderer/node-selection.ts:10` | `parentKey` | キーを `split("-")` して 4 つの整数として読む。他の形は `null`（世代つきのキーを混ぜると親子が切れる。`positionKey` が要る理由） |
+| `src/renderer/node-selection.ts:25` | `treeOf` | 階層ごとに 1 回、位置のキー → 配列の添字（`indexByKey`）で木を作る。重複したキーは後のものが勝つ。先祖の無いノードは roots |
+| `src/renderer/node-selection.ts:96` | `selectNodesForLayers` | 全レイヤーの候補を **1 つの点予算**で選ぶ（c + p ≤ B。切り替えの条件と下見の上限 B/2 の理由）。候補のキーは `keyPrefix + node.key` |
+| `src/renderer/point-cloud-renderer.ts:301` | `addLayer` | `LayerInput.hierarchy` を一度だけ `Layer` に写す。あとから変える口が無い（階層の差し替えの口が要る理由） |
+| `src/renderer/point-cloud-renderer.ts:309` | `hierarchyByKey` | `n.key` を索引にした Map。`key` が重複すると片方が消える（新旧の世代は `key` を変える理由） |
+| `src/renderer/point-cloud-renderer.ts:454` | `readLayerNode` | `"<通し番号>:<ノードキー>"` からレイヤーの `readNode` を引く。`readNode` の引数はノードキーそのもの |
+| `src/renderer/point-cloud-renderer.ts:646` | `handleNodeLoaded` | 通し番号で消えたレイヤーかどうかだけを見て捨てる。階層に無いキーを捨てる確認は今は無い（足す確認） |
+| `src/renderer/point-cloud-renderer.ts:763` | `updateStats` | 統計は全レイヤーの合計だけ。レイヤーごとの値は無い（`getLayerStats` を足す理由） |
+| `src/renderer/node-cache.ts:55` | `removeByPrefix` | キーを指定してバッファを捨てる口は無い（レイヤーを消すときだけ）。`NodeCache.remove` を足す理由 |
+| `src/renderer/animation.ts:9` | `nodeFadeFactor` | まだ描いていないノード（`firstDrawnAtMs === null`）は 0 から始まる。後継が前の世代の値を引き継がないと点滅する |
+| `src/renderer/device-profile.ts:24` | `DESKTOP_POINT_CACHE_MEMORY_BUDGET_BYTES` | デスクトップのキャッシュ予算は 1 GiB（`pointBudgetMax` 約 2,684 万点の元） |
 | `crates/pcv-convert/src/streaming.rs:114` | `convert_and_timings` | 単一 LAS/LAZ の入口。進捗は件数だけを渡す |
 | `crates/pcv-convert/src/merge.rs:360` | `merge_paths_and_timings` | 複数 LAS の入口（別の読み手） |
 | `vendor/copc-writer/src/writer.rs:759` | `memory_budget_bytes` | 変換のメモリ内予算は開始時の値を一度だけ割って使う。途中では変えられない |
