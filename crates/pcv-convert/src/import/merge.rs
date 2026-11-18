@@ -1,21 +1,3 @@
-//! M4-17: several files of any format (LAS/LAZ/PLY/PCD/E57) into one COPC.
-//!
-//! This is used when the selection contains at least one PLY/PCD/E57 file. A selection of
-//! only LAS/LAZ files keeps using `crate::merge` (it keeps classification, GPS time, return
-//! numbers; this route cannot, because `RawPoint` has only x, y, z, color, intensity).
-//!
-//! How it works:
-//!
-//! 1. Header pass: every file is opened once, only far enough to read `has_color`, the
-//!    declared point count and (LAS/LAZ) the CRS. Nothing is decoded.
-//! 2. The CRS rule is checked here, before any point is written.
-//! 3. `MergedSource` is one `PointSource` that opens the files one after another (sorted by
-//!    path) and passes their points to `run_import`, which streams them into one spill.
-//!    Only one file is open at a time, so memory does not depend on the point count.
-//!
-//! Colors: if any input has color, the output has color, and points from files without
-//! color get mid gray. This is done here, per file, not in the readers.
-
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -30,23 +12,17 @@ use super::{convert, detect_format, e57, pcd, ply, ImportError, ImportSummary, S
 use crate::stage_timings::ConversionStageTimings;
 use crate::streaming::ReadProgress;
 
-/// 16-bit mid gray for points of files that have no color, when other files do.
 const GRAY: [u16; 3] = [32768, 32768, 32768];
 
-/// Warning when LAS/LAZ is mixed with other formats (the text is fixed by the task sheet,
-/// and the Web build uses the same text).
 pub const LAS_ATTRIBUTES_DROPPED_WARNING: &str =
     "LAS/LAZ と他の形式を結合したため、LAS/LAZ の分類・GPS時刻・リターン番号などの属性は出力に含まれません";
 
-/// Warning when the output has a CRS and some points come from CRS-less formats.
 pub const NON_LAS_SAME_CRS_WARNING: &str =
     "PLY/PCD/E57 の点は LAS/LAZ と同じ座標系として結合しました";
 
-/// The result of a point merge.
 #[derive(Debug, Clone)]
 pub struct PointMergeSummary {
     pub import: ImportSummary,
-    /// Texts for the on-screen error log (ADR-0011).
     pub warnings: Vec<String>,
 }
 
@@ -56,22 +32,18 @@ enum FileKind {
     Other(SourceFormat),
 }
 
-/// What the header pass learned about one input file.
 struct FileEntry {
     path: PathBuf,
     kind: FileKind,
     has_color: bool,
 }
 
-/// `true` for `.las` / `.laz` (case-insensitive). The routing in `src-tauri` uses this too.
 pub fn is_las_or_laz(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("las") || e.eq_ignore_ascii_case("laz"))
 }
 
-/// Merges `paths` (any mix of LAS/LAZ/PLY/PCD/E57) into the COPC `output`.
-/// The files are read in sorted path order, whatever order `paths` has.
 pub fn convert_paths_to_copc_and_timings(
     paths: &[PathBuf],
     output: &Path,
@@ -115,17 +87,14 @@ pub fn convert_paths_to_copc_and_timings(
     Ok(PointMergeSummary { import, warnings })
 }
 
-/// Result of the header pass.
 struct HeaderPass {
     files: Vec<FileEntry>,
     declared_points: u64,
     has_las: bool,
     has_other: bool,
-    /// WKT of the agreed CRS of the LAS/LAZ inputs. `None` when none of them has a CRS.
     wkt_crs: Option<String>,
 }
 
-/// Opens every file once (header only). Fails on the first unreadable file or CRS conflict.
 fn read_headers(sorted: &[PathBuf]) -> Result<HeaderPass, ImportError> {
     let mut pass = HeaderPass {
         files: Vec::with_capacity(sorted.len()),
@@ -134,7 +103,6 @@ fn read_headers(sorted: &[PathBuf]) -> Result<HeaderPass, ImportError> {
         has_other: false,
         wkt_crs: None,
     };
-    // The first LAS/LAZ file that has a CRS: later ones must agree with it.
     let mut crs_owner: Option<(PathBuf, CrsId)> = None;
 
     for path in sorted {
@@ -169,8 +137,6 @@ fn read_headers(sorted: &[PathBuf]) -> Result<HeaderPass, ImportError> {
     Ok(pass)
 }
 
-/// LAS/LAZ files whose CRS is unknown count as agreeing (same as `crate::merge`).
-/// Two known CRSs must be equal.
 fn check_crs(
     path: &Path,
     crs: &CrsId,
@@ -196,7 +162,6 @@ fn check_crs(
     Ok(())
 }
 
-/// Opens a PLY/PCD/E57 file only to read `has_color` and the declared point count.
 fn peek_other(path: &Path, format: SourceFormat) -> Result<(bool, u64), ImportError> {
     let reader = BufReader::new(open_file(path)?);
     Ok(match format {
@@ -220,8 +185,6 @@ fn open_file(path: &Path) -> Result<File, ImportError> {
         .map_err(|e| ImportError::Merge(format!("{}: 開けなかった: {e}", path.display())))
 }
 
-/// One `PointSource` over all the files. It holds only the list of files (a few bytes per
-/// file); each file is opened when its turn comes and dropped when it is finished.
 struct MergedSource {
     files: Vec<FileEntry>,
     declared_points: u64,
@@ -255,7 +218,6 @@ impl PointSource for MergedSource {
     }
 }
 
-/// Opens one file and passes all its points to `visit`.
 fn stream_file(
     entry: &FileEntry,
     visit: &mut dyn FnMut(RawPoint) -> Result<(), ImportError>,

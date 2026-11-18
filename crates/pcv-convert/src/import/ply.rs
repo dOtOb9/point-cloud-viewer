@@ -1,53 +1,3 @@
-//! PLY(Polygon File Format、写真測量・研究用途で広く使われる) → ストリーミングの点ソース。
-//!
-//! # クレート選定: 自前実装にした理由
-//!
-//! ADR-0008は候補として`ply-rs` 0.1.3を挙げ、「更新が古い。実装時に評価すること」と
-//! 注記していた。実際に依存として追加して試したところ、**ビルド自体は通る**ものの、
-//! `ply-rs`自身の`build-dependencies`に`skeptic`(READMEのコード例をdoctestとして
-//! ビルド時に実行する crate)が入っており、それが`cargo_metadata`・
-//! `pulldown-cmark`・`walkdir`・`semver`など多数の推移的依存を引き込むことが
-//! `cargo build`のログと`Cargo.lock`で確認できた。`ply-rs`本体は2020年8月
-//! (5年以上前)を最後に更新が止まっている。「点群を読むためだけに、ビルドの
-//! たびにdoctest実行用のツールチェインまでコンパイルする」のは、依存を増やす
-//! 理由として釣り合わないと判断し、**自前でPLYリーダーを書くことにした**。
-//!
-//! PLYのヘッダはテキストで自己記述的(要素・プロパティの型が全て書いてある)
-//! であり、対応が必要なのは以下の3つのデータ形式だけ:
-//! ASCII・binary_little_endian・binary_big_endian(いずれもPLY 1.0)。
-//! 素朴な実装で数百行に収まり、退屈で読めるコードになる。
-//!
-//! # 属性の対応
-//!
-//! - `x`/`y`/`z`(`vertex`要素、必須): 型は問わず数値ならf64に変換する
-//! - `red`/`green`/`blue`(3つ揃っている場合のみ色ありとして扱う): PLYには
-//!   E57のcolorLimitsのような値域メタデータが無い。`uchar`(0-255、写真測量
-//!   ツールの既定)なら`* 257`で16bit幅に、`ushort`(0-65535)ならそのまま使う。
-//!   それ以外の型(float等)は規約が無いため素直に丸めてクランプするだけに留める
-//! - `intensity`(任意、CloudCompare等が書き出す非標準拡張): `uchar`は`* 257`、
-//!   `float`/`double`は0.0..1.0に正規化済みという前提で`* 65535`、
-//!   それ以外は丸めてクランプする(PCDのintensityと同じ割り切り。理由は
-//!   `pcd.rs`のコメント参照)
-//!
-//! # `vertex`以外の要素(`face`等)の扱い
-//!
-//! メッシュのPLYは`vertex`の後ろに`face`要素(`property list uchar int
-//! vertex_indices`のような可変長リスト)を持つ。本ビューアは点群専用で
-//! 面情報を使わないため中身は捨てるが、**バイト位置がずれないよう
-//! 正しくスキップする必要がある**(特にbinaryでは、要素ごとの行の長さが
-//! 分からないと後続を正しく読めない)。そのため、リスト型プロパティも含めて
-//! 全要素を同じ汎用ループで読み進め、`vertex`要素の行だけを`visit`へ渡す
-//! 設計にした。
-//!
-//! # M4-9: ストリーミング化
-//!
-//! M4-4時点は`reader.read_to_end(&mut bytes)`でファイル全体を`Vec<u8>`へ
-//! 読んでから解析していた(メモリがファイルサイズに比例する)。M4-9で、
-//! ヘッダーだけを`BufRead::read_line`で行単位に読み(ヘッダーは高々数KB)、
-//! データ本体は`BufRead`から直接(ASCIIは行単位、binaryはプロパティの値ごとに
-//! 固定長バイト列)読み進めてその場で`visit`へ渡す形に書き換えた。保持する
-//! メモリは「現在読んでいる1行・1点ぶんの値」だけで、点数には比例しない。
-
 use std::io::{BufRead, Read};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
@@ -179,8 +129,6 @@ impl PropertyDef {
         }
     }
 
-    /// 値の型。リストの場合は要素の型(x/y/z/色/強度がリストになることは
-    /// 実務上起こらないが、保険として定義しておく)。
     fn scalar_type(&self) -> ScalarType {
         match self {
             PropertyDef::Scalar { ty, .. } => *ty,
@@ -262,8 +210,6 @@ impl VertexLayout {
         self.color.is_some()
     }
 
-    /// 1行分の生の値(プロパティごとにVec。scalarなら長さ1、listなら要素数分)から
-    /// `RawPoint`を組み立てる。
     fn extract(&self, values: &[Vec<f64>]) -> RawPoint {
         let x = values[self.x_idx][0];
         let y = values[self.y_idx][0];
@@ -290,9 +236,6 @@ impl VertexLayout {
     }
 }
 
-/// 8bit(0-255)を16bit幅(0-65535)へ過不足なく写す(`* 257`)。それ以外の型は
-/// PLYに値域の規約が無いため、素直に丸めてクランプするだけに留める
-/// (モジュール冒頭コメント参照)。
 fn scale_channel_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
@@ -314,7 +257,6 @@ fn scale_intensity_to_u16(value: f64, ty: ScalarType) -> u16 {
     }
 }
 
-/// ヘッダーを読んだ後の`BufRead`から、ストリーミングで点を取り出す。
 pub(crate) struct PlySource<R: BufRead> {
     reader: R,
     format: PlyFormat,
@@ -325,8 +267,6 @@ pub(crate) struct PlySource<R: BufRead> {
 }
 
 impl<R: BufRead> PlySource<R> {
-    /// パスだけでなく`BufRead`から開けるコア実装(他形式の`open`と同じ考え方。
-    /// PLYは先頭から順に読むだけで済むので`Seek`は要らない)。
     pub(crate) fn open(mut reader: R) -> Result<Self, ImportError> {
         let header = read_header(&mut reader).map_err(ImportError::Ply)?;
 
@@ -378,8 +318,6 @@ impl<R: BufRead> PointSource for PlySource<R> {
     }
 }
 
-/// `end_header`行まで(含む)を行単位で読み、ヘッダーテキストとして解析する。
-/// 呼び出し後、`reader`の読み取り位置はデータ本体の先頭にある。
 fn read_header<R: BufRead>(reader: &mut R) -> Result<PlyHeader, PlyError> {
     let mut header_text = String::new();
     let mut line = String::new();
@@ -483,10 +421,7 @@ fn parse_header(header_text: &str) -> Result<PlyHeader, PlyError> {
                     element.properties.push(PropertyDef::Scalar { name, ty });
                 }
             }
-            _ => {
-                // 未知の宣言行は無視する(PLY仕様上ここに来うる行を将来
-                // 網羅する必要が出たら追加すればよい。読み込みを止めるほどではない)。
-            }
+            _ => {}
         }
     }
 
@@ -494,9 +429,6 @@ fn parse_header(header_text: &str) -> Result<PlyHeader, PlyError> {
     Ok(PlyHeader { format, elements })
 }
 
-/// 全要素を順番に読み、`vertex`要素の行だけ`visit`へ渡す。`vertex`以外
-/// (`face`等)もリスト型プロパティを含めて正しく読み進めることで、
-/// 後続のバイト位置(行)がずれないようにする(モジュール冒頭コメント参照)。
 fn stream_ascii_body<R: BufRead>(
     reader: &mut R,
     elements: &[ElementDef],
@@ -606,9 +538,6 @@ fn stream_binary_body<R: Read>(
     Ok(())
 }
 
-/// 1スカラ分(最大8バイト、`ScalarType::Float64`)を読む。`Read::read_exact`が
-/// 途中でEOFになった場合は`UnexpectedEof`として扱う(標準の`io::ErrorKind`は
-/// `UnexpectedEof`という専用の種別を持つため、それを見て区別する)。
 fn read_scalar<R: Read>(reader: &mut R, ty: ScalarType, big_endian: bool) -> Result<f64, PlyError> {
     let size = ty.byte_size();
     let mut buf = [0u8; 8];

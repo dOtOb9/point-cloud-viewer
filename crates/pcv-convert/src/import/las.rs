@@ -1,13 +1,3 @@
-//! LAS/LAZ as a `PointSource` (used only by the multi-file point merge, M4-17).
-//!
-//! Single LAS/LAZ files and all-LAS selections do not come through here: they use
-//! `crate::streaming` and `crate::merge`, which keep every attribute. This reader keeps only
-//! what `RawPoint` has (x, y, z in real coordinates, RGB, intensity), so that LAS/LAZ can be
-//! chained with PLY/PCD/E57 into one COPC.
-//!
-//! Memory: the points are decoded `READ_BATCH_SIZE` at a time and passed on one by one,
-//! so the memory does not grow with the number of points.
-
 use std::path::Path;
 
 use pcv_core::crs::{crs_id_from_las_header, CrsId};
@@ -16,21 +6,17 @@ use super::point::{PointSource, RawPoint};
 use super::ImportError;
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
-/// Same value and same reason as `crate::merge`'s batch size (it helps the parallel LAZ decoder).
 const READ_BATCH_SIZE: u64 = 1024 * 1024;
 
 pub(crate) struct LasSource {
     reader: las::Reader,
     has_color: bool,
     declared_points: u64,
-    /// CRS of the file. `CrsId::Missing` when it has none.
     pub crs: CrsId,
-    /// WKT to write into the output when this file's CRS is used.
     pub wkt_crs: Option<String>,
 }
 
 impl LasSource {
-    /// Reads the header only; no point is decoded yet.
     pub(crate) fn open(path: &Path) -> Result<Self, ImportError> {
         let reader = las::Reader::from_path(path).map_err(|e| {
             ImportError::Merge(format!("{}: LASを開けなかった: {e}", path.display()))
