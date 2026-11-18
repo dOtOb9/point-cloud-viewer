@@ -1,148 +1,23 @@
-// EDL（Eye-Dome Lighting）: M2-1。
-//
-// なぜ要るか（TaskSheets/M2-shading-and-ui.md M2-1参照）: `sofi.copc.laz`はRGBを
-// 持たない点群で、単色で描くと真っ白な塊にしか見えない。EDLは隣接ピクセルとの
-// 深度差から陰影を作り、色が無くても凹凸構造を読めるようにする（Potreeが採用している
-// 手法）。
-//
-// アルゴリズムそのもの（Potreeのedl.fragが元ネタ。考え方は同じで、このプロジェクトの
-// 深度レンジ・命名に合わせて書き直した）:
-//   1. 各ピクセルの深度を、NDCの[0,1]から「カメラからの実距離」に戻す(linearizeDepth)
-//   2. 8方向の近傍ピクセルと比べ、「自分のほうが奥にある」ぶんだけ
-//      max(0, log2(自分) - log2(近傍)) を足し合わせ、平均する(response)。
-//      **メートルの差ではなくlog2の差（=距離の比）で比べる**（下の「log2にした理由」参照）
-//   3. shade = max(EDL_MIN_SHADE, exp(-response * スケール定数 * strength)) を色に掛ける
-//      （自分が近傍より手前にある＝画面から見て手前に飛び出している場合は
-//      差が0にクリップされるので暗くならない。奥まった場所だけが暗くなる。
-//      暗くなりすぎて真っ黒にならないよう、下限EDL_MIN_SHADEで止める）
-//
-// ## log2にした理由（2026-10-10の不具合修正。M2-1追記参照）
-//
-// 当初はメートルの深度差(max(0, 自分-近傍))をそのまま足していた。これだと
-// 木の裏の10mの段差が`exp(-10*300*strength)`でほぼ0（真っ黒）に潰れ、
-// 木の輪郭・未読み込みノードの縁・建物の縁に黒い線が出た（所有者が画面で確認）。
-// しかも応答がシーンのスケールに依存し、カメラが遠いほど暗くなる。
-// Potreeのedl.fragは深度のlog2の差を使う。log2の差は「距離の比」なので、
-// 10mの距離での1mの段差と1000mの距離での100mの段差が同じ応答になり、
-// カメラ距離に依らない。強さをPotreeと同じ桁（0.4〜1.0）で使えるのもこのため
-// （メートルのままだと0.05→0.03まで下げ続ける必要があった）。
-//
-// **色に依存する計算をせず、深度だけを見る。** これによりRGBを持たない点群
-// （sofi.copc.laz）でも問題なく機能する。
-//
-// ## 空・グリッドとの分離（タスクシートの必須要件）
-//
-// EDLの陰影は点群にだけ掛かるべきで、空やグリッドが陰影で汚れてはいけない。
-// 既存の描画は空・グリッド・点群を同じレンダーパス内に順番に描いていた
-// （point-cloud-renderer.tsのdrawFrame()参照）。この構成のまま点群にだけ
-// EDLを掛けようとすると、「フラグメントシェーダの中でこのピクセルが点由来か
-// 背景由来か」を区別する手段が無い。
-//
-// 採用した方式: **点群を独立したオフスクリーンの色+深度テクスチャに先に描き、
-// EDLの合成パスでそのテクスチャだけを読む。** 空・グリッドは今まで通り
-// スワップチェーンへ直接描く。合成パスは、オフスクリーンの深度が
-// 「クリア値のまま(=点が1つも描かれなかった)」のピクセルを`discard`する
-// ことで、そのピクセルの書き込みを一切行わない。WebGPUの`discard`は
-// 「そのフラグメントを完全に捨てる」動作なので、そのピクセルには既に
-// 描かれている空・グリッド・単色の背景がそのまま残る。
-//
-// 検討した他の案:
-// - **深度バッファのビットやステンシルバッファで「点かどうか」を区別する**:
-//   実装できるが、深度/ステンシルの1ビットに意味を持たせる分、後から読む人が
-//   「このビットは何のためにあるか」を深度バッファの外から探す必要が生まれる。
-//   別テクスチャに分けたほうが「オフスクリーンに何が入っているか」がテクスチャの
-//   宣言そのものから読み取れる（所有者の「実装を追えること」を優先）。
-// - **1本のレンダーパスの中でシェーダを工夫し、空/グリッドを描く前に点群の深度だけ
-//   先に用意する**: 空・グリッドのシェーダ自体にEDL用の深度参照を混ぜる必要が
-//   生まれ、sky.ts/ground-grid.tsの見通しが悪くなる。パスを分けたほうが
-//   「どのパスが何をするか」が既存の空・グリッドのコードに触れずに済む。
-//
-// ## 深度の線形化（linearizeDepth）
-//
-// `mat4.ts`の`perspective()`はWebGPU向けのNDC(z: 0..1)の透視投影行列を作る。
-// この行列に対応する、NDC深度から「カメラからの実距離(view空間の-z)」への
-// 変換式は次の通り（`near`/`far`は`point-cloud-renderer.ts`のNEAR/FARと同じ値を
-// 渡すこと）。
-//
-//   linearDepth = (near * far) / (far - ndcDepth * (far - near))
-//
-// 検算: ndcDepth=0(近クリップ)でlinearDepth=near、ndcDepth=1(遠クリップ)で
-// linearDepth=farになる。下のテストで確認している。
 import edlWgsl from "./shaders/edl.wgsl?raw";
 
-
-/** EDLの既定のオン/オフ。既定はオン（タスクシートの指示通り）。 */
 export const DEFAULT_EDL_ENABLED = true;
 
-/**
- * EDLの強さの既定値。**未検証の初期値（画面を見て決めた値。所有者の確認待ち）。**
- *
- * 経緯（古い順）:
- * 1. 当初はPotreeの既定(edlStrength、0.4〜1.0)を参考に1.0を置いた。
- * 2. 所有者が実機(`sofi.copc.laz`)で確認し、強すぎるので0.05で固定した
- *    （強さのスライダーはUIから削除。M2-1「強さ固定の経緯」参照）。
- * 3. 「0.05でもちょっと強すぎる」との指摘で0.03に下げた（2026-10-10）。
- *    ただし0.03にしても、木の輪郭・建物の縁などの深度の段差に黒い線が出続けた。
- * 4. 原因は強さではなく式だった。深度の差を**メートル**で足していたため、
- *    10mの段差だけで陰影が0（黒）に飽和していた（1.0→0.05→0.03と下げ続けたのは
- *    この飽和を弱さで誤魔化していただけ）。式を**log2の差（Potreeと同じ）**に
- *    改め、陰影の下限(EDL_MIN_SHADE)も設けた。これでPotreeと同じ桁の強さに戻せる。
- *    値はスクリーンショットを見て決めた（TaskSheets/M2-shading-and-ui.md
- *    M2-1「EDLの黒い輪郭の修正」参照）。
- */
 export const DEFAULT_EDL_STRENGTH = 0.15;
 
-/**
- * EDLが近傍として見る距離（スクリーンピクセル単位）の既定値。**未検証の初期値。**
- * Potreeの既定値(edlRadius、バージョンにより1.0〜1.4)を参考にした。
- */
 export const DEFAULT_EDL_RADIUS_PX = 1.4;
 
-/**
- * 深度差(response、log2の差)を陰影に変換する際のスケール定数。Potreeのedl.fragが
- * 使っている値(300.0)をそのまま借りている。responseがPotreeと同じlog2の差に
- * なったので、この値とstrengthの組み合わせの桁もPotreeと同じになる。
- */
 export const EDL_RESPONSE_SCALE = 300.0;
 
-/**
- * 陰影の下限。`shade`はこれより小さくならない（=エッジは暗くなるが真っ黒にはならない）。
- * **未検証の初期値。** 0.3〜0.5の範囲でスクリーンショットを見て決めた
- * （M2-1「EDLの黒い輪郭の修正」参照）。下限が無いと、深度の段差が大きい所
- * （木の裏・未読み込みノードの縁）でshadeが0になり黒い線になる。
- */
 export const EDL_MIN_SHADE = 0.5;
 
-/**
- * NDC深度(0..1、WebGPUの深度バッファの値そのもの)を、カメラからの実距離に戻す。
- * `mat4.ts`の`perspective()`が作る投影行列に対応する式（ファイル冒頭のコメント参照）。
- *
- * GPU上のWGSL版（edl.tsのEDL_SHADER_SRC内`linearizeDepth`）は同じ式を手で
- * 再実装したもの。WGSL側はGPUが無いとテストできないため、ここで純粋関数として
- * 切り出したこちらをテストで担保し、シェーダ側は目視でも式が一致していることを
- * 確認できるようコメントで対応を明記してある。
- */
 export function linearizeDepth(ndcDepth: number, near: number, far: number): number {
   return (near * far) / (far - ndcDepth * (far - near));
 }
 
-/**
- * TP-1: orthographic counterpart of `linearizeDepth`. Depth is linear in an orthographic projection
- * (`orthographicMatrix` in mat4.ts), so the eye distance is `near + depth * (far - near)`. `near` is usually
- * negative there, so the result can be zero or negative: do not take log2 of it directly (see `edlLogDepthOrtho`).
- * The WGSL `logDepth` in EDL_SHADER_SRC is the hand-written copy.
- */
 export function linearizeDepthOrtho(ndcDepth: number, near: number, far: number): number {
   return near + ndcDepth * (far - near);
 }
 
-/**
- * TP-1: the value EDL compares for a pixel, for each projection. Perspective: log2 of the eye distance
- * (a ratio of distances). Orthographic: there is no perspective scale, so the same "ratio" is taken against the
- * orbit distance `referenceDistance`: a depth step dz gives dz / (referenceDistance * ln 2), which equals the
- * first-order log2(1 + dz / referenceDistance). The response then depends on how large the step is relative to
- * the zoom, not on where the eye plane happens to be (near can be negative).
- */
 export function edlLogDepth(eyeDistance: number): number {
   return Math.log2(eyeDistance);
 }
@@ -150,31 +25,10 @@ export function edlLogDepthOrtho(eyeDistance: number, referenceDistance: number)
   return eyeDistance / (referenceDistance * Math.LN2);
 }
 
-/**
- * EDLの陰影係数(shade)を計算する。1.0で無変化、小さいほど暗くなる。
- * 戻り値は[EDL_MIN_SHADE, 1]の範囲（strength=0・近傍なしは1.0）。
- *
- * - `ownDepth`: このピクセルの線形化済み深度（`linearizeDepth`の戻り値。
- *   メートル相当で、0より大きいこと）
- * - `neighbourDepths`: 近傍ピクセルの線形化済み深度の配列（背景など「点が無い」
- *   近傍は呼び出し側で除外して渡す。GPU側の実装でも除外している）
- * - `strength`: UIから渡される強さ。0のとき常に1.0を返す（EDL無効=元の色のまま、
- *   タスクシートの受け入れ条件「強さ0でM1と同じ見た目になる」を満たす）
- *
- * 深度は**log2を取ってから**差を見る（ファイル冒頭「log2にした理由」参照）。
- * 自分が近傍より「奥にある」(ownDepth > neighbourDepth)ぶんだけ暗くなり、
- * 自分が近傍より「手前にある」場合は寄与が0にクリップされ暗くならない。
- * これにより、奥まった場所（手前の物の裏・凹み）だけが暗くなり、
- * 手前に飛び出した部分は明るいまま残る（Eye-Dome Lightingの見た目の根拠）。
- */
 export function edlShadingFactor(ownDepth: number, neighbourDepths: readonly number[], strength: number): number {
   return edlShadingFactorFromLogs(edlLogDepth(ownDepth), neighbourDepths.map(edlLogDepth), strength);
 }
 
-/**
- * TP-1: the same shade from values already converted by `edlLogDepth` / `edlLogDepthOrtho`. Both projections
- * end here, so the response and the shade formula exist once.
- */
 export function edlShadingFactorFromLogs(ownLog: number, neighbourLogs: readonly number[], strength: number): number {
   if (neighbourLogs.length === 0 || strength === 0) return 1.0;
 
@@ -187,12 +41,10 @@ export function edlShadingFactorFromLogs(ownLog: number, neighbourLogs: readonly
   return Math.max(EDL_MIN_SHADE, Math.exp(-response * EDL_RESPONSE_SCALE * strength));
 }
 
-/** EDL合成パス用のuniformバッファのレイアウト。フィールドはすべてf32のスカラーで、
- *  point-cloud-renderer.tsのUniforms構造体と同じ流儀（vec4に詰め替えない）。 */
-const EDL_UNIFORM_FLOATS = 8; // strength, radiusPx, near, far, viewportWidth, viewportHeight, pad, pad
+const EDL_UNIFORM_F32_FIELDS = ["strength", "radiusPx", "near", "far", "viewportWidth", "viewportHeight", "orthoRef", "_pad1"] as const;
+const EDL_UNIFORM_FLOATS = EDL_UNIFORM_F32_FIELDS.length;
 const EDL_UNIFORM_BYTES = EDL_UNIFORM_FLOATS * 4;
 
-/** WGSLのf32リテラルとして書ける形（小数点付き）にする。`1`のような整数表記を避ける。 */
 function wgslFloat(value: number): string {
   return value.toFixed(4);
 }
@@ -202,18 +54,6 @@ const EDL_SHADER_SRC =
   `const EDL_RESPONSE_SCALE: f32 = ${wgslFloat(EDL_RESPONSE_SCALE)};\n` +
   edlWgsl;
 
-/**
- * EDLの合成パス。点群だけを描いたオフスクリーンの色+深度テクスチャを読み、
- * 陰影を掛けてからスワップチェーンへ合成する（discardで背景ピクセルには
- * 触れない。ファイル冒頭の「空・グリッドとの分離」参照）。
- *
- * sky.ts/SkyBackground・ground-grid.ts/GroundGridと同じ構造（全画面パス、
- * init()でパイプライン構築、draw()で毎フレーム呼ぶ）だが、入力がuniformの
- * 数値だけでなくテクスチャ(点群のオフスクリーン描画結果)にもなる点が違う。
- * テクスチャはウィンドウリサイズのたびに作り直されるため、そのつど
- * `updateInputTextures()`でバインドグループを作り直す必要がある
- * （point-cloud-renderer.tsのresize()参照）。
- */
 export class EdlPass {
   private pipeline: GPURenderPipeline | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
@@ -221,37 +61,6 @@ export class EdlPass {
   private bindGroup: GPUBindGroup | null = null;
   private readonly uniformData = new Float32Array(EDL_UNIFORM_FLOATS);
 
-  /**
-   * スワップチェーンと同じフォーマットへ書き込む（このパスはスワップチェーンの
-   * レンダーパスの中で、空・グリッドの後・最後に呼ばれる）。
-   *
-   * `depthFormat`は、このパスが実際に描き込まれるレンダーパス
-   * （point-cloud-renderer.tsのdrawFrame()パス2）の`depthStencilAttachment`と
-   * 同じフォーマット（`DEPTH_FORMAT`）を渡すこと。
-   *
-   * **実機不具合の修正:** 当初はこのパイプラインに`depthStencil`を一切
-   * 指定していなかった。「深度を読むだけで書かないのだから、深度アタッチメントに
-   * 関わる設定は不要のはず」という誤った理解によるもので、実際には
-   * **画面が真っ黒になり何も描画されなくなる**不具合として現れた
-   * （TaskSheets/M2-shading-and-ui.md M2-1参照）。
-   *
-   * 原因はWebGPUのパイプライン/レンダーパス互換性の要件にある。
-   * レンダーパスが`depthStencilAttachment`を持つ場合、そのパス内で使う
-   * すべてのパイプラインは、**同じdepth-stencilフォーマットの`depthStencil`を
-   * 宣言していなければならない**（宣言しない＝そのパイプラインはdepth-stencil
-   * 無しのパスとしか互換にならない）。EDLの合成パスは空・グリッドと同じ
-   * レンダーパス（`depthStencilAttachment`を持つ、drawFrame()パス2）の中で
-   * 呼ばれるため、`depthStencil`を宣言していないこのパイプラインは
-   * そのパスと非互換になる。**非互換なパイプラインでdrawするとバリデーション
-   * エラーになり、そのコマンドエンコーダ全体が無効になる**
-   * （`encoder.finish()`が無効なコマンドバッファを返し、`submit()`で
-   * そのフレームがまるごと捨てられる）。これが「画面が真っ黒」の直接の原因。
-   *
-   * 直し方は`sky.ts`/`ground-grid.ts`と同じ: 深度を書かないパイプラインでも
-   * `depthStencil: { format, depthWriteEnabled: false, depthCompare: "always" }`を
-   * 明示的に宣言する（「深度に触れない」ことと「depthStencilの宣言が要らない」
-   * ことは別の話だった、という教訓）。
-   */
   init(device: GPUDevice, format: GPUTextureFormat, depthFormat: GPUTextureFormat): void {
     this.bindGroupLayout = device.createBindGroupLayout({
       entries: [
@@ -267,11 +76,6 @@ export class EdlPass {
       vertex: { module: shaderModule, entryPoint: "vs_main" },
       fragment: { module: shaderModule, entryPoint: "fs_main", targets: [{ format }] },
       primitive: { topology: "triangle-list" },
-      // 深度は読むだけで書かないが、呼び出し元のレンダーパス（空・グリッドと
-      // 同じ、depthStencilAttachmentを持つパス）と互換にするため、
-      // sky.ts/ground-grid.tsと同じ「書かない・常に通す」設定を明示的に宣言する
-      // 必要がある（init()のコメント参照。この宣言を省略すると、パスの深度
-      // アタッチメントと非互換になりdrawがまるごと無効になる不具合があった）。
       depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: "always" },
     });
 
@@ -281,11 +85,6 @@ export class EdlPass {
     });
   }
 
-  /**
-   * ウィンドウリサイズなどでオフスクリーンの色/深度テクスチャが作り直されたら
-   * 呼ぶこと。バインドグループはテクスチャビューを固定で参照するため、
-   * テクスチャそのものが変わるたびに作り直す必要がある。
-   */
   updateInputTextures(device: GPUDevice, colorView: GPUTextureView, depthView: GPUTextureView): void {
     if (!this.bindGroupLayout || !this.uniformBuffer) return;
     this.bindGroup = device.createBindGroup({
@@ -298,12 +97,6 @@ export class EdlPass {
     });
   }
 
-  /**
-   * スワップチェーンのレンダーパスの中で、空・グリッドを描いた後の最後に呼ぶこと。
-   * `strength`は呼び出し側(point-cloud-renderer.ts)が「EDLがオフなら0を渡す」
-   * ことで無効化を表現する（シェーダ側にオン/オフの分岐を持たせず、
-   * strength=0のとき常に無変化になる`edlShadingFactor`の性質だけで実現する）。
-   */
   draw(
     device: GPUDevice,
     pass: GPURenderPassEncoder,
@@ -313,7 +106,6 @@ export class EdlPass {
     far: number,
     viewportWidth: number,
     viewportHeight: number,
-    /** TP-1: 0 for perspective; the orbit distance for orthographic (see the shader's orthoRef). */
     orthoRefDistance = 0,
   ): void {
     if (!this.pipeline || !this.uniformBuffer || !this.bindGroup) return;

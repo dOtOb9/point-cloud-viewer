@@ -1,38 +1,19 @@
-// L2-D: read back part of a depth texture (a size x size pixel window) to the CPU.
-//
-// depth24plus cannot be copied directly with copyTextureToBuffer (WebGPU rule). So a tiny
-// compute shader reads the depth texture with textureLoad and writes it to a storage
-// buffer, which is copied to a MAP_READ buffer and read. The window is at most 9x9 = 81
-// pixels, so speed is not a concern. Pixels outside the texture are returned as 1.0
-// (the "no point" clear value).
-//
-// The math (unprojection, window projection) lives in pick-math.ts. This file only does
-// the GPU read-back.
 import depthWindowWgsl from "./shaders/depth-window.wgsl?raw";
-
-
-const SHADER = depthWindowWgsl;
 
 export class DepthWindowReader {
   private pipeline: GPUComputePipeline | null = null;
   private pipelineDevice: GPUDevice | null = null;
 
-  /** Recreate the pipeline when the device changed (recovery from device loss). */
   private ensurePipeline(device: GPUDevice): GPUComputePipeline {
     if (this.pipeline && this.pipelineDevice === device) return this.pipeline;
     this.pipeline = device.createComputePipeline({
       layout: "auto",
-      compute: { module: device.createShaderModule({ code: SHADER }), entryPoint: "main" },
+      compute: { module: device.createShaderModule({ code: depthWindowWgsl }), entryPoint: "main" },
     });
     this.pipelineDevice = device;
     return this.pipeline;
   }
 
-  /**
-   * Returns the depth of the size x size window of `texture` (depth24plus) whose top-left is
-   * (x0, y0), as a row-major array of 0..1 depths (1.0 where there is no point). Throws on
-   * failure (the caller routes it to the error display).
-   */
   async read(device: GPUDevice, texture: GPUTexture, x0: number, y0: number, size: number): Promise<Float32Array> {
     const pipeline = this.ensurePipeline(device);
     const count = size * size;

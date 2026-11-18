@@ -13,8 +13,7 @@ const LIMIT = 800;
 /** Files already over LIMIT, with the most lines they may have. Only ever lowered. */
 const BASELINE: Record<string, number> = {
   "src/datasource/copc.worker.ts": 1376,
-  "src/renderer/gpu-resources.ts": 1015,
-  "src/renderer/point-cloud-renderer.ts": 1309,
+  "src/renderer/point-cloud-renderer.ts": 867,
 };
 
 // Vite reads every source file as text (the generated wasm glue is left out). Keys look like "./app/view.ts".

@@ -1,83 +1,8 @@
-// 空の背景（M2-0c）。
-//
-// 方式は手続き的なグラデーション（テクスチャ不使用）。全画面パスでビューのレイ方向から
-// 色を決めるだけなので、アセットも頂点バッファも要らない（TaskSheets/M2-shading-and-ui.md
-// M2-0c参照。キューブマップ・大気散乱シミュレーションは却下済み）。
-//
-// 守ること（タスクシートより）:
-// - 点より必ず奥に描く: depthWriteEnabled=false, depthCompare="always"にして、
-//   このパイプラインが深度バッファに何も書き込まない/常に通すようにする
-//   （点群側のパイプラインはdepthCompare="less"のまま。空が先に描かれても、
-//   その後の点はすべて手前に来る）
-// - 切り替えられること: 空 / 単色(暗) / 単色(明) を選べるようにする。既定値は
-//   下の`DEFAULT_BACKGROUND_MODE`のコメント、および TaskSheets/M2-shading-and-ui.md
-//   M2-0cの「既定の決定」を参照（一時「空」を既定にしたが、実機フィードバックを
-//   受けて最終的に単色(暗)に戻した。経緯を記録してある）
-// - 地平線の下も描く: 上方向(upAxis)との内積が負の側（地平線より下）にも
-//   別の色（ground）を割り当てる。空だけだと下を向いたときに背景が消えるため。
-//
-// 補強（M2-0c 実機報告への対応）: 所有者が段階2を実機で見て「地平線が分からない。
-// 地面がない？」と報告した。原因はグラデーションだけでは境界が無く、色が
-// 滑らかに変わる面にしか見えないこと。対策として、(1) groundColorをhorizonColorと
-// 明度・色相ともにはっきり分け、(2) t=0の近傍に細い地平線（horizonLineColor）を
-// 明示的に描く。地面のグリッドは別ファイル(ground-grid.ts)で扱う。
-//
-// 実機不具合1回目（実機報告: 空にすると地面しか見えない）: 当初はワールド空間の
-// viewProjの逆行列(invViewProj)をそのままuniformに積んでf32でGPUに渡し、
-// フラグメントシェーダで`invViewProj * ndc`からレイ方向を復元していた。これは
-// `mat4.ts`冒頭の規約（ワールド座標そのものを行列に持たせない）に反していた:
-// NEAR(0.01)/FAR(1e7)のダイナミックレンジにautzenのような大きなワールド座標
-// （X約637,000）が重なると、逆行列の成分は1e-9〜1e8桁まで開く。f32(有効桁約7桁)
-// ではこれを表現しきれず、変換後のwが桁落ちして0になり、`xyz / w`がInf、
-// `normalize`がNaNになっていた（`scripts/diag-sky-ray.ts`で再現・実測済み）。
-// WGSLは`NaN >= 0.0`がfalseなので全ピクセルがelse分岐(groundColor)に落ち、
-// 「空にすると地面しか見えない」形で現れていた。
-//
-// 実機不具合2回目（実機報告: 空やグリッドを入れると画面が真っ黒になる）:
-// 1回目の対策として「全画面三角形の3頂点(NDC (-1,-1),(3,-1),(-1,3))それぞれの
-// レイ方向(正規化済み)をuniformで渡し、頂点シェーダで@locationに渡して線形補間、
-// フラグメントシェーダで再度normalize」という方式にしたが、これも壊れていた。
-// NDC=3は画面の中心から見て水平半画角(FOV60°・アスペクト16:9なら約46°)の
-// 3倍近い、70度以上離れた方向になる。**正規化済みの単位ベクトルをこれだけ広い
-// 角度で線形補間すると、球面上の弧ではなく弦を取ることになり、結果のベクトルは
-// 向きがずれるだけでなく長さが縮む**（数値検証: 画面上の位置によって補間直後の
-// 長さが0.53〜1.0まで変動。角度が開くほど0に近づく設計上の欠陥）。長さがほぼ0に
-// なった場所では`normalize(ほぼ0)`がNaNになり、同じNaNが別の経路で戻ってきて
-// いた（「画面が真っ黒」はNaNがアルファ/カラーに伝播した結果）。
-//
-// **教訓（重要。次に踏みやすい罠）:**
-// 1. **単位ベクトル（方向）を広い角度にわたって線形補間してはいけない。**
-//    線形補間は「位置」や「まっすぐ変化する量」には正しいが、正規化された
-//    方向ベクトルは球面上の点なので、弦（chord）を取ることになり、角度が
-//    開くほど誤差が増え、長さが縮む。全画面三角形は画面の3倍外側まで頂点が
-//    延びるため、この誤差が致命的な大きさになる
-// 2. **「NaNが出ない」は正しさの証明にならない。** 1回目の修正のとき、
-//    診断スクリプト(`scripts/diag-sky-ray.ts`)はNaNの有無だけを確認しており、
-//    値がf64の真値と一致するかを検証していなかった。その結果、2回目の
-//    不具合（値が真値から最大0.48もずれ、条件によってはNaNにもなる）を
-//    見逃した。**「NaNが出ない」は必要条件であって十分条件ではない。**
-//
-// 対策（2回目）: 方向ベクトルの補間そのものをやめた。頂点シェーダで補間するのは
-// **NDC座標（位置）だけ**にする（位置の線形補間はアフィンな量なので正しい）。
-// フラグメントシェーダで、画素ごとに
-//   dir = normalize(forward + ndc.x * rightScaled + ndc.y * upScaled)
-// としてレイ方向を組み立てる。`forward`(カメラの視線方向)・`rightScaled`
-// (right * tan(fovY/2) * アスペクト比)・`upScaled`(up * tan(fovY/2))は
-// JS側(f64)で`mat4.ts`の`cameraBasis()`から求める。これはNDCがいくつでも
-// 厳密で（外挿ではなく、透視投影の逆関数そのもの）、扱う数値はどれも
-// 大きさ~1、行列もワールド座標の絶対値も一切GPUに渡らない
-// （詳細はdraw()のコメント参照）。
-
 import type { Vec3 } from "./up-axis";
 import skyWgsl from "./shaders/sky.wgsl?raw";
 
 export type BackgroundMode = "sky" | "solid-dark" | "solid-light";
 
-/** 既定は単色(暗)。一時「空」を既定にしたが、所有者が実データで見て単色(暗)に
- *  戻すと判断した。結果として、M2-0c策定時の「点のコントラストを落とすため
- *  既定にしない」という当初の判断が実データで裏付けられた形になる。経緯は
- *  TaskSheets/M2-shading-and-ui.md M2-0cに記録している。空は引き続き選べる
- *  （グリッドの既定はオン。ground-grid.ts参照）。 */
 export const DEFAULT_BACKGROUND_MODE: BackgroundMode = "solid-dark";
 
 export const SOLID_DARK_CLEAR: GPUColor = { r: 0.05, g: 0.05, b: 0.08, a: 1 };
@@ -86,27 +11,10 @@ export const SOLID_LIGHT_CLEAR: GPUColor = { r: 0.92, g: 0.93, b: 0.95, a: 1 };
 interface SkyColors {
   zenith: Vec3;
   horizon: Vec3;
-  /** 地平線より下の色。horizonとは明度・色相の両方ではっきり区別すること
-   *  （実機報告: 単なる濃淡だけでは「境界のある地面」に見えなかった）。 */
   ground: Vec3;
-  /** 地平線そのものに引く細い線の色。グラデーションだけでは境界が読めなかった
-   *  という実機報告への対策（M2-0c補強）。 */
   horizonLine: Vec3;
 }
 
-/** 空色。定数はこの1箇所にまとめてあるので、次に微調整するときはここだけ触ればよい。
- *
- * 調整の経緯（実機フィードバック、2回）:
- * 1. 当初の`horizon`は明度0.75〜0.83（ほぼ白）で、「白っぽくて違和感がある」と
- *    報告された。背景が明るいほど暗い点が見えにくくなるという懸念
- *    （TaskSheets/M2-shading-and-ui.md M2-0c）もあり、彩度を保ったまま明度を
- *    大きく落とした（horizon明度0.79→0.38あたりまで）
- * 2. 今度は「もうちょっと明るくてもよい」と報告された。**元の値（白っぽい）と
- *    1回目の調整後（暗すぎ）のおおよそ中間**まで明度を戻した。青みは維持しつつ
- *    白っぽさは出ない範囲、が狙い
- *
- * groundは2回とも変更なし（暗いままでよいとされている）。
- * 色そのものは主観なので、次に見え方が気になったらこの定数だけ調整すればよい。 */
 const SKY_COLORS: SkyColors = {
   zenith: [0.08, 0.17, 0.36],
   horizon: [0.48, 0.56, 0.64],
@@ -114,16 +22,10 @@ const SKY_COLORS: SkyColors = {
   horizonLine: [0.7, 0.74, 0.78],
 };
 
-const SKY_SHADER_SRC = skyWgsl;
-
-const SKY_UNIFORM_FLOATS =
-  4 * 3 /* forward/rightScaled/upScaled */ + 4 /* upAxis */ + 4 * 4 /* colors (zenith/horizon/ground/horizonLine) */;
+const SKY_UNIFORM_VEC4_FIELDS = ["forward", "rightScaled", "upScaled", "upAxis", "zenithColor", "horizonColor", "groundColor", "horizonLineColor"] as const;
+const SKY_UNIFORM_FLOATS = SKY_UNIFORM_VEC4_FIELDS.length * 4;
 const SKY_UNIFORM_BYTES = SKY_UNIFORM_FLOATS * 4;
 
-/**
- * 空の全画面パス。点群のパイプラインとは別に持ち、同じレンダーパス内で
- * 点より先に描く（呼び出し側がdrawの順序を保証する。point-cloud-renderer.ts参照）。
- */
 export class SkyBackground {
   private pipeline: GPURenderPipeline | null = null;
   private uniformBuffer: GPUBuffer | null = null;
@@ -141,14 +43,12 @@ export class SkyBackground {
       ],
     });
 
-    const shaderModule = device.createShaderModule({ code: SKY_SHADER_SRC });
+    const shaderModule = device.createShaderModule({ code: skyWgsl });
     this.pipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
       vertex: { module: shaderModule, entryPoint: "vs_main" },
       fragment: { module: shaderModule, entryPoint: "fs_main", targets: [{ format }] },
       primitive: { topology: "triangle-list" },
-      // 深度を書かず、常に通す。点は既存の点群パイプライン(depthCompare="less")で
-      // 描かれるので、空が先に描かれても点は必ず空より手前に残る。
       depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: "always" },
     });
 
@@ -162,15 +62,6 @@ export class SkyBackground {
     });
   }
 
-  /**
-   * 同じレンダーパス内で、点群を描く前に呼ぶこと。
-   *
-   * `forward`/`rightScaled`/`upScaled`はカメラ基底（呼び出し側`point-cloud-renderer.ts`が
-   * `mat4.ts`の`cameraBasis()`とFOV/アスペクト比からf64で計算する。詳細は
-   * ファイル冒頭の「対策（2回目）」参照）。どれも大きさ~1のベクトルなので、
-   * f32にキャストしても精度の問題は起きない。ワールド座標の絶対値
-   * （invViewProjやeyeの絶対座標）はここには一切登場しない。
-   */
   draw(
     device: GPUDevice,
     pass: GPURenderPassEncoder,
@@ -197,7 +88,6 @@ export class SkyBackground {
   }
 }
 
-/** 背景モードに応じたクリアカラー。"sky"のときは全画面が上書きされるので任意の値でよい。 */
 export function clearColorForMode(mode: BackgroundMode): GPUColor {
   switch (mode) {
     case "solid-light":

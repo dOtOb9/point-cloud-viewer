@@ -1,6 +1,3 @@
-// Checks whether WebGPU is usable (navigator.gpu and requestAdapter()). Used by useWebGpuSupport.
-// This file does not know React; it only uses DOM APIs.
-
 export type WebGpuProbeResult =
   | {
       supported: true;
@@ -14,7 +11,6 @@ export type WebGpuProbeResult =
       reason: string;
     };
 
-/** navigator.gpu の有無と requestAdapter() の成否を確認する。 */
 export async function probeWebGpu(): Promise<WebGpuProbeResult> {
   if (!("gpu" in navigator) || navigator.gpu === undefined) {
     return { supported: false, reason: "navigator.gpu が存在しない" };
