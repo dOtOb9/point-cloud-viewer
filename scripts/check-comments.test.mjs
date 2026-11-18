@@ -78,10 +78,13 @@ describe("check-comments: TypeScript and JavaScript", () => {
       "// eslint-disable-next-line no-console -- reason",
       "/* eslint-disable no-console */",
       "// @ts-expect-error no types",
-      "// @ts-ignore",
       "console.log(1);",
     ].join("\n");
     expect(countedLines(text, "x.js")).toEqual([]);
+  });
+
+  it("counts @ts-ignore, because @ts-expect-error does the same job and fails once the error is gone", () => {
+    expect(countedLines("// @ts-ignore\nconst a: number = \"x\";\n/* @ts-ignore */\n", "x.ts")).toEqual([1, 3]);
   });
 
   it("counts a comment that only mentions a directive later in its text", () => {

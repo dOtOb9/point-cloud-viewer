@@ -12,7 +12,6 @@ const EXCLUDED_PATHS = [/^vendor\//, /^src\/wasm\//, /^TaskSheets\//, /\.generat
 const TOOL_DIRECTIVES = [
   /^\/[/*]\s*eslint-disable/,
   /^\/[/*]\s*@ts-expect-error/,
-  /^\/[/*]\s*@ts-ignore/,
   /^\/\/\/\s*<reference\s/,
   /^\/[/*]\*?\s*@vitest-environment\s/,
   /^\/\/\s*@ts-check\b/,

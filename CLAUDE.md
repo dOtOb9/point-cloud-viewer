@@ -10,7 +10,8 @@
 - **コード中にコメントを書かない**（Rust・TypeScript・WGSL・スクリプト・設定。所有者の決定 2026-11-17。2026-10-15 の「コメントは英語」を置き換えた）。
   意図はコードから読めるようにする: 名前（関数・変数・定数・型）、小さな関数への切り出し、型、テストの名前で表す。
   コードで表せない「なぜ」（外部の不具合の回避、測った結果の選択）は、タスクシート・ADR に書く。既存のコメントは CM タスク（`TaskSheets/CM-0-no-comments.md`）で消す。
-  例外は、道具が読む指示（`eslint-disable-*`・`@ts-expect-error`・`/// <reference>`・`@vitest-environment`・shebang）と、`unsafe` の前の1行の `// SAFETY:` だけ
+  例外は、道具が読む指示（`eslint-disable-*`・`@ts-expect-error`・`/// <reference>`・`@vitest-environment`・`// @ts-check`・shebang）と、`unsafe` の前の1行の `// SAFETY:` だけ
+  （`// @ts-check` は 2026-11-18 に足した。JS のファイルに型の検査をかける指示で、消すと検査が外れる。`@ts-ignore` は例外にしない。`@ts-expect-error` で代わりになり、そちらはエラーが無くなると落ちる。一覧は `scripts/check-comments.mjs` の `TOOL_DIRECTIVES` と揃える）
 - **`TaskSheets/` の文書（タスクシート・ADR・ベンチの記録）は日本語**で書く（所有者の決定 2026-10-22。
   2026-10-15 の「英語で書く」を取り消した）。新しく作るファイルは日本語。既存の英語のファイルに追記する節も日本語でよい
   （既存の英語の本文は一度に訳さない）。`TaskSheets/HANDOFF.md` はコーディネーターが管理する
