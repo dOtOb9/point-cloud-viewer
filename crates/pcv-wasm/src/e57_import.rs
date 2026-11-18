@@ -84,12 +84,7 @@ impl<R: Read + Seek + 'static> E57Stream<R> {
             return Ok(false);
         };
         self.next_scan += 1;
-        // SAFETY: `self.reader` comes from `Box::into_raw` in `open` and is freed only in
-        // `Drop`, after `self.points` is cleared, so the reference is valid for as long as the
-        // iterator exists. It is the only reference to the reader: this is the only place that
-        // dereferences the pointer, and a new one is made only when `self.points` is `None`
-        // (see `next_point`), so no two `&mut` are alive at the same time. The `'static` is a
-        // lie that the drop order above makes harmless.
+        // SAFETY: `self.reader` is from `Box::into_raw` in `open`, freed only in `Drop` after `self.points` is cleared, and dereferenced only here while `self.points` is `None`, so this `&mut` is the only one and outlives the iterator.
         let reader: &'static mut E57Reader<R> = unsafe { &mut *self.reader };
         let iter = reader
             .pointcloud_simple(pc)
@@ -143,8 +138,7 @@ impl<R: Read + Seek + 'static> Drop for E57Stream<R> {
     fn drop(&mut self) {
         // The iterator borrows the reader, so it must go first.
         self.points = None;
-        // SAFETY: `self.reader` came from `Box::into_raw` in `open`, nothing borrows it any
-        // more (the iterator was just dropped) and `Drop` runs once.
+        // SAFETY: `self.reader` came from `Box::into_raw` in `open`, the iterator that borrowed it was just dropped, and `Drop` runs once.
         drop(unsafe { Box::from_raw(self.reader) });
     }
 }

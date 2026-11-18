@@ -22,16 +22,9 @@ pub struct FileRangeReader {
     stats: Stats,
 }
 
-// `File`は内部でJSオブジェクトへの参照(`JsValue`)を持つため、コンパイラは自動では
-// `Send`と認めない。wasm32-unknown-unknown はatomics抜きでは実際にはスレッドを
-// またがない(このWorker1本の中で`FileRangeReader`が生成・使用・破棄される)ため、
-// ここでの`Send`はコンパイル上の形式要件(`pcv_core::CopcFile<R>`が`R: Send`を
-// 要求している。ネイティブ版でスレッドプールに`CopcFile`を渡す設計と型を
-// 揃えるため)を満たすためのものであり、実際にスレッド間で共有されることはない。
+// SAFETY: wasm32-unknown-unknown without atomics is single-threaded, so the `File` (a `JsValue`) never crosses threads; `Send` only satisfies `CopcFile<R: Send>`.
 unsafe impl Send for FileRangeReader {}
-// M4-6b: `las::Reader::new`は`R: Read + Seek + Send + Sync + 'static`を要求する
-// (Web版の変換、`crates/pcv-wasm/src/convert.rs`が使う)。上と同じ理由で
-// 実際にスレッド間で共有されることは無いので、形式要件として`Sync`も満たす。
+// SAFETY: same as `Send` above; `las::Reader::new` requires `R: Sync`.
 unsafe impl Sync for FileRangeReader {}
 
 impl FileRangeReader {

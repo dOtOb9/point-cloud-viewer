@@ -27,9 +27,7 @@ pub struct HttpRangeReader {
     stats: Stats,
 }
 
-// FileRangeReaderと同じ理由(`unsafe impl Send`のコメント参照): wasm32はシングル
-// スレッドで、`XmlHttpRequest`(JsValueを内部に持つ)を実際にスレッド間で
-// 共有することはない。
+// SAFETY: wasm32-unknown-unknown without atomics is single-threaded, so the `XmlHttpRequest` (a `JsValue`) never crosses threads.
 unsafe impl Send for HttpRangeReader {}
 
 impl HttpRangeReader {

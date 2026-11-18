@@ -345,11 +345,7 @@ pub struct OpfsScratchFs {
     seq_read_counters: OpfsSeqReadCounters,
 }
 
-// SAFETY: wasm32-unknown-unknownはatomics無効時はシングルスレッドで動く
-// (このプロジェクトの前提。ADR-0012「Web版はまずWorker1本」)。
-// `crates/pcv-wasm/src/file_reader.rs`の`FileRangeReader`と同じ理由で、
-// `web_sys`の型(内部はJsValue)を実際に複数スレッドで共有することは無い。
-// `ScratchFs: Send + Sync`という形式要件を満たすためだけのもの。
+// SAFETY: wasm32-unknown-unknown without atomics is single-threaded (ADR-0012), so these `web_sys` handles never cross threads; `Send + Sync` only satisfy the bounds of `ScratchFs`.
 unsafe impl Send for OpfsScratchFs {}
 unsafe impl Sync for OpfsScratchFs {}
 unsafe impl Send for OpfsTempWriter {}
