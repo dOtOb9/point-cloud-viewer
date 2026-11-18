@@ -1,35 +1,18 @@
-//! M4-3: 「同じファイルを二度変換しない」の判定。
-//!
-//! 変換結果(COPC)の隣に、変換した時点の元ファイルの指紋(サイズ・更新日時)を
-//! 記録したサイドカーファイル(`<出力>.meta`)を置く。次に同じ元ファイルを
-//! 開こうとしたとき、今の指紋と記録された指紋を比べ、違っていれば
-//! (サイズが変わった、または更新日時が変わった)作り直す。
-//!
-//! 判定そのもの(`needs_reconversion`)はファイルI/Oを一切しない純粋関数にして
-//! テストする(受け入れ条件のとおり)。ファイルから指紋を読み取る部分
-//! (`fingerprint_of`)とサイドカーの読み書きは別関数に分けてある。
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// 元ファイルの「指紋」。サイズと更新日時の組。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceFingerprint {
     pub len: u64,
-    /// UNIXエポックからのナノ秒。`SystemTime`は文字列化が面倒なので、
-    /// サイドカーへの保存にはこちらの整数表現を使う(退屈だが読める形)。
     pub modified_unix_nanos: u128,
 }
 
 impl SourceFingerprint {
     fn from_metadata(metadata: &std::fs::Metadata) -> io::Result<Self> {
         let modified = metadata.modified()?;
-        // エポックより前の更新日時は現実的にありえないので0に丸める
-        // (`unwrap_or`で握りつぶしても、その場合は指紋が一致しづらくなり
-        // 「余分に作り直す」方向にしか転ばない。安全側)。
         let nanos = modified
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -41,34 +24,24 @@ impl SourceFingerprint {
     }
 }
 
-/// 元ファイルの現在の指紋を読む。
 pub fn fingerprint_of(path: &Path) -> io::Result<SourceFingerprint> {
     SourceFingerprint::from_metadata(&std::fs::metadata(path)?)
 }
 
-/// 開いた`File`から指紋を読む。Androidの`content://` URIは`std::fs::metadata`
-/// (パス文字列前提)では読めないため、`tauri-plugin-fs`で既に開いた`File`
-/// (`src-tauri/src/copc_state.rs`の`open_uri_reader`と同じ経路)から直接読む。
 pub fn fingerprint_of_file(file: &std::fs::File) -> io::Result<SourceFingerprint> {
     SourceFingerprint::from_metadata(&file.metadata()?)
 }
 
-/// 変換をやり直す必要があるかどうか。ファイルI/Oをしない純粋関数。
-///
-/// `cached`が`None`(変換結果がまだ無い、またはサイドカーが読めなかった)なら
-/// 常にやり直す。安全側に倒す(疑わしきは作り直す)。
 pub fn needs_reconversion(source: SourceFingerprint, cached: Option<SourceFingerprint>) -> bool {
     cached != Some(source)
 }
 
-/// 出力(`<name>.copc.laz`)に対応するサイドカーのパス(`<name>.copc.laz.meta`)。
 pub fn sidecar_path(output: &Path) -> PathBuf {
     let mut name = output.file_name().unwrap_or_default().to_os_string();
     name.push(".meta");
     output.with_file_name(name)
 }
 
-/// 変換が成功した直後に呼ぶ。元ファイルの指紋をサイドカーへ書く。
 pub fn write_sidecar(output: &Path, fingerprint: SourceFingerprint) -> io::Result<()> {
     std::fs::write(
         sidecar_path(output),
@@ -76,8 +49,6 @@ pub fn write_sidecar(output: &Path, fingerprint: SourceFingerprint) -> io::Resul
     )
 }
 
-/// サイドカーを読む。壊れている・存在しない場合は`None`
-/// (呼び出し側は`needs_reconversion`でこれを「作り直す」側に倒す)。
 pub fn read_sidecar(output: &Path) -> Option<SourceFingerprint> {
     let text = std::fs::read_to_string(sidecar_path(output)).ok()?;
     let mut lines = text.lines();
@@ -89,21 +60,6 @@ pub fn read_sidecar(output: &Path) -> Option<SourceFingerprint> {
     })
 }
 
-// --- M4-14: 複数ファイル(マージ変換)の指紋。「同じ選択を二度変換しない」。 ---
-//
-// 単一ファイルの`SourceFingerprint`(サイズ+更新日時)をそのまま複数個持つのでは
-// なく、1つの`u64`ハッシュへまとめる。**選択した順序に依存しない**ことが要件
-// (「同じファイル集合なら、選ぶ順番が変わっても同じキャッシュに当たる」)
-// なので、ハッシュに入れる前に(ファイル名, サイズ, 更新日時)の組を昇順に
-// ソートする。ソートしてから1本のハッシュに畳み込むだけなので、
-// XOR等で各ファイルのハッシュを個別に合成する案(順序に依存しないが、
-// 同じファイルを2回選ぶと打ち消し合う欠点がある)より素直で正しい。
-
-/// 複数ファイルの「指紋」。`combined_hash`はソート済みの(ファイル名, サイズ,
-/// 更新日時)列を1つの`DefaultHasher`に順番に食わせた結果(`DefaultHasher`は
-/// 乱数化されない決定的なハッシュ関数。`output_path.rs`の`hash_path`と同じ
-/// 前提)。`file_count`/`total_bytes`も併せて比較することで、ハッシュの衝突
-/// (起こり得るが稀)がそのまま誤ったキャッシュ命中にはならないようにする。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MultiSourceFingerprint {
     pub combined_hash: u64,
@@ -111,8 +67,6 @@ pub struct MultiSourceFingerprint {
     pub total_bytes: u64,
 }
 
-/// 複数の元ファイルの現在の指紋を読む。1つでも読めなければ`Err`
-/// (単一ファイル版の`fingerprint_of`と同じく、呼び出し側へそのまま伝える)。
 pub fn multi_fingerprint_of_paths(paths: &[PathBuf]) -> io::Result<MultiSourceFingerprint> {
     let mut entries: Vec<(String, u64, u128)> = Vec::with_capacity(paths.len());
     let mut total_bytes = 0u64;
@@ -126,7 +80,6 @@ pub fn multi_fingerprint_of_paths(paths: &[PathBuf]) -> io::Result<MultiSourceFi
         total_bytes += fp.len;
         entries.push((name, fp.len, fp.modified_unix_nanos));
     }
-    // 選択順に依存しないキーにする(ファイル名→サイズ→更新日時の順でソート)。
     entries.sort();
 
     let mut hasher = DefaultHasher::new();
@@ -142,7 +95,6 @@ pub fn multi_fingerprint_of_paths(paths: &[PathBuf]) -> io::Result<MultiSourceFi
     })
 }
 
-/// 複数ファイル版の`needs_reconversion`。
 pub fn needs_remerge(
     source: MultiSourceFingerprint,
     cached: Option<MultiSourceFingerprint>,
@@ -150,10 +102,6 @@ pub fn needs_remerge(
     cached != Some(source)
 }
 
-/// 複数ファイル版のサイドカーパス(単一ファイル版と同じ命名規則、
-/// `<出力>.meta`)。出力ファイル名自体が入力集合から決まる(`output_path.rs`の
-/// `multi_output_file_name`)ため、単一ファイル版と同じ`sidecar_path`を
-/// そのまま使ってよい(形式(3行のテキスト)だけが違う)。
 pub fn write_multi_sidecar(output: &Path, fingerprint: MultiSourceFingerprint) -> io::Result<()> {
     std::fs::write(
         sidecar_path(output),
@@ -164,7 +112,6 @@ pub fn write_multi_sidecar(output: &Path, fingerprint: MultiSourceFingerprint) -
     )
 }
 
-/// 複数ファイル版のサイドカーを読む。壊れている・存在しない場合は`None`。
 pub fn read_multi_sidecar(output: &Path) -> Option<MultiSourceFingerprint> {
     let text = std::fs::read_to_string(sidecar_path(output)).ok()?;
     let mut lines = text.lines();
@@ -272,8 +219,6 @@ mod tests {
             .collect()
     }
 
-    /// 受け入れ条件: 同じファイル集合なら、選ぶ順番が変わっても同じ
-    /// キャッシュキー(指紋)になる。
     #[test]
     fn multi_fingerprint_is_order_independent() {
         let dir = tempfile::tempdir().unwrap();
@@ -296,9 +241,7 @@ mod tests {
         let fp_b = multi_fingerprint_of_paths(&paths_b[..2]).unwrap();
         let fp_c = multi_fingerprint_of_paths(&paths_b).unwrap();
 
-        // 同じ2ファイルなら一致する。
         assert_eq!(fp_a, fp_b);
-        // 3ファイル目が増えれば(ファイル数も中身も違うので)一致しない。
         assert_ne!(fp_a, fp_c);
     }
 

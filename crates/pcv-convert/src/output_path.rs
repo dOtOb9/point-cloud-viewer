@@ -1,19 +1,8 @@
-//! M4-3: 変換結果(COPC)をどこに書くかを決める。
-//!
-//! 受け入れ条件どおり、出力名は`<元ファイル名>.copc.laz`。まず元ファイルの
-//! 隣に書くことを試み、書き込み権限が無い等で失敗する場合は
-//! `fallback_dir`(呼び出し側=`src-tauri`がアプリのキャッシュディレクトリを渡す)
-//! に置く。フォールバック時は複数の元ファイルが同じベース名を持つ場合の
-//! 衝突を避けるため、元パス全体のハッシュをファイル名に前置する。
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// "foo.las"/"foo.laz"(大文字小文字を問わない) → "foo.copc.laz"。
-/// どちらの拡張子でもない場合は末尾にそのまま付け足す(呼び出し側は事前に
-/// .las/.lazだけを対象にしている想定だが、何が来ても壊れない形にしておく)。
 pub fn copc_output_file_name(source_file_name: &str) -> String {
     let lower = source_file_name.to_ascii_lowercase();
     let stem_len = if lower.ends_with(".laz") || lower.ends_with(".las") {
@@ -24,11 +13,6 @@ pub fn copc_output_file_name(source_file_name: &str) -> String {
     format!("{}.copc.laz", &source_file_name[..stem_len])
 }
 
-/// 出力先を決める。まず元ファイルの隣を試し、書き込めなければ`fallback_dir`
-/// (実在しなければ作る)に置く。
-///
-/// 「書き込めるか」は実際に一時ファイルを作って消すことで確かめる
-/// (OSごとに権限APIの意味が食い違うため、実際に試すのが確実)。
 pub fn resolve_output_path(source: &Path, fallback_dir: &Path) -> io::Result<PathBuf> {
     let file_name = source.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
         io::Error::new(
@@ -48,19 +32,6 @@ pub fn resolve_output_path(source: &Path, fallback_dir: &Path) -> io::Result<Pat
     Ok(fallback_dir.join(format!("{:016x}-{output_name}", hash_path(source))))
 }
 
-/// M4-14: 複数ファイル(マージ変換)の出力ファイル名。
-///
-/// `sorted_file_names`は**ファイル名の昇順にソート済み**であること(選択した
-/// 順序に依存しない名前にするため。呼び出し側=`src-tauri/src/conversion.rs`
-/// が`collect_input_paths`相当のソートを済ませてから渡す)。
-///
-/// 表示名は「<先頭ファイルの拡張子抜きの名前> ほか<残り件数>ファイル」
-/// (要件の例「09LD2626 ほか54ファイル」のとおり)。**衝突を避けるハッシュ等は
-/// 付けない**: 違うファイル集合が同じ先頭ファイル名+件数になる(例: 別の
-/// フォルダの同名ファイルを先頭に55個選ぶ)可能性はあるが、キャッシュの
-/// 正しさは`cache::MultiSourceFingerprint`(サイドカー)が担保するので、
-/// ファイル名が衝突しても「キャッシュが外れて作り直すだけ」で済む
-/// (`resolve_output_path`が元ファイルの指紋だけで安全性を保つのと同じ考え方)。
 pub fn multi_output_file_name(sorted_file_names: &[String]) -> String {
     debug_assert!(
         !sorted_file_names.is_empty(),
@@ -75,10 +46,6 @@ pub fn multi_output_file_name(sorted_file_names: &[String]) -> String {
     format!("{first_stem} ほか{rest}ファイル.copc.laz")
 }
 
-/// M4-14: 複数ファイルの出力先を決める。単一ファイル版(`resolve_output_path`)
-/// と違い、**常に`fallback_dir`(アプリのキャッシュディレクトリ)に置く**
-/// (入力が複数のディレクトリに散らばっている場合「元ファイルの隣」という
-/// 概念が定まらないため。単純さを優先した割り切り)。
 pub fn resolve_multi_output_path(
     sorted_file_names: &[String],
     fallback_dir: &Path,
@@ -113,7 +80,6 @@ mod tests {
 
     #[test]
     fn appends_when_extension_is_neither_las_nor_laz() {
-        // 呼び出し側は.las/.lazだけを渡す想定だが、壊れないことだけ確認する。
         assert_eq!(
             copc_output_file_name("no-extension"),
             "no-extension.copc.laz"
@@ -138,8 +104,6 @@ mod tests {
 
     #[test]
     fn falls_back_when_parent_does_not_exist() {
-        // 存在しないディレクトリは`tempfile_in`が失敗する(=書き込めない)ため、
-        // 実際に権限を落とす面倒な仕込みをせずに「書き込めない」経路を再現できる。
         let dir = tempfile::tempdir().expect("tempdir");
         let source = dir.path().join("does-not-exist").join("beer.laz");
         let fallback = dir.path().join("fallback");
@@ -175,8 +139,6 @@ mod tests {
 
     #[test]
     fn multi_output_file_name_is_order_independent_given_sorted_input() {
-        // 呼び出し側がソート済みの配列を渡す前提なので、同じ集合なら常に
-        // 同じ名前になる(受け入れ条件「同じ選択を二度変換しない」の一部)。
         let mut names = vec![
             "b.las".to_string(),
             "a.las".to_string(),
@@ -205,7 +167,6 @@ mod tests {
         let a = Path::new("/one/does-not-exist/beer.laz");
         let b = Path::new("/two/does-not-exist/beer.laz");
 
-        // どちらも実在しない親を持つので必ずフォールバックへ落ちる。
         let out_a = resolve_output_path(a, &fallback).unwrap();
         let out_b = resolve_output_path(b, &fallback).unwrap();
 

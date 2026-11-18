@@ -1,36 +1,3 @@
-//! G3-2 / G3-3 / G3-4: "thin a COPC file or remove outliers from it, and write the
-//! kept points into a new COPC file" (desktop and Android).
-//!
-//! The same structure as `extract.rs`: the source file is never modified
-//! (`TaskSheets/ADR-0018-layer-centric-operations.md`), the kept points are streamed to
-//! `copc-writer` (`write_streaming_with_cancel_and_timings`), and the output points are
-//! not held in memory.
-//!
-//! # How the points flow
-//!
-//! `pcv_core::tiles::TileReader` reads one XY tile (+ margin) at a time. The decision
-//! function (`pcv_core::thin` / `pcv_core::outlier`) says which points of the tile to
-//! keep; `KeptPoints` hands those, tile by tile, to the writer as an iterator. Memory is
-//! one tile (+ margin) plus the writer's own spill, independent of the point count.
-//!
-//! # SOR needs two passes
-//!
-//! The threshold depends on the mean and std over the whole cloud. Pass 1 reads every
-//! tile and only accumulates the statistics (no output). Pass 2 reads every tile again
-//! and writes. See `pcv_core::outlier`. ROR and thinning need one pass.
-//!
-//! # Progress
-//!
-//! `ReadProgress::points_read` counts the CORE points of the tiles finished so far
-//! (every point once per pass) and `total_points` is the header's point count times the
-//! number of passes. Re-reading of coarse nodes is not in these numbers; it shows up in
-//! `ThinFilterSummary::points_scanned`.
-//!
-//! # Zero points
-//!
-//! If nothing is kept, no output is created and `ThinFilterError::EmptyResult` is
-//! returned (the first kept point is taken before the writer starts, as in extract).
-
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,7 +18,6 @@ use crate::write_metadata::copc_write_metadata_from_source_header;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThinFilterError {
-    /// User-facing text, shown on screen as is.
     #[error("残る点がありません")]
     EmptyResult,
     #[error("設定が正しくありません: {0}")]
@@ -75,7 +41,6 @@ pub enum ThinFilterError {
 }
 
 impl ThinFilterError {
-    /// Whether it stopped because of cancellation (shown as "cancelled" on screen).
     pub fn is_cancelled(&self) -> bool {
         matches!(
             self,
@@ -85,13 +50,9 @@ impl ThinFilterError {
     }
 }
 
-/// How the cloud is cut into tiles (see `pcv_core::tiles::plan_tiles`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TilingParams {
-    /// Target maximum of (estimated) points per tile core.
     pub cap_points: u64,
-    /// Smallest tile side. The functions below raise it to at least twice the margin,
-    /// so that the margin is never wider than a tile.
     pub min_tile_size: f64,
 }
 
@@ -104,40 +65,29 @@ impl Default for TilingParams {
     }
 }
 
-/// Which outlier filter to run.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OutlierFilter {
     Ror(RorSettings),
     Sor(SorSettings),
 }
 
-/// The statistics SOR computed in pass 1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SorSummary {
     pub mean: f64,
     pub std: f64,
-    /// `mean + n * std`: points with a larger score were removed.
     pub threshold: f64,
 }
 
-/// Result of a thinning or filtering run.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThinFilterSummary {
-    /// Number of points written.
     pub kept_points: u64,
     pub tile_count: u64,
-    /// Points decompressed over all tiles and passes (includes re-reads of nodes that
-    /// overlap several tiles). Divide by the header's point count (times passes) for the
-    /// re-read factor.
     pub points_scanned: u64,
-    /// Core points handled over all passes (the header's count times the passes).
     pub core_points_read: u64,
-    /// The largest number of points (core + margin) one tile held.
     pub largest_tile_points: u64,
     pub sor: Option<SorSummary>,
 }
 
-/// Counters shared between the iterator (moved into the writer) and the caller.
 #[derive(Default)]
 struct Counters {
     tiles: AtomicU64,
@@ -163,9 +113,6 @@ impl Counters {
     }
 }
 
-/// Yields the kept points tile by tile. Checks `cancel` and reports progress per tile.
-/// `D` is the decision function of the tile: it returns the indices (ascending) of the
-/// points of the tile to keep.
 struct KeptPoints<'a, R, F, D>
 where
     R: Read + Seek + Send,
@@ -177,7 +124,6 @@ where
     decide: D,
     cancel: &'a (dyn CancelCheck + Sync),
     on_progress: &'a mut dyn FnMut(ReadProgress),
-    /// `points_read` already done by earlier passes, and the total over all passes.
     progress_base: u64,
     progress_total: u64,
     current: std::vec::IntoIter<LasPointRecord>,
@@ -228,7 +174,6 @@ where
     }
 }
 
-/// Moves the points at `keep` (ascending indices) out of the tile.
 fn take_indices(tile: TileData, keep: &[usize]) -> Vec<LasPointRecord> {
     let mut out = Vec::with_capacity(keep.len());
     let mut wanted = keep.iter().copied().peekable();
@@ -241,7 +186,6 @@ fn take_indices(tile: TileData, keep: &[usize]) -> Vec<LasPointRecord> {
     out
 }
 
-/// What the header says, needed before any point is read.
 struct SourceInfo {
     layout: StreamingLayout,
     metadata: copc_writer::CopcWriteMetadata,
@@ -301,7 +245,6 @@ fn tile_reader_for<'a>(
 #[cfg(test)]
 mod tests;
 
-/// One writing pass: reads every tile, keeps what `decide` says and writes it.
 #[allow(clippy::too_many_arguments)]
 fn write_pass<D>(
     source: &Path,
@@ -337,7 +280,6 @@ where
         done: false,
     };
 
-    // Take the first point before starting the writer; with none, fail without writing.
     let first = match points.next() {
         None => return Err(ThinFilterError::EmptyResult),
         Some(Err(e)) => return Err(ThinFilterError::Read(e)),
@@ -382,10 +324,6 @@ fn summary_from(
     }
 }
 
-/// Grid or voxel thinning of `source` into `output`.
-///
-/// - `on_progress`: called after each tile is read (see the module comment).
-/// - `cancel`: checked before each tile and by the writer.
 #[allow(clippy::too_many_arguments)]
 pub fn thin_path<F>(
     source: &Path,
@@ -426,7 +364,6 @@ where
     Ok(summary_from(&counters, None, None))
 }
 
-/// ROR or SOR filtering of `source` into `output`. SOR reads the file twice.
 #[allow(clippy::too_many_arguments)]
 pub fn filter_path<F>(
     source: &Path,
@@ -469,7 +406,6 @@ where
             settings.validate().map_err(ThinFilterError::Settings)?;
             let info = read_source_info(source)?;
             let total = info.total_points;
-            // Pass 1: statistics only, nothing is written.
             let (stats, pass1) = sor_statistics(
                 source,
                 settings,
@@ -479,7 +415,6 @@ where
                 total * 2,
             )?;
             let threshold = stats.threshold(settings.n_sigma);
-            // Pass 2: recompute the same scores and write the points under the threshold.
             let mut decide =
                 |tile: &TileData, _: &TileRect| sor_keep(&tile.points, settings, threshold);
             let pass2 = write_pass(
@@ -507,7 +442,6 @@ where
     }
 }
 
-/// SOR pass 1: the mean and std of the scores of all points.
 fn sor_statistics(
     source: &Path,
     settings: &SorSettings,

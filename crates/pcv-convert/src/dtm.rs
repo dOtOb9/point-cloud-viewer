@@ -1,17 +1,3 @@
-//! G1-T15: the DTM tool on desktop and Android.
-//!
-//! The work is `pcv_core::dtm::DtmJob`. This file connects it to files:
-//!
-//! 1. The job runs inside an iterator (`DtmRecords`) that `copc-writer` pulls from. The first `next()` runs pass 1
-//!    and the cloth simulation; after that it yields the classified points node by node. So the points go
-//!    from the source straight to the writer's spill files and **nothing grows with the point count** (the same
-//!    design as `extract.rs`).
-//! 2. When the writer is done the job is finished into a TIN and the GeoTIFF / LandXML files are written.
-//!
-//! Progress is the job's fraction (cloth passes, simulation, classification) scaled to 0..90%; the writer's
-//! own work after the last point (octree, compression) is not measured and shows as 95%.
-//! When anything fails or is cancelled, every output file is removed.
-
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufWriter;
@@ -32,7 +18,6 @@ use crate::write_metadata::copc_write_metadata_from_source_header;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DtmRunError {
-    /// User-facing text, shown on screen as is.
     #[error(transparent)]
     Dtm(#[from] DtmError),
     #[error("{path}: 点群(COPC)として開けませんでした: {source}")]
@@ -58,7 +43,6 @@ pub enum DtmRunError {
 }
 
 impl DtmRunError {
-    /// Whether it stopped because of cancellation (shown as "cancelled" on screen).
     pub fn is_cancelled(&self) -> bool {
         matches!(
             self,
@@ -67,32 +51,26 @@ impl DtmRunError {
     }
 }
 
-/// Where the outputs go. `geotiff` / `landxml` are written only when the request asks for them.
 #[derive(Debug, Clone)]
 pub struct DtmOutputs {
-    /// The classified point cloud (COPC).
     pub copc: PathBuf,
     pub geotiff: PathBuf,
     pub landxml: PathBuf,
 }
 
-/// Result of a run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DtmSummary {
     pub point_count: u64,
     pub ground_points: u64,
-    /// CSF against the source classification (a rough guide, not a truth).
     pub agreement: GroundAgreement,
     pub width: u32,
     pub height: u32,
     pub cell_size: f64,
-    /// TIN vertices (cells that held a ground point) and triangles.
     pub tin_points: usize,
     pub tin_triangles: usize,
     pub warnings: Vec<String>,
 }
 
-/// The classified points as an iterator for the writer. It owns the job's progress, not the files.
 struct DtmRecords<'a> {
     job: &'a mut DtmJob,
     reader: &'a mut CopcReader<std::io::BufReader<File>>,
@@ -100,7 +78,6 @@ struct DtmRecords<'a> {
     done: bool,
     cancel: &'a (dyn CancelCheck + Sync),
     on_progress: &'a mut (dyn FnMut(ReadProgress) + Send),
-    /// The real error, kept here because the writer only sees a `copc_core::Error`.
     failure: &'a mut Option<DtmError>,
 }
 
@@ -138,12 +115,6 @@ impl Iterator for DtmRecords<'_> {
     }
 }
 
-/// Classifies the ground of `source` (COPC), writes the result as the COPC `outputs.copc` and the DTM as
-/// `outputs.geotiff` and/or `outputs.landxml` (as `request.output` says).
-///
-/// - `on_progress`: `points_read` / `total_points` is the fraction in per mille (0..1000).
-/// - `cancel`: checked between steps and by the writer. On failure or cancel, every output is removed.
-/// - `unix_seconds`: the time written into LandXML.
 #[allow(clippy::too_many_arguments)]
 pub fn dtm_path(
     source: &Path,
@@ -168,7 +139,6 @@ pub fn dtm_path(
         &mut on_progress,
     );
     if result.is_err() {
-        // Best effort: half-written outputs must not stay behind.
         for path in [&outputs.copc, &outputs.geotiff, &outputs.landxml] {
             let _ = std::fs::remove_file(path);
         }
@@ -176,8 +146,6 @@ pub fn dtm_path(
     result
 }
 
-/// `dtm_path` with the caps of this platform: the desktop caps, or on Android the (smaller) Web caps, because a phone has
-/// far less memory (the desktop caps are measured in `TaskSheets/G1-T15-dtm.md`; the Android ones are not).
 #[allow(clippy::too_many_arguments)]
 pub fn dtm_path_desktop(
     source: &Path,
@@ -222,7 +190,6 @@ fn dtm_inner(
     on_progress: &mut (dyn FnMut(ReadProgress) + Send),
 ) -> Result<DtmSummary, DtmRunError> {
     request.validate()?;
-    // Layout, output metadata and CRS come from the header only (no point is read).
     let header_reader =
         las::Reader::from_path(source).map_err(|source_err| DtmRunError::OpenHeader {
             path: source.to_path_buf(),
@@ -241,7 +208,6 @@ fn dtm_inner(
         path: source.to_path_buf(),
         source: e,
     })?;
-    // The caps are checked here, before any point is read.
     let params: DtmParams = request.to_params(max_particles, max_cells);
     let mut job = DtmJob::new(&reader, epsg, &params)?;
     let total_points = job.points_total();
@@ -348,7 +314,6 @@ mod tests {
 
     use crate::streaming::AtomicCancel;
 
-    /// A flat 40 x 40 m ground (class 1, every 0.5 m) with a 4 x 4 m box 5 m above it (class 6).
     fn write_town_las(path: &Path) {
         let mut builder = las::Builder::from((1, 4));
         builder.point_format = las::point::Format::new(6).expect("PDRF6");
@@ -473,7 +438,6 @@ mod tests {
         let source_count = CopcFile::open(&source).expect("source").info().point_count;
         assert_eq!(summary.point_count, source_count, "header count");
 
-        // The new layer has every point; the ground is class 2 and the box keeps class 6.
         let mut file = CopcFile::open(&out.copc).expect("output");
         assert_eq!(file.info().point_count, source_count);
         let keys: Vec<_> = file.hierarchy().nodes().map(|n| n.key).collect();

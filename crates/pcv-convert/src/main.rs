@@ -1,14 +1,3 @@
-//! M4-1(`TaskSheets/M4-import-and-conversion.md`)のスパイク: 生LAS/LAZをCOPCへ
-//! 素朴な実装で変換し、かかる時間を測る。最適化はしていない。
-//!
-//! ```text
-//! cargo run -p pcv-convert --release -- <入力.las/.laz> <出力.copc.laz> [ノードあたり最大点数]
-//! ```
-//!
-//! ピークメモリはこのプロセスの外(PowerShellで`Process.PeakWorkingSet64`を
-//! ポーリング)から測る。実行結果の記録方法は`TaskSheets/M4-import-and-conversion.md`
-//! のM4-1「結果」を参照。
-
 use std::path::Path;
 use std::time::Instant;
 

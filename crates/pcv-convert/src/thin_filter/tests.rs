@@ -1,7 +1,3 @@
-//! Tests of `thin_path` / `filter_path` on synthetic COPC files (tiling independence,
-//! attributes, SOR's two passes, zero points, cancel, the tile size bound).
-
-// `expect_err` needs `Debug` on the success types, which the helpers do not derive.
 #![allow(clippy::err_expect)]
 
 use super::*;
@@ -29,8 +25,6 @@ impl CopcPointSource for Source {
     }
 }
 
-/// `id` is stored in `gps_time`; intensity, classification and colour are derived
-/// from it so that attribute preservation can be checked.
 fn field(x: f64, y: f64, z: f64, id: u32) -> CopcPointFields {
     CopcPointFields {
         x,
@@ -58,7 +52,6 @@ fn field(x: f64, y: f64, z: f64, id: u32) -> CopcPointFields {
     }
 }
 
-/// Deterministic numbers in [0, 1).
 fn rng(seed: u64) -> impl FnMut() -> f64 {
     let mut state = seed;
     move || {
@@ -72,8 +65,6 @@ fn rng(seed: u64) -> impl FnMut() -> f64 {
 const CLUSTER_POINTS: u32 = 5400;
 const TOTAL_POINTS: u32 = 6000;
 
-/// Ids `0..CLUSTER_POINTS` are three dense clusters; the rest is a sparse background
-/// over 200 x 200, so outlier filters must keep the former and drop the latter.
 fn cluster_points() -> Vec<CopcPointFields> {
     let mut next = rng(7);
     let mut v = Vec::new();
@@ -125,12 +116,10 @@ fn write_copc(dir: &Path, points: Vec<CopcPointFields>) -> PathBuf {
 fn tiling(cap: u64) -> TilingParams {
     TilingParams {
         cap_points: cap,
-        // A huge minimum gives exactly one tile (the reference).
         min_tile_size: if cap >= 1_000_000 { 1.0e6 } else { 0.0 },
     }
 }
 
-/// id (gps_time bits) -> (x, y, z, intensity, class, rgb) of every output point.
 type Attrs = (f64, f64, f64, u16, u8, [u16; 3]);
 
 fn read_all(path: &Path) -> BTreeMap<u64, Attrs> {
@@ -241,10 +230,7 @@ fn grid_thinning_keeps_one_original_point_per_cell_and_all_attributes() {
     assert_eq!(run.summary.kept_points as usize, run.points.len());
     assert!(run.summary.tile_count > 4, "{:?}", run.summary);
 
-    // One point per cell, every occupied cell present.
     let cell = |x: f64, y: f64| ((x / 2.0).floor() as i64, (y / 2.0).floor() as i64);
-    // Cells come from the coordinates as stored in the source file (rounded to its
-    // scale), which is what thinning sees; the original floats can differ by the scale.
     let stored = read_all(&source);
     let occupied: BTreeSet<_> = stored.values().map(|a| cell(a.0, a.1)).collect();
     let by_id: BTreeMap<u64, &CopcPointFields> = source_points
@@ -257,7 +243,6 @@ fn grid_thinning_keeps_one_original_point_per_cell_and_all_attributes() {
     }
     assert_eq!(seen, occupied);
 
-    // Attributes are those of the original point.
     for (id, attrs) in &run.points {
         let original = by_id[id];
         assert!((attrs.0 - original.x).abs() < 1e-3);
@@ -288,7 +273,6 @@ fn thinning_does_not_depend_on_the_tiling_and_progress_reaches_the_total() {
 
 #[test]
 fn the_largest_tile_is_bounded_by_the_cap_not_by_the_total() {
-    // Memory bound: one tile (+ margin) is all that is held. Check the tile's size.
     let dir = tempfile::tempdir().expect("dir");
     let source = write_copc(dir.path(), cluster_points());
     let settings = ThinSettings {
@@ -297,7 +281,6 @@ fn the_largest_tile_is_bounded_by_the_cap_not_by_the_total() {
     };
     let cap = 1200;
     let run = run_thin(&source, &settings, cap);
-    // The clusters are dense, so the estimate can be off; a factor 2 is allowed.
     assert!(
         run.summary.largest_tile_points <= 2 * cap,
         "largest {} cap {cap}",
@@ -342,7 +325,6 @@ fn sor_reads_twice_and_its_statistics_do_not_depend_on_the_tiling() {
     let many = run_filter(&source, &filter, 1200).expect("sor");
     assert!(many.summary.tile_count > 8);
     assert_eq!(ids(&many), ids(&one));
-    // Two passes: every point is a core point once per pass.
     assert_eq!(many.summary.core_points_read, 2 * u64::from(TOTAL_POINTS));
     assert_eq!(many.last_progress.points_read, 2 * u64::from(TOTAL_POINTS));
     assert_eq!(many.last_progress.total_points, 2 * u64::from(TOTAL_POINTS));
@@ -350,11 +332,9 @@ fn sor_reads_twice_and_its_statistics_do_not_depend_on_the_tiling() {
         (Some(a), Some(b)) => (a, b),
         other => panic!("no SOR summary: {other:?}"),
     };
-    // Only the order of summation differs between tilings.
     assert!((a.mean - b.mean).abs() <= 1e-9 * a.mean);
     assert!((a.std - b.std).abs() <= 1e-9 * a.std);
     assert!((a.threshold - b.threshold).abs() <= 1e-9 * a.threshold);
-    // Clusters survive; most of the sparse background goes.
     let cluster_kept = many
         .points
         .keys()
@@ -422,10 +402,6 @@ fn cancel_stops_the_run() {
     assert!(!output.exists());
 }
 
-// ---- G3-5: the step-by-step job used by the Web build gives the same points ----
-
-/// Runs `ThinFilterJob` to the end. Returns the ids (gps_time bits) of the kept points, the
-/// number of `advance` calls, the largest batch one call returned and the largest tile held.
 fn run_job(
     source: &Path,
     mode: pcv_core::thin_filter_job::JobMode,

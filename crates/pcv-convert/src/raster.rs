@@ -1,27 +1,3 @@
-//! G1-3 / G1-R2: rasterise a COPC file (desktop and Android).
-//!
-//! Two jobs, both for the Rasterize window:
-//!
-//! 1. `read_coarse_path`: read the upper levels of the octree into a `CoarsePoints`
-//!    store. The window keeps it while it is open and draws the live preview from it
-//!    (`pcv_core::raster::preview`).
-//! 2. `rasterize_path`: the export. Streams every point of the source once into a grid
-//!    of cells and writes a GeoTIFF (colored or values, `RasterOptions::tiff`). There is
-//!    no second output: the raster is not a layer (plan `G1-raster-and-dtm.md` section 13).
-//!
-//! # Memory
-//!
-//! Both readers hold one node of points at a time. The export's grid holds a few bytes
-//! per cell, so memory follows the **area / cell size**, never the point count. The
-//! caller passes the largest number of cells it accepts, and a bigger grid is refused
-//! before any point is read (`GridSpec::from_bounds`). The preview store holds at most
-//! `cap` points (`CoarsePoints`).
-//!
-//! # Zero points
-//!
-//! If no point is counted (empty cloud, or "ground only" on a cloud without class 2),
-//! nothing is written and `RasterRunError::NoPoints` is returned.
-
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -37,7 +13,6 @@ use pcv_core::raster::{CellAccumulator, GridSpec, RasterError, RasterOptions, Ra
 
 #[derive(Debug, thiserror::Error)]
 pub enum RasterRunError {
-    /// The text comes from `RasterError` (cell cap, bad cell size, ...).
     #[error("{0}")]
     Raster(#[from] RasterError),
     #[error("このレイヤーは色を持たないため、色(RGB)のラスタは作れません")]
@@ -63,25 +38,20 @@ pub enum RasterRunError {
 }
 
 impl RasterRunError {
-    /// Whether it stopped because of cancellation (shown as "cancelled" on screen).
     pub fn is_cancelled(&self) -> bool {
         matches!(self, RasterRunError::Read(copc_core::Error::Cancelled))
     }
 }
 
-/// Result of an export.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RasterSummary {
     pub width: u32,
     pub height: u32,
-    /// Points that were counted (class filter applied).
     pub points_counted: u64,
-    /// For the error log (for example: no CRS in the GeoTIFF).
     pub warnings: Vec<String>,
     pub stats: ExtractStats,
 }
 
-/// What the header says that both jobs need.
 struct HeaderFacts {
     layout: StreamingLayout,
     bounds: XyBounds,
@@ -112,11 +82,8 @@ fn read_header(source: &Path) -> Result<HeaderFacts, RasterRunError> {
     })
 }
 
-/// How many points one `CoarseReader::feed` call reads between cancel checks.
 const COARSE_BATCH_POINTS: usize = 50_000;
 
-/// Reads the upper levels of `source` (at most `cap` points) for the preview. `cancel` is
-/// checked between batches; `on_progress` after each batch.
 pub fn read_coarse_path<F>(
     source: &Path,
     cap: usize,
@@ -148,12 +115,6 @@ where
     }
 }
 
-/// Rasterises `source` (COPC) into the GeoTIFF `geotiff_output`.
-///
-/// - `max_cells`: the largest grid accepted (more is refused before reading points).
-/// - `on_progress`: called after each node is read, like `extract_path_and_timings`.
-/// - `cancel`: checked per node while reading. When it stops or fails, the GeoTIFF is
-///   removed too.
 pub fn rasterize_path<F>(
     source: &Path,
     options: RasterOptions,
@@ -174,7 +135,6 @@ where
         on_progress,
     );
     if result.is_err() {
-        // Best effort: a half-written GeoTIFF must not stay behind.
         let _ = std::fs::remove_file(geotiff_output);
     }
     result
@@ -191,7 +151,6 @@ fn rasterize_inner<F>(
 where
     F: FnMut(ReadProgress) + Send,
 {
-    // Layout, extent and CRS come from the header only (no point is read).
     let facts = read_header(source)?;
     if options.value == RasterValue::RgbMean && !facts.layout.has_color {
         return Err(RasterRunError::NoColor);
@@ -229,7 +188,6 @@ where
     if acc.accepted_points() == 0 {
         return Err(RasterRunError::NoPoints);
     }
-    // The last node may have been read after the final callback check.
     cancel.check().map_err(RasterRunError::Read)?;
 
     let file = File::create(geotiff_output).map_err(RasterRunError::GeoTiffFile)?;
@@ -257,10 +215,6 @@ mod tests {
     use pcv_core::raster::TiffKind;
     use tiff::decoder::{Decoder, DecodingResult};
 
-    /// Writes a LAS (PDRF7, with colour): 10 x 10 columns at 1 m spacing from
-    /// (1000, 2000); each column has 3 points at z = 10, 20, 30. The z = 10 point has
-    /// class `lowest_class` (2 = ground), the others class 1. Intensity is 100 * (k + 1); colour is
-    /// (ix * 1000, iy * 1000, 0). No CRS.
     fn write_columns_las(path: &Path, lowest_class: u8) {
         let mut builder = las::Builder::from((1, 4));
         builder.point_format = las::point::Format::new(7).expect("PDRF7");
@@ -358,8 +312,6 @@ mod tests {
         }
     }
 
-    /// 10 x 10 columns with a 2 m cell: 5 x 5 cells, each holding 2 x 2 columns x 3
-    /// points = 12 points (z = 10, 20, 30).
     #[test]
     fn z_mean_per_cell() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -377,7 +329,6 @@ mod tests {
         let (w, h, values) = read_f32_tiff(&tif);
         assert_eq!((w, h), (5, 5));
         assert!(values.iter().all(|&v| v == 20.0), "{values:?}");
-        // The raster is not a layer: nothing but the GeoTIFF is written.
         let written: Vec<_> = std::fs::read_dir(dir.path())
             .expect("read dir")
             .filter_map(|e| e.ok())
@@ -400,7 +351,6 @@ mod tests {
         let (count, tif) = run(&source, dir.path(), options(RasterValue::Count, false), 100);
         count.expect("count");
         assert!(read_f32_tiff(&tif).2.iter().all(|&v| v == 12.0));
-        // Ground only: class 2 is z = 10, 4 per cell.
         let (ground, tif) = run(&source, dir.path(), options(RasterValue::Count, true), 100);
         let summary = ground.expect("ground");
         assert_eq!(summary.points_counted, 100);
@@ -423,8 +373,6 @@ mod tests {
         match d.read_image().expect("image") {
             DecodingResult::U16(v) => {
                 assert_eq!(v.len(), 5 * 5 * 4);
-                // Image order: row 0 is the north row (iy = 8, 9), column 0 is ix = 0, 1:
-                // mean red = 500, mean green = 8500, alpha opaque.
                 assert_eq!(&v[0..4], &[500, 8500, 0, 65_535]);
             }
             other => panic!("unexpected sample type: {other:?}"),
@@ -435,7 +383,6 @@ mod tests {
     fn colored_geotiff_is_rgba8_and_uses_the_range_it_is_given() {
         let dir = tempfile::tempdir().expect("tempdir");
         let source = make_copc(dir.path(), 500, 2);
-        // Every cell has z mean 20; a given range of 10..50 puts it at t = 0.25.
         let mut o = options(RasterValue::ZMean, false);
         o.tiff = TiffKind::Colored;
         o.range = Some((10.0, 50.0));
@@ -465,13 +412,12 @@ mod tests {
     #[test]
     fn ground_only_without_ground_is_an_error_and_writes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let source = make_copc(dir.path(), 500, 1); // class 1 only: no ground
+        let source = make_copc(dir.path(), 500, 1);
         let (result, tif) = run(&source, dir.path(), options(RasterValue::Count, true), 100);
         assert!(matches!(result, Err(RasterRunError::NoPoints)));
         assert!(!tif.exists());
     }
 
-    /// The reader holds one node at a time, however many points there are.
     #[test]
     fn buffer_is_bounded_by_largest_node() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -529,12 +475,10 @@ mod tests {
         assert_eq!((last.points_read, last.total_points), (300, 300));
     }
 
-    // --- the preview store (G1-R2) ---
-
     #[test]
     fn coarse_read_keeps_at_most_the_cap_and_renders_a_preview() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let source = make_copc(dir.path(), 50, 2); // 300 points in several nodes
+        let source = make_copc(dir.path(), 50, 2);
         let all = read_coarse_path(&source, 1_000_000, &NeverCancel, |_| {}).expect("all");
         assert_eq!(all.len(), 300);
         let cap = read_coarse_path(&source, 40, &NeverCancel, |_| {}).expect("capped");

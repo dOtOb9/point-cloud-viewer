@@ -1,58 +1,5 @@
-//! M4-3: LASヘッダーのCRS(WKTまたはGeoTIFF)を、COPC出力へ運ぶためのWKT文字列に
-//! 解決する。
-//!
-//! # 背景(方針転換で必要になった理由)
-//!
-//! 当初(パスを渡すだけの一括関数`convert_las_to_copc_streaming_with_crs_wkt_override`を
-//! 使う設計)は、元にWKTのVLRがあれば`copc-writer`が自動でそれを出力へ運んで
-//! くれるため、本モジュールは「GeoTIFFキーだけの場合の穴埋め」だけを担えばよかった。
-//!
-//! **Android対応のため低水準API`write_streaming_with_cancel`を使う方針に変えた
-//! (`streaming.rs`参照)。** この関数が受け取る`copc_writer::CopcWriteMetadata`は
-//! `wkt_crs: Option<String>`という素のWKT文字列を渡す口しか持たず、
-//! 「元のWKT VLRを自動で探して運ぶ」処理はしてくれない。そのため、
-//! **既にWKTのVLRがある場合も含めて、CRSの解決を自分で行う必要がある。**
-//!
-//! `TaskSheets/M4-import-and-conversion.md`のM4-1が記録したとおり、`pcv-core`の
-//! 読み込み側はLASヘッダーのglobal encoding WKTビット(bit4)が立っていることを
-//! 前提にしている。`copc-writer` 0.9.0のソース(`validate.rs`)を読んで確認すると、
-//! GeoTIFFキーだけ(WKTのVLRが無い)の入力は、`crs_wkt_override`を渡さない限り
-//! **変換そのものが`Error::Unsupported("... GeoTIFF-to-WKT CRS conversion is not
-//! implemented in copc-writer")`で失敗する**。つまりこのケースを放置すると、
-//! CRSが失われるだけでなく**変換自体がエラーで止まる**。所有者の実データ
-//! (GeoTIFF形式のCRSを持つLAS/LAZ)を一切変換できなくなるため、これは
-//! 無視できない問題である。
-//!
-//! `resolved_wkt_crs_for_header`は次の優先順で解決する:
-//!
-//! 1. 元にWKTのVLR(通常VLRまたはEVLR)があれば、そのままそのWKT文字列を使う
-//! 2. GeoTIFFキーだけで、かつ`pcv_core::crs`(M4-5)が対応する系
-//!    (平面直角座標系19系・UTM 51N〜56N)なら、検証済みのゾーンパラメータから
-//!    WKTを組み立てる
-//! 3. それ以外(WKTも対応済みGeoTIFFも無い)は`None`。CRSが失われることを
-//!    許容する(対応していない系の変換式を持っていないため、これ以上は
-//!    できない)
-//!
-//! # 生成するWKTについて(正直に)
-//!
-//! ゾーンの原点緯度経度・central meridian・縮尺係数は`pcv_core::crs`が
-//! 国土地理院資料・EPSGレジストリ実測で検証済みの値(M4-5)をそのまま使う。
-//! 一方、datum/楕円体/単位のEPSG権威コード(GRS80=7019、JGD2000 datum=6612、
-//! JGD2011 datum=1128、JGD2000地理座標系=4612、JGD2011地理座標系=6668、
-//! WGS84関連=4326/6326/7030、Greenwich=8901、degree=9122、metre=9001)は
-//! 広く使われる既知の固定値であり、GDAL等が出力するWKTでも同じ値が使われるが、
-//! **本セッションでEPSGレジストリへ都度問い合わせて確認してはいない**
-//! (M4-5のmm精度テストのような、その場で取得した値ではない)。誤りがあれば
-//! この一覧を直せばよい形にしてある。
-//!
-//! 正しさの確認は、生成したWKTを`pcv_core::crs::detect_crs_from_las_header`に
-//! 通し、**元と同じ系(zone/epoch)に戻ること**をテストする(下記`tests`)。
-//! これはAUTHORITY部分の構造が正しいことの裏付けにはなるが、GDAL等の
-//! 外部ツールが全体を有効なWKTとして受理するかまでは確認していない。
-
 use pcv_core::crs::{Crs, JgdEpoch};
 
-/// LASヘッダーのCRSをWKT文字列として解決する。モジュールのドキュメント参照。
 pub fn resolved_wkt_crs_for_header(header: &las::Header) -> Option<String> {
     if let Some(bytes) = header.get_wkt_crs_bytes() {
         return Some(decode_wkt_bytes(bytes));
@@ -65,10 +12,6 @@ pub fn resolved_wkt_crs_for_header(header: &las::Header) -> Option<String> {
     wkt_for_epsg(epsg)
 }
 
-/// WKTのVLRデータはヌル終端されていることがある(`copc-writer`の
-/// `null_terminated_wkt_bytes`と同じ想定、`las`クレートの`set_wkt_crs`も
-/// ヌル終端を前提にしている)。末尾のヌルバイト以降を切り落としてから
-/// 文字列化する。
 fn decode_wkt_bytes(bytes: &[u8]) -> String {
     let trimmed = bytes.split(|&b| b == 0).next().unwrap_or(bytes);
     String::from_utf8_lossy(trimmed).into_owned()
@@ -92,8 +35,6 @@ fn wkt_for_epsg(epsg: u16) -> Option<String> {
     }
 }
 
-/// 平面直角座標系の系番号(1〜19)をEPSG命名慣習のローマ数字にする
-/// (例: 9 → "IX"。"JGD2011 / Japan Plane Rectangular CS IX"のような名前に使う)。
 fn roman_numeral(n: u8) -> &'static str {
     const NUMERALS: [&str; 19] = [
         "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV",
@@ -162,21 +103,32 @@ mod tests {
     use super::*;
     use pcv_core::crs::detect_crs_from_las_header;
 
-    // pcv-core側のテスト(crates/pcv-core/src/crs/mod.rsの
-    // `header_with_geotiff_projected_crs`)と同じ組み立て方
-    // (GeoKeyDirectoryTagのバイナリレイアウトはGeoTIFF仕様どおり)。
-    // pcv-core側のヘルパーは非公開なので、ここで独立に組み立てる。
+    fn geo_key_directory_with_one_projected_crs_key(epsg: u16) -> Vec<u8> {
+        let key_directory_version = 1u16;
+        let key_revision = 1u16;
+        let minor_revision = 1u16;
+        let number_of_keys = 1u16;
+        let projected_crs_geo_key = 3072u16;
+        let value_stored_inline = 0u16;
+        let value_count = 1u16;
+        [
+            key_directory_version,
+            key_revision,
+            minor_revision,
+            number_of_keys,
+            projected_crs_geo_key,
+            value_stored_inline,
+            value_count,
+            epsg,
+        ]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+    }
+
     fn header_with_geotiff_projected_crs(epsg: u16) -> las::Header {
         let mut builder = las::Builder::from((1, 4));
-        let mut data = Vec::new();
-        data.extend_from_slice(&1u16.to_le_bytes()); // KeyDirectoryVersion
-        data.extend_from_slice(&1u16.to_le_bytes()); // KeyRevision
-        data.extend_from_slice(&1u16.to_le_bytes()); // MinorRevision
-        data.extend_from_slice(&1u16.to_le_bytes()); // NumberOfKeys
-        data.extend_from_slice(&3072u16.to_le_bytes()); // ProjectedCRSGeoKey
-        data.extend_from_slice(&0u16.to_le_bytes()); // location=0(値そのもの)
-        data.extend_from_slice(&1u16.to_le_bytes()); // count=1
-        data.extend_from_slice(&epsg.to_le_bytes());
+        let data = geo_key_directory_with_one_projected_crs_key(epsg);
 
         builder.vlrs.push(las::Vlr {
             user_id: "LASF_Projection".to_string(),

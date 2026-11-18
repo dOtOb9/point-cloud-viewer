@@ -1,110 +1,3 @@
-//! M4-3: 本番の変換経路。
-//!
-//! # 方針転換の経緯(コーディネーター指示、Android対応)
-//!
-//! 当初は`copc-writer`の一括関数`convert_las_to_copc_streaming_with_crs_wkt_override`
-//! (パスを渡すだけの高水準API)を使う設計だったが、**所有者の方針変更で
-//! Androidでも変換すること**になった。Androidのファイル選択は`content://` URIを
-//! 返し、パスではなく`std::fs::File`(`tauri-plugin-fs`が`ContentResolver`経由で
-//! 開いたもの。`src-tauri/src/copc_state.rs`の`open_uri_reader`と同じ経路)しか
-//! 得られない。一括関数はパスしか受け付けないため、代わりに`copc-writer`が
-//! 公開している低水準API`write_streaming_with_cancel(path, layout, points: I,
-//! params, metadata, spill_dir, cancel)`を使う。これは点の`Iterator`を受け取る
-//! ため、`R: Read + Seek`であれば`std::fs::File`(パスから開いても
-//! `content://`から開いても最終的にこの型になる)を同じコードで扱える
-//! (デスクトップ・Androidを1本の経路に統一する。コーディネーター指示どおり)。
-//!
-//! 副産物として、**点のイテレータを自前で回すため、読み込んだ点数を数えて
-//! 進捗として報告できる**(`on_progress`引数)。`copc-writer`自身は進捗の
-//! コールバックを持たない(ソースで確認済み)ため、これは外付けの計測になる。
-//!
-//! # キャンセルの実装方針(ソースを読んで確認した結果)
-//!
-//! `copc-writer` 0.9.0は`copc_core::CancelCheck`トレイトでキャンセルに
-//! 対応している(`writer.rs`の随所――点のスパイル・LOD構築・チャンク圧縮の
-//! 全フェーズ――で`cancel.check()?`を呼んでおり、点の処理では4096点ごとに
-//! 確認される)。**そのため別プロセスは起動しない。** デスクトップ・Android
-//! 共通で、同じプロセスの中の別スレッドで動かし、`Arc<AtomicBool>`を共有する
-//! `AtomicCancel`をキャンセルフラグとして渡すだけでよい(Androidはアプリごとに
-//! サンドボックスされ、自分自身を別プロセスとして起動するのは一般的な作法
-//! ではないため、元よりこの方式がAndroidと相性がよい)。
-//!
-//! キャンセル時・失敗時の一時ファイル・書きかけ出力の後始末も`copc-writer`
-//! 自身が面倒を見ることをソースで確認した。一時ファイル(スパイル・LOD index)は
-//! `tempfile::NamedTempFile`で作られており(`spill.rs`/`lod.rs`)、`.persist()`を
-//! 呼ばない限り`Drop`時に自動で削除される。出力ファイルも`writer.rs`の
-//! `PendingOutput`が同じ仕組み(`.part`という一時名で書き、成功時だけ
-//! `persist()`で本来の名前へリネームする)を使っている。したがって
-//! `cancel.check()`が`Err`を返して呼び出しが通常のエラーで戻れば
-//! (パニックではないので、スタック巻き戻しは常に起きる)、これらの一時
-//! ファイルは全てRAIIで消える。このモジュールで追加の後始末コードは
-//! 書いていない。
-//!
-//! # 進捗の粒度(コーディネーター指示)
-//!
-//! 「読み込み」段階(入力を全点読んでスパイルする段階)は、読んだ点数/
-//! ヘッダーの申告点数で正確な割合を出せる。その後の段階(octree構築・
-//! チャンク圧縮・書き出し)は`write_streaming_with_cancel`の呼び出しの中で
-//! 一括して行われ、外から個別のフックを挟む口が無いため、割合は出さず
-//! 「段階名」だけを示す(コーディネーター指示どおり「段階名だけ出す、で
-//! よい」)。呼び出し側(`src-tauri`)は、`on_progress`が
-//! `points_read == total_points`に達した時点を「読み込み完了」とみなし、
-//! そこから`write_streaming_with_cancel`が返るまでの間を「後処理中(割合不明)」
-//! として表示を切り替える。
-//!
-//! # M4-7: LAZ展開の並列化(デスクトップ・Android)
-//!
-//! `TaskSheets/M4-import-and-conversion.md`のM4-7で、変換の「読み込み」段階の
-//! 内訳を実測した結果、**LAZの展開がディスクI/Oやspillへの書き込みより
-//! 大きく勝る**ことが分かった(`beer.laz`、66,848,096点で読み込み段階
-//! 49.0秒のうち展開だけで38.8秒=約79〜106%。計測条件によって比率は
-//! 前後するが一貫して過半数を占める)。`TaskSheets/ADR-0007-pcv-protocol-concurrency.md`
-//! の教訓(並列度だけを上げて1回あたりのコストを疑わなかった失敗)に
-//! 倣い、まず測ってからこの並列化に進んだ。
-//!
-//! `las`クレートは`laz`クレートの並列展開機能(`parallel`フィーチャ、
-//! `rayon`使用)への入口を`laz-parallel`フィーチャとして既に持っている
-//! (自前でチャンクを分担するコードを書く前に確認した。`Cargo.toml`参照)。
-//! `Cargo.toml`でこのフィーチャを有効にすると、`las::ReaderOptions::default()`
-//! が**既定で**並列展開(`LazParallelism::Yes`)を選ぶため、`Reader::new`を
-//! 呼ぶだけのこのモジュールのコードは変更不要だった(`las`クレートの
-//! ソース、`src/reader/mod.rs`の`ReaderOptions::default()`で確認済み)。
-//!
-//! 内部的には`laz::ParLasZipDecompressor`が使われる。LAZの1チャンク
-//! (約5万点、チャンク間に依存は無い)はチャンクテーブルで独立に位置が
-//! わかるため、`decompress_many`は要求された点数を埋めるのに必要な
-//! チャンク群を読み、`rayon`のスレッドプールでチャンクごとに並列展開する
-//! (`laz`クレートのソース、`src/laszip/parallel/decompression.rs`で確認済み)。
-//! **各チャンクの展開結果は出力バッファの自分の位置へそのまま書かれるため、
-//! 点の順序は変わらない**(同ソースで確認済み。並べ替えが起きないことは
-//! 実測ではなくコードの読み込みによる確認であることを明記する)。
-//!
-//! ## バッチサイズを増やした理由
-//!
-//! `decompress_many`(=`fill_points`)は、1回の呼び出しがまたぐチャンク数の
-//! 分だけ並列化される。以前の`READ_BATCH_SIZE`(64Ki点)は1チャンク(約5万点)
-//! の1.3倍程度にしかならず、並列化の余地がほとんど無かった。
-//! `examples/parallel_read_bench.rs`でバッチサイズを振って実測した
-//! (`beer.laz`、20論理コア、詳細は`TaskSheets/M4-import-and-conversion.md`
-//! のM4-7参照):
-//!
-//! | バッチサイズ | 直列 | 並列 | 倍率 |
-//! |---|---|---|---|
-//! | 64Ki (旧値) | 43.0秒 | 25.5秒 | 1.69倍 |
-//! | 256Ki | 17.3秒 | 5.3秒 | 3.27倍 |
-//! | **1Mi (採用)** | 17.6秒 | **3.3秒** | **5.33倍** |
-//! | 4Mi | 17.6秒 | 2.8秒 | 6.30倍 |
-//!
-//! 4Miの方がわずかに速いが、バッチが大きいほど「1回の`fill_points`呼び出しの
-//! 間はキャンセルを割り込ませられない」(=1バッチ分の時間だけキャンセルの
-//! 反応が遅れうる)という代償が大きくなる。1Miなら1バッチの所要時間は
-//! 66,848,096点/(1,048,576点ごと)≈64バッチ、3.3秒÷64≈52ms程度で、
-//! 体感では「即座」の範囲に収まる。4Miでは1バッチ≈175msとやや増える。
-//! **速度の伸びがわずか(5.33→6.30倍)な割にキャンセル遅延が3倍以上に
-//! 増える**ため、1Miを採用した。メモリ面でも1Mi点の一時バッファは
-//! 点のサイズを38バイトとしても約40MB程度で、out-of-coreの前提
-//! (全点をメモリに載せない)を崩さない。
-
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
 use std::path::Path;
@@ -117,26 +10,10 @@ use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriterParams};
 use crate::stage_timings::ConversionStageTimings;
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
-/// 進捗の報告間隔(点数)。`copc-writer`内部のキャンセル確認間隔
-/// (`CANCEL_POLL_STRIDE`=4096、非公開定数だが`writer.rs`のソースで確認済み)と
-/// 同じ桁にして、進捗コールバック自体が読み込みのボトルネックにならない
-/// 頻度に抑える。`pub(crate)`: `merge.rs`(複数ファイルの変換経路)が同じ値を
-/// 使うため(M4-14、進捗の粒度を単一ファイル経路と揃える)。
 pub(crate) const PROGRESS_REPORT_STRIDE: u64 = 4096;
 
-/// 1回の`fill_points`で読むバッチサイズ。
-///
-/// M4-7(モジュール冒頭のドキュメント参照)で、LAZの並列展開
-/// (`laz-parallel`フィーチャ)が1回の`fill_points`呼び出しがまたぐチャンク数
-/// (チャンクはおよそ5万点ごと)の分しか並列化されないことが分かり、
-/// 元の64Ki(≈1.3チャンク分)から1Mi(≈21チャンク分、20論理コアの開発機で
-/// ほぼ頭打ちになる値を実測)に増やした。実測値・キャンセル遅延との
-/// トレードオフは同じくモジュール冒頭のドキュメント参照。
 const READ_BATCH_SIZE: u64 = 1024 * 1024;
 
-/// キャンセル要求を`copc_core::CancelCheck`に橋渡しする。フラグは呼び出し元
-/// (Tauriコマンド側)が持ち、キャンセルボタンが押されたら
-/// `store(true, Ordering::Relaxed)`するだけでよい。
 #[derive(Clone)]
 pub struct AtomicCancel(pub Arc<AtomicBool>);
 
@@ -150,22 +27,12 @@ impl CancelCheck for AtomicCancel {
     }
 }
 
-/// 「読み込み」段階の進捗。`total_points`はLASヘッダーの申告値
-/// (`las::Header::number_of_points`)で、実データの点数と食い違うことは
-/// 理論上ありうるが(壊れたヘッダー)、進捗表示の分母としては十分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadProgress {
     pub points_read: u64,
     pub total_points: u64,
 }
 
-/// `las::Reader`はバッチ単位(`fill_points`)でしか点を読めず、`Iterator`を
-/// 直接は実装していない(`las`0.10の実際のAPI。当初`.points()`という
-/// イテレータメソッドがあると誤って想定していたが、無かった)。
-/// `write_streaming_with_cancel`が要求する`Iterator<Item=Result<LasPointRecord>>`を
-/// 満たすため、バッチを読んでは`VecDeque`に貯めて1点ずつ払い出す
-/// アダプタをここで組む。バッチサイズは`READ_BATCH_SIZE`(64Ki点)なので、
-/// メモリに載るのは常に高々1バッチ分だけ(out-of-coreの前提を崩さない)。
 struct BatchedLasPoints<F: FnMut(ReadProgress)> {
     reader: las::Reader,
     point_data: las::PointData,
@@ -220,19 +87,6 @@ impl<F: FnMut(ReadProgress)> Iterator for BatchedLasPoints<F> {
     }
 }
 
-/// `R: Read + Seek`な入力(パスから開いた`File`でも、Androidの`content://`から
-/// 開いた`File`でも、最終的にはどちらも`std::fs::File`になる。
-/// `src-tauri/src/copc_state.rs`の`open_uri_reader`参照)からCOPCへ変換する。
-///
-/// `on_progress`は読み込み段階の間、`PROGRESS_REPORT_STRIDE`点ごと(と最後の
-/// 1回)呼ばれる。読み込み完了後(`points_read == total_points`の通知の後)は
-/// 呼ばれなくなり、この関数が`Ok`/`Err`で返るまで後処理(octree構築・書き出し)が
-/// 続く(呼び出し側で「段階名だけの表示」に切り替える。モジュールの
-/// ドキュメント参照)。
-///
-/// `las::Reader::new`が`R: Send + Sync + 'static`を要求するため、この関数も
-/// 同じ境界を引き継ぐ(呼び出し側はどのみち別スレッドで変換を回すので、
-/// この制約が問題になることはない)。
 pub fn convert<R, F>(
     source: R,
     output: &Path,
@@ -257,16 +111,6 @@ where
     )
 }
 
-/// M4-12(`TaskSheets/M4-import-and-conversion.md`): `convert`と同じ処理を行い、
-/// あわせて段階ごとの所要時間(`timings`)を埋める。`src-tauri/src/
-/// conversion.rs`が本番の変換経路として呼ぶ(所有者が「変換のどこが遅いか」を
-/// 画面で確認し、そのまま報告できるようにするため)。
-///
-/// 内訳の実体は`vendor/copc-writer`の
-/// `write_streaming_with_cancel_and_timings`(`IngestStageTimings`・
-/// `PostProcessStageTimings`)がそのまま計測する。このクレート側は
-/// 2つの構造体を1つの`ConversionStageTimings`にまとめるだけで、追加の計測は
-/// 行っていない。
 pub fn convert_and_timings<R, F>(
     source: R,
     output: &Path,
@@ -281,8 +125,6 @@ where
     F: FnMut(ReadProgress),
 {
     let las_reader = las::Reader::new(source).map_err(|e| copc_core::Error::Las(e.to_string()))?;
-    // `fill_points`は`&mut self`を要求するため、ヘッダーから要る情報は先に取り出す
-    // (借用が重ならないようにする)。
     let layout = StreamingLayout::from_las_header(las_reader.header());
     let metadata = copc_write_metadata_from_source_header(las_reader.header());
     let total_points = las_reader.header().number_of_points();
@@ -317,9 +159,6 @@ where
     Ok(())
 }
 
-/// パスから開く便利関数(デスクトップの通常経路。テストからも使う)。
-/// Android(`content://`)は`convert`を直接、`tauri-plugin-fs`で開いた
-/// `File`を渡して呼ぶ(`src-tauri`側の実装を参照)。
 pub fn convert_path<F>(
     source: &Path,
     output: &Path,
@@ -343,7 +182,6 @@ where
     )
 }
 
-/// `convert_path`の内訳付き版(`convert_and_timings`と同じ理由)。
 #[allow(clippy::too_many_arguments)]
 pub fn convert_path_and_timings<F>(
     source: &Path,
