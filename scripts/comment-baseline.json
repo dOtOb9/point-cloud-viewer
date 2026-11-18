@@ -185,8 +185,6 @@
   "src/app/view.test.ts": 4,
   "src/app/view.ts": 22,
   "src/code-limits.test.ts": 18,
-  "src/datasource/update-check.ts": 17,
-  "src/datasource/version-compare.ts": 7,
   "src/layer-rules.test.ts": 19,
   "src/renderer/animation.ts": 34,
   "src/renderer/camera-motion.test.ts": 6,
