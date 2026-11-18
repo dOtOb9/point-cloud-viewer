@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCountedComments, findRustCommentRanges, isCheckedFile } from "./check-comments.mjs";
 import ts from "typescript";
@@ -7,7 +8,7 @@ import ts from "typescript";
 const LINES_LOOKED_AT_AFTER_A_COMMENT = 8;
 const MAGIC_NUMBER = /(?<![\w.])(?:0x[0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:e-?\d+)?)(?![\w.])/g;
 const NUMBERS_THAT_EXPLAIN_THEMSELVES = new Set(["0", "1", "0.0", "1.0", "2", "2.0"]);
-const SHORT_STRING_LITERAL = /"([^"\\\n]{1,3})"/;
+const SHORT_STRING_LITERAL = /"([^"\\\n]{1,3})"/g;
 const LEXED_LIKE_RUST = /\.(rs|wgsl)$/;
 
 function commentRanges(text, fileName) {
@@ -32,13 +33,13 @@ function withoutComments(line) {
   return line.replace(/\/\/.*$/, "").replace(/\/\*.*?\*\//g, "");
 }
 
-function magicLiteralOf(codeLine) {
+function bareLiteralsOf(codeLine) {
   const code = withoutComments(codeLine);
-  for (const match of code.matchAll(MAGIC_NUMBER)) {
-    if (!NUMBERS_THAT_EXPLAIN_THEMSELVES.has(match[0])) return match[0];
-  }
-  const shortString = code.match(SHORT_STRING_LITERAL);
-  return shortString ? `"${shortString[1]}"` : null;
+  const numbers = [...code.matchAll(MAGIC_NUMBER)]
+    .map((match) => match[0])
+    .filter((number) => !NUMBERS_THAT_EXPLAIN_THEMSELVES.has(number));
+  const shortStrings = [...code.matchAll(SHORT_STRING_LITERAL)].map((match) => match[0]);
+  return [...numbers, ...shortStrings];
 }
 
 export function findRemovedCommentsNearLiterals(baseText, headText, fileName) {
@@ -60,14 +61,14 @@ export function findRemovedCommentsNearLiterals(baseText, headText, fileName) {
       candidates.push(baseLines[i]);
     }
     for (const candidate of candidates) {
-      const literal = magicLiteralOf(candidate);
+      const literals = bareLiteralsOf(candidate);
       const code = candidate.trim();
-      if (literal && headCodeLines.has(code)) {
+      if (literals.length > 0 && headCodeLines.has(code)) {
         if (!foundByCodeLine.has(code)) {
           foundByCodeLine.set(code, {
             line: firstLine + 1,
             comment: body.split(/\r?\n/)[0].slice(0, 80),
-            literal,
+            literals,
             code: code.slice(0, 100),
           });
         }
@@ -78,9 +79,13 @@ export function findRemovedCommentsNearLiterals(baseText, headText, fileName) {
   return [...foundByCodeLine.values()];
 }
 
-function changedCheckedFiles(base, pathspecs) {
+export function repositoryRoot() {
+  return execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+}
+
+export function changedCheckedFiles(root, base, pathspecs) {
   const output = execFileSync("git", ["diff", "--name-only", base, "--", ...pathspecs], { encoding: "utf8" });
-  return output.split("\n").filter((path) => path && isCheckedFile(path) && existsSync(path));
+  return output.split("\n").filter((path) => path && isCheckedFile(path) && existsSync(join(root, path)));
 }
 
 function baseTextOf(base, path) {
@@ -97,14 +102,15 @@ function main() {
     console.error("usage: node scripts/removed-comments-near-literals.mjs <base commit> [pathspec...]");
     process.exit(2);
   }
+  const root = repositoryRoot();
   let total = 0;
-  for (const path of changedCheckedFiles(base, pathspecs)) {
+  for (const path of changedCheckedFiles(root, base, pathspecs)) {
     const baseText = baseTextOf(base, path);
     if (baseText === null) continue;
-    for (const item of findRemovedCommentsNearLiterals(baseText, readFileSync(path, "utf8"), path)) {
+    for (const item of findRemovedCommentsNearLiterals(baseText, readFileSync(join(root, path), "utf8"), path)) {
       total++;
       console.log(`${path}:${item.line}: ${item.comment}`);
-      console.log(`    still bare: ${item.literal} in \`${item.code}\``);
+      console.log(`    still bare: ${item.literals.join(", ")} in \`${item.code}\``);
     }
   }
   console.log(`${total} removed comments explained a literal that is still bare: name it, or write the reason in the task sheet`);

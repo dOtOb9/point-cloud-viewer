@@ -17,7 +17,7 @@ describe("removed-comments-near-literals", () => {
     ].join("\n");
     const found = findRemovedCommentsNearLiterals(base, head, "a.rs");
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ line: 2, literal: "500" });
+    expect(found[0]).toMatchObject({ line: 2, literals: ["500", "256", "1024"] });
   });
 
   it("lists a removed doc comment whose function still has a bare short string (CM-5 F-2)", () => {
@@ -31,7 +31,14 @@ describe("removed-comments-near-literals", () => {
     ].join("\n");
     const head = base.split("\n").slice(1).join("\n");
     const found = findRemovedCommentsNearLiterals(base, head, "lib.rs");
-    expect(found.map((item) => item.literal)).toEqual(['"*"']);
+    expect(found.map((item) => item.literals)).toEqual([['"*"']]);
+  });
+
+  it("gives every bare number of the line, not only the first one", () => {
+    const base = ["// The budget is small so that the octree splits on disk.", "let p = new(500).budget(64 * 1024);"].join("\n");
+    const head = "let p = new(500).budget(64 * 1024);";
+    const [item] = findRemovedCommentsNearLiterals(base, head, "a.rs");
+    expect(item.literals).toEqual(["500", "64", "1024"]);
   });
 
   it("does not list the comment once the literal is named", () => {
@@ -63,7 +70,7 @@ describe("removed-comments-near-literals", () => {
     expect(findRemovedCommentsNearLiterals(rust, "let p = unsafe { f(8) };", "a.rs")).toEqual([]);
     const ts = ["// 1420 is the dev server port", "const url = `http://localhost:${port}`;", "const port = 1420;"].join("\n");
     const tsHead = ["const url = `http://localhost:${port}`;", "const port = 1420;"].join("\n");
-    expect(findRemovedCommentsNearLiterals(ts, tsHead, "a.ts").map((item) => item.literal)).toEqual(["1420"]);
+    expect(findRemovedCommentsNearLiterals(ts, tsHead, "a.ts").map((item) => item.literals)).toEqual([["1420"]]);
   });
 
   it("lists one entry per bare line even when a doc comment has many lines", () => {
