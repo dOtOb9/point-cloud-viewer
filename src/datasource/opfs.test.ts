@@ -1,8 +1,3 @@
-﻿// opfs.ts の純粋関数(キャッシュのキー・容量の判定)のテスト。
-// 実際のOPFS I/Oはブラウザでしか意味を持たないため、ここではテストしない
-// (所有者がブラウザで確かめる手順は TaskSheets/M4-import-and-conversion.md の
-// M4-6bに書く)。
-
 import { describe, expect, it, vi } from "vitest";
 import {
   cacheKeyFor,
@@ -55,8 +50,6 @@ describe("outputFileNameFor", () => {
   });
 });
 
-// M4-14: 複数ファイル選択のキャッシュキー。「同じ選択を二度変換しない」
-// (選ぶ順序に依存しない)ための要件を確認する。
 describe("cacheKeyForMulti", () => {
   const a: FileFingerprint = { name: "a.laz", size: 100, lastModified: 1 };
   const b: FileFingerprint = { name: "b.laz", size: 200, lastModified: 2 };
@@ -108,8 +101,6 @@ describe("requiredScratchBytes(フォールバック、ファイルサイズか�
   });
 });
 
-// M4-9追記: 容量の見積もりを点数から出す(実機不具合の修正。
-// opfs.tsのrequiredBytesForPointCountのドキュメント参照)。
 describe("requiredBytesForPointCount", () => {
   it("M4-1bの実測(60 B/点の一時領域+10 B/点の出力)を根拠にした値を返す", () => {
     expect(SCRATCH_BYTES_PER_POINT).toBe(60);
@@ -127,9 +118,6 @@ describe("requiredBytesForPointCount", () => {
     const sofiPcdFileSizeBytes = 9.47 * 1024 ** 3;
     const byPointCount = requiredBytesForPointCount(sofiPointCount);
     const byFileSizeFallback = requiredScratchBytes(sofiPcdFileSizeBytes);
-    // 旧実装(ファイルサイズ×11)は9.47GB×11≈104GBという、実際には不要な
-    // 過大な見積もりになっていた(実機不具合の原因)。点数からの見積もりは
-    // それよりずっと小さい値になるはず。
     expect(byPointCount).toBeLessThan(byFileSizeFallback);
   });
 });
@@ -182,8 +170,6 @@ describe("openHandlePool", () => {
   });
 
   it("途中で失敗したら、それまでに作ったハンドルをすべて閉じてから投げ直す", async () => {
-    // 実機不具合の再現: N個目(ここでは3個目、index=2)で
-    // createSyncAccessHandle相当が投げる偽物を用意する。
     const closed: number[] = [];
     const failure = new Error(
       "Failed to execute 'createSyncAccessHandle' on 'FileSystemFileHandle': ...",
@@ -200,8 +186,6 @@ describe("openHandlePool", () => {
       ),
     ).rejects.toBe(failure);
 
-    // 0・1個目は成功して開いていたはずなので、両方とも閉じられている
-    // (3・4個目はそもそも作られていないので閉じる対象にもならない)。
     expect(closed).toEqual([0, 1]);
   });
 
@@ -240,7 +224,6 @@ describe("openHandlePool", () => {
       ),
     ).rejects.toBe(failure);
 
-    // id=1のcloseが失敗しても、id=0・2は閉じようとし続けるはず。
     expect(closed).toEqual([0, 1, 2]);
   });
 });
@@ -281,9 +264,6 @@ describe("withConversionLock", () => {
   });
 });
 
-// M4-6追記(「空き容量が足りません」の改善): 永続化の要求フロー。
-// `navigator.storage`を直接使わず、テストから差し替え可能な
-// `PersistableStorageLike`を注入する(`withConversionLock`と同じ方針)。
 describe("ensurePersistentStorage", () => {
   function fakeStorage(persistedInitially: boolean, persistResult: boolean): PersistableStorageLike {
     return {
@@ -320,9 +300,6 @@ describe("toGiBLabel", () => {
   });
 });
 
-// M4-6追記: 容量不足の表示の文言組み立て(純粋関数)。所有者の実機不具合
-// (「空き容量が足りません(10.0GiB)」が必要量か空きか分からなかった)の
-// 修正として、必要・空き・上限・使用中を分けて出し、空ける方法を示す。
 describe("describeInsufficientSpaceWeb", () => {
   const base = {
     requiredBytes: 20 * 1024 ** 3,
@@ -335,7 +312,7 @@ describe("describeInsufficientSpaceWeb", () => {
   it("必要・空き・上限・使用中を分けて出す", () => {
     const message = describeInsufficientSpaceWeb(base);
     expect(message).toContain("必要: 約20.0GiB");
-    expect(message).toContain("空き: 約9.0GiB"); // quota(10) - usage(1)
+    expect(message).toContain("空き: 約9.0GiB");
     expect(message).toContain("上限 約10.0GiB");
     expect(message).toContain("使用中 約1.0GiB");
   });

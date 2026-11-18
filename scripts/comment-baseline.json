@@ -205,8 +205,6 @@
   "src/datasource/laz-decompress.worker.ts": 45,
   "src/datasource/node-format.test.ts": 9,
   "src/datasource/node-format.ts": 17,
-  "src/datasource/opfs.test.ts": 23,
-  "src/datasource/opfs.ts": 115,
   "src/datasource/point-count-estimate.test.ts": 6,
   "src/datasource/point-count-estimate.ts": 48,
   "src/datasource/prepare-outcome.ts": 7,
