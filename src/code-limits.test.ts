@@ -12,7 +12,7 @@ const LIMIT = 800;
 
 /** Files already over LIMIT, with the most lines they may have. Only ever lowered. */
 const BASELINE: Record<string, number> = {
-  "src/datasource/copc.worker.ts": 1733,
+  "src/datasource/copc.worker.ts": 1376,
   "src/datasource/web.ts": 901,
   "src/renderer/gpu-resources.ts": 1235,
   "src/renderer/point-cloud-renderer.ts": 1309,

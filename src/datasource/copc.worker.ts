@@ -1,31 +1,3 @@
-// Web版のCOPC読込を行うWeb Worker本体。`pcv-wasm`(crates/pcv-wasm、pcv-coreの
-// wasm-bindgenラッパー)をここでロードし、`WasmCopcFile`を1本だけ保持する。
-//
-// ## なぜWorkerでなければならないか
-//
-// `web_sys::FileReaderSync`と、同期モードの`XMLHttpRequest`はどちらも
-// **Webワーカー専用のAPI**で、メインスレッドには存在しない(同期XHRはメイン
-// スレッドでも動くが非推奨かつUIをブロックする)。`pcv-core`の`CopcFile`は
-// 同期の`Read + Seek`の上で動く設計なので、この同期I/Oが使えるWorkerの中で
-// 動かす必要がある(`TaskSheets/ADR-0012-web-worker-sync-io.md`参照)。
-//
-// ## 並列化について(COPCの読込)
-//
-// このWorkerは1本だけ生成される(`web.ts`の`createRealWorker`)。Tauri版は
-// リーダーをプールして並列読み出ししている(ADR-0007)が、Web版はまず1本で
-// 動かす方針(ADR-0012)。複数Workerでの並列化は必要になってから検討する。
-// ※これはCOPCを**開く**(ノード読出し)側の話。**変換**(LAS/LAZ→COPC)の
-// LAZ展開は下記M4-7で複数Workerに分担させるようにした(開く側とは別の経路)。
-//
-// ## M4-7: 変換のLAZ展開を複数Workerへ分担させる
-//
-// `crates/pcv-wasm/src/convert.rs`のモジュールドキュメント参照。この
-// Worker(変換用)は、自分の`WasmConverter`(spillへの書き込みを1本で担う)は
-// そのまま持ちつつ、読み込み段階だけを`laz-decompress.worker.ts`の
-// インスタンス複数個に分担させる(`decompressWorkerCountFor`が1を返す
-// 小さい入力・低コア環境では、今までどおり`WasmConverter.feed`の
-// 逐次バッチループにフォールバックする)。
-
 import init, {
   init_panic_hook as initPanicHook,
   inspectLasHeaderSummary,
@@ -38,8 +10,8 @@ import init, {
   WasmSectionLine,
   WasmCopcFile,
   WasmPointFileConverter,
-  WasmThinFilter, // G3
-  WasmDtm, // G1-T15
+  WasmThinFilter,
+  WasmDtm,
 } from "../wasm/pcv-wasm/pcv_wasm.js";
 import type { CloudInfoDto, HierarchyNodeDto } from "./copc-dto";
 import type { RasterPreviewInfo } from "./raster";
@@ -58,9 +30,9 @@ import { DEFAULT_MAX_POINTS_PER_NODE } from "./web-protocol";
 import type {
   ConvertMultiStartRequest,
   ExtractStartRequest,
-  FilterStartRequest, // G3
-  DtmStartRequest, // G1-T15
-  ThinStartRequest, // G3
+  FilterStartRequest,
+  DtmStartRequest,
+  ThinStartRequest,
   OpenSource,
   PointFileConvertStartRequest,
   PointFileFormat,
@@ -74,31 +46,18 @@ import type {
   WorkerResponse,
 } from "./web-protocol";
 
-/**
- * `self`の型をDOM libとWebWorker libの衝突を避けつつ最小限だけ宣言する
- * (tsconfig.jsonのlibはDOM向けのままにしておきたいので、ここでは`self`の
- * 実際の使用箇所に必要な形だけをキャストで与える)。
- */
 interface WorkerScope {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null;
   postMessage(message: WorkerResponse, transfer?: Transferable[]): void;
 }
 const rawScope = self as unknown as WorkerScope;
 
-/**
- * L2-C: ids of point-cloud tool (merge) requests. A tool merge uses the same code as conversion (`runMultiConversion`),
- * but its result should go out as `tool-*` (reaching only the caller's Promise), not `convert-*`
- * (which the app-wide listener turns into "open the conversion result"). Instead of rewriting every
- * send site in `runMultiConversion`, the exit point (this `scope.postMessage`) rewrites
- * `convert-*` into `tool-*` for ids in this set.
- */
 const toolRequestIds = new Set<number>();
 
 function translateForTool(message: WorkerResponse): WorkerResponse | null {
   if (!("id" in message) || !toolRequestIds.has(message.id)) return message;
   switch (message.type) {
     case "convert-progress":
-      // Only the read phase becomes tool progress (preparing / post-processing phases are not shown).
       return message.progress.phase === "reading"
         ? {
             type: "tool-progress",
@@ -140,55 +99,18 @@ const scope = {
 };
 
 let wasmReady: Promise<void> | null = null;
-// L1-B: 開いているファイルの表（世代番号 = cloudId → ファイル）。複数同時に持つ。
-// `close`で表から外して`free()`し、wasm側のリーダー・メモリを手放す
-// （メモリは開いているファイルの数にだけ比例する）。
 const openFiles = new Map<number, WasmCopcFile>();
 
-// ファイル切り替え時の不具合の修正（TaskSheets/M4-import-and-conversion.md参照）。
-//
-// このWorkerはメインスレッドからのメッセージをFIFOで順番に処理する。「open」で
-// `openFile`を差し替えた後は、それより前に受け取った「readNode」(旧ファイル宛て)
-// は既に処理済みのはずに思えるが、実際には「open」を待っている間
-// （`WebSource.open()`のPromiseがまだ解決していない間）も、レンダラのrAFループは
-// 止まらず、旧hierarchyに基づいて`NodeLoader`が新しい「readNode」をこのWorkerへ
-// 送り続けている。これらは「open」より後に送信されるため、Workerに届く頃には
-// 既に`openFile`が新しいファイルに差し替わっており、旧ファイルのキーを新しい
-// ファイルのhierarchyに対して検索することになる（キーが存在しなければエラー、
-// 運悪く存在すれば新しいファイルのバイト列が旧キーの結果として返ってしまう）。
-//
-// `openGeneration`は「open」のたびに進む通し番号。`WebSource`は`open-result`で
-// 受け取った値を覚えておき、以後の「readNode」に含めて送り返す
-// （`ReadNodeRequest.generation`）。ここで一致を確認し、違えば実際の読み出しを
-// 行わずに`ReadNodeStaleResponse`を返す。
 let openGeneration = 0;
 
-// M4-6b: 変換のキャンセル要求。読み込みバッチの合間にこのフラグを見る
-// (`handleConvertStart`参照)。後処理(finish)の間はチェックできない
-// (`crates/pcv-wasm/src/convert.rs`のドキュメント参照)。1本のWorkerでは
-// 同時に1件しか変換しない前提なので、進行中のリクエストidだけを覚えておけば
-// 「自分宛てのキャンセルか」を判定できる。
 let activeConvertId: number | null = null;
 let convertCancelRequested = false;
 
-// M4-7: 進行中の展開Workerとその`reject`(キャンセルされたときに、
-// 待っているPromiseをすぐ解決させるために呼ぶ)。`convertCancel`の
-// ハンドラから直接参照して即座に`terminate()`するため、
-// `runParallelReadPhase`の外(モジュールスコープ)に置く。
 let activeDecompressWorkers: Array<{ worker: Worker; reject: (err: Error) => void }> = [];
 
-/** キャンセルされたことを表す、`runParallelReadPhase`専用のエラー。 */
 class ParallelReadCancelledError extends Error {}
 
 function ensureWasmReady(): Promise<void> {
-  // M4-6: `init_panic_hook`は`crates/pcv-wasm/src/lib.rs`で`#[wasm_bindgen(start)]`
-  // 付きで定義されているため、`init()`が解決した時点でwasm-bindgenの生成コード
-  // (`__wbindgen_start`)が自動的に1回呼んでいる(`src/wasm/pcv-wasm/pcv_wasm.js`の
-  // `__wbg_finalize_init`参照)。ここで明示的にもう一度呼ぶのは、「変換用の
-  // Workerでpanicフックが有効になっている」ことをこのファイルを読むだけで
-  // 確認できるようにするため(`#[wasm_bindgen(start)]`の自動呼び出しは、
-  // この.tsファイルを読んだだけでは分からない)。`set_hook`を複数回呼んでも
-  // 副作用はない(最後に設定したものに置き換わるだけ)ので安全。
   wasmReady ??= init().then(() => {
     initPanicHook();
   });
@@ -200,18 +122,9 @@ scope.onmessage = (event) => {
 };
 
 async function handleRequest(request: WorkerRequest): Promise<void> {
-  // convertCancelは応答を返さないfire-and-forgetで、かつ進行中の変換の
-  // 読み込みループが次のバッチに進む前に処理されて初めて意味を持つ
-  // (`convertCancelRequested`をここで即座に立てる。ensureWasmReady()の
-  // awaitやtryの外で処理することで、他の処理を待たされずに反映される)。
   if (request.type === "convertCancel") {
     if (request.id === activeConvertId) {
       convertCancelRequested = true;
-      // M4-7: 並列読み込み中なら、展開Workerを今すぐ止める。`terminate()`は
-      // 実行位置に関わらず即座に止まるが、`Promise.all`で待っている側は
-      // `terminate()`されたWorkerからの応答を永遠に受け取れないため、
-      // 対応する`reject`も合わせて呼び、待ちを即座に解消する
-      // (`runParallelReadPhase`参照)。
       for (const { worker, reject } of activeDecompressWorkers) {
         worker.terminate();
         reject(new ParallelReadCancelledError("キャンセルされました"));
@@ -232,7 +145,6 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       case "close":
         handleClose(request.id, request.cloudId);
         return;
-      // --- G2: cross-section view ---
       case "sectionLineStart":
         await handleSectionLineStart(request);
         return;
@@ -251,14 +163,12 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       case "extractStart":
         await handleExtractStart(request);
         return;
-      // --- G3: thinning and outlier filters ---
       case "thinStart":
         await handleThinStart(request);
         return;
       case "filterStart":
         await handleFilterStart(request);
         return;
-      // --- G1: DTM ---
       case "dtmStart":
         await handleDtmStart(request);
         return;
@@ -298,11 +208,6 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
 function handleOpen(id: number, source: OpenSource): void {
   const openFile =
     source.kind === "file" ? WasmCopcFile.openFile(source.file) : WasmCopcFile.openUrl(source.url);
-  // 呼ぶたびに1つ進む通し番号。同じファイルを開き直した場合も新しい世代になる
-  // （「古い世代を無効化する」という目的に対しては同じファイルかどうかを
-  // 気にする必要が無いため、単純な方が良い。Tauri側`src-tauri/src/copc_state.rs`の
-  // `OpenedFile`と同じ考え方）。
-  // L1-B: 他に開いているファイルは閉じず、表に足す。
   openGeneration += 1;
   openFiles.set(openGeneration, openFile);
 
@@ -322,18 +227,10 @@ function handleOpen(id: number, source: OpenSource): void {
 function handleReadNode(id: number, key: string, generation: number): void {
   const openFile = openFiles.get(generation);
   if (!openFile) {
-    // 閉じた、または知らない世代（ファイル切り替え前に送られた古いリクエストなど）。
-    // 実際の読み出しは行わず、専用の応答で知らせる
-    // （モジュール冒頭の`openGeneration`のコメント参照）。
     scope.postMessage({ type: "readNode-stale", id });
     return;
   }
   const bytes = openFile.readNode(key);
-  // wasm-bindgenが生成するグルーコードは`Vec<u8>`の戻り値をwasmのリニアメモリから
-  // 既に`.slice()`でコピーしてある(pcv_wasm.jsのreadNode()参照)ので、`bytes.buffer`は
-  // 他から参照されていない専有のArrayBuffer。そのままtransferできる
-  // (もう1回コピーする必要はない)。node-format.tsの受け側はArrayBufferを
-  // そのまま扱う設計になっている。
   const buffer = bytes.buffer as ArrayBuffer;
   scope.postMessage(
     {
@@ -347,30 +244,18 @@ function handleReadNode(id: number, key: string, generation: number): void {
   );
 }
 
-// --- G2: cross-section view ---
-/** Read the whole opened file as `(s, z)` points of a cross section and send the buffer without copying it. */
 function handleSectionProfile(request: SectionProfileRequest): void {
   const openFile = openFiles.get(request.cloudId);
   if (!openFile) {
-    // A failure goes through the generic "error" response (the caller shows its text).
     throw new Error("断面のレイヤーが閉じられています");
   }
   const bytes = openFile.readSectionProfile(request.line, request.cap);
-  // Same as handleReadNode: wasm-bindgen already copied the bytes out of wasm memory, so the buffer is ours.
   const buffer = bytes.buffer as ArrayBuffer;
   scope.postMessage({ type: "section-profile-result", id: request.id, ok: true, buffer }, [buffer]);
 }
 
-// --- G2: section line ---
-/** Run at most this long (ms) between two yields to the event loop (a cancel message is handled at the yield). */
 const SECTION_LINE_SLICE_MS = 30;
 
-/**
- * Compute the ground line of a cross section from the source layer with `WasmSectionLine`. Each `advance` is a small
- * piece of work; they run back to back for a slice of time, then progress is posted and the loop yields so that a
- * `convertCancel` message can set `convertCancelRequested`. The answer is always one `section-line-done` or
- * `section-line-failed` (this function does not throw).
- */
 async function handleSectionLineStart(request: SectionLineStartRequest): Promise<void> {
   const { id } = request;
   const fail = (message: string, cancelled: boolean) =>
@@ -403,7 +288,6 @@ async function handleSectionLineStart(request: SectionLineStartRequest): Promise
       }
     }
     const bytes = job.finish();
-    // Same as handleReadNode: wasm-bindgen already copied the bytes out of wasm memory, so the buffer is ours.
     const buffer = bytes.buffer as ArrayBuffer;
     scope.postMessage({ type: "section-line-done", id, buffer }, [buffer]);
   } catch (err) {
@@ -414,7 +298,6 @@ async function handleSectionLineStart(request: SectionLineStartRequest): Promise
   }
 }
 
-/** L1-B: そのファイルを閉じる。wasm側のリーダーを`free()`で手放す。知らない世代は何もしない。 */
 function handleClose(id: number, cloudId: number): void {
   const file = openFiles.get(cloudId);
   if (file) {
@@ -424,53 +307,24 @@ function handleClose(id: number, cloudId: number): void {
   scope.postMessage({ type: "close-result", id, ok: true });
 }
 
-// M4-6b: `WasmConverter::feed`が返すDTO(`crates/pcv-wasm/src/dto.rs`の
-// `FeedResultDto`。serdeのデフォルトなのでsnake_case)。
 interface FeedResultDto {
   points_read: number;
   total_points: number;
   done: boolean;
 }
 
-// `WasmConverter::finish`が返すDTO(同`FinishResultDto`)。M4-12
-// (`TaskSheets/M4-import-and-conversion.md`)で`stage_timings`を追加した
-// (`crates/pcv-wasm/src/dto.rs`の`ConversionStageBreakdownDto`と同じ形)。
 interface FinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
-  /** L2-C: warnings (e.g. files without a CRS were let through). */
   warnings?: string[];
 }
 
-/** 1回の`feed`呼び出しで読むバッチサイズ。デスクトップ版
- *  (`crates/pcv-convert/src/streaming.rs`の`READ_BATCH_SIZE`)と同じ桁にして、
- *  進捗の粒度・キャンセルの反応速度を揃える。 */
 const CONVERT_BATCH_SIZE = 64 * 1024;
 
-/** マイクロタスクではなくマクロタスクとして1回イベントループへ制御を返す。
- *  Workerの`onmessage`(postMessageの配送)はマクロタスクとして処理されるため、
- *  `Promise.resolve()`だけの`await`(マイクロタスク)では、送信済みの
- *  `convertCancel`メッセージがまだ処理されないことがある
- *  (`crates/pcv-wasm/src/convert.rs`のドキュメント参照)。 */
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-/**
- * 2026-10-07追記: 変換失敗のエラーメッセージを、wasmのメモリ確保失敗の詳細で
- * 補う。
- *
- * メモリ確保の失敗は`unreachable`命令でのトラップにしかならず、JSが受け取る
- * 例外のメッセージは単に`"unreachable"`(`WebAssembly.RuntimeError`)で、
- * 画面にはそれしか出せなかった(所有者がdevtoolsのconsoleを開かないと
- * `crates/pcv-wasm/src/alloc_guard.rs`が出す詳しい理由が見えない)。
- * `lastAllocationFailureMessage()`(同ファイル参照)で、直前に確保失敗が
- * 記録されていればその文言を画面のエラーにも足す。記録が無い場合(=
- * メモリ確保の失敗以外が原因の`unreachable`、または何らかの理由で
- * 記録を読めなかった場合)は、代わりにconsoleを見るよう案内する一般的な
- * 文言を足す(「確かめていないことを確認したと書かない」という方針により、
- * 読めるかどうかが不確かな経路を前提にしないため)。
- */
 function describeConversionFailure(err: unknown): string {
   const baseMessage = err instanceof Error ? err.message : String(err);
   const looksLikeWasmTrap = /unreachable/i.test(baseMessage) || /RuntimeError/i.test(baseMessage);
@@ -488,61 +342,16 @@ function describeConversionFailure(err: unknown): string {
   return `${baseMessage}(メモリ不足の可能性があります。詳しい情報がブラウザの開発者ツールのConsoleに出ている場合があるので確認してください)`;
 }
 
-/** `laz-decompress.worker.ts`のインスタンスを1つ立てる。 */
 function spawnDecompressWorker(): Worker {
   return new Worker(new URL("./laz-decompress.worker.ts", import.meta.url), { type: "module" });
 }
 
-/**
- * M4-7追記(2026-10-07、緊急修正): 読み込み段階を`workerCount`個の展開Workerに
- * 分担させる。`pointRangesFor`で点インデックスを均等に分け、各Workerへ`File`
- * (構造化クローン。`File`は不変なスナップショットなので複数Workerで
- * 同時に読んでも競合しない)と担当範囲を渡す。
- *
- * ## バッチ単位・pull型・背圧(メモリが点数に比例する不具合の修正)
- *
- * 以前は各Workerが担当範囲**全体**を1回で返す設計で、Worker1個のメモリ
- * 使用量が担当範囲の点数に比例していた(`decompress-partition.ts`の
- * モジュールドキュメント参照)。今は各Workerに対して、この関数が
- * `requestBatch`を1つずつ送り、届いた分(最大`DECOMPRESS_BATCH_POINTS`点)を
- * `pushSerializedRecords`に渡して**即座に捨てる**(参照を残さない)。
- *
- * 同時に「要求済みでまだ消費していない」バッチの数・バイト数を
- * `BoundedBatchFlow`で数え、上限(`workerCount * MAX_IN_FLIGHT_BATCHES_PER_WORKER`
- * 件)に達していたら、そのWorkerへの次の`requestBatch`を**送らずに待つ**
- * (展開Worker側は次のリクエストが来るまで何もしないので、これが背圧になる)。
- * 上限は点数に依存しない固定値なので、担当範囲が10倍になっても同時に抱える
- * 量は変わらない(`decompress-partition.test.ts`で確認)。
- *
- * ## 点の順序について(変更あり)
- *
- * 各Workerの担当範囲内での順序は保たれるが、**Worker間の順序は到着順になる**
- * (以前は「範囲の昇順で取り出す」決め打ちだったが、この設計ではそれをやめた。
- * 理由: 順序を決め打ちにするなら、「次に取り出す番のWorker」以外から届いた
- * バッチは、取り出されるまでどこかに**貯めておく**しかない。これは
- * 「バッチを受け取ったら即座にpushして捨てる」という、この修正の前提
- * (同時に抱える量を点数に比例させない)を崩す。範囲の数(Worker数)が
- * 増えるほど、順番待ちで貯まるバッチも増えうるため、到着順のまま即座に
- * 消費する設計を選んだ)。`crates/pcv-wasm/src/convert.rs`の
- * モジュールドキュメント「M4-7」が示すとおり、`SpillWriter::push`の順序は
- * 最終的なoctree構築の結果(点の集合)に影響しない。これは
- * `crates/pcv-wasm/tests/parallel_push_order_point_set.rs`で、順序を変えて
- * pushした結果が点の集合として一致することを直接確認済み。
- *
- * ## キャンセルと進捗
- *
- * 進捗は、バッチが1つ届くたび(=`DECOMPRESS_BATCH_POINTS`点ごと)に更新する
- * (以前のWorker単位の粗い粒度より細かくなった)。キャンセルは変わらず
- * `Worker.terminate()`。
- */
 async function runParallelReadPhase(
   converter: WasmConverter,
   file: File,
   totalPoints: number,
   workerCount: number,
   onProgress: (pointsRead: number) => void,
-  // M4-11: 準備段階の「展開用Workerを起動しています(i/N)」を画面に出すための
-  // コールバック(省略可能。呼ばれるたびに起動済みのWorker数を渡す)。
   onWorkerStarting?: (started: number) => void,
 ): Promise<"done" | "cancelled"> {
   const ranges = pointRangesFor(totalPoints, workerCount);
@@ -557,15 +366,9 @@ async function runParallelReadPhase(
   let pointsCompleted = 0;
   let cancelled = false;
 
-  /** 1Worker分の「init→done/failedまでrequestBatchし続ける」ループ。 */
   function runWorkerLoop(worker: Worker, range: PointRange, index: number) {
     return new Promise<void>((resolve, reject) => {
       let nextRequestId = 0;
-      // 直前に送ったrequestBatchに対して、まだ応答(batch/done/failedの
-      // いずれか)を受け取っていないか。`init`が失敗した場合の
-      // `decompress-failed`はrequestBatchを送る前に届くため、その場合は
-      // falseのまま(=flow.acquireしていないので、応答時にflow.releaseしては
-      // いけない)。
       let batchRequestPending = false;
       activeDecompressWorkers.push({ worker, reject });
 
@@ -578,9 +381,6 @@ async function runParallelReadPhase(
           resolve();
           return;
         }
-        // 背圧: 上限に達していたら、他のWorkerのバッチが消費される(release
-        // される)まで送らずに待つ。ポーリングだが、1バッチの処理時間
-        // (数万点のpush)に対して十分短い間隔なので実用上問題ない。
         while (!flow.canAcquire()) {
           await yieldToEventLoop();
           if (cancelled || convertCancelRequested) {
@@ -621,10 +421,6 @@ async function runParallelReadPhase(
             return;
           }
           case "decompress-done":
-            // 直前のrequestBatchでacquireした分を解放する(バッチが届かなかった
-            // だけで、要求自体には応答が返ってきたため)。これを忘れると、
-            // このWorkerが最後に抱えた分がflowの集計に残り続けてしまい、
-            // 他のWorkerがcanAcquire()で見かけ上余裕が無いと誤判定する。
             if (batchRequestPending) {
               flow.release(estimatedBatchBytes);
               batchRequestPending = false;
@@ -632,8 +428,6 @@ async function runParallelReadPhase(
             resolve();
             return;
           case "decompress-failed":
-            // initの失敗(requestBatchをまだ送っていない)ならacquireして
-            // いないので、releaseしない。
             if (batchRequestPending) {
               flow.release(estimatedBatchBytes);
               batchRequestPending = false;
@@ -669,18 +463,11 @@ async function runParallelReadPhase(
   }
 }
 
-/** 元のファイル名から、ダウンロード時に提案する分かりやすい名前を作る。
- *  M4-9追記: PCDの拡張子も対象に含めた(LAS/LAZ専用だった)。 */
 function suggestedFileNameFor(sourceFileName: string): string {
   const withoutExtension = sourceFileName.replace(/\.(laz|las|pcd|ply|e57)$/i, "");
   return `${withoutExtension}.copc.laz`;
 }
 
-/** 準備段階(M4-11)の進捗を1つ送る。`src/ui/dialogs/ConversionDialog.tsx`が
- *  「変換を準備しています…」の代わりにステップ名を表示する(所有者の実機で
- *  「準備中のまま止まってタブが落ちる」不具合の調査のため。次に落ちたとき、
- *  どのステップで止まったか所有者が報告できるようにするのが目的。
- *  `TaskSheets/M4-import-and-conversion.md`のM4-11参照)。 */
 function reportPreparing(id: number, preparing: PreparingStepDto): void {
   scope.postMessage({
     type: "convert-progress",
@@ -689,13 +476,6 @@ function reportPreparing(id: number, preparing: PreparingStepDto): void {
   });
 }
 
-/**
- * 変換を1つに限る。Web Locks(`opfs.withConversionLock`)が取れなければ、
- * 実際の変換(`runConversion`)は一切始めず「別のタブで変換中です」と知らせる
- * (実機不具合の修正: 複数タブが同時にOPFSの一時ファイルを掴み合うと
- * `createSyncAccessHandle`が「Access Handles cannot be created if there is
- * another open Access Handle...」で失敗していた)。
- */
 async function handleConvertStart(
   id: number,
   file: File,
@@ -737,17 +517,8 @@ async function runConversion(
   let succeeded = false;
 
   try {
-    // 前回までの後始末が走らなかった残骸(タブを閉じた・クラッシュした等)を
-    // 掃除してから始める。ロックの中で呼ぶため、他のタブが同時に新しい
-    // ディレクトリを作り始めている途中を誤って消す心配がない
-    // (`opfs.cleanupStaleScratchDirs`のドキュメント参照)。掃除自体が
-    // 失敗しても変換は試みる。
     reportPreparing(id, { step: "cleaning_stale_scratch" });
-    try {
-      await opfs.cleanupStaleScratchDirs();
-    } catch {
-      // 失敗しても変換自体は試みる。
-    }
+    await opfs.cleanupStaleScratchDirsWithoutStoppingTheJob();
 
     const poolSize = opfsScratchPoolSize();
     const pool = await opfs.createScratchPool(poolSize, (opened, total) => {
@@ -761,15 +532,6 @@ async function runConversion(
     reportPreparing(id, { step: "reading_header" });
     converter = new WasmConverter(file, scratchHandles, outputHandle, outputName, maxPointsPerNode);
 
-    // 読み込み段階: 入力が大きく、コアが複数あれば展開Workerに分担させる
-    // (M4-7)。それ以外は今までどおり`feed`の逐次バッチループ
-    // (小さい入力・単一コア環境ではWorker起動のオーバーヘッドの方が
-    // 大きいため。`decompressWorkerCountFor`のドキュメント参照)。
-    // M4-11: モバイルでは展開用Workerの数を抑える
-    // (`decompressWorkerCountFor`の`isMobile`引数、`decompress-partition.ts`の
-    // ドキュメント参照。各展開Workerは独立したwasmモジュール+ヒープ+
-    // 担当範囲ぶんのシリアライズ済みバッファを保持するため、モバイルでは
-    // 追加のWorkerを増やさない方へ倒す)。
     const totalPoints = converter.totalPoints();
     const workerCount = decompressWorkerCountFor(totalPoints, {
       hardwareConcurrency:
@@ -801,8 +563,6 @@ async function runConversion(
         return;
       }
     } else {
-      // バッチごとにWorkerのイベントループへ制御を返し、その隙間で
-      // convertCancelを受け取れるようにする(モジュール冒頭のコメント参照)。
       for (;;) {
         if (convertCancelRequested) {
           scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
@@ -820,19 +580,11 @@ async function runConversion(
       return;
     }
 
-    // 後処理段階(octree構築・チャンク圧縮・書き出し): copc-writer本体の
-    // 1回の同期呼び出しで、この間はconvertCancelを反映できない
-    // (`crates/pcv-wasm/src/convert.rs`のドキュメント参照)。
     scope.postMessage({
       type: "convert-progress",
       id,
       progress: { phase: "post_processing", elapsed_secs: elapsedSecs() },
     });
-    // `finish()`は呼ばれた時点(成功・例外どちらでも)でRust側のオブジェクトを
-    // 消費・解放する(wasm-bindgenの生成コードが`finish()`本体の実行前に
-    // ポインタを0にする。`src/wasm/pcv-wasm/pcv_wasm.js`の`finish()`参照)。
-    // そのため呼び出しの成否によらず、直後に`converter`をnullへ倒して
-    // 下のfinallyブロックの`converter?.free()`が二重解放しないようにする。
     let finishResult: FinishResultDto;
     try {
       finishResult = converter.finish() as FinishResultDto;
@@ -841,8 +593,6 @@ async function runConversion(
     }
 
     if (convertCancelRequested) {
-      // 後処理中に来たキャンセルは、終わった後に無かったことにする
-      // (途中で止められないため。モジュールドキュメント参照)。
       scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
       return;
     }
@@ -866,7 +616,6 @@ async function runConversion(
       cancelled: false,
     });
   } finally {
-    // 受け入れ条件: 成功・失敗・キャンセルのいずれでも一時ファイルを必ず消す。
     converter?.free();
     opfs.closeHandles(scratchHandles);
     if (outputHandle) opfs.closeHandles([outputHandle]);
@@ -878,22 +627,6 @@ async function runConversion(
   }
 }
 
-// --- M4-14: 複数のLAS/LAZを1つのCOPCへマージする変換 ---
-//
-// `runConversion`(単一ファイル)とほぼ同じ構造だが、以下が異なる:
-// 1. 変換前に全ファイルのヘッダーを`inspectLasHeaderSummary`で確認し、
-//    point format・CRSの不一致を明確なエラーにする(デスクトップ版
-//    `pcv_convert::merge::summarize_headers`と同じ目的)
-// 2. 1本の`WasmConverter`を先頭ファイルで作り、`setDeclaredTotals`で全入力の
-//    合計点数・合計サイズに上書きした上で、`openNextFile`でファイルを順番に
-//    切り替えながら読み進める(`crates/pcv-wasm/src/convert.rs`の
-//    `WasmConverter::openNextFile`のドキュメント参照。spillは1本のまま、
-//    読み込み元だけを入れ替える)
-// 3. 進捗は「全入力の合計点数」に対する割合で報告する(受け入れ条件
-//    「全入力の総点数に対する1本の進捗バー」)
-
-/** `inspectLasHeaderSummary`が返すDTO(`crates/pcv-wasm/src/dto.rs`の
- *  `HeaderSummaryDto`。serdeのデフォルトなのでsnake_case)。 */
 interface HeaderSummaryDto {
   declared_points: number;
   layout_key: string;
@@ -939,22 +672,13 @@ async function runMultiConversion(
 
   try {
     reportPreparing(id, { step: "cleaning_stale_scratch" });
-    try {
-      await opfs.cleanupStaleScratchDirs();
-    } catch {
-      // 失敗しても変換自体は試みる。
-    }
+    await opfs.cleanupStaleScratchDirsWithoutStoppingTheJob();
 
-    // M4-14: 全ファイルのヘッダーだけを読み(`fill_points`を呼ばないため、
-    // 全点読み込みとは別のI/Oパス。デスクトップ版`summarize_headers`の
-    // ドキュメントと同じ理由)、point format・CRSの一致を確認する。
     reportPreparing(id, { step: "reading_header" });
     const summaries: HeaderSummaryDto[] = files.map(
       (file) => inspectLasHeaderSummary(file) as HeaderSummaryDto,
     );
     const first = summaries[0];
-    // L2-G: files without a CRS ("Missing", the Debug text of `pcv_core::crs::CrsId::Missing`) are
-    // let through (Rust `finish` returns the warning). Only a mismatch between files that have a CRS stops.
     const NO_CRS = "Missing";
     const firstKnownCrs = summaries.findIndex((s) => s.crs_label !== NO_CRS);
     for (let i = 1; i < summaries.length; i++) {
@@ -986,14 +710,8 @@ async function runMultiConversion(
     outputHandle = await opfs.createOutputHandle(outputName);
 
     converter = new WasmConverter(files[0], scratchHandles, outputHandle, outputName, maxPointsPerNode);
-    // M4-14: `new`時点では先頭ファイルのヘッダーしか見えていない
-    // (totalPoints()は1ファイル分)ため、事前に求めた全入力の合計で上書きする
-    // (進捗バー・内訳表示を「全入力の合計」にするため)。
     converter.setDeclaredTotals(totalPoints, totalFileSizeBytes);
 
-    // M4-14: 全入力の合計点数に対する割合で進捗を報告する(受け入れ条件
-    // 「全入力の総点数に対する1本の進捗バー」)。`pointsCompletedBeforeCurrentFile`
-    // は、既に読み終わったファイルの点数の合計(ファイルを切り替えるたびに加算)。
     let pointsCompletedBeforeCurrentFile = 0;
     const reportReadingProgress = (pointsReadInCurrentFile: number) => {
       scope.postMessage({
@@ -1010,8 +728,6 @@ async function runMultiConversion(
 
     for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
       if (fileIndex > 0) {
-        // M4-14: spillはそのまま、読み込み元だけを次のファイルへ入れ替える
-        // (`WasmConverter::openNextFile`のドキュメント参照)。
         converter.openNextFile(files[fileIndex]);
       }
       const fileTotalPoints = summaries[fileIndex].declared_points;
@@ -1038,16 +754,12 @@ async function runMultiConversion(
           return;
         }
       } else {
-        // バッチごとにWorkerのイベントループへ制御を返す(単一ファイル版と同じ理由)。
         for (;;) {
           if (convertCancelRequested) {
             scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });
             return;
           }
           const result = converter.feed(CONVERT_BATCH_SIZE) as FeedResultDto;
-          // L2-G: `points_read` counts points over all files so far (the converter's spill counter).
-          // `reportReadingProgress` wants the count inside the current file, so subtract the finished
-          // files. Without this the bar counted the earlier files twice (6,250,115 / 3,126,520).
           reportReadingProgress(result.points_read - pointsCompletedBeforeCurrentFile);
           if (result.done) break;
           await yieldToEventLoop();
@@ -1109,12 +821,6 @@ async function runMultiConversion(
   }
 }
 
-// --- L2-C: extract only the matching points of a COPC into a new COPC (point selection, cross section) ---
-//
-// Same sequence as `runConversion` (lock -> scratch-file pool -> sequential feed loop ->
-// finish -> cleanup). The differences are that the input is a `WasmExtractor` (reads only matching nodes) and that
-// the result is returned as `tool-done`. Cancellation is the same `convertCancel` (no effect during finish).
-
 async function handleExtractStart(request: ExtractStartRequest): Promise<void> {
   const { id, file, filter, label } = request;
   const outcome = await opfs.withConversionLock(navigator.locks, () =>
@@ -1149,11 +855,7 @@ async function runExtract(
     scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
 
   try {
-    try {
-      await opfs.cleanupStaleScratchDirs();
-    } catch {
-      // Carry on even if cleanup fails (same as conversion).
-    }
+    await opfs.cleanupStaleScratchDirsWithoutStoppingTheJob();
     const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
     scratchDirName = pool.dirName;
     scratchHandles = pool.handles;
@@ -1192,7 +894,6 @@ async function runExtract(
       return;
     }
 
-    // `finish()` consumes the Rust-side object when called (same as runConversion).
     let finishResult: FinishResultDto;
     try {
       finishResult = extractor.finish() as FinishResultDto;
@@ -1231,13 +932,6 @@ async function runExtract(
     if (activeConvertId === id) activeConvertId = null;
   }
 }
-
-// --- G3: thinning and outlier filters ---
-//
-// Same sequence as `runExtract` (lock -> scratch-file pool -> loop -> finish -> cleanup). The loop calls
-// `WasmThinFilter.advance()`, which handles ONE tile of the source, and yields to the event loop after each
-// call, so a cancel message is handled between tiles (no effect during finish). Progress is the core points
-// handled so far; for SOR it covers both passes. The result is `tool-done`, like extraction.
 
 async function handleThinStart(request: ThinStartRequest): Promise<void> {
   const { id, file, label } = request;
@@ -1295,11 +989,7 @@ async function runThinFilter(
     scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
 
   try {
-    try {
-      await opfs.cleanupStaleScratchDirs();
-    } catch {
-      // Carry on even if cleanup fails (same as conversion).
-    }
+    await opfs.cleanupStaleScratchDirsWithoutStoppingTheJob();
     const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
     scratchDirName = pool.dirName;
     scratchHandles = pool.handles;
@@ -1322,7 +1012,6 @@ async function runThinFilter(
       return;
     }
 
-    // `finish()` consumes the Rust-side object when called (same as runExtract).
     let finishResult: FinishResultDto;
     try {
       finishResult = job.finish() as FinishResultDto;
@@ -1362,14 +1051,6 @@ async function runThinFilter(
   }
 }
 
-// --- G1: DTM ---
-//
-// Same sequence as `runThinFilter` (lock -> scratch-file pool -> loop -> finish -> cleanup). The loop calls
-// `WasmDtm.advance()`, which does a small piece of work (about 200 thousand points, or ten cloth steps) and returns
-// the fraction; it yields to the event loop after each call, so a cancel message is handled between calls (no effect
-// during finish). The classified COPC goes to OPFS like any tool output; the DTM files (GeoTIFF, LandXML) are
-// made after `finish` and transferred in `tool-done`.
-
 async function handleDtmStart(request: DtmStartRequest): Promise<void> {
   const { id, file, label } = request;
   const outcome = await opfs.withConversionLock(navigator.locks, () => runDtm(id, label, file, request));
@@ -1397,17 +1078,12 @@ async function runDtm(id: number, label: string, file: File, request: DtmStartRe
     scope.postMessage({ type: "tool-failed", id, message: "キャンセルされました", cancelled: true });
 
   try {
-    try {
-      await opfs.cleanupStaleScratchDirs();
-    } catch {
-      // Carry on even if cleanup fails (same as conversion).
-    }
+    await opfs.cleanupStaleScratchDirsWithoutStoppingTheJob();
     const pool = await opfs.createScratchPool(opfsScratchPoolSize(), () => {});
     scratchDirName = pool.dirName;
     scratchHandles = pool.handles;
     outputHandle = await opfs.createOutputHandle(outputName);
 
-    // The constructor refuses a cloth or a grid over the caps before any point is read.
     job = new WasmDtm(file, request.request, scratchHandles, outputHandle, outputName, DEFAULT_MAX_POINTS_PER_NODE);
 
     for (;;) {
@@ -1481,13 +1157,6 @@ async function runDtm(id: number, label: string, file: File, request: DtmStartRe
   }
 }
 
-// --- G1: rasterize ---
-//
-// Preview:`WasmRasterPreview` keeps the thinned points of the open Rasterize window (bounded in Rust), keyed by the
-// request id of `rasterPreviewOpen`. Render and close use that id. Errors go out through the generic "error" reply.
-// Export: `WasmRasterizer` reads every point in batches (so the cancel message gets through between batches), then the
-// GeoTIFF bytes are transferred in `raster-done`. Nothing is written to OPFS: the raster is not a layer.
-
 const rasterPreviews = new Map<number, WasmRasterPreview>();
 
 async function handleRasterPreviewOpen(request: RasterPreviewOpenRequest): Promise<void> {
@@ -1511,7 +1180,6 @@ function handleRasterPreviewRender(request: RasterPreviewRenderRequest): void {
   const preview = rasterPreviews.get(request.sessionId);
   if (!preview) throw new Error("ラスタ化のウィンドウが閉じられています");
   const bytes = preview.render(request.options);
-  // `bytes` is a fresh copy made by wasm-bindgen, so its buffer can be transferred.
   const buffer = bytes.buffer as ArrayBuffer;
   scope.postMessage({ type: "raster-preview-image", id: request.id, buffer }, [buffer]);
 }
@@ -1528,7 +1196,6 @@ async function handleRasterStart(request: RasterStartRequest): Promise<void> {
   convertCancelRequested = false;
   let rasterizer: WasmRasterizer | null = null;
   try {
-    // The constructor refuses a grid over the cell cap before any point is read.
     rasterizer = new WasmRasterizer(file, options);
     for (;;) {
       if (convertCancelRequested) {
@@ -1562,31 +1229,16 @@ async function handleRasterStart(request: RasterStartRequest): Promise<void> {
     if (activeConvertId === id) activeConvertId = null;
   }
 }
-// ---
 
-// --- M4-9 / R7: PCD, PLY and E57 to COPC (TaskSheets/M4-import-and-conversion.md, R7-web-ply-e57.md) ---
-//
-// Same structure as the LAS/LAZ version (`runConversion`), simpler in two ways:
-// 1. None of these formats has the parallel decompression of LAZ (M4-7), so `feed` is always a plain
-//    sequential batch loop.
-// 2. Cancel is checked between `feed` calls, and the post-processing (`finish`) cannot be interrupted;
-//    both are the same as for LAS/LAZ (all converters use the same SpillWriter ->
-//    write_copc_from_spill_with_fs).
-// M4-17: one Rust class (`WasmPointFileConverter`) reads all formats, one file or several. With several files
-// the Rust side reads them one after another into one spill, so this loop is the same for one file or many.
-
-/** What `WasmPointFileConverter::feed` returns (same shape as `FeedResultDto`). */
 interface PointFileFeedResultDto {
   points_read: number;
   total_points: number;
   done: boolean;
 }
 
-/** What `WasmPointFileConverter::finish` returns (same shape as `FinishResultDto`). */
 interface PointFileFinishResultDto {
   point_count: number;
   stage_timings: ConversionStageBreakdownDto;
-  /** L2-C: warnings (e.g. files without a CRS were let through). */
   warnings?: string[];
 }
 
@@ -1615,8 +1267,6 @@ async function runPointFileConversion(
   activeConvertId = id;
   convertCancelRequested = false;
 
-  // One file keeps the single-file cache key and name; several files use the multi-file ones
-  // (the same as the LAS merge, so the cache check in `WebSource` and the write below agree).
   const isMulti = files.length > 1;
   const fingerprints = files.map((f) => ({ name: f.name, size: f.size, lastModified: f.lastModified }));
   const outputName = isMulti ? opfs.outputFileNameForMulti(fingerprints) : opfs.outputFileNameFor(fingerprints[0]);
@@ -1631,11 +1281,7 @@ async function runPointFileConversion(
 
   try {
     reportPreparing(id, { step: "cleaning_stale_scratch" });
-    try {
-      await opfs.cleanupStaleScratchDirs();
-    } catch {
-      // 失敗しても変換自体は試みる。
-    }
+    await opfs.cleanupStaleScratchDirsWithoutStoppingTheJob();
 
     const poolSize = opfsScratchPoolSize();
     const pool = await opfs.createScratchPool(poolSize, (opened, total) => {
@@ -1647,12 +1293,9 @@ async function runPointFileConversion(
     outputHandle = await opfs.createOutputHandle(outputName);
 
     reportPreparing(id, { step: "reading_header" });
-    // The constructor reads the header of every file (the header pass) and fails on a CRS conflict.
     converter = new WasmPointFileConverter(formats, files, scratchHandles, outputHandle, outputName, maxPointsPerNode);
 
     const totalPoints = converter.totalPoints();
-    // No parallel decompression here, so always the sequential batch loop (the same path as the LAS/LAZ
-    // route when `workerCount <= 1`).
     for (;;) {
       if (convertCancelRequested) {
         scope.postMessage({ type: "convert-failed", id, message: "キャンセルされました", cancelled: true });

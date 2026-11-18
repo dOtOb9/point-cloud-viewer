@@ -194,7 +194,6 @@
   "src/datasource/copc-dto.ts": 10,
   "src/datasource/copc-header.test.ts": 7,
   "src/datasource/copc-header.ts": 27,
-  "src/datasource/copc.worker.ts": 249,
   "src/datasource/decompress-partition.test.ts": 18,
   "src/datasource/decompress-partition.ts": 41,
   "src/datasource/dtm.ts": 18,
