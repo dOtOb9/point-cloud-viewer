@@ -93,7 +93,9 @@
 - **終わる前に、決まりが変わっていないか確かめる。** `git log <作業を始めたコミット>..HEAD --oneline -- CLAUDE.md AGENTS.md "TaskSheets/ADR-*.md"` に出たコミットがあれば、その差分を読み、
   自分が作業中に足したものが新しい決まりに合っているか見直してから報告する（TP-1 の F-4。作業中に状態の置き場所の決まりが改訂された）
 - **共有の関数・判定を変えるときは、その使い手を全部数え（`grep`）、各使い手にとって「壊れて困る側」が同じか確かめて、作業報告に数と結果を書く**（TP-1 の PR 監査 R2 F-1: 視点のキーのために共有の判定を緩めたら、確認なしでレイヤーを消す Delete まで緩んだ）
-- 「入力欄にフォーカスがあるか」は `src/app/typing-target.ts` の関数を呼ぶ（害のないキーは `isTypingTarget`、消す・決める・確定するキーは `isFormControl`）（自前で `tagName` を比べない。`src/code-limits.test.ts` が検査する）
+- 「入力欄にフォーカスがあるか」は `src/app/typing-target.ts` の関数を呼ぶ（自前で `tagName` を比べない。`src/code-limits.test.ts` が検査する）。
+  使い分け: 害のないキー（視点の F・1〜7）は `isTypingTarget`（文字を打つ欄＝テキストの input・textarea・select・contenteditable でだけ止め、クリックの後もフォーカスが残るラジオ・チェックボックス・スライダーの上では効かせる）、
+  取り消せない・決めるキー（Delete でレイヤーを消す、計測と範囲選択のツールの Enter・Esc）は `isFormControl`（種類を問わずフォーム部品にフォーカスがあれば止める。安全な側。TP-1 の PR 監査 R2 F-1）
 
 ### 作業報告（Worker → Auditor）
 
