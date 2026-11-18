@@ -1,12 +1,6 @@
-# Samples the private memory (sum over a process tree) and the free space of C: every 0.5 s.
-# usage: sampler.ps1 -RootPid <pid> -Csv <path>
-#
-# The CSV is written with the invariant culture and NO digit grouping ("1040", never "1,040").
-# PF-0 lost every value above 1 GiB because the old script wrote "{0:N0}" ("1,040"), which splits into two CSV
-# columns. Read the file with scripts/bench/summarize-samples.mjs, which rejects any row with a wrong column count.
 param([int]$RootPid, [string]$Csv)
 $inv = [Globalization.CultureInfo]::InvariantCulture
-(Get-Process -Id $PID).ProcessorAffinity = [IntPtr]0xFF000   # keep the sampler off the P cores that are being timed
+(Get-Process -Id $PID).ProcessorAffinity = [IntPtr]0xFF000
 "t,private_mib,procs,free_gb" | Out-File $Csv -Encoding ascii
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while ($true) {

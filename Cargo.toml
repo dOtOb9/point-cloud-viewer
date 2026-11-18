@@ -1,65 +1,19 @@
 [workspace]
 resolver = "2"
 members = ["crates/pcv-core", "crates/pcv-convert", "src-tauri"]
-# crates/pcv-convert: the production converter for the desktop app (raw LAS/LAZ/E57/PLY/PCD -> COPC,
-# merge, DTM, raster, thin/filter). It began as the M4-1 spike
-# (TaskSheets/M4-import-and-conversion.md). pcv-core does not depend on it, so
-# `cargo build -p pcv-core --target wasm32-unknown-unknown` (rule 1) is not affected.
-#
-# crates/pcv-wasm はここには入れない。wasm-bindgen 系の依存はwasm32専用で、
-# ネイティブの `cargo test --workspace` / `cargo clippy --workspace` (CIの rust ジョブ、
-# windows-latest) に巻き込むと壊れる。vendor/ と同じ理由でワークスペース外に置く
-# (TaskSheets/ADR-0012-web-worker-sync-io.md 参照)。ビルドは
-# `cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown`
-# のように明示的なmanifest-pathで行う。
 exclude = ["vendor", "crates/pcv-wasm"]
 
-# 全クレート共通のメタデータ。各メンバーは license.workspace = true で継承する。
 [workspace.package]
 license = "MIT OR Apache-2.0"
 authors = ["dOtOb9"]
 repository = "https://github.com/dOtOb9/point-cloud-viewer"
 
-# copc-reader 0.9.0 は root hierarchy ページが hierarchy EVLR の先頭にあると誤って仮定しており、
-# hierarchy が複数ページに分かれる大規模 COPC を開けない。vendor/ に取り込んで修正している。
-# 経緯と再現手順は TaskSheets/ADR-0003-copc-crate.md の追記を参照。
-#
-# copc-writer 0.9.0 は一時ファイル(tempfile)・索引読み出し(memmap2)を直接使っており、
-# そのままでは wasm32-unknown-unknown(Web版)で動かせない。vendor/ に取り込み、
-# ファイルシステムに触れる箇所を ScratchFs トレイト越しに差し替えられる形に改修した
-# (M4-6a のスパイクで検証済み、M4-6b で本採用)。経緯は
-# TaskSheets/M4-import-and-conversion.md の M4-6/M4-6a、vendor/copc-writer/PATCH.md を参照。
 [patch.crates-io]
 copc-reader = { path = "vendor/copc-reader" }
 copc-writer = { path = "vendor/copc-writer" }
-# L2-G: seek inside variable-size chunks (COPC). vendor/laz/PATCH.md
 laz = { path = "vendor/laz" }
 
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
-#
-# panic = "unwind"（2026-09-24、ADR-0013）: 元は"abort"だった。
-#
-# 所有者の実機(OPPO Pad Air)で「点群が複数ノードにまたがると落ちる」という報告が
-# あり、原因はまだ特定できていないが、`panic = "abort"`だと**Rustのどこかで1回でも
-# panicが起きた瞬間、ログを一切残さずプロセスが即終了する**ことが分かった
-# (`ADR-0013-crash-visibility.md`参照)。`pcv://`ノード読み出しをpanicから
-# 復旧させる(`catch_unwind`で捕まえてHTTP 500を返す。`src-tauri/src/lib.rs`の
-# `handle_pcv_protocol`参照)には、そもそもRustにunwind(スタック巻き戻し)機構が
-# 有効でなければならず、"abort"のままでは`catch_unwind`を書いても効かない
-# (panicが起きた瞬間にプロセスごと終了するため)。そのため"unwind"に変えた。
-#
-# 影響（実測・未実測は正直に分ける。詳細はADR-0013）:
-# - バイナリサイズ: デスクトップ(Windows, pcv-tauri.exe)で実測した。
-#   panic="abort": 4,328,448 バイト(2026-09-23時点のリリースビルド)
-#   panic="unwind": 11,416,576 バイト(catch_unwindのコード・log/env_logger/
-#   android_loggerの追加を同時に行った状態での実測値。差分+163.8%は
-#   想定より大きく、panic設定単独の効果とロギング用クレート追加の効果を
-#   切り分ける計測は時間の都合で行っていない。詳細・次に測る手順はADR-0013)。
-# - Androidの実機での性能影響: **未計測**。unwindテーブルの分だけ実行時の
-#   コード量がわずかに増えるとされるが、このアプリのホットパス(LAZ伸長)自体は
-#   panicしない前提のコードであり、通常経路の速度に影響するとは考えにくい。
-#   ただし実際に計測していないため、断定はしない。
 panic = "unwind"
 codegen-units = 1
 lto = true

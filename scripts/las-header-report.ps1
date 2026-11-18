@@ -1,7 +1,3 @@
-# LAS ファイルのヘッダー(と GeoKey)だけを読んで、点数・point format・EPSG・範囲を表にする。
-# 点データは読まない。使い方:
-#   pwsh scripts/las-header-report.ps1 -Dir data\tokyo-shibuya,data\tokyo-23ku-1b -ListFile TaskSheets/BENCH-1b-tiles.txt
-# 出力: 図郭ごとの CSV 風の行と、合計・point format の種類・EPSG の種類。
 param(
   [Parameter(Mandatory)][string[]]$Dir,
   [string]$ListFile = ''
@@ -23,12 +19,10 @@ $rows = foreach ($f in $files | Sort-Object Name) {
     $recLen = [BitConverter]::ToUInt16($b, 105)
     $n = [BitConverter]::ToUInt32($b, 107)
     if ($verMinor -ge 4) { $n = [BitConverter]::ToUInt64($b, 247) }
-    # 仕様の位置: scale 131..155, offset 155..179, max/min x,y,z 179..227
     $sx = [BitConverter]::ToDouble($b, 131); $sy = [BitConverter]::ToDouble($b, 139); $sz = [BitConverter]::ToDouble($b, 147)
     $maxx = [BitConverter]::ToDouble($b, 179); $minx = [BitConverter]::ToDouble($b, 187)
     $maxy = [BitConverter]::ToDouble($b, 195); $miny = [BitConverter]::ToDouble($b, 203)
     $maxz = [BitConverter]::ToDouble($b, 211); $minz = [BitConverter]::ToDouble($b, 219)
-    # VLR を走査して GeoKeyDirectory(LASF_Projection, record 34735)から EPSG を取る
     $hdrSize = [BitConverter]::ToUInt16($b, 94)
     $fs.Position = $hdrSize
     $epsg = ''

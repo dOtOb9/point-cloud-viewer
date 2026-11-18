@@ -1,32 +1,11 @@
 name: Pages
 
-# Web版(pcv-core を wasm でビルドし、Worker内で動かす版)と、設計読解用のmdBook
-# (docs/book/)をGitHub Pagesへ公開する。既存の`ci.yml`とはあえて別ファイルに
-# してある。デスクトップ/Android向けの`rust`/`build`ジョブ(windows-latest、
-# Rustのwasm32ターゲットやwasm-bindgen-cliを前提にしていない)に、このワーク
-# フローの前提を混ぜて壊したくないため。
-#
-# 設計の経緯・検討して採らなかった案は TaskSheets/ADR-0012-web-worker-sync-io.md を参照。
-#
-# mdBookはPagesビルド用ランナー(ubuntu-latest)に標準で入っていないため、
-# `peaceiris/actions-mdbook`で導入する(バイナリを自前で取得・展開するより、
-# バージョン指定とキャッシュをAction側に任せられるため)。アプリ(dist/、
-# `/point-cloud-viewer/`)と本(docs/book/book/、`/point-cloud-viewer/book/`)は
-# 同じPagesの成果物にまとめて公開する。本をdist/book/へコピーしてから
-# upload-pages-artifactする(アプリのビルドを壊さない。本の追加に失敗しても
-# このジョブ自体が落ちるため、本だけが欠けたまま公開されることはない)。
-#
-# 所有者がやること(1回だけ): GitHubのリポジトリ設定 → Pages → "Build and deployment"の
-# Sourceを"GitHub Actions"にする。これをしないと、このワークフローが成功しても
-# 実際には公開されない。
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
-# 同時に複数のPagesデプロイが走らないようにする(Pagesの標準的な作法)。
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -41,16 +20,10 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      # crates/pcv-wasm はルートのワークスペースに入っていない(pcv-core・src-tauriと
-      # 依存グラフが別、Cargo.lockも別)ため、rust-cacheにも別ワークスペースとして
-      # 明示的に教える。
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "crates/pcv-wasm -> target"
 
-      # pcv-wasmのWorker/JSに依存しない部分(範囲読みのバイト計算など)のユニットテスト。
-      # ネイティブターゲットで動く(wasm-bindgen/web-sysはJSを実際に呼ばない限り
-      # ネイティブでもコンパイル・リンクできる)。
       - name: pcv-wasmのユニットテスト(ネイティブ、Worker非依存部分のみ)
         run: cargo test --manifest-path crates/pcv-wasm/Cargo.toml
 
@@ -59,35 +32,12 @@ jobs:
           cargo fmt --manifest-path crates/pcv-wasm/Cargo.toml -- --check
           cargo clippy --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
 
-      # 2026-10-07の緊急修正(M4-8追記)の再発防止。
-      #
-      # `vendor/copc-writer`はrootワークスペースのexclude対象で、上のpcv-wasm
-      # 自身のclippyは「依存先(path/patch経由のcopc-writer含む)」までは
-      # `-D warnings`で厳格化しない(pcv-wasm自身の警告だけが対象。実際に
-      # 確認済み: copc-writerのdead-code警告がこの直前のステップでも出るが、
-      # ビルドは失敗しない)。そのためcopc-writer自身をmanifest-pathで直接
-      # 指定し、`std::time::Instant::now`/`SystemTime::now`の直接呼び出しが
-      # 無いことを単独で検査する(`vendor/copc-writer/clippy.toml`の
-      # `disallowed-methods`)。
-      #
-      # - `--lib`のみ(`--all-targets`にすると、dev-dependencyの`criterion`が
-      #   rayon前提でwasm32と非互換のためビルド自体が失敗する。実機で確認済み)
-      # - `-D clippy::disallowed_methods`だけを指定し、`-D warnings`はあえて
-      #   使わない(`--no-default-features`(native-fsを切った状態、pcv-wasmの
-      #   依存指定と同じ)だとこのクレートに元から多数のdead-code警告があり、
-      #   このタスクの対象外の既存debtを一緒にブロッカーにしてしまうため)
-      # - ネイティブ側では検査しない(`ci.yml`の`rust`ジョブのコメント参照:
-      #   ネイティブだと`web_time::Instant::now`が`std::time::Instant::now`への
-      #   単純な再エクスポートに解決されるため、正しいコードまで誤検知する)
       - name: vendor/copc-writerのInstant::now直接呼び出しを禁止(wasm32)
         run: |
           cargo clippy --manifest-path vendor/copc-writer/Cargo.toml \
             --no-default-features --target wasm32-unknown-unknown --lib \
             -- -D clippy::disallowed_methods
 
-      # wasm-bindgen CLIはCargo.lockの`wasm-bindgen`クレートと**完全に同じ
-      # バージョン**でないと動かない。ハードコードすると更新時に食い違って
-      # 気づかないまま壊れるので、Cargo.lockから実際のバージョンを読む。
       - name: wasm-bindgen-cliのバージョンをCargo.lockに合わせて決定する
         run: |
           version=$(grep -A1 '^name = "wasm-bindgen"$' crates/pcv-wasm/Cargo.lock | tail -1 | cut -d '"' -f2)
@@ -95,10 +45,6 @@ jobs:
       - name: wasm-bindgen-cliのインストール
         run: cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
 
-      # crates/pcv-wasm を release ビルドし、wasm-bindgenでJSグルー(ESM)を生成する。
-      # 出力先(src/wasm/pcv-wasm/)は普段はコミット済みの生成物を使う
-      # (既存のci.ymlのfrontend/buildジョブがRustツールチェインを前提にしないで済むように
-      # するため。ADR-0012参照)が、ここでは実際にソースからビルドし直して上書きする。
       - name: pcv-wasm を release ビルド
         run: cargo build --manifest-path crates/pcv-wasm/Cargo.toml --release --target wasm32-unknown-unknown
       - name: wasm-bindgenでJSグルーを生成
@@ -111,14 +57,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      # RF-15: the wasm glue committed in src/wasm/pcv-wasm/ must be what the steps above just generated.
-      # Otherwise a Rust change whose `npm run build:wasm` output was not committed would pass the E2E in
-      # ci.yml (which uses the committed files) while this job publishes a different build.
-      # Only the JS glue and the type files are compared (`npm run check:wasm-glue`, which is `git diff --exit-code`).
-      # The .wasm itself is NOT compared: it embeds absolute source paths (panic locations), so it differs
-      # between machines and directories even for identical sources. Measured in
-      # TaskSheets/RF-safety-net.md (RF-15). This catches a changed `#[wasm_bindgen]` signature, not a
-      # changed function body.
       - name: Committed wasm glue (JS and types) is up to date
         run: |
           if ! npm run check:wasm-glue; then
@@ -130,17 +68,11 @@ jobs:
       - run: npm run lint
       - run: npm run test
 
-      # GitHub PagesはリポジトリのサブパスURL(https://<owner>.github.io/point-cloud-viewer/)
-      # で配信される。`GITHUB_PAGES_BUILD=true`でvite.config.tsの`base`をそのサブパスに
-      # 切り替える(Tauri版のビルドはこの環境変数を立てないので、既定の"/"のまま影響しない)。
       - name: 静的ビルド(vite build、Pagesのサブパス向け)
         run: npm run build
         env:
           GITHUB_PAGES_BUILD: "true"
 
-      # 設計読解用のmdBook(docs/book/)。標準のmdBookだけでビルドできる
-      # (拡張は使っていない)。`mdbook build`の既定出力先は本のルート直下の
-      # `book/`(= docs/book/book/)。
       - name: mdBookの導入
         uses: peaceiris/actions-mdbook@v2
         with:

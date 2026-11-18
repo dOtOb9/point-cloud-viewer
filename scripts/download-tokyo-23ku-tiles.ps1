@@ -1,13 +1,3 @@
-# 東京都 区部点群データの図郭(LAS)をダウンロードして展開する。
-# 使い方(リポジトリのルートから):
-#   pwsh scripts/download-tokyo-23ku-tiles.ps1 `
-#     -ListFile TaskSheets/BENCH-1b-tiles.txt `
-#     -OutDir C:\rust\point-cloud-viewer\data\tokyo-23ku-1b `
-#     -ExistingDir C:\rust\point-cloud-viewer\data\tokyo-shibuya
-# 動き: 一覧のうち、OutDir か ExistingDir に <図郭>.las が既にあるものは飛ばす。
-#   残りを同時 $Parallel 本でダウンロード→展開→zip削除。失敗は再試行。
-#   C ドライブの空きが $MinFreeGB を下回りそうなら、新しい取得を始めずに止まる。
-# 出典: 東京都デジタルツイン実現プロジェクト「区部点群データ」(CC BY 4.0)
 param(
   [Parameter(Mandatory)][string]$ListFile,
   [Parameter(Mandatory)][string]$OutDir,
@@ -26,7 +16,6 @@ $todo = Get-Content $ListFile | ? { $_ -match '^\w+$' } | ? {
 $failed = $todo | ForEach-Object -ThrottleLimit $Parallel -Parallel {
   $n = $_
   $free = (Get-PSDrive C).Free / 1GB
-  # 1枚あたり zip 約0.12GB + 展開 約0.2GB。並列分の余裕として +2GB を見る
   if ($free -lt ($using:MinFreeGB + 2)) { "$n(空き不足で未着手)"; return }
   $zip = Join-Path $using:OutDir "$n.zip"
   $tmp = Join-Path $using:OutDir "_tmp_$n"

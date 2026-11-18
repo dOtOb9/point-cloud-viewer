@@ -1,12 +1,8 @@
-# Runs one executable pinned to the P cores (0xFFF on the i5-14600K, TaskSheets/BENCH-measurement-cores.md),
-# samples its private memory and the free space of C: every 0.2 s, and stops it if C: free space drops below -MinFreeGB.
-# usage: run-native.ps1 -Exe <exe> -ArgLine <args> -Tag <name> -OutDir <dir> [-TempDir <dir>] [-MinFreeGB 25]
-# Output: <OutDir>\<Tag>.stdout / .stderr / .csv (see sampler.ps1 about the format) / .result
 param([string]$Exe, [string]$ArgLine, [string]$Tag, [string]$OutDir, [string]$TempDir = "", [int]$MinFreeGB = 25)
 $inv = [Globalization.CultureInfo]::InvariantCulture
 if ($TempDir -ne "") { $env:TEMP = $TempDir; $env:TMP = $TempDir }
 $p = Start-Process -FilePath $Exe -ArgumentList $ArgLine -PassThru -NoNewWindow -RedirectStandardOutput "$OutDir\$Tag.stdout" -RedirectStandardError "$OutDir\$Tag.stderr"
-$p.ProcessorAffinity = [IntPtr]0xFFF   # set right after the start: the first few ms may run on any core (fine for runs of seconds)
+$p.ProcessorAffinity = [IntPtr]0xFFF
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $peakPriv = 0; $minFree = [double]::MaxValue
 "t,private_mib,free_gb" | Out-File "$OutDir\$Tag.csv" -Encoding ascii
