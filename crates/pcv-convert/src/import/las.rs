@@ -4,9 +4,8 @@ use pcv_core::crs::{crs_id_from_las_header, CrsId};
 
 use super::point::{PointSource, RawPoint};
 use super::ImportError;
+use crate::streaming::READ_BATCH_SIZE;
 use crate::write_metadata::copc_write_metadata_from_source_header;
-
-const READ_BATCH_SIZE: u64 = 1024 * 1024;
 
 pub(crate) struct LasSource {
     reader: las::Reader,

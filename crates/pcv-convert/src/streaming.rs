@@ -12,7 +12,7 @@ use crate::write_metadata::copc_write_metadata_from_source_header;
 
 pub(crate) const PROGRESS_REPORT_STRIDE: u64 = 4096;
 
-const READ_BATCH_SIZE: u64 = 1024 * 1024;
+pub(crate) const READ_BATCH_SIZE: u64 = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AtomicCancel(pub Arc<AtomicBool>);

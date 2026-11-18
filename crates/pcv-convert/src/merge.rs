@@ -7,7 +7,7 @@ use copc_writer::{write_streaming_with_cancel_and_timings, CopcWriteMetadata, Co
 use pcv_core::crs::{crs_id_from_las_header, CrsId};
 
 use crate::stage_timings::ConversionStageTimings;
-use crate::streaming::{ReadProgress, PROGRESS_REPORT_STRIDE};
+use crate::streaming::{ReadProgress, PROGRESS_REPORT_STRIDE, READ_BATCH_SIZE};
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
 #[derive(Debug, thiserror::Error)]
@@ -230,8 +230,6 @@ fn summarize_headers_inner(
         missing_crs_paths,
     })
 }
-
-const READ_BATCH_SIZE: u64 = 1024 * 1024;
 
 struct CurrentFile {
     reader: las::Reader,
