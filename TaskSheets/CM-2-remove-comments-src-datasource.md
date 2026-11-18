@@ -17,9 +17,9 @@
 
 | ファイル:識別子 | 消したコメントの要点 | 移し先（名前／テスト名／ここ） |
 |---|---|---|
-| `opfs.ts:attempt`・`attemptSync`（`removeOutputFile`・`removeScratchDir`・`removeScratchDirByName`・`cleanupStaleScratchDirs`・`removeCachedConversionEntry`・`clearAllCachedConversions`・`closeHandles`・`createScratchPool`・`openHandlePool` が使う） | 後始末の失敗（既に無い・他のタブが使用中・既に閉じている）は実害が無いので無視し、1件の失敗で残りの後始末を止めない（受け入れ条件「一時ファイルを必ず消す」） | 名前（空の `catch` を `attempt` に置き換えた）＋テスト名 `後始末(closeOne)自体が失敗しても、残りのハンドルを閉じ続ける`＋ここ |
+| `opfs.ts:ignoreFailure`・`ignoreFailureSync`（`removeOutputFile`・`removeScratchDir`・`removeScratchDirByName`・`cleanupStaleScratchDirs`・`removeCachedConversionEntry`・`clearAllCachedConversions`・`closeHandles`・`createScratchPool`・`openHandlePool` が使う） | 後始末の失敗（既に無い・他のタブが使用中・既に閉じている）は実害が無いので無視し、1件の失敗で残りの後始末を止めない（受け入れ条件「一時ファイルを必ず消す」） | 名前（空の `catch` を `ignoreFailure` に置き換えた。R1 の `attempt` から監査 F-1 で変えた）＋テスト名 `後始末(closeOne)自体が失敗しても、残りのハンドルを閉じ続ける`＋ここ |
 | `opfs.ts:cleanupStaleScratchDirsWithoutStoppingTheJob`（`copc.worker.ts` の 6 か所） | 前回の後始末が走らなかった一時ディレクトリを、変換・ツールの前に掃除する。掃除が失敗しても変換は試みる。ロックの中で呼ぶので、他のタブが作りかけのディレクトリを消すことはない | 名前＋ここ |
-| `opfs.ts:SIZE_OF_A_DIR_IN_USE_BY_ANOTHER_TAB` | 他のタブが使用中で大きさを読めない一時ディレクトリも、一覧から消すと「個別に消す」操作の対象にできなくなるので、0 として一覧に残す | 名前＋ここ |
+| `opfs.ts:SIZE_WHEN_UNREADABLE` | 他のタブが使用中などで大きさを読めない一時ディレクトリも、一覧から消すと「個別に消す」操作の対象にできなくなるので、0 として一覧に残す | 名前＋ここ |
 | `opfs.ts:collectReadableCachedConversions` | 索引が壊れている・対応する出力が無い 1 件は飛ばす。`pcv-converted` 自体が無いときは空のまま | 名前 |
 | `opfs.ts:SCRATCH_SIZE_FACTOR` | 11 は ADR-0006 の実測（sofi: 入力 2.03GB → 一時ファイルのピーク 21.864GB、約 10.77 倍）。LAZ（圧縮）の実測なので、点数が分かるときは `requiredBytesForPointCount` を使う | ここ（テスト名 `ADR-0006の実測どおり入力サイズの11倍を必要量とする`） |
 | `opfs.ts:SCRATCH_BYTES_PER_POINT` | 60 は ADR-0006・M4-1b の実測（一時ファイルのピーク÷点数）beer.laz 49.31〜59.06、sofi.copc.laz 51.06〜60.00 B/点の大きい側 | ここ（テスト名 `M4-1bの実測(60 B/点の一時領域+10 B/点の出力)を根拠にした値を返す`） |
@@ -51,6 +51,8 @@
 | `copc.worker.ts:NO_CRS` | `"Missing"` は `pcv_core::crs::CrsId::Missing` の Debug の表記。CRS の無いファイルは通し（Rust の `finish` が警告を返す）、CRS を持つファイル同士の食い違いだけ止める | ここ |
 | `copc.worker.ts:runMultiConversion`（`result.points_read - pointsCompletedBeforeCurrentFile`） | `points_read` はそれまでの全ファイルの点数。差し引かないと前のファイルを二重に数えた（6,250,115 / 3,126,520 と出た） | ここ |
 | `copc.worker.ts:WorkerScope` | tsconfig の lib を DOM 向けのままにしたいので、`self` は使う形だけをキャストで与える | ここ |
+| `copc.worker.ts:openFiles` | 開いているファイルの表（世代番号 = cloudId → ファイル）。複数を同時に持つ。`close` で表から外して `free()` し、wasm 側のリーダーとメモリを手放すので、メモリは開いているファイルの数にだけ比例する（L1-B） | ここ（監査 F-3 で足した） |
+| `copc.worker.ts:reportPreparing` | 準備段階のステップを細かく画面に送る。所有者の実機で「準備中のまま止まってタブが落ちる」不具合の調査のためで、次に落ちたときに、どのステップで止まったかを所有者が報告できるようにする（M4-11） | ここ（監査 F-3 で足した） |
 | `tauri.ts:readNode`（`panicMessageFromBackend`） | 500 の本文には Rust が `catch_unwind` で捕まえた panic のメッセージとノードキーが入っている（ADR-0013）。読み捨てると「500」としか出せない | 名前（`body` から変えた）＋ここ |
 | `tauri.ts:readNode`・`tauri-protocol.ts:buildNodeRequestPath` | `convertFileSrc` は文字列全体を 1 回 `encodeURIComponent` するので、区切りの `/` も `%2F` で届く。v0.1.3 では区切りが `:` で、Rust がデコードせずに解析していて全ノードの読み出しが失敗した。今は Rust がデコードしてから解析するので区切りの選び方は動作に影響せず、ベンチ用の `/<size>` と見分けやすい `/` にした | テスト名 `ベンチ用の'/<size>'形式(数字のみ)とは常に区別できる('/'を含む)`＋ここ |
 | `file-picker.ts:pickFilesOnWeb` | `input.click()` は呼び出し側のクリックの処理の中で、最初の `await` より前に同期で呼ぶ（そうしないとブラウザがユーザー操作でないとして止める）。そのためこの関数は `async` にしない。`cancel` イベントを出さないブラウザでは Promise が決まらないままだが、クリックの処理以外は待たないので害は無い。input は document に付けていない（R6 の記録） | ここ |
@@ -103,3 +105,10 @@
 - `npx vitest run src/datasource`（`C:\` から）→ 19 files、195 tests passed。全体は 97 files、1113 tests passed
 - `npm run check:all` → typecheck・lint・check:circular・check:docs・check:comments・vitest・cargo fmt (workspace)・cargo clippy (workspace)・cargo fmt (vendor/copc-writer) がすべて OK
 - 振る舞い: 名前の変更と `attempt` などへの置き換え以外の差分はコメントと空行だけ（`git diff d05c858..HEAD -- src/datasource` の `+` 行を見た）。OPFS の I/O（`attempt` を使う所）はブラウザでしか動かず、テストは無い。所有者の確認手順は M4-6b と同じ（Web 版で LAS を変換し、設定の「保存領域」で一時ファイル・キャッシュの一覧と「消す」「すべて消す」が前と同じに動くこと）
+
+### 監査の指摘への対応（R1 の APPROVE の後、CM-2-RP R1）
+
+- F-1（should）: `opfs.ts` の `attempt`・`attemptSync` を `ignoreFailure`・`ignoreFailureSync` に変え、戻り値を `Promise<void>`・`void` にした（`catch { return; }`。使い手は `opfs.ts` の中だけで、`ignoreFailure` 10 か所・`ignoreFailureSync` 2 か所。`git grep -n "attempt(\|attemptSync(" -- src/datasource` は 0 件）。上の表の行も新しい名前に直した
+- F-2（nit）: `SIZE_OF_A_DIR_IN_USE_BY_ANOTHER_TAB` を `SIZE_WHEN_UNREADABLE` にした（`dirTotalBytes` のどんな失敗でも 0 になるため）。使い手は `getOpfsUsageBreakdown` の 1 か所
+- F-3（nit）: 表に `copc.worker.ts:openFiles` と `copc.worker.ts:reportPreparing` の 2 行を足した
+- F-4（nit）: `opfs.ts`・`opfs.test.ts`・`file-system-sync-access-handle.d.ts` の先頭にあった BOM（`EF BB BF`）が消えた。R1 の一時的なスクリプトで、先頭の行のコメントを消すとき「行の前がコメント以外は空白か」を `trim()` で見ていて、`trim()` が BOM も空白として扱うので、BOM ごと行を消していた。BOM はコンパイラーにも検査にも影響しないので戻していない（`d05c858` で BOM があったのはこの 3 ファイルだけ。`git show d05c858:<file> | head -c3` で全ファイルを見た）
