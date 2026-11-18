@@ -25,6 +25,7 @@ const VLR_COUNT_LASZIP_AND_COPC_INFO: u32 = 2;
 const POINT_FORMAT_LAZ_COMPRESSED_BIT: u8 = 0x80;
 const LEGACY_POINT_COUNT_UNUSED_IN_LAS_1_4: u32 = 0;
 const LEGACY_POINTS_BY_RETURN_COUNT: usize = 5;
+const LEGACY_POINTS_BY_RETURN_UNUSED_IN_LAS_1_4: u32 = 0;
 const NO_WAVEFORM_DATA_PACKET: u64 = 0;
 const EVLR_COUNT_ONE_HIERARCHY_PAGE: u32 = 1;
 const POINTS_BY_RETURN_COUNT: usize = 15;
@@ -258,7 +259,7 @@ impl HeaderFields {
         w.write_u16::<LittleEndian>(self.point_record_length)?;
         w.write_u32::<LittleEndian>(LEGACY_POINT_COUNT_UNUSED_IN_LAS_1_4)?;
         for _ in 0..LEGACY_POINTS_BY_RETURN_COUNT {
-            w.write_u32::<LittleEndian>(LEGACY_POINT_COUNT_UNUSED_IN_LAS_1_4)?;
+            w.write_u32::<LittleEndian>(LEGACY_POINTS_BY_RETURN_UNUSED_IN_LAS_1_4)?;
         }
         w.write_f64::<LittleEndian>(self.scale.0)?;
         w.write_f64::<LittleEndian>(self.scale.1)?;
