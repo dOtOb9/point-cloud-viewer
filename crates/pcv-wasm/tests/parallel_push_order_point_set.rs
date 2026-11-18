@@ -1,33 +1,9 @@
-//! M4-7追記(2026-10-07緊急修正)の受け入れ条件: 展開Workerをバッチ単位で
-//! 駆動するようにした結果、`crates/pcv-wasm/src/convert.rs`の
-//! `push_serialized_records`(= `copc_core::deserialize_le`→
-//! `SpillWriter::push`)が呼ばれる**順序**は、以前の「範囲の昇順で取り出す」
-//! から「どのバッチが先に届いたか(到着順)」に変わった
-//! (`src/datasource/copc.worker.ts`の`runParallelReadPhase`、各展開Workerが
-//! 独立に`requestBatch`へ応答するpull型プロトコル参照)。
-//!
-//! `crates/pcv-wasm/src/convert.rs`のモジュールドキュメント「点の順序について」
-//! (M4-7)が既に述べているとおり、`SpillWriter::push`に渡す順序が変わっても
-//! `copc-writer`の検証(`validate_spill_record`)・統計(`PointStats`)は1点ごとに
-//! 閉じた計算で順序に依存しない(ソースを読んで確認済み)。このテストは、
-//! その結論を**実際に`write_copc_from_spill_with_fs`まで通して**確認する:
-//! 同じ点の集合を(1)元の順序、(2)複数Workerへの分担を模した「ラウンドロビンで
-//! 入れ替えた順序」でそれぞれ`SpillWriter`へpushし、別々のCOPCへ書き出した上で、
-//! 両方を`las::Reader`で開き直して**点の集合が一致する**ことを確認する。
-//!
-//! (`las::Reader`でCOPC出力を開き直せること自体は`crates/pcv-convert/tests/
-//! streaming_conversion.rs`で既に行われている。COPCはLAS 1.4 + 可変チャンクの
-//! LASzipという、点データ部分だけ見れば通常のLAS/LAZ読み出し経路と同じ形に
-//! なるように設計されているため)。
-
 use std::collections::BTreeSet;
 use std::io::Cursor;
 
 use copc_core::{LasPointRecord, NeverCancel, StreamingLayout};
 use copc_writer::{write_copc_from_spill_with_fs, CopcWriterParams, MemoryScratchFs, SpillWriter};
 
-/// 整数演算で決まる、決定的な合成点群を作る(浮動小数点の誤差で集合比較が
-/// 揺れないようにするため。`parallel_laz_decompression.rs`と同じ考え方)。
 fn synthetic_records(point_count: u32) -> Vec<LasPointRecord> {
     (0..point_count)
         .map(|i| LasPointRecord {
@@ -40,11 +16,6 @@ fn synthetic_records(point_count: u32) -> Vec<LasPointRecord> {
         .collect()
 }
 
-/// `records`を`worker_count`個のグループに均等に分け、各グループの先頭から
-/// 1個ずつ・ラウンドロビンで取り出す順序を返す。複数の展開Workerが
-/// 独立に`requestBatch`へ応答し、到着順にpushされる(=各Workerの担当範囲内の
-/// 順序は保たれるが、Worker間では入れ替わる)新しいpull型プロトコルの
-/// 「最悪に近い」並び替えを模している。
 fn round_robin_across_workers(
     records: &[LasPointRecord],
     worker_count: usize,
@@ -81,8 +52,6 @@ fn round_robin_across_workers(
     out
 }
 
-/// `records`を渡された順序でそのままSpillWriterへpushし、COPCへ書き出した上で
-/// `las::Reader`で開き直し、(点数, 座標+intensityの集合)を返す。
 fn push_order_and_reopen(records: &[LasPointRecord]) -> (u64, BTreeSet<(u64, u64, u64, u16)>) {
     let layout = StreamingLayout {
         point_format: 0,

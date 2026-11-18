@@ -1,10 +1,3 @@
-# 空の[workspace]テーブル: このCargo.tomlを、それ自身を根とする独立した
-# 1クレートのワークスペースにする。ルート側のexcludeだけに頼ると、ディレクトリの
-# 親をさらに辿った先(このリポジトリをgit worktreeとして複数チェックアウトしている
-# 場合の、外側のチェックアウトなど)に別の[workspace]が見つかってしまうことがあり、
-# 「そのワークスペースのメンバーでもexclude対象でもない」という曖昧な状態になって
-# cargoがエラーにする。空の[workspace]を明示することで、どこに置かれても
-# このCargo.tomlより上を探しに行かなくなる。
 [workspace]
 
 [package]
@@ -16,16 +9,7 @@ authors = ["dOtOb9"]
 repository = "https://github.com/dOtOb9/point-cloud-viewer"
 description = "pcv-core を wasm-bindgen で包み、Web Worker から呼べるようにする層。wasm 固有の依存(wasm-bindgen/js-sys/web-sys)はここに閉じ、pcv-core には持ち込まない(ARCHITECTURE.md 規約1)"
 
-# ルートのワークスペースには入れていない(ルート Cargo.toml の exclude を参照)。
-# そのためここは自分自身が根になる、1クレートだけの独立したワークスペースとして扱われる
-# ([patch.crates-io] が効くのもそのため)。ビルドは
-# `cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown`。
-
 [lib]
-# cdylib: wasm-bindgen が読む .wasm バイナリを作るのに必要。
-# rlib: pcv-wasm 自身のユニットテスト(cargo test、ネイティブターゲット)をこのクレート内で
-# 動かすのに必要(範囲読みのバイト計算など、Worker/JSに依存しない部分だけをテストする。
-# TaskSheets/ADR-0012-web-worker-sync-io.md 参照)。
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
@@ -34,41 +18,13 @@ wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
-# M4-6b: Web版の変換(convert.rs)が、読み込んだLAS/LAZの点をCOPCへ書き出すのに使う。
-# copc-core/las はpcv-coreの読み込み側・pcv-convertのネイティブ変換経路と同じ版
-# (ADR-0003/ADR-0006)なので、依存解決が衝突しない。
 copc-core = "0.9.0"
 copc-reader = "0.9.0"
 las = { version = "0.10", features = ["laz"] }
-# native-fsフィーチャ(既定)を切り、tempfile/memmap2への依存自体を外す
-# (wasm32-unknown-unknownには実行時に使えないため。vendor/copc-writer/PATCH.md参照)。
-# OpfsScratchFs(opfs.rs)が&dyn ScratchFsとしてcopc-writer本体に渡る。
 copc-writer = { version = "0.9.0", default-features = false }
-# M4-6/M4-9(TaskSheets/M4-import-and-conversion.md追記): PCD→COPCの直接変換
-# (pcd_import.rs)に使う。`crates/pcv-convert`と同じ版(0.13.0)。
-#
-# なぜ`crates/pcv-convert`の`src/import/`に直接依存しないか: pcv-wasmは
-# ルートワークスペースの外にある独立した1クレートのワークスペース(このファイル
-# 冒頭のコメント参照)。`pcv-convert`はルートワークスペースの通常メンバーなので、
-# パス依存で引き込むとワークスペースの二重定義でcargoがエラーになる
-# (実際に試して確認済み)うえ、`pcv-convert`の`copc-writer`依存は
-# `parallel-lod`/`parallel-compress`(rayon使用)を要求しており、同じ
-# `[patch.crates-io]`先(vendor/copc-writer)を共有する以上、依存グラフの
-# フィーチャ統合でpcv-wasmのwasm32ビルドにまで`rayon`が混入してしまう
-# (このプロジェクトが前提とする「wasm32向けビルドにrayonは入り込まない」を
-# 破る)。そのためPCDの読み込みロジック(`pcv-convert/src/import/pcd.rs`相当)は
-# `pcd_import.rs`に独立に書いた(意図した重複。コメントに理由を記録する)。
 pcd-rs = "0.13.0"
 byteorder = "1"
-# R7 (TaskSheets/R7-web-ply-e57.md): the PLY reader (ply_import.rs) and the E57 reader
-# (e57_import.rs) are copies of `crates/pcv-convert`, for the same reason as PCD above.
-# PLY is a hand-written parser (only `byteorder`, above). E57 uses the same pinned version
-# as `crates/pcv-convert` (it builds for wasm32-unknown-unknown; deps: roxmltree, memchr).
 e57 = "=0.11.13"
-# M4-12(TaskSheets/M4-import-and-conversion.md): 変換の段階ごとの所要時間を
-# 画面に出すための計測。`std::time::Instant`はwasm32-unknown-unknownでpanicする
-# ため(clippy.tomlのdisallowed-methods参照)、vendor/copc-writerと同じ
-# web_time::Instantを使う。
 web-time = "1"
 
 [dependencies.web-sys]
@@ -80,32 +36,15 @@ features = [
   "XmlHttpRequest",
   "XmlHttpRequestResponseType",
   "console",
-  # M4-6b: OPFS(Origin Private File System)。opfs.rsがcreateSyncAccessHandle()で
-  # 得たハンドルの読み書きに使う。ハンドル自体の取得(FileSystemDirectoryHandle/
-  # FileSystemFileHandle越しの非同期呼び出し)はTypeScript側(src/datasource/opfs.ts)が
-  # 行い、Rust側は渡されたFileSystemSyncAccessHandleの同期メソッドだけを呼ぶ
-  # (TaskSheets/M4-import-and-conversion.mdのM4-6a 7節、MDN/WHATWG仕様参照)。
   "FileSystemSyncAccessHandle",
   "FileSystemReadWriteOptions",
 ]
 
-# pcv-core と同じ理由(vendor/copc-reader/PATCH.md参照): 上流の copc-reader 0.9.0 は
-# hierarchyが複数ページに分かれる大規模COPC(sofi.copc.laz等)を開けない欠陥がある。
-# pcv-wasmはルートワークスペースの外にあるため、この[patch]もルートとは別に必要。
-# 忘れるとWeb版は「小さいファイルは開けるが大きいファイルだけ壊れる」という、
-# ADR-0003が既に踏んだのと同じ罠にはまる。
-#
-# copc-writerも同じ理由(vendor/copc-writer/PATCH.md参照): OPFS向けのScratchFs
-# 実装(&dyn ScratchFs)を渡せる入口(write_copc_from_spill_with_fs)は
-# vendor/copc-writerにしか無い。
 [patch.crates-io]
 copc-reader = { path = "../../vendor/copc-reader" }
 copc-writer = { path = "../../vendor/copc-writer" }
-# L2-G: seek inside variable-size chunks (COPC). vendor/laz/PATCH.md
 laz = { path = "../../vendor/laz" }
 
-# M4-6b: `tests/memory_scratch_conversion.rs`(ネイティブで走る統合テスト)が
-# 合成LASを書き出すのに使う。wasm32ビルドには一切含まれない(dev-dependency)。
 [dev-dependencies]
 tempfile = "3"
 

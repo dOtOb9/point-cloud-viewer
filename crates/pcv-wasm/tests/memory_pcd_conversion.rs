@@ -1,19 +1,3 @@
-//! M4-6/M4-9追記(`TaskSheets/M4-import-and-conversion.md`): Web版のPCD→COPC
-//! 変換(`crates/pcv-wasm/src/pcd_import.rs`の`WasmPcdConverter`)が使う部品を、
-//! `MemoryScratchFs`に対してネイティブで検証する統合テスト。
-//!
-//! `WasmPointFileConverter`自体は`web_sys::File`・`FileSystemSyncAccessHandle`という
-//! ブラウザ専用の型を引数に取るためネイティブからは直接呼べない
-//! (`memory_scratch_conversion.rs`と同じ事情)。代わりに、`WasmPointFileConverter`が
-//! 内部で使うのと同じ部品(`pcd_rs::DynReader`でフィールドを読み取り、
-//! `SpillWriter::create`/`push`/`finalize`→`write_copc_from_spill_with_fs`)を
-//! `MemoryScratchFs`に対して直接呼ぶことで、「PCDのバッチ読み込み→spill→COPC」
-//! という設計が正しく動くことを検証する。
-//!
-//! x/y/z・rgb(パック済み)・intensityを持つ、複数ノードに分かれる程度に
-//! 散らした合成PCD(binary形式)を`pcd-rs`自身の`DynWriter`で作る
-//! (`crates/pcv-convert/tests/import_pcd.rs`と同じ考え方)。
-
 use std::io::BufReader;
 
 use copc_core::{LasPointRecord, NeverCancel, StreamingLayout};
@@ -33,7 +17,6 @@ fn xyz_rgb_intensity_schema() -> Schema {
     ])
 }
 
-/// x/y/z全軸に散らした、複数ノードに分かれる程度の合成PCD(binary)を書く。
 fn write_synthetic_pcd(path: &std::path::Path, point_count: u32) {
     let mut writer: DynWriter<_> = WriterInit {
         width: u64::from(point_count),
@@ -74,7 +57,6 @@ fn batched_pcd_feed_via_memory_scratch_fs_produces_openable_copc() {
     let point_count = 2_000u32;
     write_synthetic_pcd(&source, point_count);
 
-    // `PcdStream::open`と同じ手順: フィールドの位置を名前で探す。
     let file = std::fs::File::open(&source).unwrap();
     let reader = DynReader::from_reader(BufReader::new(file)).expect("DynReader::from_reader");
     let meta = reader.meta().clone();
@@ -98,7 +80,6 @@ fn batched_pcd_feed_via_memory_scratch_fs_produces_openable_copc() {
     let fs = MemoryScratchFs::new();
     let mut spill = SpillWriter::create(&fs, layout, None).expect("SpillWriter::create");
 
-    // `WasmPointFileConverter::feed`と同じ手順: バッチに分けて読み、spillへ書く。
     const BATCH_SIZE: usize = 256;
     let mut fed = 0u64;
     let mut iter = reader.into_iter();
@@ -143,10 +124,6 @@ fn batched_pcd_feed_via_memory_scratch_fs_produces_openable_copc() {
     }
     assert_eq!(fed, u64::from(point_count), "全点がspillへ渡されたはず");
 
-    // `WasmPointFileConverter::finish`と同じ手順。スケール・オフセットは
-    // (`pcd_import.rs`の`choose_scale_offset`に専用の単体テストがあるため)
-    // このテストでは`CopcWriteMetadata::default()`の既定値をそのまま使う
-    // (`memory_scratch_conversion.rs`と同じ簡略化)。
     let spill_reader = spill.finalize().expect("spill.finalize");
     let output_path = std::path::Path::new("synthetic_pcd.copc.laz");
     write_copc_from_spill_with_fs(

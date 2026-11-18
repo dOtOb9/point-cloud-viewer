@@ -31,10 +31,5 @@
   "crates/pcv-core/src/test_support.rs": 3,
   "crates/pcv-core/src/thin.rs": 81,
   "crates/pcv-core/src/thin_filter_job.rs": 49,
-  "crates/pcv-core/src/tiles.rs": 98,
-  "crates/pcv-wasm/tests/buffered_file_reader_reduces_read_calls.rs": 47,
-  "crates/pcv-wasm/tests/memory_pcd_conversion.rs": 22,
-  "crates/pcv-wasm/tests/memory_scratch_conversion.rs": 31,
-  "crates/pcv-wasm/tests/parallel_push_order_point_set.rs": 30,
-  "crates/pcv-wasm/tests/sequential_lod_open_files_bounded.rs": 95
+  "crates/pcv-core/src/tiles.rs": 98
 }
