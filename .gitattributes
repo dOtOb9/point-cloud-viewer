@@ -1,2 +1,3 @@
 *.ui text eol=lf
 *.generated.tsx text eol=lf
+*.wgsl text eol=lf
