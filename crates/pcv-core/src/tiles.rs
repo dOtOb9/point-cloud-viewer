@@ -1,48 +1,3 @@
-//! G3-1: splitting a COPC cloud into XY tiles and reading it tile by tile.
-//!
-//! The thinning and outlier filters (G3) look at "nearby points". To keep memory
-//! independent of the point count, they work on one XY tile at a time: the points of
-//! the tile plus a margin around it are read, the filter decides which points to keep,
-//! and only the points inside the tile (the core) are written out. The margin points
-//! belong to the neighbouring tile and are written there. This file is the shared
-//! "plan the tiles" and "read one tile" part (CSF tiling in G1-9 can reuse it).
-//!
-//! # Ownership rule
-//!
-//! A point is a core point of the tile whose core rectangle contains it with
-//! half-open intervals `[min, max)` in both X and Y. The one exception is the outer
-//! max edge of the whole extent, which is closed (`[min, max]`), so the points on the
-//! far edge are not lost. Neighbouring tiles share the exact same `f64` boundary
-//! value (it is computed once), so every point is core in exactly one tile.
-//! Points outside the extent (the header bounds) are core nowhere; a valid COPC header
-//! always contains its points.
-//!
-//! # Estimating a tile's point count
-//!
-//! Only the hierarchy is known before reading (every node's point count and cube).
-//! The estimate for a tile is the sum over nodes of
-//! `node.point_count * (XY overlap area of node and tile) / (XY area of node)`,
-//! i.e. each node is assumed to be spread evenly over its XY footprint. It is an
-//! estimate, not a bound: a node that is dense in one corner can put more points in a
-//! tile than estimated. The reader reports the real count of every tile.
-//!
-//! # Planning
-//!
-//! 1. Start from a uniform grid whose cells hold about `cap / 2` points on average
-//!    (average density = header point count / extent area).
-//! 2. Any tile whose estimate exceeds `cap` is split in four (a quadtree), down to
-//!    `min_tile_size`. A tile that cannot be split any more is kept as it is, so
-//!    `cap` can be exceeded there (for example a very dense spot or a tiny size).
-//!
-//! # Reading and memory
-//!
-//! `TileReader` reads one tile (+ margin) at a time with `ExtractPoints` and an
-//! axis-aligned box, and drops it before the next. `ExtractPoints` consumes its
-//! reader, so the caller passes a function that opens a fresh `CopcReader` per tile
-//! (re-reading the header and hierarchy, which is small). Coarse-level nodes cover a
-//! wide area and are read again by every tile they overlap; the measured cost of this
-//! is in `TaskSheets/G3-T4-tiles.md`.
-
 use std::io::{Read, Seek};
 
 use copc_core::LasPointRecord;
@@ -51,7 +6,6 @@ use copc_reader::CopcReader;
 use crate::copc::voxel_bounds;
 use crate::extract::{ExtractFilter, ExtractPoints, OrientedBox};
 
-/// An axis-aligned rectangle in the XY plane (the file's real coordinates).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TileRect {
     pub min: [f64; 2],
@@ -64,28 +18,21 @@ impl TileRect {
     }
 }
 
-/// The XY footprint of one hierarchy node and how many points it holds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeFootprint {
     pub rect: TileRect,
     pub point_count: u64,
 }
 
-/// One planned tile.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tile {
-    /// The core rectangle (the points this tile is responsible for).
     pub core: TileRect,
-    /// Estimated number of points inside `core` (see the module comment).
     pub estimated_points: f64,
-    /// The max X edge is the outer edge of the whole extent, so it is closed.
     closed_max_x: bool,
-    /// Same for the max Y edge.
     closed_max_y: bool,
 }
 
 impl Tile {
-    /// Whether the point belongs to this tile (the ownership rule in the module comment).
     pub fn owns(&self, x: f64, y: f64) -> bool {
         x >= self.core.min[0]
             && (x < self.core.max[0] || (self.closed_max_x && x == self.core.max[0]))
@@ -94,7 +41,6 @@ impl Tile {
     }
 }
 
-/// Estimated number of points of `nodes` inside `rect`.
 pub fn estimate_points(rect: &TileRect, nodes: &[NodeFootprint]) -> f64 {
     let mut sum = 0.0;
     for node in nodes {
@@ -107,7 +53,6 @@ pub fn estimate_points(rect: &TileRect, nodes: &[NodeFootprint]) -> f64 {
         let fraction = if node_area > 0.0 {
             (w * h / node_area).min(1.0)
         } else {
-            // A node with no XY area sits on a line or a point that touches the tile.
             1.0
         };
         sum += node.point_count as f64 * fraction;
@@ -115,9 +60,6 @@ pub fn estimate_points(rect: &TileRect, nodes: &[NodeFootprint]) -> f64 {
     sum
 }
 
-/// Splits `extent` into tiles. Pure function (no files). `cap` is the target maximum
-/// of estimated points per tile; `min_tile_size` is the smallest side a tile may be
-/// split down to (in the file's units).
 pub fn plan_tiles(
     extent: TileRect,
     nodes: &[NodeFootprint],
@@ -140,7 +82,6 @@ pub fn plan_tiles(
         return Err("タイルの最小の大きさが不正です".to_string());
     }
 
-    // Uniform grid: about cap / 2 points per cell on average.
     let width = extent.max[0] - extent.min[0];
     let height = extent.max[1] - extent.min[1];
     let wanted = ((total_points as f64) * 2.0 / cap as f64).ceil().max(1.0);
@@ -156,7 +97,6 @@ pub fn plan_tiles(
         (1, 1)
     };
 
-    // The minimum size also limits the starting grid.
     let cells_for = |len: f64, n: usize| -> usize {
         if min_tile_size > 0.0 && len > 0.0 {
             n.min(((len / min_tile_size).floor() as usize).max(1))
@@ -166,7 +106,6 @@ pub fn plan_tiles(
     };
     let (nx, ny) = (cells_for(width, nx), cells_for(height, ny));
 
-    // The same boundary value is used by both neighbours of an edge.
     let boundary = |lo: f64, hi: f64, i: usize, n: usize| -> f64 {
         if i == 0 {
             lo
@@ -177,7 +116,6 @@ pub fn plan_tiles(
         }
     };
 
-    // Work list; cells are pushed in reverse so that tiles come out in row-major order.
     let mut stack: Vec<(Tile, u32)> = Vec::new();
     for iy in (0..ny).rev() {
         for ix in (0..nx).rev() {
@@ -203,7 +141,6 @@ pub fn plan_tiles(
         }
     }
 
-    // Quadtree splitting. Depth is limited so that float rounding can never loop forever.
     const MAX_DEPTH: u32 = 24;
     let mut tiles = Vec::new();
     while let Some((mut tile, depth)) = stack.pop() {
@@ -218,7 +155,6 @@ pub fn plan_tiles(
         }
         let mid_x = tile.core.min[0] + w / 2.0;
         let mid_y = tile.core.min[1] + h / 2.0;
-        // Child ranges per axis: (min, max, closed max edge).
         let xs: Vec<(f64, f64, bool)> = if split_x {
             vec![
                 (tile.core.min[0], mid_x, false),
@@ -255,10 +191,6 @@ pub fn plan_tiles(
     Ok(tiles)
 }
 
-/// The XY extent the tiles cover: the header bounds, widened by one scale unit on every
-/// side. A writer may compute the bounds from unrounded coordinates while the stored
-/// coordinates are rounded to the scale, so a point can land just outside the header
-/// bounds; without the padding it would be core in no tile and silently dropped.
 fn header_extent(header: &copc_reader::LasHeader) -> TileRect {
     TileRect {
         min: [
@@ -272,7 +204,6 @@ fn header_extent(header: &copc_reader::LasHeader) -> TileRect {
     }
 }
 
-/// Plans tiles for an opened COPC file (header bounds + hierarchy).
 pub fn plan_tiles_for_reader<R: Read + Seek + Send>(
     reader: &CopcReader<R>,
     cap: u64,
@@ -304,31 +235,21 @@ pub fn plan_tiles_for_reader<R: Read + Seek + Send>(
     .map_err(copc_core::Error::InvalidInput)
 }
 
-/// A point of a tile read with its margin.
 #[derive(Debug, Clone)]
 pub struct TilePoint {
     pub record: LasPointRecord,
-    /// `true` if the point belongs to this tile (the core); `false` for margin points
-    /// that belong to a neighbour.
     pub is_core: bool,
 }
 
-/// The points of one tile + margin.
 #[derive(Debug, Clone)]
 pub struct TileData {
     pub core: TileRect,
-    /// The planned tile itself, for `owns()` (callers that decide ownership of things
-    /// other than points, such as thinning cells, need it).
     pub tile: Tile,
     pub points: Vec<TilePoint>,
-    /// Points decompressed for this tile (all points of the nodes read, including the
-    /// ones outside the tile). Summing this over tiles gives the total work, which
-    /// shows the re-reading of coarse-level nodes.
     pub scanned_points: u64,
     pub estimated_points: f64,
 }
 
-/// Iterator over the tiles of a COPC file. Holds one tile (+ margin) at a time.
 pub struct TileReader<R, F>
 where
     R: Read + Seek + Send,
@@ -348,8 +269,6 @@ where
     R: Read + Seek + Send,
     F: FnMut() -> copc_core::Result<CopcReader<R>>,
 {
-    /// `open` is called once here (to plan) and once per tile. `margin` is the width of
-    /// the band around each tile that is read as well (0 or more, file units).
     pub fn new(mut open: F, cap: u64, min_tile_size: f64, margin: f64) -> copc_core::Result<Self> {
         if !margin.is_finite() || margin < 0.0 {
             return Err(copc_core::Error::InvalidInput(
@@ -372,7 +291,6 @@ where
         })
     }
 
-    /// The XY extent of the whole file (the header bounds) that the tiles cover.
     pub fn extent(&self) -> TileRect {
         self.extent
     }
@@ -385,8 +303,6 @@ where
         let m = self.margin;
         let lo = [tile.core.min[0] - m, tile.core.min[1] - m];
         let hi = [tile.core.max[0] + m, tile.core.max[1] + m];
-        // Pad the box a little so rounding in the centre/half-extent form cannot drop
-        // a point on the edge; the exact test below decides.
         let pad = |c: f64| (1.0 + c.abs()) * 1e-9;
         let center = [
             (lo[0] + hi[0]) / 2.0,
@@ -408,7 +324,6 @@ where
         for record in extract.by_ref() {
             let record = record?;
             let is_core = tile.owns(record.x, record.y);
-            // With margin 0 only core points are kept; otherwise a closed band.
             let keep = is_core
                 || (m > 0.0
                     && record.x >= lo[0]
@@ -441,7 +356,6 @@ where
         self.next += 1;
         let result = self.read_tile(tile);
         if result.is_err() {
-            // Do not continue after a failure.
             self.next = self.tiles.len();
         }
         Some(result)
@@ -463,8 +377,6 @@ mod tests {
         }
     }
 
-    // ---- planning (no files) ----
-
     #[test]
     fn plan_covers_extent_without_overlap() {
         let extent = rect(0.0, 0.0, 100.0, 60.0);
@@ -475,7 +387,6 @@ mod tests {
         let tiles = plan_tiles(extent, &nodes, 10_000, 1_000, 1.0).expect("plan");
         let area: f64 = tiles.iter().map(|t| t.core.area()).sum();
         assert!((area - 6000.0).abs() < 1e-6, "area {area}");
-        // Every sample position is owned by exactly one tile (incl. edges).
         for xi in 0..=20 {
             for yi in 0..=12 {
                 let (x, y) = (f64::from(xi) * 5.0, f64::from(yi) * 5.0);
@@ -488,7 +399,6 @@ mod tests {
     #[test]
     fn plan_splits_dense_areas_and_respects_cap() {
         let extent = rect(0.0, 0.0, 100.0, 100.0);
-        // One dense corner node and a sparse background node.
         let nodes = [
             NodeFootprint {
                 rect: extent,
@@ -534,10 +444,6 @@ mod tests {
         assert!(plan_tiles(line, &[], 1, 1, -1.0).is_err());
     }
 
-    // ---- reading (synthetic COPC) ----
-
-    /// A 60 x 40 grid of points at 1 m spacing (coordinates are exact in the LAS scale),
-    /// so many points sit exactly on tile boundaries. `gps_time` = running number.
     fn grid_points() -> Vec<CopcPointFields> {
         let mut v = Vec::new();
         let mut id = 0.0;
@@ -591,9 +497,7 @@ mod tests {
         let path = write_copc(dir.path(), grid_points(), 200);
         let reader = TileReader::new(open_fn(&path), 400, 1.0, 0.0).expect("reader");
         let tiles: Vec<Tile> = reader.tiles().to_vec();
-        // The extent max corner (1059, 2039) must be owned by exactly one tile.
         assert_eq!(tiles.iter().filter(|t| t.owns(1059.0, 2039.0)).count(), 1);
-        // A point on an internal vertical boundary belongs to the tile on the right.
         let mut checked = 0;
         for t in &tiles {
             let x = t.core.max[0];
@@ -605,7 +509,6 @@ mod tests {
             }
         }
         assert!(checked > 0, "no internal boundary was checked");
-        // Outer max edge points are read as core.
         let mut edge = 0;
         for tile in reader {
             let tile = tile.expect("tile");
@@ -620,8 +523,6 @@ mod tests {
 
     #[test]
     fn points_exactly_on_internal_boundaries_are_core_once() {
-        // 65 x 33 points at 1 m spacing: the extent is 64 x 32, so with power-of-two
-        // splitting the tile boundaries fall on integer coordinates and points sit on them.
         let mut points = Vec::new();
         let mut id = 0.0;
         for ix in 0..65 {
@@ -685,8 +586,6 @@ mod tests {
             largest = largest.max(tile.points.len());
             tile_count += 1;
         }
-        // Density is 1 point per m^2. A tile with estimate <= cap and margin m holds about
-        // cap + perimeter * m points; allow a factor 2 for the estimate error.
         let bound = 2 * (cap as usize + 4 * 40 * margin as usize);
         assert!(largest <= bound, "largest {largest} bound {bound}");
         assert!(largest < total / 2, "largest {largest} total {total}");

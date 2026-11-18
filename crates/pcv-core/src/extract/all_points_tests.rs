@@ -1,7 +1,3 @@
-//! Tests of `ExtractPoints::all` on small COPC files written on the spot (the
-//! same approach as `copc_file_tests` in `copc.rs`; `copc-writer` is already a
-//! dev-dependency of this crate, so these tests live here and not in `pcv-convert`).
-
 use super::*;
 use crate::raster::{CellAccumulator, ClassFilter, GridSpec, RasterValue};
 use copc_writer::{
@@ -24,7 +20,6 @@ impl CopcPointSource for Source {
     }
 }
 
-/// `side * side` points on a 1 m lattice (x = i, y = j, z = i + j).
 fn make_copc(dir: &std::path::Path, side: u32, max_points_per_node: u32) -> std::path::PathBuf {
     let mut points = Vec::new();
     for i in 0..side {
@@ -62,7 +57,7 @@ fn make_copc(dir: &std::path::Path, side: u32, max_points_per_node: u32) -> std:
 #[test]
 fn all_yields_exactly_the_header_point_count() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = make_copc(dir.path(), 40, 300); // 1600 points, many nodes
+    let path = make_copc(dir.path(), 40, 300);
     let reader = CopcReader::from_path(&path).expect("open");
     let header_count = reader.file().header().number_of_points();
     assert_eq!(header_count, 1600);
@@ -70,7 +65,6 @@ fn all_yields_exactly_the_header_point_count() {
     let mut seen = std::collections::HashSet::new();
     for record in iter.by_ref() {
         let p = record.expect("point");
-        // Each lattice point exactly once: levels hold disjoint points.
         assert!(seen.insert((p.x as i64, p.y as i64)), "duplicate point");
     }
     assert_eq!(seen.len() as u64, header_count);
@@ -81,12 +75,10 @@ fn all_yields_exactly_the_header_point_count() {
     assert_eq!(stats.nodes_read, stats.nodes_total);
 }
 
-/// The reader holds one node of points at a time, not all of them (same style as
-/// `buffer_is_bounded_by_largest_node` in `crates/pcv-convert/src/extract.rs`).
 #[test]
 fn all_buffer_is_bounded_by_largest_node() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = make_copc(dir.path(), 60, 200); // 3600 points
+    let path = make_copc(dir.path(), 60, 200);
     let reader = CopcReader::from_path(&path).expect("open");
     let largest_node = reader
         .file()
@@ -109,11 +101,10 @@ fn all_buffer_is_bounded_by_largest_node() {
     assert!(s.max_buffered_points * 10 < 3600);
 }
 
-/// The reader feeds the accumulator: the whole path from file to raster.
 #[test]
 fn all_points_feed_the_accumulator() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = make_copc(dir.path(), 10, 30); // x, y in 0..=9
+    let path = make_copc(dir.path(), 10, 30);
     let reader = CopcReader::from_path(&path).expect("open");
     let spec = GridSpec::from_bounds(0.0, 0.0, 9.0, 9.0, 3.0, 100).expect("spec");
     let mut count = CellAccumulator::new(spec, RasterValue::Count, ClassFilter::all());
@@ -123,9 +114,6 @@ fn all_points_feed_the_accumulator() {
     assert_eq!(count.accepted_points(), 100);
     let total: f32 = count.f32_samples(0.0).sum();
     assert_eq!(total, 100.0);
-    // 3 x 3 cells of 3 m. South-west cell (x, y in 0..3) is the bottom-left pixel
-    // (row 2, col 0 = index 6): 3 x 3 points.
     assert_eq!(count.value_at(6), Some(9.0));
-    // North-east cell (row 0, col 2 = index 2) also takes the max edge: x, y in 6..=9.
     assert_eq!(count.value_at(2), Some(16.0));
 }

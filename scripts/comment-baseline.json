@@ -3,19 +3,11 @@
   "crates/pcv-core/src/dtm.rs": 124,
   "crates/pcv-core/src/dtm/landxml.rs": 30,
   "crates/pcv-core/src/dtm/tests.rs": 38,
-  "crates/pcv-core/src/extract.rs": 113,
-  "crates/pcv-core/src/extract/all_points_tests.rs": 14,
-  "crates/pcv-core/src/outlier.rs": 96,
-  "crates/pcv-core/src/profile.rs": 57,
-  "crates/pcv-core/src/profile/tests.rs": 11,
   "crates/pcv-core/src/raster/color.rs": 47,
   "crates/pcv-core/src/raster/geotiff.rs": 93,
   "crates/pcv-core/src/raster/grid.rs": 95,
   "crates/pcv-core/src/raster/output.rs": 29,
   "crates/pcv-core/src/raster/preview.rs": 114,
   "crates/pcv-core/src/section_line.rs": 98,
-  "crates/pcv-core/src/section_line/tests.rs": 20,
-  "crates/pcv-core/src/thin.rs": 81,
-  "crates/pcv-core/src/thin_filter_job.rs": 49,
-  "crates/pcv-core/src/tiles.rs": 98
+  "crates/pcv-core/src/section_line/tests.rs": 20
 }

@@ -1,74 +1,24 @@
-//! G3-2: grid (2D) and voxel (3D) thinning. Keeps ORIGINAL points, one per cell.
-//!
-//! Nothing is averaged: the kept point is an existing point of the cloud, so its
-//! attributes (RGB, intensity, classification, ...) are carried over unchanged.
-//!
-//! # Cells are global, not per tile
-//!
-//! A cell is `floor(x / size)`, `floor(y / size)` (and `floor(z / size)` for voxels),
-//! measured from the coordinate origin (0, 0, 0), never from a tile corner. So a cell
-//! has the same bounds whatever the tiling is.
-//!
-//! # Who outputs a cell (the ownership rule)
-//!
-//! Tile borders are arbitrary (`tiles.rs`), so a cell can straddle a border. The rule:
-//! **the tile that owns the XY of the cell's centre outputs the cell.** The tile reads a
-//! margin of `size / 2` (plus a little slack) around its core. Every point of a cell
-//! whose centre lies in the core is then inside core + margin, because the cell reaches
-//! at most `size / 2` from its centre. The tile picks the best point among ALL points
-//! of that cell (core and margin points alike) and outputs it. That point may be a
-//! margin point; it is still output exactly once, by the owner of the cell.
-//!
-//! Because the owner depends only on the cell centre (a function of the cell, not of
-//! the tiling) and the winner is chosen among all points of the cell, **the result does
-//! not depend on the tiling**. Rejected: choosing tile borders at multiples of the cell
-//! size. It would tie the tiling (which is chosen by point counts) to the cell size and
-//! fail for large cells or odd extents.
-//!
-//! Edge case: a cell whose centre lies outside the file's extent (cells at the max
-//! edge) is owned by the tile that owns the centre moved into the extent
-//! (clamped). The clamped centre is within `size / 2` of every point of the cell
-//! inside the extent, so the margin still suffices.
-//!
-//! # Which point wins
-//!
-//! The point with the smallest score. Ties are broken by z, x, y (total order on the
-//! coordinates), so two different points never compete on equal terms. Two points with
-//! identical coordinates but different attributes are a real tie; the one read first
-//! wins, and the read order can depend on the tiling. That is the only case where the
-//! tiling can change the result.
-//!
-//! # Memory
-//!
-//! A tile holds a hash map from occupied owned cells to the best point index. It is
-//! bounded by the number of points of the tile (+ margin), never by the whole cloud.
-
 use std::collections::HashMap;
 
 use crate::tiles::{TileData, TilePoint, TileRect};
 
-/// Which point of a grid cell is kept.
+const HALF_A_CELL_PLUS_ONE_PERCENT_SLACK: f64 = 0.51;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridKeep {
-    /// The point nearest to the cell centre in XY.
     NearestCentre,
-    /// The point with the lowest z.
     Lowest,
-    /// The point with the highest z.
     Highest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinKind {
-    /// 2D cells in XY; one point per cell.
     Grid(GridKeep),
-    /// 3D cubes; keeps the point nearest to the cube centre.
     Voxel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThinSettings {
-    /// Cell / voxel edge length in the file's units.
     pub size: f64,
     pub kind: ThinKind,
 }
@@ -81,15 +31,10 @@ impl ThinSettings {
         Ok(())
     }
 
-    /// The margin a tile must read around its core (see the module comment).
     pub fn margin(&self) -> f64 {
-        // Half a cell, plus 1 % slack so float rounding can never lose a point.
-        self.size * 0.51
+        self.size * HALF_A_CELL_PLUS_ONE_PERCENT_SLACK
     }
 
-    /// Checks that the cell index of the farthest coordinate fits easily in an `i64`.
-    /// With a size that is tiny compared with the coordinates, all points would
-    /// saturate into one cell and silently produce a wrong result.
     pub fn check_coordinates(&self, max_abs_coordinate: f64) -> Result<(), String> {
         if max_abs_coordinate / self.size > 1.0e15 {
             return Err("大きさが座標に比べて小さすぎます".to_string());
@@ -98,12 +43,9 @@ impl ThinSettings {
     }
 }
 
-/// Indices (ascending) into `data.points` of the points to keep for this tile.
-/// `extent` is the XY extent of the whole file (`TileReader::extent`).
 pub fn thin_tile(data: &TileData, extent: &TileRect, settings: &ThinSettings) -> Vec<usize> {
     let tile = data.tile;
     let owns_centre = |cx: f64, cy: f64| {
-        // Centres outside the extent are moved onto it (see the module comment).
         let cx = cx.clamp(extent.min[0], extent.max[0]);
         let cy = cy.clamp(extent.min[1], extent.max[1]);
         tile.owns(cx, cy)
@@ -111,9 +53,6 @@ pub fn thin_tile(data: &TileData, extent: &TileRect, settings: &ThinSettings) ->
     thin_points(&data.points, &owns_centre, settings)
 }
 
-/// The same as [`thin_tile`] on a plain slice. `owns_centre(cx, cy)` tells whether the
-/// caller's tile outputs cells with that centre. Core flags are not used: a cell is
-/// decided by its centre, and all of its points are in `points`.
 pub fn thin_points(
     points: &[TilePoint],
     owns_centre: &dyn Fn(f64, f64) -> bool,
@@ -121,7 +60,6 @@ pub fn thin_points(
 ) -> Vec<usize> {
     let size = settings.size;
     let voxel = settings.kind == ThinKind::Voxel;
-    // Cell key -> (score of the best point so far, its index).
     let mut best: HashMap<(i64, i64, i64), ([f64; 4], usize)> = HashMap::new();
     for (index, p) in points.iter().enumerate() {
         let (x, y, z) = (p.record.x, p.record.y, p.record.z);
@@ -160,7 +98,6 @@ pub fn thin_points(
     kept
 }
 
-/// Lexicographic "less than" on the score with a total order on floats.
 fn score_less(a: &[f64; 4], b: &[f64; 4]) -> bool {
     for i in 0..4 {
         match a[i].total_cmp(&b[i]) {
@@ -211,12 +148,11 @@ mod tests {
 
     #[test]
     fn grid_keeps_one_point_nearest_to_the_centre() {
-        // Cell [0,2) x [0,2) has centre (1, 1); cell [2,4) x [0,2) has centre (3, 1).
         let pts = [
             point(0.1, 0.1, 0.0, 1.0),
-            point(1.2, 0.9, 5.0, 2.0), // nearest to (1, 1)
+            point(1.2, 0.9, 5.0, 2.0),
             point(1.9, 1.9, 0.0, 3.0),
-            point(3.0, 1.0, 9.0, 4.0), // alone in the second cell, exactly at its centre
+            point(3.0, 1.0, 9.0, 4.0),
         ];
         let kept = thin_points(&pts, &all, &grid(2.0, GridKeep::NearestCentre));
         assert_eq!(ids(&pts, &kept), vec![2.0, 4.0]);
@@ -242,10 +178,10 @@ mod tests {
             kind: ThinKind::Voxel,
         };
         let pts = [
-            point(1.0, 1.0, 0.2, 1.0),  // voxel z [0,2), centre z = 1
-            point(1.0, 1.0, 1.1, 2.0),  // nearest to (1, 1, 1)
-            point(1.0, 1.0, 2.5, 3.0),  // voxel z [2,4), alone
-            point(-0.5, 1.0, 1.0, 4.0), // negative x: voxel [-2,0)
+            point(1.0, 1.0, 0.2, 1.0),
+            point(1.0, 1.0, 1.1, 2.0),
+            point(1.0, 1.0, 2.5, 3.0),
+            point(-0.5, 1.0, 1.0, 4.0),
         ];
         let kept = thin_points(&pts, &all, &settings);
         assert_eq!(ids(&pts, &kept), vec![2.0, 3.0, 4.0]);
@@ -253,7 +189,6 @@ mod tests {
 
     #[test]
     fn negative_coordinates_use_floor() {
-        // -0.1 belongs to cell [-2, 0), not to cell [0, 2).
         let pts = [point(-0.1, 0.5, 0.0, 1.0), point(0.1, 0.5, 0.0, 2.0)];
         let kept = thin_points(&pts, &all, &grid(2.0, GridKeep::NearestCentre));
         assert_eq!(kept.len(), 2);
@@ -291,10 +226,6 @@ mod tests {
             .is_err());
     }
 
-    // ---- tiling independence on a synthetic COPC file ----
-
-    /// Pseudo-random but deterministic points with unique coordinates and ids; the
-    /// points are not on a lattice so the cell choice is not a tie.
     fn scattered_points() -> Vec<CopcPointFields> {
         let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = move || {
@@ -315,7 +246,6 @@ mod tests {
         v
     }
 
-    /// Runs the thinning over all tiles of the file and returns the kept ids.
     fn thin_file(
         path: &std::path::Path,
         cap: u64,
@@ -355,7 +285,6 @@ mod tests {
             },
         ];
         for s in settings {
-            // One tile (cap larger than the file) is the reference.
             let (reference, one) = thin_file(&path, 1_000_000, &s);
             assert_eq!(one, 1);
             assert!(reference.len() > 20 && reference.len() < 3000);
@@ -382,7 +311,6 @@ mod tests {
             let cell = ((p.x / 4.0).floor() as i64, (p.y / 4.0).floor() as i64);
             assert!(cells.insert(cell), "two points in one cell");
         }
-        // Every occupied cell has an output.
         let occupied: BTreeSet<(i64, i64)> = source
             .iter()
             .map(|p| ((p.x / 4.0).floor() as i64, (p.y / 4.0).floor() as i64))
@@ -392,7 +320,6 @@ mod tests {
 
     #[test]
     fn cells_straddling_tile_borders_and_the_extent_edge_are_kept() {
-        // A lattice with a point exactly on the max edge of the extent, and on borders.
         let mut points = Vec::new();
         let mut id = 0.0;
         for ix in 0..65 {
@@ -403,13 +330,11 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = write_copc(dir.path(), points, 200);
-        // Cell size 5 does not divide the extent (64 x 32) evenly.
         let s = grid(5.0, GridKeep::Lowest);
         let (reference, _) = thin_file(&path, 1_000_000, &s);
         let (kept, tiles) = thin_file(&path, 300, &s);
         assert!(tiles > 4);
         assert_eq!(kept, reference);
-        // 500..=564 spans cells 100..=112 (13), 700..=732 spans 140..=146 (7).
         assert_eq!(kept.len(), 13 * 7);
     }
 }

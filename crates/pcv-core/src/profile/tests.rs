@@ -1,6 +1,3 @@
-//! Tests of the section profile on small COPC files written on the spot (same approach as
-//! `extract/all_points_tests.rs`).
-
 use super::*;
 use copc_writer::{
     write_source, CopcPointFields, CopcPointSource, CopcWriteMetadata, CopcWriterParams,
@@ -43,7 +40,6 @@ fn open(dir: &std::path::Path, points: Vec<CopcPointFields>, has_color: bool) ->
     CopcFile::open(&path).expect("open test copc")
 }
 
-/// A lattice in the plane y = 0: x = i (0..nx), z = j (0..nz).
 fn wall(nx: u32, nz: u32) -> Vec<CopcPointFields> {
     let mut points = Vec::new();
     for i in 0..nx {
@@ -67,7 +63,6 @@ struct Decoded {
     flags: u32,
     s_range: (f32, f32),
     z_range: (f32, f32),
-    /// (s, z, [r, g, b, class])
     points: Vec<(f32, f32, [u8; 4])>,
 }
 
@@ -117,7 +112,6 @@ fn keeps_every_point_under_the_cap_with_exact_s_and_z() {
     assert_eq!(d.flags & PROFILE_FLAG_COLOR, PROFILE_FLAG_COLOR);
     assert_eq!(d.s_range, (0.0, 9.0));
     assert_eq!(d.z_range, (0.0, 7.0));
-    // Every lattice point is present once, and colour / classification are carried over.
     let mut seen: Vec<(i32, i32)> = d.points.iter().map(|p| (p.0 as i32, p.1 as i32)).collect();
     seen.sort_unstable();
     seen.dedup();
@@ -130,7 +124,6 @@ fn keeps_every_point_under_the_cap_with_exact_s_and_z() {
 
 #[test]
 fn s_follows_a_to_b_and_z_follows_up_when_the_line_is_not_on_the_x_axis() {
-    // A wall in the plane x = 5 seen along +y: s = y - 5 (A = (5, 5, 0)).
     let mut points = Vec::new();
     for j in 0..20 {
         points.push(CopcPointFields {
@@ -144,8 +137,8 @@ fn s_follows_a_to_b_and_z_follows_up_when_the_line_is_not_on_the_x_axis() {
     let mut file = open(dir.path(), points, false);
     let line = SectionLine {
         a: [5.0, 5.0, 0.0],
-        b: [5.0, 15.0, 100.0], // the height difference of A and B must not change s
-        up: [0.0, 0.0, 2.0],   // not unit length
+        b: [5.0, 15.0, 100.0],
+        up: [0.0, 0.0, 2.0],
     };
     let d = decode(&read_section_profile(&mut file, &line, 0).expect("profile"));
     assert_eq!(d.flags & PROFILE_FLAG_COLOR, 0);
@@ -157,7 +150,6 @@ fn s_follows_a_to_b_and_z_follows_up_when_the_line_is_not_on_the_x_axis() {
 #[test]
 fn never_returns_more_than_the_cap_and_still_covers_the_whole_section() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // 200 x 200 = 40,000 points, cap 1,000.
     let mut file = open(dir.path(), wall(200, 200), false);
     let line = SectionLine {
         a: [0.0, 0.0, 0.0],
@@ -173,9 +165,7 @@ fn never_returns_more_than_the_cap_and_still_covers_the_whole_section() {
         d.points.len()
     );
     assert_eq!(d.flags & PROFILE_FLAG_THINNED, PROFILE_FLAG_THINNED);
-    // The size is bounded by the cap, not by the 40,000 input points.
     assert!(bytes.len() <= PROFILE_HEADER_BYTES + 1000 * PROFILE_RECORD_BYTES);
-    // The thinned points spread over the whole wall (not only one corner).
     assert!(
         d.s_range.0 <= 10.0 && d.s_range.1 >= 189.0,
         "{:?}",

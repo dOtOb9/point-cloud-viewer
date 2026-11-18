@@ -1,39 +1,3 @@
-//! L2-C: reading only the points that match a condition out of a COPC file.
-//!
-//! The point-cloud tools (point selection, cross section) create a new layer from a
-//! chosen layer (`TaskSheets/ADR-0018-layer-centric-operations.md`). This file is the
-//! "read" side only; **writing the COPC is not done here**. Desktop writes it in
-//! `crates/pcv-convert/src/extract.rs` and Web in `crates/pcv-wasm/src/extract.rs`,
-//! both by handing an iterator of points to `vendor/copc-writer`, exactly like the
-//! existing conversion. It lives here because both sides can use it (it builds for
-//! wasm32 and does not depend on Tauri).
-//!
-//! # Layout
-//!
-//! - `ExtractFilter`: the condition, either a polygon drawn on screen
-//!   (`ScreenPolygon`) or an oriented box (`OrientedBox`). Coordinates are the
-//!   file's real coordinates (f64) in both cases.
-//! - `ExtractPoints`: picks the octree nodes that may intersect the condition from
-//!   the COPC hierarchy, reads them one at a time, and yields the matching points
-//!   one by one.
-//!
-//! # Why memory does not grow with the point count
-//!
-//! `ExtractPoints` only holds the points of the node being read and drops them
-//! before reading the next node. A node holds at most `max_points_per_node` points
-//! (default 100k, decided when the file was written), so the buffer depends neither
-//! on the total point count nor on the node count (only the hierarchy listing and
-//! the list of selected node keys grow with the node count). The bound is checked by
-//! the test `buffer_is_bounded_by_largest_node` in `crates/pcv-convert/src/extract.rs`.
-//!
-//! # Node culling is conservative
-//!
-//! `may_intersect` returns `false` only when it can say for sure that the node does
-//! not intersect. When unsure (for example a node that straddles the camera plane) it
-//! returns `true`, the node is read, and the per-point `contains` decides exactly.
-//! The result is therefore correct whatever the culling precision; coarse culling
-//! only means more nodes are read.
-
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
 
@@ -42,29 +6,18 @@ use copc_reader::CopcReader;
 
 use crate::copc::voxel_bounds;
 
-/// A polygon drawn on screen. A point is selected when it projects inside the
-/// polygon and is in front of the camera (w > 0). Depth does not matter (everything
-/// from near to far is selected).
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenPolygon {
-    /// View-projection matrix, 16 elements in column-major order (the WebGPU /
-    /// glMatrix layout). World coordinates (the file's real coordinates) to clip
-    /// coordinates.
     pub view_proj: [f64; 16],
-    /// Polygon vertices in NDC (x and y in -1..1). It does not need to be closed
-    /// (the last vertex is joined to the first).
     pub polygon_ndc: Vec<[f64; 2]>,
 }
 
-/// An oriented box (for example the slab of a cross section).
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrientedBox {
     pub center: [f64; 3],
-    /// Three orthonormal axes (unit length).
     pub axes: [[f64; 3]; 3],
-    /// Half the length along each axis (0 or more).
     pub half_extents: [f64; 3],
 }
 
@@ -76,8 +29,6 @@ pub enum ExtractFilter {
 }
 
 impl ExtractFilter {
-    /// Checks the shape of the input (finite numbers, at least 3 vertices, ...).
-    /// Call before using the condition.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             ExtractFilter::ScreenPolygon(p) => {
@@ -110,7 +61,6 @@ impl ExtractFilter {
         }
     }
 
-    /// Whether a point matches the condition (exact test).
     pub fn contains(&self, p: [f64; 3]) -> bool {
         match self {
             ExtractFilter::ScreenPolygon(s) => match project(&s.view_proj, p) {
@@ -124,8 +74,6 @@ impl ExtractFilter {
         }
     }
 
-    /// Whether the axis-aligned box `[min, max]` may intersect the condition.
-    /// `false` means it certainly does not (see "Node culling is conservative").
     pub fn may_intersect(&self, min: [f64; 3], max: [f64; 3]) -> bool {
         match self {
             ExtractFilter::ScreenPolygon(s) => screen_may_intersect(s, min, max),
@@ -142,7 +90,6 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Projects a world point to NDC (x, y). `None` unless w > 0 (behind the camera).
 fn project(m: &[f64; 16], p: [f64; 3]) -> Option<[f64; 2]> {
     let w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
     if w <= 0.0 || !w.is_finite() {
@@ -153,7 +100,6 @@ fn project(m: &[f64; 16], p: [f64; 3]) -> Option<[f64; 2]> {
     Some([x / w, y / w])
 }
 
-/// Even-odd rule: cast a ray to the right; an odd number of edge crossings means inside.
 fn point_in_polygon(p: [f64; 2], polygon: &[[f64; 2]]) -> bool {
     let mut inside = false;
     let n = polygon.len();
@@ -184,11 +130,6 @@ fn corners(min: [f64; 3], max: [f64; 3]) -> [[f64; 3]; 8] {
     out
 }
 
-/// Conservative intersection test between a screen polygon and a box.
-/// If any of the 8 corners is behind the camera (w <= 0) the projection breaks
-/// down, so return `true` (read the node and test per point). If all corners are in
-/// front, compare the NDC bounding rectangle of the projected corners with the
-/// polygon's bounding rectangle (disjoint rectangles certainly do not intersect).
 fn screen_may_intersect(s: &ScreenPolygon, min: [f64; 3], max: [f64; 3]) -> bool {
     let mut bx = (f64::INFINITY, f64::NEG_INFINITY);
     let mut by = (f64::INFINITY, f64::NEG_INFINITY);
@@ -210,10 +151,6 @@ fn screen_may_intersect(s: &ScreenPolygon, min: [f64; 3], max: [f64; 3]) -> bool
     bx.0 <= px.1 && px.0 <= bx.1 && by.0 <= py.1 && py.0 <= by.1
 }
 
-/// Separating-axis test between an oriented box and an axis-aligned box.
-/// Only the 3 axes of the oriented box and the 3 world axes are checked (the 9 edge
-/// cross-product axes are not). Fewer axes only means fewer cases where "does not
-/// intersect" can be proven, so the test errs only toward returning `true`.
 fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
     let c = [
         (min[0] + max[0]) * 0.5,
@@ -226,7 +163,6 @@ fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
         (max[2] - min[2]) * 0.5,
     ];
     let d = sub(c, b.center);
-    // Axes of the oriented box: the projected radius of the aligned box is sum h_k |axis_k|.
     for i in 0..3 {
         let axis = b.axes[i];
         let r = h[0] * axis[0].abs() + h[1] * axis[1].abs() + h[2] * axis[2].abs();
@@ -234,7 +170,6 @@ fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
             return false;
         }
     }
-    // World axes: the projected radius of the oriented box is sum e_i |axis_i[k]|.
     for k in 0..3 {
         let r = (0..3)
             .map(|i| b.half_extents[i] * b.axes[i][k].abs())
@@ -246,55 +181,35 @@ fn box_may_intersect(b: &OrientedBox, min: [f64; 3], max: [f64; 3]) -> bool {
     true
 }
 
-/// Progress of an extraction (for progress display and tests).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExtractStats {
-    /// Number of nodes with point data in the hierarchy.
     pub nodes_total: usize,
-    /// Nodes that may intersect the condition (the nodes that will be read).
     pub nodes_selected: usize,
-    /// Nodes read so far.
     pub nodes_read: usize,
-    /// Total points of the selected nodes (upper bound of what will be read; the
-    /// denominator of progress).
     pub candidate_points: u64,
-    /// Points read so far.
     pub points_scanned: u64,
-    /// Of those, points that matched and were returned.
     pub points_matched: u64,
-    /// Most points held at the same time (one node; checked by a test).
     pub max_buffered_points: usize,
 }
 
-/// Called after each node is read.
 pub type NodeCallback<'a> = Box<dyn FnMut(&ExtractStats) -> copc_core::Result<()> + Send + 'a>;
 
-/// Iterator that yields only the points of a COPC file that match a condition.
 pub struct ExtractPoints<'a, R: Read + Seek + Send> {
     reader: CopcReader<R>,
-    /// `None` means "every point" (see `ExtractPoints::all`).
     filter: Option<ExtractFilter>,
     pending: VecDeque<VoxelKey>,
-    /// Matching points of the node being read (dropped once consumed).
     current: VecDeque<LasPointRecord>,
     stats: ExtractStats,
-    /// Called after each node is read (progress and cancellation checks). Returning
-    /// `Err` aborts the extraction.
     on_node: Option<NodeCallback<'a>>,
-    /// Deepest COPC level that was selected (`coarse` only; `None` = no depth limit).
     depth_limit: Option<i32>,
 }
 
 impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
-    /// Looks at the hierarchy of `reader` and selects the nodes that intersect the
-    /// condition. No points are read yet.
     pub fn new(reader: CopcReader<R>, filter: ExtractFilter) -> Result<Self, copc_core::Error> {
         filter.validate().map_err(copc_core::Error::InvalidInput)?;
         let info: CopcInfo = *reader.copc_info();
         let mut stats = ExtractStats::default();
         let mut pending = VecDeque::new();
-        // The hierarchy is a BTreeMap, so nodes are read in key order (level, x, y, z),
-        // the same order every time.
         for entry in reader.file().hierarchy_entries() {
             if !entry.has_point_data() {
                 continue;
@@ -318,13 +233,6 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         })
     }
 
-    /// Selects every node of the hierarchy and yields every point (no condition).
-    /// COPC levels hold disjoint points, so each point of the file is yielded exactly
-    /// once. Reading is node at a time, exactly like `new`, so memory does not grow
-    /// with the point count. Used by raster tools that need all points.
-    ///
-    /// This is a separate constructor, not an `ExtractFilter` variant, because
-    /// `ExtractFilter` is deserialized from TypeScript and its shape is a contract.
     pub fn all(reader: CopcReader<R>) -> Self {
         let mut stats = ExtractStats::default();
         let mut pending = VecDeque::new();
@@ -348,14 +256,7 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         }
     }
 
-    /// Selects only the upper levels of the octree: levels `0..=d` where `d` is the
-    /// deepest level for which the nodes of levels `0..=d` hold at most `max_points`
-    /// points in total (level 0 is always taken, even when it alone is larger). The
-    /// points of the upper levels are a thinned copy of the whole cloud that covers
-    /// all of it, which is what a quick preview needs. Reading is node at a time,
-    /// like `all`. The point count comes from the hierarchy, so nothing is read here.
     pub fn coarse(reader: CopcReader<R>, max_points: u64) -> Self {
-        // Points per level, from the hierarchy only.
         let mut per_level: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
         for entry in reader.file().hierarchy_entries() {
             if entry.has_point_data() {
@@ -396,7 +297,6 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         }
     }
 
-    /// The deepest level `coarse` selected (`None` for the other constructors).
     pub fn depth_limit(&self) -> Option<i32> {
         self.depth_limit
     }
@@ -405,16 +305,10 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
         self.stats
     }
 
-    /// Sets a function called after each node is read, for progress reports and
-    /// cancellation. It is needed because when few points match, the writer receives
-    /// nothing for a long time, so its own cancellation check alone would be too
-    /// slow. If it returns `Err`, the iterator yields that error and ends.
     pub fn set_node_callback(&mut self, callback: NodeCallback<'a>) {
         self.on_node = Some(callback);
     }
 
-    /// Reads the next node and puts its matching points into `current`.
-    /// Returns `false` when there is no node left.
     fn load_next_node(&mut self) -> Result<bool, copc_core::Error> {
         let Some(key) = self.pending.pop_front() else {
             return Ok(false);
@@ -433,7 +327,6 @@ impl<'a, R: Read + Seek + Send> ExtractPoints<'a, R> {
                     .push_back(LasPointRecord::from_las_point(point));
             }
         }
-        // `points` is dropped here (released before the next node is read).
         if let Some(callback) = self.on_node.as_mut() {
             callback(&self.stats)?;
         }
@@ -454,7 +347,6 @@ impl<R: Read + Seek + Send> Iterator for ExtractPoints<'_, R> {
                 Ok(true) => {}
                 Ok(false) => return None,
                 Err(e) => {
-                    // Do not keep reading past a failed node.
                     self.pending.clear();
                     return Some(Err(e));
                 }
@@ -470,7 +362,6 @@ mod all_points_tests;
 mod tests {
     use super::*;
 
-    /// A matrix that uses x, y as NDC directly (w = 1).
     fn identity_view_proj() -> [f64; 16] {
         let mut m = [0.0; 16];
         m[0] = 1.0;
@@ -480,7 +371,6 @@ mod tests {
         m
     }
 
-    /// A matrix with w = -z: z < 0 is in front of the camera, z > 0 is behind it.
     fn looking_down_minus_z() -> [f64; 16] {
         let mut m = identity_view_proj();
         m[11] = -1.0;
@@ -525,7 +415,6 @@ mod tests {
             !f.may_intersect([0.6, 0.0, 0.0], [1.0, 1.0, 1.0]),
             "a distant box is not read"
         );
-        // A box straddling the camera plane is read rather than judged.
         let g = ExtractFilter::ScreenPolygon(ScreenPolygon {
             view_proj: looking_down_minus_z(),
             polygon_ndc: square(-0.1, 0.1),
@@ -552,7 +441,6 @@ mod tests {
 
     #[test]
     fn rotated_box_uses_its_own_axes() {
-        // A thin slab (length 10, width 0.5) rotated 45 degrees around the z axis.
         let s = std::f64::consts::FRAC_1_SQRT_2;
         let f = ExtractFilter::OrientedBox(OrientedBox {
             center: [0.0, 0.0, 0.0],
@@ -561,7 +449,6 @@ mod tests {
         });
         assert!(f.contains([3.0, 3.0, 0.0]), "along the slab");
         assert!(!f.contains([3.0, -3.0, 0.0]), "outside the slab width");
-        // A node in a far corner away from the slab is not read.
         assert!(!f.may_intersect([4.0, -6.0, -1.0], [6.0, -4.0, 1.0]));
     }
 
@@ -580,7 +467,6 @@ mod tests {
 
     #[test]
     fn filter_deserializes_from_camel_case_json() {
-        // The shape the frontend (TypeScript) sends.
         let json = r#"{"kind":"orientedBox","center":[1,2,3],
             "axes":[[1,0,0],[0,1,0],[0,0,1]],"halfExtents":[1,1,1]}"#;
         let f: ExtractFilter = serde_json::from_str(json).expect("json");

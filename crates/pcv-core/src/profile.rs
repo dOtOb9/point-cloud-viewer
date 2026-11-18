@@ -1,51 +1,11 @@
-//! G2-1: the points of a cross-section layer as 2D `(s, z)` points, for the section panel.
-//!
-//! A cross section (the tool "断面") is a COPC layer that holds a thin vertical slab of a bigger cloud.
-//! The panel draws that slab seen from the side: the horizontal axis `s` is the distance from the
-//! section's point A along A->B (measured in the horizontal plane), the vertical axis `z` is the height
-//! along the view's `up` axis. Both are in the file's unit.
-//!
-//! # What is returned
-//!
-//! One byte buffer (little endian), built for direct use by the browser:
-//!
-//! ```text
-//! header, 24 bytes   u32 count | u32 flags | f32 s_min | f32 s_max | f32 z_min | f32 z_max
-//! then count * 12    f32 s | f32 z | u8 r | u8 g | u8 b | u8 classification
-//! ```
-//!
-//! `flags` bit 0 = the points were thinned (the layer has more points than were returned),
-//! bit 1 = the cloud has colour (r, g, b are real; otherwise they are 0 and the caller colours by the
-//! classification byte). The ranges are those of the returned points. The header is 24 bytes so the
-//! records start 4-byte aligned and the browser can view them as `Float32Array` / `Uint32Array`.
-//!
-//! # Memory does not grow with the point count
-//!
-//! The result never has more than `cap` points (default 2,000,000, i.e. 24 MB). Nodes are read one at a
-//! time (`CopcFile::read_node_points`), so only one node plus the result is in memory.
-//!
-//! - If the layer has at most `cap` points, every point is kept.
-//! - Otherwise points go into a fixed `(s, z)` grid of at most `cap` cells and each cell keeps the
-//!   FIRST point that fell into it. The grid is sized from the layer's bounding box, so it is as fine as
-//!   `cap` cells allow. The number of kept points is at most the number of cells, so it can never exceed
-//!   `cap`: a second "stride" pass is not needed (the plan's "then stride if still over" cannot happen with
-//!   this grid). Dense areas lose points, sparse areas keep all of theirs.
-//!
-//! This file does not use `std::time` (it is used from the browser build too).
-
 use std::io::{Read, Seek};
 
 use crate::{CopcError, CopcFile, NodeKey};
 
-/// Default maximum number of returned points.
 pub const DEFAULT_PROFILE_CAP: usize = 2_000_000;
-/// Size of the header in bytes.
 pub const PROFILE_HEADER_BYTES: usize = 24;
-/// Size of one record in bytes.
 pub const PROFILE_RECORD_BYTES: usize = 12;
-/// `flags` bit: the points were thinned.
 pub const PROFILE_FLAG_THINNED: u32 = 1;
-/// `flags` bit: r, g, b are real colours.
 pub const PROFILE_FLAG_COLOR: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
@@ -56,17 +16,14 @@ pub enum ProfileError {
     Read(#[from] CopcError),
 }
 
-/// The section line as the section tool defines it (file coordinates). Comes from the frontend as JSON.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SectionLine {
     pub a: [f64; 3],
     pub b: [f64; 3],
-    /// Direction of "up" in the view that picked the points (need not be unit length).
     pub up: [f64; 3],
 }
 
-/// The two axes of the section: `along` (horizontal unit vector from A towards B) and `up` (unit).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SectionAxes {
     origin: [f64; 3],
@@ -79,7 +36,6 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 impl SectionAxes {
-    /// Same construction as `sectionBox` in `src/state/tool-math.ts`: `along` is A->B with its `up` part removed.
     pub fn new(line: &SectionLine) -> Result<Self, ProfileError> {
         let mut all = line.a.iter().chain(&line.b).chain(&line.up);
         if all.any(|v| !v.is_finite()) {
@@ -127,17 +83,14 @@ impl SectionAxes {
         })
     }
 
-    /// Horizontal unit vector from A towards B.
     pub(crate) fn along(&self) -> [f64; 3] {
         self.along
     }
 
-    /// Unit vector of the height axis.
     pub(crate) fn up(&self) -> [f64; 3] {
         self.up
     }
 
-    /// `(s, z)` of a point: `s` = horizontal distance from A along A->B (negative behind A), `z` = height along `up`.
     pub fn project(&self, p: [f64; 3]) -> (f64, f64) {
         let d = [
             p[0] - self.origin[0],
@@ -147,7 +100,6 @@ impl SectionAxes {
         (dot(d, self.along), dot(p, self.up))
     }
 
-    /// Ranges of `s` and `z` over the 8 corners of an axis-aligned box.
     pub(crate) fn ranges_of_box(&self, min: [f64; 3], max: [f64; 3]) -> ((f64, f64), (f64, f64)) {
         let mut s_range = (f64::INFINITY, f64::NEG_INFINITY);
         let mut z_range = (f64::INFINITY, f64::NEG_INFINITY);
@@ -165,7 +117,6 @@ impl SectionAxes {
     }
 }
 
-/// One output point.
 #[derive(Debug, Clone, Copy)]
 struct ProfilePoint {
     s: f32,
@@ -173,27 +124,22 @@ struct ProfilePoint {
     rgbc: [u8; 4],
 }
 
-/// An empty grid cell has a NaN `s`.
 const EMPTY_CELL: ProfilePoint = ProfilePoint {
     s: f32::NAN,
     z: 0.0,
     rgbc: [0; 4],
 };
 
-/// Grid size `(width, height)` with `width * height <= cells`, cells roughly square in `(s, z)` units.
 fn grid_dims(s_span: f64, z_span: f64, cells: usize) -> (usize, usize) {
     let s_span = s_span.max(1e-9);
     let z_span = z_span.max(1e-9);
     let side = (s_span * z_span / cells as f64).sqrt();
     let clamp = |n: f64| (n.floor().max(1.0) as usize).min(cells);
     let height = clamp(z_span / side);
-    // The width is limited by what is left, so that the product never exceeds `cells` even when
-    // `height` was raised to 1 or one span is tiny.
     let width = clamp(s_span / side).min((cells / height).max(1));
     (width, height)
 }
 
-/// Where the kept points go: a plain list, or the fixed grid.
 enum Sink {
     All(Vec<ProfilePoint>),
     Grid {
@@ -227,7 +173,6 @@ impl Sink {
             } => {
                 let fx = ((s - *s_min) / *s_span * *width as f64).floor();
                 let fy = ((z - *z_min) / *z_span * *height as f64).floor();
-                // Clamp: the last edge belongs to the last cell, and rounding may push slightly outside.
                 let ix = (fx.max(0.0) as usize).min(*width - 1);
                 let iy = (fy.max(0.0) as usize).min(*height - 1);
                 let cell = &mut cells[iy * *width + ix];
@@ -246,8 +191,6 @@ impl Sink {
     }
 }
 
-/// Read every node of `file` and return the section buffer described in the module docs.
-/// `cap` is the largest number of points returned (0 means `DEFAULT_PROFILE_CAP`).
 pub fn read_section_profile<R: Read + Seek + Send>(
     file: &mut CopcFile<R>,
     line: &SectionLine,
@@ -284,7 +227,6 @@ pub fn read_section_profile<R: Read + Seek + Send>(
     };
 
     for key in keys {
-        // The node's points are dropped at the end of each iteration.
         for p in file.read_node_points(key)? {
             let (s, z) = axes.project([p.x, p.y, p.z]);
             if !s.is_finite() || !z.is_finite() {

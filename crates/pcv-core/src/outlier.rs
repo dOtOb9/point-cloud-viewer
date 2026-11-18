@@ -1,69 +1,12 @@
-//! G3-3 / G3-4: outlier removal that works one tile at a time.
-//!
-//! - ROR (radius outlier removal): keep a point if at least `m` OTHER points lie within
-//!   distance `r` (3D Euclidean distance).
-//! - SOR (statistical outlier removal): the score of a point is the mean distance to its
-//!   `k` nearest neighbours. Keep the point if `score <= mean + n * std`, where mean and
-//!   std are taken over the scores of ALL points of the cloud.
-//!
-//! Both only decide for the **core** points of a tile. The tile also holds the margin
-//! points (`tiles.rs`) so that a core point near the tile border sees all of its
-//! neighbours; margin points are only ever neighbours, never decided here (their own tile
-//! decides them).
-//!
-//! # Neighbour search
-//!
-//! A hand-written uniform grid (`PointGrid`): points are sorted by the 3D cell they fall
-//! in and a hash map gives the range of each occupied cell. Rejected: a kd-tree crate.
-//! It is faster on bad data but harder to follow; the grid can be replaced if
-//! measurement shows it is too slow.
-//!
-//! # ROR margin
-//!
-//! `RorSettings::margin() = r` (plus 1e-6 relative slack). Every neighbour of a core point
-//! is within `r` in XY, hence inside core + margin. The result is exact and does not
-//! depend on the tiling.
-//!
-//! # SOR margin and the search radius
-//!
-//! The k nearest neighbours can be arbitrarily far away for an isolated point, and a tile
-//! cannot read an unbounded margin. So SOR has an explicit **search radius** `R`:
-//! neighbours farther than `R` are not looked for, and each missing neighbour (fewer than
-//! `k` points within `R`) counts as distance `R` in the mean. The margin is
-//! `R` (plus slack). This makes the score a function of the point and the cloud only,
-//! never of the tiling: a core point sees every point within `R` in XY, which is exactly
-//! the set the definition looks at. Consequences:
-//!
-//! - Points with fewer than `k` neighbours within `R` get a score close to `R` (a lower
-//!   bound of their true score). With `R` a few times the typical point spacing the
-//!   kept/removed decision is the same as with an unbounded search, because such points
-//!   are far above the threshold anyway.
-//! - The global mean and std are computed from these capped scores. If `R` is too small
-//!   (about the point spacing) many scores sit at the cap and the std is meaningless.
-//!   Choose `R` at least several times the point spacing; the UI should suggest it.
-//!
-//! # Two passes
-//!
-//! Pass 1 pushes every core point's score into a running mean/variance (Welford's
-//! method, population variance `m2 / count`); scores are NOT stored. Pass 2 recomputes
-//! the same scores and keeps the points at or below the threshold. Time is paid for
-//! memory: memory depends on the tile, not on the number of points. The scores of a point
-//! are bit-identical in both passes (same arithmetic, same order), so the threshold test
-//! is consistent. The mean and std differ between tilings only by float rounding
-//! (the order of summation), about 1e-12 relative.
-
 use std::collections::HashMap;
 
 use crate::tiles::TilePoint;
 
-/// Slack on margins so that a neighbour at exactly the radius is never lost to rounding.
 const MARGIN_SLACK: f64 = 1.000_001;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RorSettings {
-    /// Search radius in the file's units.
     pub radius: f64,
-    /// A point is kept if it has at least this many neighbours within `radius`.
     pub min_neighbors: u32,
 }
 
@@ -82,11 +25,8 @@ impl RorSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SorSettings {
-    /// Number of nearest neighbours in the mean distance.
     pub k: usize,
-    /// Keep points with `score <= mean + n_sigma * std`.
     pub n_sigma: f64,
-    /// The search radius `R` (see the module comment).
     pub search_radius: f64,
 }
 
@@ -109,7 +49,6 @@ impl SorSettings {
     }
 }
 
-/// Running mean and (population) standard deviation, Welford's method.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RunningStats {
     count: u64,
@@ -133,7 +72,6 @@ impl RunningStats {
         self.mean
     }
 
-    /// Population standard deviation (0 for fewer than 2 values).
     pub fn std(&self) -> f64 {
         if self.count < 2 {
             0.0
@@ -142,20 +80,16 @@ impl RunningStats {
         }
     }
 
-    /// `mean + n * std`: scores above this are removed.
     pub fn threshold(&self, n_sigma: f64) -> f64 {
         self.mean + n_sigma * self.std()
     }
 }
 
-/// Points of one tile in a uniform 3D grid.
 struct PointGrid {
     cell: f64,
     origin: [f64; 3],
     positions: Vec<[f64; 3]>,
-    /// Point indices sorted by cell.
     order: Vec<u32>,
-    /// Cell -> (start in `order`, length).
     cells: HashMap<[i64; 3], (u32, u32)>,
 }
 
@@ -165,7 +99,6 @@ impl PointGrid {
             .iter()
             .map(|p| [p.record.x, p.record.y, p.record.z])
             .collect();
-        // Cell indices are measured from the minimum so they stay small.
         let mut origin = [f64::MAX; 3];
         for p in &positions {
             for a in 0..3 {
@@ -205,7 +138,6 @@ impl PointGrid {
         ]
     }
 
-    /// Point indices stored in `key`'s cell.
     fn cell_points(&self, key: [i64; 3]) -> &[u32] {
         match self.cells.get(&key) {
             Some(&(start, len)) => &self.order[start as usize..(start + len) as usize],
@@ -219,8 +151,6 @@ impl PointGrid {
         dx * dx + dy * dy + dz * dz
     }
 
-    /// Number of other points within `radius` of point `i`, counting stops at `limit`.
-    /// Needs `radius <= cell`, so the 27 cells around point `i` hold every neighbour.
     fn count_within(&self, i: usize, radius: f64, limit: u32) -> u32 {
         let r2 = radius * radius;
         let c = self.cell_of(&self.positions[i]);
@@ -242,8 +172,6 @@ impl PointGrid {
         count
     }
 
-    /// Mean distance from point `i` to its `k` nearest neighbours within `cap`; each
-    /// missing neighbour counts as `cap`. `best` is a scratch buffer.
     fn mean_knn_distance(&self, i: usize, k: usize, cap: f64, best: &mut Vec<f64>) -> f64 {
         let cap2 = cap * cap;
         let c = self.cell_of(&self.positions[i]);
@@ -275,7 +203,6 @@ impl PointGrid {
                     }
                 }
             }
-            // Points in cells farther than `ring` are at least ring * cell away.
             let reach = ring as f64 * self.cell;
             if best.len() == k && best[k - 1] <= reach * reach {
                 break;
@@ -290,7 +217,6 @@ impl PointGrid {
     }
 }
 
-/// ROR for one tile. Returns the indices (ascending) of the CORE points to keep.
 pub fn ror_keep(points: &[TilePoint], settings: &RorSettings) -> Vec<usize> {
     let grid = PointGrid::new(points, settings.radius);
     let mut kept = Vec::new();
@@ -305,8 +231,6 @@ pub fn ror_keep(points: &[TilePoint], settings: &RorSettings) -> Vec<usize> {
     kept
 }
 
-/// The grid cell edge for SOR: about the distance to the k-th neighbour of a typical
-/// point (from the XY density), clamped so that the ring search stays short.
 fn sor_cell_size(points: &[TilePoint], settings: &SorSettings) -> f64 {
     let cap = settings.search_radius;
     let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
@@ -325,8 +249,6 @@ fn sor_cell_size(points: &[TilePoint], settings: &SorSettings) -> f64 {
     guess.clamp(cap / 6.0, cap)
 }
 
-/// Calls `f(index, score)` for every CORE point of the tile, in index order.
-/// The score is the mean distance to the k nearest neighbours (see the module comment).
 pub fn sor_scores(points: &[TilePoint], settings: &SorSettings, mut f: impl FnMut(usize, f64)) {
     let grid = PointGrid::new(points, sor_cell_size(points, settings));
     let mut scratch = Vec::with_capacity(settings.k + 1);
@@ -338,13 +260,10 @@ pub fn sor_scores(points: &[TilePoint], settings: &SorSettings, mut f: impl FnMu
     }
 }
 
-/// SOR pass 1 for one tile: adds the scores of the core points to `stats`.
 pub fn sor_accumulate(points: &[TilePoint], settings: &SorSettings, stats: &mut RunningStats) {
     sor_scores(points, settings, |_, score| stats.push(score));
 }
 
-/// SOR pass 2 for one tile: indices (ascending) of the CORE points whose score is at
-/// most `threshold` (`RunningStats::threshold`).
 pub fn sor_keep(points: &[TilePoint], settings: &SorSettings, threshold: f64) -> Vec<usize> {
     let mut kept = Vec::new();
     sor_scores(points, settings, |i, score| {
@@ -376,7 +295,6 @@ mod tests {
         }
     }
 
-    /// A dense 5 x 5 x 1 patch (spacing 0.5) plus one far point.
     fn patch_and_loner() -> Vec<TilePoint> {
         let mut v = Vec::new();
         for ix in 0..5 {
@@ -387,8 +305,6 @@ mod tests {
         v.push(point(50.0, 50.0, 0.0, true));
         v
     }
-
-    // ---- ROR ----
 
     #[test]
     fn ror_removes_isolated_and_keeps_clustered() {
@@ -401,15 +317,11 @@ mod tests {
             },
         );
         assert!(!kept.contains(&25), "loner kept");
-        // Every patch point has >= 4 neighbours within 1.0 (a corner has 8: 3 at 0.5,
-        // 3 at 0.707... exact: the 3x3 block minus itself within radius 1.0 = 8 for a
-        // corner at spacing 0.5 since 2*0.5 = 1.0 is included).
         assert_eq!(kept.len(), 25);
     }
 
     #[test]
     fn ror_counts_exactly_the_neighbours_within_the_radius() {
-        // A row of points 1 apart: inner points have 2 neighbours within 1.0.
         let pts: Vec<TilePoint> = (0..6)
             .map(|i| point(f64::from(i), 0.0, 0.0, true))
             .collect();
@@ -465,9 +377,6 @@ mod tests {
         assert!(bad.validate().is_err());
     }
 
-    // ---- SOR ----
-
-    /// Brute-force score with the same definition, for comparison.
     fn brute_score(pts: &[TilePoint], i: usize, k: usize, cap: f64) -> f64 {
         let mut d: Vec<f64> = (0..pts.len())
             .filter(|&j| j != i)
@@ -522,7 +431,6 @@ mod tests {
 
     #[test]
     fn sor_missing_neighbours_count_as_the_search_radius() {
-        // Two points 10 apart, k = 3, R = 4: no neighbours -> score = R.
         let pts = vec![point(0.0, 0.0, 0.0, true), point(10.0, 0.0, 0.0, true)];
         let s = SorSettings {
             k: 3,
@@ -571,9 +479,6 @@ mod tests {
         .is_err());
     }
 
-    // ---- tiling independence on a synthetic COPC file ----
-
-    /// Deterministic pseudo-random numbers in [0, 1).
     fn rng(seed: u64) -> impl FnMut() -> f64 {
         let mut state = seed;
         move || {
@@ -584,7 +489,6 @@ mod tests {
         }
     }
 
-    /// Three dense clusters, a sparse background and a few far loners.
     fn scattered_fields(n: usize) -> Vec<CopcPointFields> {
         let mut next = rng(42);
         let mut v = Vec::new();
@@ -659,8 +563,6 @@ mod tests {
 
     #[test]
     fn ror_on_a_lattice_removes_only_the_corners() {
-        // 65 x 33 lattice, spacing 1: tile borders fall on points. With r = 1.5 and
-        // m = 4 interior points have 8 neighbours, edge points 5, corners 3.
         let mut points = Vec::new();
         let mut id = 0.0;
         for ix in 0..65 {
@@ -680,7 +582,6 @@ mod tests {
         assert_eq!(ror_file(&path, 1_000_000, &s), kept);
     }
 
-    /// Returns the kept ids and the pass-1 statistics.
     fn sor_file(
         path: &std::path::Path,
         cap: u64,
@@ -722,7 +623,6 @@ mod tests {
         for cap in [900, 300, 100] {
             let (kept, stats) = sor_file(&path, cap, &s);
             assert_eq!(stats.count(), 3000, "every core point counted once");
-            // Tolerance: only the order of summation differs, so 1e-9 relative is loose.
             assert!((stats.mean() - ref_stats.mean()).abs() <= 1e-9 * ref_stats.mean());
             assert!((stats.std() - ref_stats.std()).abs() <= 1e-9 * ref_stats.std());
             assert_eq!(kept, reference, "cap {cap}");

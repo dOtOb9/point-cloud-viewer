@@ -1,30 +1,3 @@
-//! G3-5: thinning and outlier filters as a step-by-step job (for the Web build).
-//!
-//! The desktop build runs `pcv_convert::thin_filter::{thin_path, filter_path}`, one long call that
-//! streams the kept points to the writer. A Web Worker cannot be told to stop while a long call
-//! runs, so the Web build needs the same work in small pieces: the Worker calls `advance`
-//! repeatedly (one tile per call) and yields to the event loop between calls, where a cancel
-//! message is handled. This file is that state machine. It uses the same decision functions
-//! (`thin_tile`, `ror_keep`, `sor_accumulate`, `sor_keep`) and the same `TileReader` as the desktop
-//! path, so the kept points are the same; the test in `crates/pcv-convert/src/thin_filter/tests.rs`
-//! compares the two.
-//!
-//! # Memory
-//!
-//! One tile (+ margin) is held at a time, and `advance` returns only the kept points of that tile.
-//! The caller writes them away before the next call. Nothing grows with the point count.
-//!
-//! # Passes
-//!
-//! Thinning and ROR have one pass (write). SOR has two: pass 1 only adds up the scores
-//! (`sor_accumulate`), pass 2 writes the points under the threshold (see `outlier.rs`). The
-//! progress counts the core points of every pass, so SOR's total is twice the header's count.
-//!
-//! # Requests
-//!
-//! `ThinRequest` and `FilterRequest` are the JSON shapes the screen sends (lengths already in the
-//! file's unit). The desktop Tauri commands take the same shapes.
-
 use std::io::{Read, Seek};
 use std::rc::Rc;
 
@@ -36,7 +9,6 @@ use crate::outlier::{ror_keep, sor_accumulate, sor_keep, RorSettings, RunningSta
 use crate::thin::{thin_tile, GridKeep, ThinKind, ThinSettings};
 use crate::tiles::{TileData, TileReader, TileRect};
 
-/// Which point of a grid cell is kept (JSON names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GridKeepRequest {
@@ -45,7 +17,6 @@ pub enum GridKeepRequest {
     Highest,
 }
 
-/// Thinning request. `size` is in the file's unit.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ThinRequest {
@@ -72,7 +43,6 @@ impl ThinRequest {
     }
 }
 
-/// Outlier filter request. Lengths are in the file's unit.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FilterRequest {
@@ -86,7 +56,6 @@ pub enum FilterRequest {
     },
 }
 
-/// What a job does. Built from a request.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum JobMode {
     Thin(ThinSettings),
@@ -143,7 +112,6 @@ impl JobMode {
 
 #[derive(Debug, thiserror::Error)]
 pub enum JobError {
-    /// User-facing text, shown on screen as is.
     #[error("設定が正しくありません: {0}")]
     Settings(String),
     #[error("{0}")]
@@ -152,39 +120,27 @@ pub enum JobError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// SOR pass 1: statistics only.
     Statistics,
-    /// The pass that produces the kept points.
     Write,
 }
 
-/// The result of one `advance` call.
 #[derive(Debug)]
 pub struct JobStep {
-    /// Kept points of the tile just handled (empty in the statistics pass).
     pub kept: Vec<LasPointRecord>,
-    /// Core points handled so far, over all passes.
     pub points_read: u64,
-    /// The header's point count times the number of passes.
     pub total_points: u64,
-    /// No more calls are needed.
     pub done: bool,
 }
 
-/// Totals for the tests and the log.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JobCounters {
     pub tiles: u64,
     pub kept_points: u64,
-    /// The most points (core + margin) one tile held.
     pub largest_tile_points: u64,
 }
 
-/// Opens a fresh reader of the source. Shared (`Rc`) because pass 2 of SOR opens the file again. It is a
-/// `dyn` so that the job has one type parameter (the reader) and the Web layer can name the job's type.
 type OpenFn<R> = Rc<dyn Fn() -> copc_core::Result<CopcReader<R>>>;
 
-/// The `TileReader` the job reads with: a boxed closure that calls `OpenFn`.
 type JobTiles<R> = TileReader<R, Box<dyn FnMut() -> copc_core::Result<CopcReader<R>>>>;
 
 pub struct ThinFilterJob<R>
@@ -211,8 +167,6 @@ impl<R> ThinFilterJob<R>
 where
     R: Read + Seek + Send + 'static,
 {
-    /// `open` opens a fresh reader of the source each time it is called (the same function the
-    /// desktop path gives `TileReader`). `cap_points` is the target maximum of points per tile core.
     pub fn new(
         mode: JobMode,
         open: impl Fn() -> copc_core::Result<CopcReader<R>> + 'static,
@@ -231,7 +185,6 @@ where
         if let JobMode::Thin(s) = &mode {
             s.check_coordinates(max_abs).map_err(JobError::Settings)?;
         }
-        // The tile side is at least twice the margin, so the margin is never wider than a tile.
         let min_tile_size = 2.0 * mode.margin();
         let cap_points = cap_points.max(1);
         let tiles = Self::tile_reader(&open, cap_points, min_tile_size, mode.margin())?;
@@ -273,7 +226,6 @@ where
         self.counters
     }
 
-    /// Handles the next tile (or the switch from SOR pass 1 to pass 2).
     pub fn advance(&mut self) -> Result<JobStep, JobError> {
         let total_points = self.header_points * self.passes;
         if self.done {
@@ -283,7 +235,6 @@ where
             Some(tile) => tile?,
             None => {
                 if self.phase == Phase::Statistics {
-                    // Pass 1 is over: fix the threshold and start reading again for pass 2.
                     if let JobMode::Sor(s) = &self.mode {
                         self.threshold = self.stats.threshold(s.n_sigma);
                     }
@@ -339,7 +290,6 @@ where
     }
 }
 
-/// Moves the points at `keep` (ascending indices) out of the tile.
 fn take_indices(tile: TileData, keep: &[usize]) -> Vec<LasPointRecord> {
     let mut out = Vec::with_capacity(keep.len());
     let mut wanted = keep.iter().copied().peekable();
