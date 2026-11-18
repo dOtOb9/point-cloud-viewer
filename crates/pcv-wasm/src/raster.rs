@@ -1,26 +1,3 @@
-//! G1-4 / G1-R2: Web version of the Rasterize window.
-//!
-//! The same two jobs as the desktop `crates/pcv-convert/src/raster.rs`, on top of the
-//! shared code in `pcv_core::raster`; only the reading (`FileRangeReader`) differs.
-//!
-//! - `WasmRasterPreview`: reads the upper levels of the COPC into a bounded store when
-//!   the window opens, then `render` draws a picture from it for every setting change.
-//! - `WasmRasterizer`: the export. Streams every point into the grid, then `geotiff`
-//!   gives the bytes. There is no other output (the raster is not a layer).
-//!
-//! # Calls
-//!
-//! The TypeScript Worker calls `feed` repeatedly with small batches and yields to the
-//! event loop in between, so cancelling works.
-//!
-//! # Memory
-//!
-//! Preview: at most `PREVIEW_POINT_BUDGET` points (32 bytes each) plus a grid of about
-//! 1M cells. Export: the grid holds a few bytes per cell (the constructor refuses a
-//! raster over `MAX_CELLS_WEB` before reading), the reader holds one node, and the
-//! GeoTIFF is built in one `Vec` (cells x 4 bytes, x 8 for 16-bit RGB). Nothing grows
-//! with the point count.
-
 use std::io::BufReader;
 
 use copc_reader::CopcReader;
@@ -38,9 +15,6 @@ use web_sys::File;
 use crate::file_reader::FileRangeReader;
 use crate::stats::BytesReadCounter;
 
-/// The largest raster the Web build accepts (cells). Everything is in the Worker's wasm
-/// memory (4 GiB at most), so it is a quarter of the desktop's. See
-/// `TaskSheets/G1-T6-rasterize-tool.md` for how it was chosen.
 pub const MAX_CELLS_WEB: u64 = 16_000_000;
 
 const READ_BUFFER_BYTES: usize = 256 * 1024;
@@ -58,7 +32,6 @@ fn open_source(file: File) -> Source {
     )
 }
 
-/// What the headers say that both classes need: layout facts, extent and CRS.
 struct HeaderFacts {
     has_color: bool,
     bounds: XyBounds,
@@ -86,7 +59,6 @@ fn read_header(file: &File) -> Result<HeaderFacts, JsValue> {
     })
 }
 
-/// Progress returned by `feed` (both classes).
 #[derive(Serialize)]
 pub struct RasterFeedDto {
     pub points_scanned: u64,
@@ -94,7 +66,6 @@ pub struct RasterFeedDto {
     pub done: bool,
 }
 
-/// Returned by `WasmRasterizer::info`.
 #[derive(Serialize)]
 pub struct RasterInfoDto {
     pub width: u32,
@@ -102,7 +73,6 @@ pub struct RasterInfoDto {
     pub warnings: Vec<String>,
 }
 
-/// The upper levels of a COPC, kept while the Rasterize window is open.
 #[wasm_bindgen]
 pub struct WasmRasterPreview {
     reader: Option<CoarseReader<Source>>,
@@ -111,7 +81,6 @@ pub struct WasmRasterPreview {
 
 #[wasm_bindgen]
 impl WasmRasterPreview {
-    /// `file` is the source COPC. Nothing is read until `feed`.
     #[wasm_bindgen(constructor)]
     pub fn new(file: File) -> Result<WasmRasterPreview, JsValue> {
         let facts = read_header(&file)?;
@@ -129,7 +98,6 @@ impl WasmRasterPreview {
         })
     }
 
-    /// Reads up to `batch_size` points. `done` is true once the store is ready.
     pub fn feed(&mut self, batch_size: u32) -> Result<JsValue, JsValue> {
         let Some(reader) = self.reader.as_mut() else {
             return Err(JsValue::from_str("feedはもう終わっている"));
@@ -149,7 +117,6 @@ impl WasmRasterPreview {
         .map_err(to_js_error)
     }
 
-    /// `{ heldPoints, depth, truncated }`. Call after `feed` reported `done`.
     pub fn info(&self) -> Result<JsValue, JsValue> {
         let store = self
             .store
@@ -158,8 +125,6 @@ impl WasmRasterPreview {
         serde_wasm_bindgen::to_value(&store.open_info()).map_err(to_js_error)
     }
 
-    /// Draws the preview for `options` (a `PreviewOptions` JSON) from the held points.
-    /// The bytes are `PreviewImage::to_bytes` (layout in `pcv_core::raster::preview`).
     pub fn render(&self, options: JsValue) -> Result<Vec<u8>, JsValue> {
         let options: PreviewOptions = serde_wasm_bindgen::from_value(options)
             .map_err(|e| JsValue::from_str(&format!("プレビューの設定が正しくありません: {e}")))?;
@@ -172,7 +137,6 @@ impl WasmRasterPreview {
     }
 }
 
-/// The export: every point into the grid, then the GeoTIFF bytes.
 #[wasm_bindgen]
 pub struct WasmRasterizer {
     points: ExtractPoints<'static, Source>,
@@ -183,8 +147,6 @@ pub struct WasmRasterizer {
 
 #[wasm_bindgen]
 impl WasmRasterizer {
-    /// `file` is the source COPC; `options` is the `RasterOptions` JSON (`src/datasource/tools.ts`).
-    /// Fails before reading any point when the grid is over `MAX_CELLS_WEB`.
     #[wasm_bindgen(constructor)]
     pub fn new(file: File, options: JsValue) -> Result<WasmRasterizer, JsValue> {
         let options: RasterOptions = serde_wasm_bindgen::from_value(options)
@@ -214,7 +176,6 @@ impl WasmRasterizer {
         })
     }
 
-    /// Reads up to `batch_size` points into the grid. Go to `geotiff` when `done`.
     pub fn feed(&mut self, batch_size: u32) -> Result<JsValue, JsValue> {
         let mut done = false;
         for _ in 0..batch_size {
@@ -239,14 +200,12 @@ impl WasmRasterizer {
         .map_err(to_js_error)
     }
 
-    /// The GeoTIFF bytes. Call after `feed` reported `done`.
     pub fn geotiff(&self) -> Result<Vec<u8>, JsValue> {
         let mut bytes = Vec::new();
         write_geotiff(&self.acc, self.epsg, &self.options, &mut bytes).map_err(to_js_error)?;
         Ok(bytes)
     }
 
-    /// `{ width, height, warnings }`.
     pub fn info(&self) -> Result<JsValue, JsValue> {
         serde_wasm_bindgen::to_value(&RasterInfoDto {
             width: self.acc.spec().width,

@@ -1,50 +1,11 @@
-//! E57 reader for the Web conversion (R7, `TaskSheets/R7-web-ply-e57.md`).
-//!
-//! This is a COPY of `crates/pcv-convert/src/import/e57.rs`, rewritten in one way: the
-//! original pushes points into a `visit` callback, but the Web converter is driven batch by
-//! batch (`feed`), so here `next_point` returns one point per call. What the `e57` crate does
-//! for us is the same (per-scan pose applied, spherical to Cartesian, intensity / colour
-//! normalised to 0.0..1.0), see the long comment in the original for the details.
-//!
-//! Why copied instead of shared: see the comment on the `pcd-rs` dependency in
-//! `crates/pcv-wasm/Cargo.toml`. A fix in one file must be made in the other.
-//!
-//! # The feed design: one iterator that lives across `feed` calls
-//!
-//! `E57Reader::pointcloud_simple` returns an iterator that borrows the reader. To keep that
-//! iterator between two `feed` calls the struct has to hold both the reader and the iterator
-//! that borrows it (a self-referential struct). The alternatives were:
-//!
-//! - Re-create the iterator in every `feed` and skip the points already consumed. The iterator
-//!   has no seek: skipping decodes everything again from the start of the scan, so the whole
-//!   conversion would be O(n^2) in the number of points. Not acceptable for large files.
-//! - Run the whole conversion in one wasm call. Then the Worker cannot see a cancel message
-//!   (messages are only handled between calls), so cancel would not work.
-//!
-//! So this file does the self-reference by hand, in the smallest way: the reader lives in a
-//! `Box` that is turned into a raw pointer, and the iterator borrows it through that pointer
-//! (`'static` lifetime, see `E57Stream::open_scan`). The two `unsafe` blocks are `open_scan`
-//! and `Drop`; the SAFETY comments there say why they are sound. No extra crate is used.
-//!
-//! Cost: each point is decoded once (O(n) in total). Memory: the reader, the XML metadata of
-//! the file and the e57 crate's own queue for the scan being read (one packet at a time);
-//! nothing depends on the number of points.
-
 use std::io::{Read, Seek};
 
 use e57::{CartesianCoordinate, E57Reader, PointCloud, PointCloudReaderSimple};
 
 use crate::point_file_import::RawPoint;
 
-/// E57 opened from any `Read + Seek` (the browser `File` reader, or a `Cursor` in tests).
-/// `'static` is needed because the iterator below borrows the boxed reader with a `'static`
-/// lifetime (see `open_scan`).
 pub(crate) struct E57Stream<R: Read + Seek + 'static> {
-    /// The iterator over the scan being read. It borrows `*reader`, so it is declared first
-    /// and `Drop` clears it before the reader is freed.
     points: Option<PointCloudReaderSimple<'static, R>>,
-    /// Owned `Box<E57Reader<R>>` as a raw pointer (freed in `Drop`). A raw pointer, not a
-    /// `Box`, so that moving `E57Stream` does not invalidate the borrow held by `points`.
     reader: *mut E57Reader<R>,
     pointclouds: Vec<PointCloud>,
     next_scan: usize,
@@ -72,13 +33,10 @@ impl<R: Read + Seek + 'static> E57Stream<R> {
         self.has_color
     }
 
-    /// The sum of `records` over all scans. `next_point` can yield fewer points: points with
-    /// no valid Cartesian position (direction only, empty grid slots) are skipped.
     pub(crate) fn declared_point_count(&self) -> u64 {
         self.declared_points
     }
 
-    /// Start reading the next scan, or return `false` when all scans are done.
     fn open_scan(&mut self) -> Result<bool, String> {
         let Some(pc) = self.pointclouds.get(self.next_scan) else {
             return Ok(false);
@@ -93,7 +51,6 @@ impl<R: Read + Seek + 'static> E57Stream<R> {
         Ok(true)
     }
 
-    /// The next valid point of the file (all scans in order), or `None` at the end.
     pub(crate) fn next_point(&mut self) -> Result<Option<RawPoint>, String> {
         loop {
             if self.points.is_none() && !self.open_scan()? {
@@ -103,12 +60,10 @@ impl<R: Read + Seek + 'static> E57Stream<R> {
                 return Ok(None);
             };
             let Some(point) = iter.next() else {
-                // This scan is finished; go on with the next one.
                 self.points = None;
                 continue;
             };
             let point = point.map_err(|e| format!("E57の点を読めない: {e}"))?;
-            // Pose and spherical to Cartesian are already applied by the crate's defaults.
             let CartesianCoordinate::Valid { x, y, z } = point.cartesian else {
                 continue;
             };
@@ -136,15 +91,12 @@ impl<R: Read + Seek + 'static> E57Stream<R> {
 
 impl<R: Read + Seek + 'static> Drop for E57Stream<R> {
     fn drop(&mut self) {
-        // The iterator borrows the reader, so it must go first.
         self.points = None;
         // SAFETY: `self.reader` came from `Box::into_raw` in `open`, the iterator that borrowed it was just dropped, and `Drop` runs once.
         drop(unsafe { Box::from_raw(self.reader) });
     }
 }
 
-/// The `e57` crate normalises intensity and colour to 0.0..=1.0 by default; map that to the
-/// 16 bit range of LAS.
 fn normalize_unit_to_u16(value: f32) -> u16 {
     (value.clamp(0.0, 1.0) * 65535.0).round() as u16
 }
@@ -158,9 +110,6 @@ mod tests {
     };
     use std::io::Cursor;
 
-    /// Write the same two-scan file as `crates/pcv-convert/tests/import_e57.rs`: scan 1 has
-    /// Cartesian points, colour (U8) and intensity (0..1000) with a translation; scan 2 has
-    /// spherical coordinates only with a 90 degree rotation about Z plus a translation.
     fn write_two_scan_file(path: &std::path::Path) {
         let mut writer = E57Writer::from_file(path, "guid-root").expect("create e57 writer");
 
@@ -259,8 +208,6 @@ mod tests {
         }
         assert_eq!(points.len(), 5);
 
-        // Scan 1: local coordinate + translation (100, 200, 300). Colour 0..255 is normalised to
-        // 0..1 and then scaled to 16 bit (so value * 257); intensity 0..1000 is scaled by 65.535.
         let expect = |p: &RawPoint, xyz: (f64, f64, f64), color: [u16; 3], intensity: u16| {
             assert!((p.x - xyz.0).abs() < 1e-9, "x {} vs {}", p.x, xyz.0);
             assert!((p.y - xyz.1).abs() < 1e-9, "y {} vs {}", p.y, xyz.1);
@@ -277,14 +224,9 @@ mod tests {
             16384,
         );
         expect(&points[3], (100.0, 200.0, 301.0), [0, 65535, 32896], 65469);
-        // Scan 2: local (10, 0, 0), rotated to (0, 10, 0), plus (5, 5, 5). No colour, no intensity.
         expect(&points[4], (5.0, 15.0, 5.0), [0, 0, 0], 0);
     }
 
-    /// 20_000 points in one scan, read in small batches through the iterator that lives across
-    /// calls. Checks that every point comes out exactly once and in order (so the long-lived
-    /// iterator keeps its position), and that dropping the stream half way is fine
-    /// (the `Drop` order).
     #[test]
     fn long_lived_iterator_keeps_position_and_drops_cleanly() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -315,7 +257,6 @@ mod tests {
         }
         let bytes = read_file(&path);
 
-        // Read everything in batches of 777 (like `feed`); a batch never holds more than 777.
         let mut stream = E57Stream::open(Cursor::new(bytes.clone())).expect("open");
         let mut next_expected = 0u32;
         loop {
@@ -336,7 +277,6 @@ mod tests {
         }
         assert_eq!(next_expected, count);
 
-        // Drop in the middle of a scan: the iterator must be released before the reader.
         let mut partial = E57Stream::open(Cursor::new(bytes)).expect("open");
         for _ in 0..100 {
             assert!(partial.next_point().expect("next_point").is_some());
@@ -344,9 +284,6 @@ mod tests {
         drop(partial);
     }
 
-    /// Not a test: the Web E2E (`e2e/web-point-file-conversion.spec.ts`) runs this with
-    /// `--ignored` and `PCV_E57_FIXTURE=<path>` to get a small synthetic E57 (2000 points with
-    /// colour and intensity). No point-cloud data is committed.
     #[test]
     #[ignore = "writes the E57 fixture for the Web E2E; run with PCV_E57_FIXTURE set"]
     fn write_e57_fixture_for_e2e() {

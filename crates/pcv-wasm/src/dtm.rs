@@ -1,24 +1,3 @@
-//! G1-T15: Web version of the DTM tool. CSF classifies the ground of a COPC file, the classified points are written
-//! into a new COPC file on OPFS, and the DTM (GeoTIFF and/or LandXML) is returned as bytes.
-//!
-//! The work is `pcv_core::dtm::DtmJob`, the same as on desktop (`crates/pcv-convert/src/dtm.rs`). A Worker cannot be
-//! told to stop while a long call runs, so the Worker calls `advance` repeatedly (a small piece of work per call:
-//! about 200 thousand points, or ten cloth steps) and yields to the event loop between calls, where a cancel message
-//! is handled. This is the same shape as `WasmExtractor::feed`. The write side is the same as `extract.rs`:
-//! `SpillWriter`, then `write_copc_from_spill_with_fs_and_timings`.
-//!
-//! # Calls
-//!
-//! `new` -> `advance` until done -> `finish` (octree, write, TIN) -> `info` / `geotiff` / `landxml`. `finish` keeps
-//! the TIN in the object so the two files can be asked for afterwards.
-//!
-//! # Memory
-//!
-//! The cloth, the best-point grid and the TIN follow the area (the constructor refuses a cloth over
-//! `DTM_MAX_PARTICLES_WEB` or a grid over the cell cap before reading a point). The reader holds one node and the
-//! record buffer one `advance` call. The classified points go to the spill on OPFS. The GeoTIFF and LandXML are each
-//! built in one `Vec` (the cell cap is lower when LandXML is asked for, see `DTM_MAX_CELLS_WEB_LANDXML`).
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -46,16 +25,12 @@ fn to_js_error<E: std::fmt::Display>(err: E) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
 
-/// Progress returned by `advance`.
 #[derive(Serialize)]
 pub struct DtmStepDto {
-    /// 0 to 1 over the passes and the simulation.
     pub fraction: f32,
-    /// Every point was read and classified (go on to `finish`).
     pub done: bool,
 }
 
-/// Returned by `info` (after `finish`).
 #[derive(Serialize)]
 pub struct DtmInfoDto {
     pub width: u32,
@@ -74,7 +49,6 @@ pub struct WasmDtm {
     surface: Option<DtmSurface>,
     request: DtmRequest,
     epsg: Option<u32>,
-    /// Name of the source, for the name of the LandXML surface.
     source_name: String,
     spill: Option<SpillWriter>,
     fs: OpfsScratchFs,
@@ -90,9 +64,6 @@ pub struct WasmDtm {
 
 #[wasm_bindgen]
 impl WasmDtm {
-    /// `file` is the source COPC; `request` is the `DtmRequest` JSON (shape in `src/datasource/dtm.ts`, lengths in the
-    /// file's unit). The scratch-file pool and output handle are the same ones the conversion uses.
-    /// Fails before reading any point when the cloth or the grid is over its cap.
     #[wasm_bindgen(constructor)]
     pub fn new(
         file: File,
@@ -112,7 +83,6 @@ impl WasmDtm {
             .trim_end_matches(".copc")
             .to_string();
 
-        // Read the header (layout, output metadata, CRS) with `las`; no point data is read.
         let header_reader = las::Reader::new(open_source(file.clone()))
             .map_err(|e| JsValue::from_str(&format!("ヘッダーを読めませんでした: {e}")))?;
         let header = header_reader.header();
@@ -158,7 +128,6 @@ impl WasmDtm {
         })
     }
 
-    /// Does a small piece of work and writes the classified points it made to the spill. Go to `finish` when `done`.
     pub fn advance(&mut self) -> Result<JsValue, JsValue> {
         let job = self
             .job
@@ -188,8 +157,6 @@ impl WasmDtm {
         .map_err(to_js_error)
     }
 
-    /// Builds the octree and writes the OPFS output, then builds the TIN. Returns the same result as the conversion
-    /// (`FinishResultDto`). Fails (writing nothing) when no point is ground.
     pub fn finish(&mut self) -> Result<JsValue, JsValue> {
         let spill = self
             .spill
@@ -199,7 +166,6 @@ impl WasmDtm {
             .job
             .take()
             .ok_or_else(|| JsValue::from_str("finishは既に呼ばれている"))?;
-        // The TIN first: with no ground point it fails before the (slow) COPC write.
         let ground_points = job.points_ground();
         let surface = job.finish().map_err(to_js_error)?;
         let reader = spill.finalize().map_err(to_js_error)?;
@@ -234,7 +200,6 @@ impl WasmDtm {
         serde_wasm_bindgen::to_value(&dto).map_err(to_js_error)
     }
 
-    /// `{ width, height, cell_size, tin_points, tin_triangles, ground_points, warnings }`. Call after `finish`.
     pub fn info(&self) -> Result<JsValue, JsValue> {
         let surface = self.surface()?;
         serde_wasm_bindgen::to_value(&DtmInfoDto {
@@ -249,7 +214,6 @@ impl WasmDtm {
         .map_err(to_js_error)
     }
 
-    /// The GeoTIFF bytes (`request.output.tiff`). Call after `finish`.
     pub fn geotiff(&self) -> Result<Vec<u8>, JsValue> {
         let mut bytes = Vec::new();
         self.surface()?
@@ -258,7 +222,6 @@ impl WasmDtm {
         Ok(bytes)
     }
 
-    /// The LandXML bytes. `unix_seconds` is the time to write (the Worker reads the clock). Call after `finish`.
     pub fn landxml(&self, unix_seconds: f64) -> Result<Vec<u8>, JsValue> {
         let mut bytes = Vec::new();
         self.surface()?

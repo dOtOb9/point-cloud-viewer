@@ -1,23 +1,3 @@
-//! PLY reader for the Web conversion (R7, `TaskSheets/R7-web-ply-e57.md`).
-//!
-//! This is a COPY of `crates/pcv-convert/src/import/ply.rs`, rewritten in one way: the original
-//! pushes points into a `visit` callback, but the Web converter is driven batch by batch
-//! (`feed`), so here the reader keeps its position and `next_point` returns one point per call.
-//! The header parsing, the property handling and the colour / intensity scaling are the same.
-//!
-//! Why copied instead of shared: see the comment on the `pcd-rs` dependency in
-//! `crates/pcv-wasm/Cargo.toml`. A fix in one file must be made in the other.
-//!
-//! Supported: `ascii`, `binary_little_endian`, `binary_big_endian`. Elements other than `vertex`
-//! (for example `face` with list properties) are read and thrown away so that the byte / line
-//! position stays correct.
-//!
-//! Memory: the header (a few KB) and one row. Nothing depends on the number of points.
-//!
-//! Colour: `uchar` is scaled by 257 to 16 bit, `ushort` is used as is, other types are
-//! rounded and clamped. Intensity: `uchar` is scaled by 257, float / double are taken as
-//! 0.0..1.0, other types are rounded and clamped (same rules as the desktop import).
-
 use std::io::{BufRead, Read};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
@@ -48,7 +28,6 @@ impl ScalarType {
         }
     }
 
-    /// `bytes` is exactly `byte_size()` long (the caller reads that many bytes).
     fn decode(self, bytes: &[u8], big_endian: bool) -> f64 {
         match self {
             ScalarType::Int8 => f64::from(bytes[0] as i8),
@@ -123,8 +102,6 @@ impl PropertyDef {
         }
     }
 
-    /// The value type. For a list it is the element type (x/y/z/colour/intensity are never
-    /// lists in practice, this is only a safe fallback).
     fn scalar_type(&self) -> ScalarType {
         match self {
             PropertyDef::Scalar { ty, .. } => *ty,
@@ -172,7 +149,6 @@ struct VertexLayout {
     intensity: Option<IntensityLayout>,
 }
 
-/// First value of property `idx` in a row (0.0 if the row is shorter than the header says).
 fn first_value(values: &[Vec<f64>], idx: usize) -> f64 {
     values
         .get(idx)
@@ -189,7 +165,6 @@ impl VertexLayout {
         let y_idx = find("y").ok_or_else(missing)?;
         let z_idx = find("z").ok_or_else(missing)?;
 
-        // Colour only counts when all of red / green / blue are there.
         let color = match (find("red"), find("green"), find("blue")) {
             (Some(r_idx), Some(g_idx), Some(b_idx)) => Some(ColorLayout {
                 r_idx,
@@ -213,8 +188,6 @@ impl VertexLayout {
         })
     }
 
-    /// Build a point from one row (one `Vec` per property: length 1 for a scalar, the number
-    /// of elements for a list).
     fn extract(&self, values: &[Vec<f64>]) -> RawPoint {
         let color = match &self.color {
             Some(c) => [
@@ -238,8 +211,6 @@ impl VertexLayout {
     }
 }
 
-/// 8 bit (0-255) to 16 bit (0-65535) with `* 257`. Other types have no range convention in
-/// PLY, so they are only rounded and clamped.
 fn scale_channel_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
@@ -261,17 +232,14 @@ fn scale_intensity_to_u16(value: f64, ty: ScalarType) -> u16 {
     }
 }
 
-/// A PLY file opened after its header. `next_point` walks the body row by row.
 pub(crate) struct PlyStream<R: BufRead> {
     reader: R,
     format: PlyFormat,
     elements: Vec<ElementDef>,
     layout: VertexLayout,
     vertex_count: u64,
-    /// Where we are: element index and the next row inside that element.
     element_idx: usize,
     row_in_element: usize,
-    /// Reused line buffer for the ascii format.
     line: String,
 }
 
@@ -305,8 +273,6 @@ impl<R: BufRead> PlyStream<R> {
         self.vertex_count
     }
 
-    /// The next `vertex` row as a point, or `None` at the end. Rows of other elements are
-    /// read and dropped.
     pub(crate) fn next_point(&mut self) -> Result<Option<RawPoint>> {
         loop {
             let Some(element) = self.elements.get(self.element_idx) else {
@@ -331,8 +297,6 @@ impl<R: BufRead> PlyStream<R> {
     }
 }
 
-/// Read lines up to and including `end_header` and parse them. Afterwards the reader is at
-/// the start of the body.
 fn read_header<R: BufRead>(reader: &mut R) -> Result<PlyHeader> {
     let mut header_text = String::new();
     let mut line = String::new();
@@ -439,7 +403,6 @@ fn parse_header(header_text: &str) -> Result<PlyHeader> {
                     element.properties.push(PropertyDef::Scalar { name, ty });
                 }
             }
-            // Unknown declaration lines are ignored; not worth stopping the import.
             _ => {}
         }
     }
@@ -458,7 +421,6 @@ fn parse_ascii_number(token: &str) -> Result<f64> {
         .map_err(|_| format!("PLYのデータが不正: 数値として読めない: {token}"))
 }
 
-/// Read one line and split it into the values of `element`'s properties.
 fn read_ascii_row<R: BufRead>(
     reader: &mut R,
     line: &mut String,
@@ -485,7 +447,6 @@ fn read_ascii_row<R: BufRead>(
                 let count = count_tok
                     .parse::<usize>()
                     .map_err(|_| "PLYのデータが不正: listの要素数が数値でない".to_string())?;
-                // No `with_capacity(count)`: the count comes from the file.
                 let mut list_values = Vec::new();
                 for _ in 0..count {
                     let tok = tokens.next().ok_or_else(unexpected_eof)?;
@@ -498,7 +459,6 @@ fn read_ascii_row<R: BufRead>(
     Ok(values)
 }
 
-/// Read the binary values of one row of `element`.
 fn read_binary_row<R: Read>(
     reader: &mut R,
     element: &ElementDef,
@@ -514,7 +474,6 @@ fn read_binary_row<R: Read>(
                 count_ty, elem_ty, ..
             } => {
                 let count = read_scalar(reader, *count_ty, big_endian)? as usize;
-                // No `with_capacity(count)`: the count comes from the file.
                 let mut list_values = Vec::new();
                 for _ in 0..count {
                     list_values.push(read_scalar(reader, *elem_ty, big_endian)?);
@@ -526,7 +485,6 @@ fn read_binary_row<R: Read>(
     Ok(values)
 }
 
-/// Read one scalar (at most 8 bytes).
 fn read_scalar<R: Read>(reader: &mut R, ty: ScalarType, big_endian: bool) -> Result<f64> {
     let size = ty.byte_size();
     let mut buf = [0u8; 8];
@@ -682,10 +640,6 @@ mod tests {
         assert!(result.is_err(), "a truncated body must be an error");
     }
 
-    /// Memory does not depend on the number of points: the stream holds the header plus one
-    /// row, and `next_point` hands out one point at a time. Here 50_000 points are read from
-    /// a reader that produces them on the fly (the whole file never exists in memory)
-    /// through a 64 byte `BufReader`.
     #[test]
     fn streaming_does_not_buffer_the_body() {
         struct Generated {
@@ -726,7 +680,6 @@ mod tests {
             row,
             row_pos: row.len(),
         };
-        // A small BufReader capacity: if the stream tried to hold the file, it could not.
         let mut stream =
             PlyStream::open(std::io::BufReader::with_capacity(64, source)).expect("open");
         let mut n = 0usize;

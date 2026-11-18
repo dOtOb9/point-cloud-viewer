@@ -1,40 +1,3 @@
-//! M4-6/M4-9追記(`TaskSheets/M4-import-and-conversion.md`): PCD→COPCの
-//! Web版での直接変換。
-//!
-//! # なぜ`crates/pcv-convert/src/import/pcd.rs`を直接使わず複製したか
-//!
-//! `crates/pcv-wasm/Cargo.toml`の`pcd-rs`依存のコメントに詳細を書いた。要点:
-//! pcv-wasmはルートワークスペースの外にある独立した1クレートのワークスペース
-//! なので、ルートワークスペースの通常メンバーである`pcv-convert`へパス依存を
-//! 足すとワークスペースの二重定義でcargoがエラーになる(実際に試して確認済み)。
-//! 加えて`pcv-convert`の`copc-writer`依存は`parallel-lod`/`parallel-compress`
-//! (rayon使用)を要求しており、同じ`[patch.crates-io]`先(vendor/copc-writer)を
-//! 共有する以上、依存グラフのフィーチャ統合でpcv-wasmのwasm32ビルドにまで
-//! `rayon`が混入してしまう(wasm32向けビルドにrayonが入り込まないという、
-//! このプロジェクトの前提を破る)。そのため、PCDの読み込みロジック自体
-//! (フィールドの対応・`binary_compressed`の上限チェック)をこのファイルに
-//! 独立に書いた(意図した重複)。
-//!
-//! # Where the conversion happens (M4-17)
-//!
-//! This file only reads PCD (`PcdStream`: one point at a time). The spill, octree and OPFS
-//! output are in `WasmPointFileConverter` (`point_file_import.rs`), shared with PLY / E57 / LAS.
-//! The scale and offset are chosen after the spill is finished (`choose_scale_offset` below,
-//! a copy of `crates/pcv-convert/src/import/scale.rs`), because PCD coordinates have none.
-//! There is no parallel decompression (M4-7): `pcd-rs` decompresses `binary_compressed` all at
-//! once in `DynReader::from_reader`, so there is nothing to split.
-//!
-//! # `binary_compressed`のメモリ上限
-//!
-//! `pcd-rs`の`DynReader::from_reader`は`DataKind::BinaryCompressed`を検出した
-//! その場でLZF圧縮データ全体を展開し(`col_major`)、さらに行優先に転置した
-//! もう1つの全体コピー(`row_major`)を作る(展開後サイズの最大2倍のメモリを
-//! 使う。`crates/pcv-convert/src/import/pcd.rs`のモジュールドキュメント参照、
-//! 同じ`pcd-rs` 0.9.0のソースを根拠にしている)。展開前にヘッダー直後の
-//! `uncompressed_size`だけを覗き見て、上限を超えるなら`pcd-rs`の重い展開を
-//! 呼ぶ前にエラーで知らせる(デスクトップ版と同じ上限値
-//! `MAX_BINARY_COMPRESSED_UNCOMPRESSED_BYTES`)。
-
 use std::io::{BufRead, Seek, SeekFrom};
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -42,18 +5,8 @@ use pcd_rs::{DynReader, Field};
 
 use crate::point_file_import::RawPoint;
 
-/// `binary_compressed`の展開後サイズの上限。`crates/pcv-convert/src/import/
-/// pcd.rs`の`MAX_BINARY_COMPRESSED_UNCOMPRESSED_BYTES`と同じ値・同じ根拠
-/// (`pcd-rs`の展開が展開後サイズの最大2倍のメモリを同時に確保する構造上の
-/// 制約から見積もった値。実測比ではない)。Web版はデスクトップより利用可能な
-/// メモリが少ない端末(モバイル)も対象になるため、この上限の意味は
-/// デスクトップ以上に重要。
 const MAX_BINARY_COMPRESSED_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 
-/// ヘッダーを自前で行単位に読み進め、`DATA`行が`binary_compressed`なら
-/// 展開後サイズを覗き見る。`crates/pcv-convert/src/import/pcd.rs`の
-/// `peek_binary_compressed_uncompressed_size`と同じロジック(複製の理由は
-/// モジュールドキュメント参照)。
 fn peek_binary_compressed_uncompressed_size<R: BufRead>(
     reader: &mut R,
 ) -> Result<Option<u64>, String> {
@@ -84,14 +37,9 @@ fn peek_binary_compressed_uncompressed_size<R: BufRead>(
     Ok(None)
 }
 
-/// `i32`で表現できる絶対値の上限。`crates/pcv-convert/src/import/scale.rs`と
-/// 同じ(複製の理由はモジュールドキュメント参照)。
 const I32_ABS_MAX: f64 = i32::MAX as f64;
 const SCALE_CANDIDATES: [f64; 8] = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0];
 
-/// `crates/pcv-convert/src/import/scale.rs`の`choose_scale_offset`と同じ
-/// ロジック(複製の理由はモジュールドキュメント参照。テストは同クレート側で
-/// 既に手厚く行われているため、ここでは最小限の回帰テストだけ持つ)。
 pub(crate) fn choose_scale_offset(
     min: (f64, f64, f64),
     max: (f64, f64, f64),
@@ -157,11 +105,6 @@ fn scale_8bit_to_16bit(v: u8) -> u16 {
     u16::from(v) * 257
 }
 
-/// A PCD file opened after its header. `next_point` reads one record at a time.
-///
-/// M4-17: this replaces the old `WasmPcdConverter` class. Reading PCD is now only "give me the
-/// next point", like `PlyStream` and `E57Stream`; the spill / octree / OPFS part is the one
-/// shared `WasmPointFileConverter` (`point_file_import.rs`).
 pub(crate) struct PcdStream<R: BufRead> {
     reader: DynReader<R>,
     ix: usize,
@@ -215,7 +158,6 @@ impl<R: BufRead + Seek> PcdStream<R> {
         self.total_points
     }
 
-    /// The next record as a point, or `None` at the end.
     pub(crate) fn next_point(&mut self) -> Result<Option<RawPoint>, String> {
         match self.reader.next() {
             Some(Ok(record)) => {
@@ -245,8 +187,6 @@ impl<R: BufRead + Seek> PcdStream<R> {
 mod tests {
     use super::*;
 
-    /// `crates/pcv-convert/src/import/scale.rs`の同名テストと同じ確認
-    /// (複製した関数が同じ振る舞いをすることの最小限の回帰テスト)。
     #[test]
     fn choose_scale_offset_picks_finest_candidate_for_small_range() {
         let (scale, offset) = choose_scale_offset((-10.0, -5.0, 0.0), (40.0, 55.0, 20.0));
@@ -270,18 +210,16 @@ mod tests {
         );
     }
 
-    /// M4-6/M4-9追記の受け入れ条件: `binary_compressed`の上限チェックは
-    /// `pcd-rs`の重い展開を呼ぶ前に、ヘッダー直後の8バイトだけを覗いて判定する。
-    /// `crates/pcv-convert/src/import/pcd.rs`の同種のテストと同じ考え方
-    /// (複製の理由はモジュールドキュメント参照)。
     #[test]
     fn peek_binary_compressed_size_reads_header_declared_uncompressed_size() {
         let mut header = Vec::new();
         header.extend_from_slice(b"# comment\n");
         header.extend_from_slice(b"VERSION 0.7\n");
         header.extend_from_slice(b"DATA binary_compressed\n");
-        header.extend_from_slice(&100u32.to_le_bytes()); // compressed_size
-        header.extend_from_slice(&999u32.to_le_bytes()); // uncompressed_size
+        let compressed_size = 100u32;
+        let uncompressed_size = 999u32;
+        header.extend_from_slice(&compressed_size.to_le_bytes());
+        header.extend_from_slice(&uncompressed_size.to_le_bytes());
         let mut reader = std::io::BufReader::new(std::io::Cursor::new(header));
         let size = peek_binary_compressed_uncompressed_size(&mut reader)
             .expect("peekが失敗した")

@@ -1,26 +1,3 @@
-//! M4-17 (`TaskSheets/M4-17-merge-any-format.md`): reading several files of any format
-//! (LAS/LAZ, PLY, PCD, E57) as ONE stream of points.
-//!
-//! Nothing here touches the browser: the readers are generic over `Read + Seek`, so the host
-//! `cargo test` runs this file with in-memory data (`Cursor`). The browser part (`File`, OPFS,
-//! the spill) is in `point_file_import.rs`.
-//!
-//! # The three pieces
-//!
-//! 1. `PointStream`: one opened file. "Give me the next point" for every format.
-//! 2. `plan_merge`: looks at the header summary of every file and decides what the output has
-//!    (color or not, CRS, warnings). It runs BEFORE the first point is read, because the
-//!    spill layout (does it have color?) must be known when the spill is created.
-//! 3. `MergedPoints`: walks the files one after another and gives their points as one stream.
-//!    A file without color gets mid gray when the output has color.
-//!
-//! # Memory
-//!
-//! Only one file is open at a time while points are read (the header pass drops each file
-//! right after reading its header, except the first one, which is kept so a single file is not
-//! opened twice). `LasStream` keeps at most `LAS_BATCH_POINTS` points. Nothing grows with the
-//! number of points (CLAUDE.md "メモリ").
-
 use std::io::{BufRead, Seek};
 
 use copc_core::{LasPointRecord, StreamingLayout};
@@ -32,24 +9,16 @@ use crate::ply_import::PlyStream;
 use crate::point_file_import::RawPoint;
 use crate::write_metadata::copc_write_metadata_from_source_header;
 
-/// Mid gray (16-bit) for the points of a file without color, in an output that has color.
-/// The same value as the desktop build (the sheet's "Shared rules").
 pub(crate) const GRAY: [u16; 3] = [32768, 32768, 32768];
 
-/// Shown when LAS/LAZ is merged with another format (attributes beyond x, y, z, color and
-/// intensity are not carried over). The text is fixed by the sheet; the desktop build shows the same.
 pub(crate) const LAS_ATTRIBUTES_WARNING: &str =
     "LAS/LAZ と他の形式を結合したため、LAS/LAZ の分類・GPS時刻・リターン番号などの属性は出力に含まれません";
 
-/// Shown when the output has a CRS (from LAS/LAZ) and a PLY/PCD/E57 file was merged into it.
 pub(crate) const NON_LAS_CRS_WARNING: &str =
     "PLY/PCD/E57 の点は LAS/LAZ と同じ座標系として結合しました";
 
-/// Points a `LasStream` decodes at once. A constant, so memory does not depend on the file.
 const LAS_BATCH_POINTS: u64 = 4096;
 
-/// The format of one input file. Parsed from the names `detectSourceFormatByName`
-/// (`src/datasource/source-format.ts`) returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PointFormat {
     LasLaz,
@@ -70,13 +39,9 @@ impl PointFormat {
     }
 }
 
-/// What a reader must be: buffered, seekable, and `Send + Sync + 'static` (the `las` crate asks
-/// for the last three). The browser `BufReader<FileRangeReader>` and a test `Cursor` both are.
-/// A trait with a blanket impl only to avoid repeating this bound everywhere.
 pub(crate) trait PointSourceReader: BufRead + Seek + Send + Sync + 'static {}
 impl<T: BufRead + Seek + Send + Sync + 'static> PointSourceReader for T {}
 
-/// A LAS/LAZ file read as a plain point stream (x, y, z, color, intensity only).
 pub(crate) struct LasStream {
     reader: las::Reader,
     point_data: las::PointData,
@@ -84,8 +49,6 @@ pub(crate) struct LasStream {
     declared_points: u64,
     crs: CrsId,
     wkt_crs: Option<String>,
-    /// The points decoded by the last `fill_points` (at most `LAS_BATCH_POINTS`), and the
-    /// index of the next one to give out.
     buffer: Vec<RawPoint>,
     next: usize,
 }
@@ -120,7 +83,6 @@ impl LasStream {
         Ok(point)
     }
 
-    /// Decode the next batch. Leaves `buffer` empty at the end of the file.
     fn refill(&mut self) -> Result<(), String> {
         self.buffer.clear();
         self.next = 0;
@@ -134,8 +96,6 @@ impl LasStream {
         for result in self.point_data.points() {
             let point = result.map_err(|e| e.to_string())?;
             let record = LasPointRecord::from_las_point(&point);
-            // `from_las_point` fills gray for a format without color; the merge decides that
-            // itself, so give `[0, 0, 0]` here like every other reader.
             let color = if self.has_color {
                 [record.red, record.green, record.blue]
             } else {
@@ -153,13 +113,10 @@ impl LasStream {
     }
 }
 
-/// One opened file of any format. A plain enum instead of a trait object: there are four
-/// variants and every method is a four-arm `match`.
 pub(crate) enum PointStream<R: PointSourceReader> {
     Las(Box<LasStream>),
     Ply(PlyStream<R>),
     Pcd(Box<PcdStream<R>>),
-    // Boxed: the E57 reader is much larger than the others (clippy::large_enum_variant).
     E57(Box<E57Stream<R>>),
 }
 
@@ -201,41 +158,31 @@ impl<R: PointSourceReader> PointStream<R> {
     }
 }
 
-/// The name, format and size of one input, as the browser side knows them.
 pub(crate) struct InputInfo {
     pub name: String,
     pub format: PointFormat,
     pub file_size_bytes: u64,
 }
 
-/// What the header of one file says (the "header pass").
 pub(crate) struct FileSummary {
     pub name: String,
     pub format: PointFormat,
     pub has_color: bool,
     pub declared_points: u64,
     pub file_size_bytes: u64,
-    /// `CrsId::Missing` for PLY / PCD / E57 (they carry no CRS) and for LAS/LAZ without one.
     pub crs: CrsId,
-    /// The WKT text to write into the output (LAS/LAZ only).
     pub wkt_crs: Option<String>,
 }
 
-/// What the output will look like, decided from all the summaries.
 #[derive(Debug, PartialEq)]
 pub(crate) struct MergePlan {
-    /// True if at least one input has color.
     pub output_has_color: bool,
-    /// The progress denominator: the sum of the declared point counts.
     pub total_points: u64,
     pub total_file_size_bytes: u64,
     pub wkt_crs: Option<String>,
     pub warnings: Vec<String>,
 }
 
-/// Decide the output from the header summaries (in streaming order). Fails, before any point
-/// is written, if two LAS/LAZ files have different CRSs. Files whose CRS is unknown count as
-/// agreeing (same rule as the LAS merge in `convert.rs`).
 pub(crate) fn plan_merge(summaries: &[FileSummary]) -> Result<MergePlan, String> {
     let mut first_crs: Option<&FileSummary> = None;
     for summary in summaries {
@@ -273,27 +220,17 @@ pub(crate) fn plan_merge(summaries: &[FileSummary]) -> Result<MergePlan, String>
     })
 }
 
-/// Opens file number `index` (the browser side opens the `File` and wraps it in a `BufReader`;
-/// the tests return a `Cursor`). A boxed closure so that `MergedPoints` does not need to know
-/// what a `File` is.
 pub(crate) type OpenFile<R> = Box<dyn FnMut(usize) -> Result<PointStream<R>, String>>;
 
-/// The points of all files, one file after another, as one stream.
 pub(crate) struct MergedPoints<R: PointSourceReader> {
     files: Vec<FileSummary>,
     open: OpenFile<R>,
-    /// The file being read, and its index in `files`.
     current: Option<PointStream<R>>,
     current_index: usize,
     output_has_color: bool,
 }
 
 impl<R: PointSourceReader> MergedPoints<R> {
-    /// The header pass: open every file once, read its header, and plan the output. Returns the
-    /// stream (positioned before the first point) and the plan.
-    ///
-    /// `inputs` must already be in the order the files are streamed (the browser side sorts by
-    /// name, so the output does not depend on the selection order).
     pub(crate) fn start(
         inputs: Vec<InputInfo>,
         mut open: OpenFile<R>,
@@ -315,8 +252,6 @@ impl<R: PointSourceReader> MergedPoints<R> {
                 crs,
                 wkt_crs,
             });
-            // Keep the first file open so a single file is not opened twice; drop the others
-            // now (they are opened again when their turn comes).
             if index == 0 {
                 first_stream = Some(stream);
             }
@@ -332,11 +267,9 @@ impl<R: PointSourceReader> MergedPoints<R> {
         Ok((merged, plan))
     }
 
-    /// The next point of the merged stream, or `None` after the last file.
     pub(crate) fn next_point(&mut self) -> Result<Option<RawPoint>, String> {
         loop {
             if self.current.is_none() {
-                // The first file is already open (from `start`); open the others when needed.
                 if self.current_index >= self.files.len() {
                     return Ok(None);
                 }
@@ -353,7 +286,6 @@ impl<R: PointSourceReader> MergedPoints<R> {
                     return Ok(Some(point));
                 }
                 None => {
-                    // This file is done: close it and go to the next one.
                     self.current = None;
                     self.current_index += 1;
                 }
@@ -399,8 +331,6 @@ mod tests {
         text.into_bytes()
     }
 
-    /// A LAS file (point format 2 = with color, or 0 = without) with `count` points, written
-    /// through a temporary file because `las::Writer::from_path` picks LAS / LAZ by extension.
     fn las_bytes(count: u32, with_color: bool) -> Vec<u8> {
         let mut builder = las::Builder::from((1, 2));
         builder.point_format =
@@ -449,7 +379,6 @@ mod tests {
         }
     }
 
-    /// Start a merge over in-memory files and read every point.
     fn run(files: Vec<(&str, PointFormat, Vec<u8>)>) -> Result<(Vec<RawPoint>, MergePlan), String> {
         let inputs: Vec<InputInfo> = files
             .iter()
@@ -480,7 +409,6 @@ mod tests {
         assert_eq!(plan.total_points, 5);
         assert!(!plan.output_has_color);
         assert!(plan.warnings.is_empty());
-        // Files are read in the given order, and no gray is painted.
         assert_eq!(points[0].x, 0.0);
         assert_eq!(points[4].x, 7.0);
         assert!(points.iter().all(|p| p.color == [0, 0, 0]));
@@ -514,12 +442,10 @@ mod tests {
         assert_eq!(points.len(), 4);
         assert_eq!(plan.warnings, vec![LAS_ATTRIBUTES_WARNING.to_string()]);
         assert!(plan.output_has_color);
-        // LAS points: real coordinates, color and intensity are kept.
         assert_eq!(points[1].x, 0.5);
         assert_eq!(points[1].y, 2.0);
         assert_eq!(points[1].color, [1000, 2000, 3000]);
         assert_eq!(points[1].intensity, 7);
-        // The PLY point has no color: gray.
         assert_eq!(points[3].color, GRAY);
     }
 
@@ -594,7 +520,6 @@ mod tests {
         assert_eq!(opens.get(), 1);
     }
 
-    /// Memory: the LAS reader keeps one batch, whatever the file size.
     #[test]
     fn las_stream_buffer_stays_at_one_batch() {
         let count = 3 * LAS_BATCH_POINTS as u32 + 10;
