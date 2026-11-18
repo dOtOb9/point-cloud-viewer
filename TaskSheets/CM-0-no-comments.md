@@ -108,3 +108,12 @@ YAML・TOML・`.gitattributes`・PowerShell は CM-0 の検査の対象外（数
   **このシートの「メインが決めたこと」の例外の行は `@ts-ignore` を含んだままで、検査とずれている**（メインの部分なので作業役は直さない）。正本は CLAUDE.md と `scripts/check-comments.mjs` の `TOOL_DIRECTIVES`
 - F-3（should）: `isTypingTarget` と `isFormControl` の使い分けを、AGENTS.md の作業役の決まり（「入力欄にフォーカスがあるか」の行）に直接書いた（`src/app/typing-target.ts` の冒頭コメントと、`src/app/view.ts`・`src/state/useLayerTool.ts`・`src/state/useMeasureTool.ts`・`src/ui/layers/layer-delete-key.ts` の呼び出しを読んで書いた）。RECURRENCE.md の TP-1-CI の節の「冒頭コメント」の参照も、その行に向け直した
 - F-4（nit）: 直さない（`eslint-disable-next-line x -- 理由` の理由は ESLint の書き方の一部）
+
+### 監査の記録
+
+| ラウンド | 監査役 | 判定 | 主な指摘 |
+|---|---|---|---|
+| R1 | ループ | APPROVE | F-1 [should] WGSL（TS の文字列の中）を見ていない → `.wgsl` を対象に、CM-1 でシェーダーを `.wgsl` に出す。F-2〜F-4 [nit] |
+| RP R1 | ループ | APPROVE | F-RP-1・F-RP-2 [should]（メイン宛て）CM-1 のシートに `.wgsl` 化と TS に戻らない守りの AC が無い → d05c858 で足した |
+| PR R1 | PR・CI | CHANGES_REQUESTED | F-1 [must] `docs/` の下のスクリプトを丸ごと外していた（`docs/video/tools` 12 ファイル・173 個）。F-2 CLAUDE.md の例外の一覧と検査のずれ。F-3 `isTypingTarget`/`isFormControl` の使い分けが消えるコメントにしか無い。CI run 44217862110 は緑 |
+| PR R2 | PR・CI | APPROVE | 全部直った。CI run 44219447254 は緑（Linux でも 419 ファイル・12,434 個）。F-5・F-6 [nit] 記録の文の崩れと、5fb37cb で解消した例外のずれの記述が古い（この表で補う: 例外の行は 5fb37cb でメインが揃えた）。手元の check:all の vitest が混み合いで一度だけ落ちた（推定フレーキー、CM-5 の監査でも `layer-rules.test.ts` の 5 秒のタイムアウトを1回観測） |
