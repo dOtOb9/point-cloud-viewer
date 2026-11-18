@@ -1,32 +1,16 @@
-//! 画面に出すためのCRSの説明(`CrsInfo`)。
-//!
-//! `Crs`(`mod.rs`)は「変換に使えるか」だけを持ち、対応範囲外だとEPSGコードも名前も
-//! 失われる。画面には「対応範囲外でも、ファイルに書いてある名前かEPSGコード」を
-//! 出したいので、ここで別の型にまとめる。パーサは新しく書かず、`mod.rs`の
-//! `epsg_from_wkt`と`las`クレートのGeoTIFF解析をそのまま使う。
-//!
-//! ADR-0015: 読み取りの失敗は`Result`で返さず`CrsInfo::error`に入れる。
-//! CRSが読めなくてもファイルは開けるべきなので、呼び出し側は常に`CrsInfo`を受け取る。
-
 use std::io::{Read, Seek, SeekFrom};
 
 use super::{epsg_from_wkt, Crs, JgdEpoch};
 
-/// 画面向けの分類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrsKind {
-    /// 平面直角座標系(JGD2000/JGD2011)
     PlaneRectangular,
-    /// UTM(対応範囲の北半球の帯)
     Utm,
-    /// CRS情報はあるが、本アプリが扱う系ではない(または読み取れなかった)
     Other,
-    /// ファイルにCRS情報が無い
     None,
 }
 
 impl CrsKind {
-    /// フロントに渡す文字列。Tauri版・Web版のDTOで共通。
     pub fn as_str(self) -> &'static str {
         match self {
             CrsKind::PlaneRectangular => "plane-rectangular",
@@ -40,16 +24,10 @@ impl CrsKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrsInfo {
     pub epsg: Option<u32>,
-    /// 表示名。`kind`が`None`のときは空文字列。
     pub name: String,
     pub kind: CrsKind,
-    /// 読み取りに失敗したときのエラー文言。成功なら`None`。
     pub error: Option<String>,
-    /// Length of one horizontal coordinate unit in meters (1.0 = meters, 0.3048 = international
-    /// foot, ...). `None` when the unit is unknown; callers must then not convert.
     pub horizontal_unit_to_meter: Option<f64>,
-    /// Same for the vertical axis (elevation). It can differ from the horizontal unit
-    /// (for example a horizontal foot with a vertical US survey foot).
     pub vertical_unit_to_meter: Option<f64>,
 }
 
@@ -77,7 +55,6 @@ impl CrsInfo {
     }
 }
 
-/// ローマ数字(平面直角座標系の系番号1〜19用)。
 fn roman(mut n: u8) -> String {
     const TABLE: [(u8, &str); 4] = [(10, "X"), (9, "IX"), (5, "V"), (4, "IV")];
     let mut s = String::new();
@@ -93,7 +70,6 @@ fn roman(mut n: u8) -> String {
     s
 }
 
-/// `Crs`の表示名(対応範囲内のみ)。
 fn recognized_name(crs: Crs) -> Option<(CrsKind, String)> {
     match crs {
         Crs::PlaneRectangular(p) => {
@@ -114,7 +90,6 @@ fn recognized_name(crs: Crs) -> Option<(CrsKind, String)> {
     }
 }
 
-/// WKTの最初の`PROJCS["名前"`/`PROJCRS["名前"`(なければ`COMPD_CS`・`GEOGCS`)を取り出す。
 fn wkt_name(bytes: &[u8]) -> Option<String> {
     let wkt = String::from_utf8_lossy(bytes);
     let start = ["PROJCS[\"", "PROJCRS[\"", "COMPD_CS[\"", "GEOGCS[\""]
@@ -126,10 +101,6 @@ fn wkt_name(bytes: &[u8]) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Reads the length unit factor of `UNIT["name",factor,...]` that sits directly inside the
-/// element opened by `keyword` (for example `PROJCS[`), not inside a nested element such as
-/// the `GEOGCS[` (whose unit is degrees). WKT1 only; WKT2 (`PROJCRS[`) returns `None`,
-/// which callers treat as "unknown" (no conversion) rather than guessing.
 fn direct_unit_factor(wkt: &str, keyword: &str) -> Option<f64> {
     let start = wkt.find(keyword)? + keyword.len();
     let bytes = wkt.as_bytes();
@@ -164,7 +135,6 @@ fn direct_unit_factor(wkt: &str, keyword: &str) -> Option<f64> {
     None
 }
 
-/// Parses `"name",factor...` (the text after `UNIT[`).
 fn parse_unit_factor(rest: &str) -> Option<f64> {
     let rest = rest.strip_prefix('"')?;
     let end = rest.find('"')?;
@@ -177,7 +147,6 @@ fn parse_unit_factor(rest: &str) -> Option<f64> {
     (factor.is_finite() && factor > 0.0).then_some(factor)
 }
 
-/// (horizontal, vertical) unit factors in meters from a WKT1 string.
 fn wkt_units(bytes: &[u8]) -> (Option<f64>, Option<f64>) {
     let wkt = String::from_utf8_lossy(bytes);
     (
@@ -186,28 +155,22 @@ fn wkt_units(bytes: &[u8]) -> (Option<f64>, Option<f64>) {
     )
 }
 
-/// `las::Header`のCRS(WKT優先、なければGeoTIFFキー)を説明にする。
-/// The name/kind come from `describe_names`; the length units are added here.
 pub fn describe_crs_from_las_header(header: &las::Header) -> CrsInfo {
     let mut info = describe_names(header);
     let wkt_bytes = header
         .get_wkt_crs_bytes()
         .filter(|b| b.iter().any(|c| !c.is_ascii_whitespace() && *c != 0));
     let (horizontal_wkt, vertical_wkt) = wkt_bytes.map(wkt_units).unwrap_or((None, None));
-    // The systems this app recognizes (JGD plane rectangular, UTM) are metric by definition.
     let horizontal = match info.kind {
         CrsKind::PlaneRectangular | CrsKind::Utm => Some(1.0),
         _ => horizontal_wkt,
     };
     info.horizontal_unit_to_meter = horizontal;
-    // Without a vertical CS in the WKT the vertical unit is assumed to equal the horizontal one
-    // (an assumption; it stays None when the horizontal unit is unknown too).
     info.vertical_unit_to_meter = vertical_wkt.or(horizontal);
     info
 }
 
 fn describe_names(header: &las::Header) -> CrsInfo {
-    // 空のWKT(書き出し側が「CRSなし」を空のVLRで表すことがある)は「無い」と同じ扱い。
     let wkt_bytes = header
         .get_wkt_crs_bytes()
         .filter(|b| b.iter().any(|c| !c.is_ascii_whitespace() && *c != 0));
@@ -258,7 +221,6 @@ fn describe_names(header: &las::Header) -> CrsInfo {
                     },
                 }
             }
-            // 投影座標系のキーが無い(地理座標系のみ等)。CRS情報はあるが扱える系ではない。
             _ => CrsInfo {
                 epsg: None,
                 name: "地理座標系または未対応の座標系".to_string(),
@@ -273,11 +235,6 @@ fn describe_names(header: &las::Header) -> CrsInfo {
     }
 }
 
-/// LAS/LAZ/COPCの先頭からヘッダーとVLRだけを読み、CRSの説明を返す。
-///
-/// 点データやEVLR(COPCの階層は数MBになりうる)は読まない。`reader`の位置は
-/// 呼び出し後に不定なので、呼び出し側が`seek`し直すこと。
-/// どんな失敗でも`CrsInfo::failed`で返し、パニックしない(ADR-0015)。
 pub fn read_crs_info<R: Read + Seek>(reader: &mut R) -> CrsInfo {
     match read_header_with_vlrs(reader) {
         Ok(header) => describe_crs_from_las_header(&header),
@@ -358,7 +315,6 @@ mod tests {
         assert_eq!(info.name, "Local grid");
     }
 
-    /// The real autzen WKT: horizontal international foot, vertical US survey foot.
     const AUTZEN_WKT: &str = "COMPD_CS[\"NAD83 / Oregon GIC Lambert (ft) + NAVD88 height (ftUS)\",PROJCS[\"NAD83 / Oregon GIC Lambert (ft)\",GEOGCS[\"NAD83\",DATUM[\"North_American_Datum_1983\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6269\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"false_northing\",0],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"2992\"]],VERT_CS[\"NAVD88 height (ftUS)\",VERT_DATUM[\"North American Vertical Datum 1988\",2005,AUTHORITY[\"EPSG\",\"5103\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"6360\"]]]";
 
     #[test]
@@ -371,7 +327,6 @@ mod tests {
 
     #[test]
     fn projcs_unit_is_not_confused_with_the_geogcs_degree_unit() {
-        // PROJCS without its own UNIT: the only UNIT is the nested GEOGCS degree, which must be ignored.
         let wkt =
             "PROJCS[\"x\",GEOGCS[\"g\",UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"p\"]]";
         assert_eq!(wkt_units(wkt.as_bytes()), (None, None));
@@ -404,7 +359,6 @@ mod tests {
         assert!(info.error.is_some());
     }
 
-    /// 実データのヘッダーを読む。データが無い環境(CI)では何もしない。
     #[test]
     fn real_tile_header_is_jgd2011_ix() {
         let path =

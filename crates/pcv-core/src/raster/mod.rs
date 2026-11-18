@@ -1,15 +1,3 @@
-//! G1: rasterising a point cloud (grid + accumulators) and writing GeoTIFF files.
-//!
-//! - `grid`: the cell grid and the per-cell accumulators (G1-1).
-//! - `geotiff`: a small hand-written GeoTIFF writer (G1-2).
-//! - `color`: the colour of a cell, shared by the preview and the colored GeoTIFF (G1-R1).
-//! - `preview`: the thinned points kept while the Rasterize window is open, and the
-//!   picture rendered from them (G1-R1).
-//! - `output`: the options and the GeoTIFF of a finished raster (G1-3).
-//!
-//! Everything here is pure (no files, no Tauri) and builds for wasm32. Reading the
-//! points out of a COPC file is `crate::extract::ExtractPoints`.
-
 pub mod color;
 pub mod geotiff;
 pub mod grid;
@@ -20,7 +8,6 @@ pub use output::{RasterOptions, TiffKind};
 
 pub use grid::{CellAccumulator, ClassFilter, GridSpec, RasterValue, NODATA};
 
-/// Errors of the raster code. The texts are shown on screen as they are.
 #[derive(Debug, thiserror::Error)]
 pub enum RasterError {
     #[error("{0}")]

@@ -1,28 +1,3 @@
-//! ノード読み出しを N スレッドで並列に行い、Rust 側だけの上限を測る。
-//!
-//! ```text
-//! cargo run -p pcv-core --release --example parallel_bench -- <file.copc.laz> [最大スレッド数]
-//! ```
-//!
-//! # なぜこれを測るのか
-//!
-//! `TaskSheets/ADR-0007-pcv-protocol-concurrency.md` の実測では、`pcv://` 経由で
-//! **並行数8のとき 88 nodes/s** だった。一方 `open_bench` の逐次実測では
-//! 1ノードあたり 20〜28 ms なので、8 並列なら理論上 300 nodes/s 前後は出るはずである。
-//! **実効は3割弱しか出ていない。**
-//!
-//! 所有者からも「並列度を上げたが、まだ遅い」という報告がある。
-//!
-//! この例は webview も IPC も通さず、`CopcPool` と同じ構成
-//! （スレッドごとに独立した `CopcFile` を開く）で Rust 側だけの上限を測る。
-//!
-//! - ここで 300 nodes/s 出るなら、**ボトルネックは webview / IPC / JS 側**にある
-//!   （WebView2 がオリジンごとの同時リクエスト数を制限している可能性など）
-//! - ここでも 100 nodes/s 程度で頭打ちなら、**ボトルネックはディスクか LAZ 伸長**であり、
-//!   並列度をこれ以上上げても無駄ということになる
-
-// 2026-10-07: `open_bench.rs`と同じ理由(`crates/pcv-core/clippy.toml`の
-// `disallowed-methods`、wasm32ビルドに含まれないネイティブ専用の計測ツール)。
 #![allow(clippy::disallowed_methods)]
 
 use std::path::Path;
@@ -47,7 +22,6 @@ fn main() {
     let path = Path::new(path);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
 
-    // 読む対象のノードを決める。level の浅い順に取り、全スレッドで同じ集合を使う。
     let keys: Vec<NodeKey> = {
         let file = match CopcFile::open(path) {
             Ok(file) => file,
@@ -80,8 +54,6 @@ fn main() {
     let mut single_rate = 0.0f64;
 
     for threads in thread_counts(max_threads) {
-        // スレッドごとに独立した CopcFile を開く（CopcPool と同じ構成）。
-        // プールの初期化コストは計測に含めない。
         let mut files: Vec<CopcFile> = Vec::with_capacity(threads);
         for _ in 0..threads {
             match CopcFile::open(path) {
@@ -134,7 +106,6 @@ fn main() {
     println!("     スレッドを増やしても値が落ちるなら、そこが頭打ち。");
 }
 
-/// 1, 2, 4, 8, ... と倍々に増やし、最後に上限そのものを足す。
 fn thread_counts(max: usize) -> Vec<usize> {
     let mut out = Vec::new();
     let mut n = 1;

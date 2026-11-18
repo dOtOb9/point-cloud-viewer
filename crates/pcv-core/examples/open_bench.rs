@@ -1,30 +1,3 @@
-//! COPC を開くコストと、点予算を埋めるまでのノード読み出しコストを測る。
-//!
-//! ```text
-//! cargo run -p pcv-core --release --example open_bench -- <file.copc.laz> [点予算]
-//! ```
-//!
-//! `TaskSheets/M1-point-rendering.md` の完了条件を GUI 抜きで検証するためのもの。
-//!
-//! 測る対象は2つある。
-//!
-//! 1. **開くコスト** — COPC はファイル内に octree を持つため、開く処理はヘッダと
-//!    hierarchy を読むだけで完結し、点データは読まないはずである。点数が34倍の
-//!    ファイルで開く時間も34倍になるなら、hierarchy 以外を余計に読んでいる。
-//!
-//! 2. **点予算を埋めるコスト** — LOD が最初の画を出すまでに何ノード読む必要があり、
-//!    それに何秒かかるか。ノード1つの読み出しは LAZ 伸長を含むため CPU を食う。
-//!    ここで出る「毎秒何ノード」が、`pcv://` ハンドラを同期のままにした場合の
-//!    構造的な上限になる（同期ハンドラは Rust のメインスレッドで直列に走るため）。
-
-// 2026-10-07: `crates/pcv-core/clippy.toml`の`disallowed-methods`は
-// `std::time::Instant::now`を禁止している(pcv-coreはwasm32にもビルドされ、
-// `Instant::now()`はwasm32-unknown-unknownでpanicするため。vendor/copc-writerの
-// 同種の修正参照)。この例は`cargo run --example`でネイティブ専用に実行する
-// 計測ツールで、wasm32ビルド(`cargo build -p pcv-core --target
-// wasm32-unknown-unknown`、ci.ymlの「規約1」)には`--examples`を渡しておらず
-// 含まれない。そのためここでの`Instant::now()`は安全であり、ファイル単位で
-// 明示的に許可する。
 #![allow(clippy::disallowed_methods)]
 
 use std::path::Path;
@@ -69,8 +42,6 @@ fn measure(path: &Path, budget: u64) {
     println!("  開く時間        : {open_ms:.1} ms");
     println!();
 
-    // 粗いノードから順に読む。LOD は画面空間誤差で選ぶが、ここでは
-    // 「最初の画を出すのに必要な量」の目安として level の浅い順に取る。
     let mut keys: Vec<(NodeKey, u32)> = file
         .hierarchy()
         .nodes()

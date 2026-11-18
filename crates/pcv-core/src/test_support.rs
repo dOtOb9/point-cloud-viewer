@@ -1,6 +1,3 @@
-//! Test-only helpers: write a small synthetic COPC file whose points carry a unique id
-//! in `gps_time`. Shared by the tile, thinning and outlier tests.
-
 use copc_reader::CopcReader;
 use copc_writer::{
     write_source, CopcPointFields, CopcPointSource, CopcWriteMetadata, CopcWriterParams,
@@ -22,7 +19,7 @@ impl CopcPointSource for Source {
     }
 }
 
-pub(crate) fn field(x: f64, y: f64, z: f64, id: f64) -> CopcPointFields {
+pub(crate) fn field(x: f64, y: f64, z: f64, unique_id: f64) -> CopcPointFields {
     CopcPointFields {
         x,
         y,
@@ -41,7 +38,7 @@ pub(crate) fn field(x: f64, y: f64, z: f64, id: f64) -> CopcPointFields {
         user_data: 0,
         scan_angle: 0.0,
         point_source_id: 1,
-        gps_time: id, // unique id of the point
+        gps_time: unique_id,
         red: 0,
         green: 0,
         blue: 0,
