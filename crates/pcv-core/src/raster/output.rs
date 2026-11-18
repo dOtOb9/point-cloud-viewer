@@ -1,50 +1,25 @@
-//! G1-3 / G1-R1: what a finished raster turns into: a GeoTIFF.
-//!
-//! Both the desktop (`pcv-convert`) and the Web (`pcv-wasm`) runs end here, so the two
-//! outputs are the same on both sides. Reading the points (the part that differs) stays
-//! in those crates.
-//!
-//! Two forms (the window's "書き出す TIFF" buttons):
-//!
-//! - `Colored` (default): the picture as the preview shows it, 8-bit RGBA. Windows
-//!   Photos shows it as it is, and GIS software places it with the geo tags.
-//! - `Values`: the numbers (float32 for single-band kinds, 16-bit RGBA for RGB), for
-//!   analysis.
-//!
-//! The raster is not turned into a point-cloud layer (owner's decision 2026-10-21, plan
-//! section 13): the file is the deliverable.
-
 use std::io::Write;
 
 use crate::raster::color::CellColorizer;
 use crate::raster::geotiff;
 use crate::raster::{CellAccumulator, ClassFilter, RasterError, RasterValue, NODATA};
 
-/// Which GeoTIFF to write.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TiffKind {
-    /// 8-bit RGBA, coloured like the preview.
     #[default]
     Colored,
-    /// The raw values.
     Values,
 }
 
-/// What the user asked for. Deserialised from the Tauri command / the Worker message.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RasterOptions {
-    /// In the file's horizontal unit.
     pub cell_size: f64,
     pub value: RasterValue,
-    /// Only points classified as ground (2).
     pub ground_only: bool,
     #[serde(default)]
     pub tiff: TiffKind,
-    /// The colour range of the preview (`PreviewImage::range`), `[min, max]`. The colored
-    /// file uses it so that its colours match the window. `None`: the range of the
-    /// raster's own values.
     #[serde(default)]
     pub range: Option<(f32, f32)>,
 }
@@ -59,7 +34,6 @@ impl RasterOptions {
     }
 }
 
-/// Writes the GeoTIFF of a finished accumulator as `options.tiff` says.
 pub fn write_geotiff<W: Write>(
     acc: &CellAccumulator,
     epsg: Option<u32>,
@@ -80,7 +54,6 @@ pub fn write_geotiff<W: Write>(
     }
 }
 
-/// The warning for the error log when the GeoTIFF cannot carry a CRS.
 pub fn missing_crs_warning(epsg: Option<u32>) -> Option<String> {
     match epsg {
         Some(code) if code != 0 && code < 32767 => None,
@@ -101,7 +74,6 @@ mod tests {
     use tiff::tags::Tag;
 
     fn acc(value: RasterValue) -> CellAccumulator {
-        // 2 x 2 cells of 1 m at (10, 20); NW = 0, NE = 1, SW = 2, SE = 3.
         let spec = GridSpec::from_bounds(10.0, 20.0, 12.0, 22.0, 1.0, 10).expect("spec");
         CellAccumulator::new(spec, value, ClassFilter::all())
     }
@@ -161,8 +133,8 @@ mod tests {
     #[test]
     fn colored_geotiff_is_rgba8_with_the_given_range_and_the_geo_tags() {
         let mut a = acc(RasterValue::ZMean);
-        a.add(10.5, 20.5, 14.0, 0, 1, [0; 3]); // SW (cell 2)
-        a.add(11.5, 21.5, 20.0, 0, 1, [0; 3]); // NE (cell 1)
+        a.add(10.5, 20.5, 14.0, 0, 1, [0; 3]);
+        a.add(11.5, 21.5, 20.0, 0, 1, [0; 3]);
         let mut bytes = Vec::new();
         write_geotiff(
             &a,

@@ -1,29 +1,3 @@
-//! G1-R1: the live preview of the Rasterize window.
-//!
-//! Reading every point takes minutes on a big cloud (Shibuya: about 3 minutes), so the
-//! window cannot redo that on every click. Instead:
-//!
-//! 1. When the window opens, `CoarseReader` reads only the UPPER levels of the COPC
-//!    octree (`ExtractPoints::coarse`: the deepest level whose total stays within the
-//!    point budget) into a `CoarsePoints` store. The upper levels are a thinned copy
-//!    of the whole cloud.
-//! 2. The store is kept while the window is open (desktop: Tauri state, Web: the
-//!    Worker). A click on value / class / cell size only calls `CoarsePoints::render`,
-//!    which adds the held points into a small grid and colours it. No file is read.
-//!
-//! # Memory is bounded by the cap, not by the point count
-//!
-//! `CoarsePoints::push` refuses a point once `cap` points are held (`is_truncated`).
-//! Each held point is `size_of::<CoarsePoint>()` bytes (32), so the store is at most
-//! `cap * 32` bytes. The preview grid has at most about `PREVIEW_MAX_SIDE`^2 cells.
-//! Tests: `held_points_never_exceed_the_cap`, `depth_limit_skips_deeper_nodes`.
-//!
-//! # What the preview is not
-//!
-//! It is an approximation made from thinned points: its min / max can be off, and thin
-//! areas have empty cells. The window says so. The numbers it hands to the export are
-//! only the colour range (`PreviewImage::range`).
-
 use std::io::{Read, Seek};
 
 use copc_core::LasPointRecord;
@@ -33,20 +7,12 @@ use crate::extract::ExtractPoints;
 use crate::raster::color::CellColorizer;
 use crate::raster::{CellAccumulator, ClassFilter, GridSpec, RasterError, RasterValue};
 
-/// The longest side of the preview grid, in cells (the grid may be one cell larger
-/// because the origin is snapped down to a multiple of the cell size).
 pub const PREVIEW_MAX_SIDE: u32 = 1024;
 
-/// How many points the preview store may hold. The upper COPC levels are read up to
-/// this many (`ExtractPoints::coarse`). See `TaskSheets/G1-T11-raster-window.md` for how
-/// the value was chosen (measured).
 pub const PREVIEW_POINT_BUDGET: u64 = 3_000_000;
 
-/// Bytes of the header in front of the pixels in `PreviewImage::to_bytes`.
 pub const PREVIEW_HEADER_BYTES: usize = 32;
 
-/// One held point: only what the accumulator needs. x / y stay f64 (map coordinates
-/// can be large), z is f32 (a height needs no more).
 #[derive(Debug, Clone, Copy)]
 struct CoarsePoint {
     x: f64,
@@ -57,7 +23,6 @@ struct CoarsePoint {
     rgb: [u16; 3],
 }
 
-/// The extent the preview covers (XY of the file header).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct XyBounds {
     pub min_x: f64,
@@ -66,28 +31,22 @@ pub struct XyBounds {
     pub max_y: f64,
 }
 
-/// What the window asks for. Deserialised from the Tauri command / the Worker message.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewOptions {
-    /// In the file's horizontal unit.
     pub cell_size: f64,
     pub value: RasterValue,
     pub ground_only: bool,
 }
 
-/// What the window learns when the store is ready.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewOpenInfo {
     pub held_points: u64,
-    /// The deepest COPC level that was read.
     pub depth: i32,
-    /// The cap was reached before the selected levels were read completely.
     pub truncated: bool,
 }
 
-/// The thinned points kept while the window is open.
 pub struct CoarsePoints {
     points: Vec<CoarsePoint>,
     cap: usize,
@@ -98,8 +57,6 @@ pub struct CoarsePoints {
 }
 
 impl CoarsePoints {
-    /// `expected` is how many points are about to come (reserves that much, at most
-    /// `cap`, so a small cloud does not reserve the whole cap).
     pub fn new(bounds: XyBounds, has_color: bool, cap: usize, expected: usize) -> Self {
         Self {
             points: Vec::with_capacity(expected.min(cap)),
@@ -111,7 +68,6 @@ impl CoarsePoints {
         }
     }
 
-    /// Keeps the point; returns `false` (and keeps nothing) when `cap` points are held.
     pub fn push(&mut self, p: &LasPointRecord) -> bool {
         if self.points.len() >= self.cap {
             self.truncated = true;
@@ -140,7 +96,6 @@ impl CoarsePoints {
         self.truncated
     }
 
-    /// Bytes the held points take (what the cap bounds).
     pub fn bytes_held(&self) -> usize {
         self.points.capacity() * std::mem::size_of::<CoarsePoint>()
     }
@@ -153,8 +108,6 @@ impl CoarsePoints {
         }
     }
 
-    /// The grid the preview uses: the user's cell size, but never finer than
-    /// `PREVIEW_MAX_SIDE` cells along the longer side of the extent.
     pub fn preview_spec(&self, cell_size: f64) -> Result<GridSpec, RasterError> {
         let b = &self.bounds;
         let long_side = (b.max_x - b.min_x).max(b.max_y - b.min_y);
@@ -166,13 +119,12 @@ impl CoarsePoints {
         let cell = if cell_size.is_finite() {
             cell_size.max(coarsest_needed)
         } else {
-            cell_size // from_bounds reports it
+            cell_size
         };
         let side = u64::from(PREVIEW_MAX_SIDE) + 2;
         GridSpec::from_bounds(b.min_x, b.min_y, b.max_x, b.max_y, cell, side * side)
     }
 
-    /// Adds the held points into the preview grid and colours it. Reads no file.
     pub fn render(&self, options: &PreviewOptions) -> Result<PreviewImage, RasterError> {
         if options.value == RasterValue::RgbMean && !self.has_color {
             return Err(RasterError::NoColor);
@@ -191,9 +143,6 @@ impl CoarsePoints {
         if acc.accepted_points() == 0 {
             return Err(RasterError::NoPoints);
         }
-        // The range is taken from the unfilled cells. A filled cell is a mean of its
-        // neighbours, so it lies inside min..max already and cannot change the range
-        // (the legend stays the same as without the fill).
         let colorizer = CellColorizer::new(&acc, None);
         let (width, height) = (spec.width as usize, spec.height as usize);
         let cell_count = spec.cell_count() as usize;
@@ -230,18 +179,8 @@ impl CoarsePoints {
     }
 }
 
-/// An empty cell is filled when at least this many of its 8 neighbours have a value.
-/// The preview is made from thinned points (2-3 per cell), so many cells are empty only
-/// by sampling chance; those are surrounded by values and get filled. A real gap (a river
-/// edge, the border of the data) has most neighbours empty too, so with 5 of 8 it mostly
-/// stays empty. Corner cells have 3 neighbours and edge cells 5, so a corner never fills.
-/// Preview only: the export never calls `fill_isolated_holes`.
 pub const FILL_MIN_NEIGHBOURS: usize = 5;
 
-/// One pass over the grid (row-major, `width * height` cells). An empty cell with at least
-/// `FILL_MIN_NEIGHBOURS` non-empty neighbours (of the 8 around it that exist) becomes
-/// `mean` of those neighbours. Every cell is judged against the ORIGINAL `cells`, so the
-/// fill does not chain into the next cell.
 pub fn fill_isolated_holes<T: Copy>(
     cells: &[Option<T>],
     width: usize,
@@ -281,7 +220,6 @@ fn mean_value(values: &[f32]) -> f32 {
     values.iter().sum::<f32>() / values.len() as f32
 }
 
-/// Mean colour per channel (rounded).
 fn mean_rgb(colors: &[[u16; 3]]) -> [u16; 3] {
     let n = colors.len() as u32;
     let channel = |k: usize| -> u16 {
@@ -291,34 +229,18 @@ fn mean_rgb(colors: &[[u16; 3]]) -> [u16; 3] {
     [channel(0), channel(1), channel(2)]
 }
 
-/// A rendered preview: RGBA pixels (row 0 = north, transparent = empty cell) and what
-/// the legend needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreviewImage {
     pub width: u32,
     pub height: u32,
-    /// The colour range of the values (`None` for RGB). The export gets it back.
     pub range: Option<(f32, f32)>,
-    /// The cell size the preview really used (it can be coarser than the one asked for).
     pub cell_size: f64,
-    /// Held points that were added (after the class filter).
     pub points: u64,
     pub filled_cells: u32,
     pub rgba: Vec<u8>,
 }
 
 impl PreviewImage {
-    /// One buffer for both sides to hand over (Tauri `Response`, Worker transfer). All
-    /// numbers are little-endian; the pixels follow the 32-byte header.
-    ///
-    /// ```text
-    ///  0 u32 width        4 u32 height      8 u32 flags (bit 0: range present)
-    /// 12 f32 range min   16 f32 range max  20 f32 cell size (preview)
-    /// 24 u32 points      28 u32 filled cells
-    /// 32 .. width * height * 4 bytes of RGBA
-    /// ```
-    ///
-    /// `src/datasource/raster-preview.ts` reads it.
     pub fn to_bytes(&self) -> Vec<u8> {
         let (lo, hi) = self.range.unwrap_or((0.0, 0.0));
         let mut out = Vec::with_capacity(PREVIEW_HEADER_BYTES + self.rgba.len());
@@ -335,16 +257,12 @@ impl PreviewImage {
     }
 }
 
-/// Reads the upper levels of a COPC into a `CoarsePoints`, a batch of points at a time
-/// (so the caller can report progress, check for cancel, or yield to the event loop).
 pub struct CoarseReader<R: Read + Seek + Send> {
     points: ExtractPoints<'static, R>,
     store: CoarsePoints,
 }
 
 impl<R: Read + Seek + Send> CoarseReader<R> {
-    /// `cap`: the most points to keep (`PREVIEW_POINT_BUDGET`, or less in tests). The
-    /// levels read are chosen so that they fit it.
     pub fn new(reader: CopcReader<R>, bounds: XyBounds, has_color: bool, cap: usize) -> Self {
         let points = ExtractPoints::coarse(reader, cap as u64);
         let expected = usize::try_from(points.stats().candidate_points).unwrap_or(usize::MAX);
@@ -353,8 +271,6 @@ impl<R: Read + Seek + Send> CoarseReader<R> {
         Self { points, store }
     }
 
-    /// Reads up to `batch` points. `Ok(true)` when everything is read (or the cap
-    /// stopped the reading).
     pub fn feed(&mut self, batch: usize) -> Result<bool, copc_core::Error> {
         for _ in 0..batch {
             match self.points.next() {
@@ -369,7 +285,6 @@ impl<R: Read + Seek + Send> CoarseReader<R> {
         Ok(false)
     }
 
-    /// `(points read, points that will be read)`.
     pub fn progress(&self) -> (u64, u64) {
         let stats = self.points.stats();
         (stats.points_scanned, stats.candidate_points)
@@ -403,7 +318,6 @@ mod tests {
         }
     }
 
-    /// `side * side` points on a 1 m lattice (z = x + y; ground when x is even).
     fn make_copc(dir: &std::path::Path, side: u32, max_points_per_node: u32) -> std::path::PathBuf {
         let mut points = Vec::new();
         for i in 0..side {
@@ -458,7 +372,7 @@ mod tests {
     #[test]
     fn depth_limit_skips_deeper_nodes() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = make_copc(dir.path(), 60, 200); // 3600 points, several levels
+        let path = make_copc(dir.path(), 60, 200);
         let deepest = {
             let reader = CopcReader::from_path(&path).expect("open");
             reader
@@ -483,12 +397,10 @@ mod tests {
             n += 1;
         }
         let stats = it.stats();
-        // Only the upper levels were read, and they fit the budget.
         assert!(stats.nodes_read < all_nodes, "{stats:?} of {all_nodes}");
         assert_eq!(stats.nodes_read, stats.nodes_selected);
         assert_eq!(n, stats.candidate_points);
         assert!(n <= 1000, "{n}");
-        // The reader of the window picks the same depth and keeps exactly those points.
         let (store, candidates) = read_all(&path, 60, 1000);
         assert_eq!(store.depth, depth);
         assert_eq!(candidates, n);
@@ -502,7 +414,6 @@ mod tests {
         let small = ExtractPoints::coarse(CopcReader::from_path(&path).expect("open"), 300);
         let large = ExtractPoints::coarse(CopcReader::from_path(&path).expect("open"), 1_000_000);
         assert!(small.depth_limit() < large.depth_limit());
-        // A budget over the file takes every node.
         assert_eq!(large.stats().candidate_points, 3600);
     }
 
@@ -510,12 +421,10 @@ mod tests {
     fn held_points_never_exceed_the_cap() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = make_copc(dir.path(), 60, 200);
-        // The cap is smaller than the root node (200 points), so reading is cut off.
         let (store, _) = read_all(&path, 60, 50);
         assert_eq!(store.len(), 50);
         assert!(store.is_truncated());
         assert!(store.bytes_held() <= 50 * std::mem::size_of::<CoarsePoint>());
-        // A cap the levels fit in is not truncated and holds no more than the cap.
         let (store, _) = read_all(&path, 60, 1000);
         assert!(store.len() <= 1000);
         assert!(!store.is_truncated());
@@ -531,7 +440,6 @@ mod tests {
         }
         assert_eq!(store.len(), 100);
         assert!(store.is_truncated());
-        // Nothing grew past the cap, however many points were offered.
         assert!(store.bytes_held() <= 128 * std::mem::size_of::<CoarsePoint>());
     }
 
@@ -558,7 +466,6 @@ mod tests {
         let count = store
             .render(&options(RasterValue::Count, false))
             .expect("count");
-        // 4 m cells over a 39 m extent: 10 x 10 cells, 16 points each.
         assert_eq!(count.range, Some((16.0, 16.0)));
         let ground = store
             .render(&options(RasterValue::Count, true))
@@ -581,7 +488,6 @@ mod tests {
         );
         let spec = store.preview_spec(0.5).expect("spec");
         assert!(spec.width <= PREVIEW_MAX_SIDE + 1 && spec.height <= PREVIEW_MAX_SIDE + 1);
-        // A coarser cell than needed is kept as the user asked.
         let spec = store.preview_spec(100.0).expect("spec");
         assert_eq!(spec.cell_size, 100.0);
         assert_eq!((spec.width, spec.height), (32, 24));
@@ -602,7 +508,6 @@ mod tests {
             .expect_err("no colour")
             .to_string()
             .contains("色"));
-        // Everything here is class 1 or 2, so "ground only" works; make a cloud with none.
         let mut none = CoarsePoints::new(bounds(20), false, 10, 0);
         let p = LasPointRecord {
             classification: 1,
@@ -646,7 +551,7 @@ mod tests {
     fn isolated_hole_gets_the_mean_of_its_eight_neighbours() {
         let mut cells = vec![Some(8.0f32); 9];
         cells[4] = None;
-        cells[0] = Some(0.0); // mean = (7 * 8 + 0) / 8 = 7
+        cells[0] = Some(0.0);
         let out = fill_isolated_holes(&cells, 3, 3, mean_value);
         assert_eq!(out[4], Some(7.0));
     }
@@ -681,14 +586,11 @@ mod tests {
 
     #[test]
     fn edge_cells_count_only_existing_neighbours_and_corners_never_fill() {
-        // 4 wide, 3 high. Edge cell (row 0, col 1) has 5 neighbours: all filled -> fills.
         let mut cells = vec![Some(3.0f32); 12];
         cells[1] = None;
         assert_eq!(fill_isolated_holes(&cells, 4, 3, mean_value)[1], Some(3.0));
-        // One more empty neighbour leaves it 4 of 5 -> stays empty.
         cells[2] = None;
         assert_eq!(fill_isolated_holes(&cells, 4, 3, mean_value)[1], None);
-        // A corner has only 3 neighbours, so it never fills.
         let mut cells = vec![Some(3.0f32); 12];
         cells[0] = None;
         assert_eq!(fill_isolated_holes(&cells, 4, 3, mean_value)[0], None);
@@ -696,26 +598,17 @@ mod tests {
 
     #[test]
     fn the_fill_does_not_chain() {
-        // 5 wide, 3 high; two adjacent holes at index 6 and 7 (row 1, cols 1 and 2).
         let mut cells = vec![Some(1.0f32); 15];
         for i in [6, 7, 0, 1, 5, 10, 11] {
             cells[i] = None;
         }
-        // Left hole (6): filled neighbours are 2, 12 only (7 is empty) -> stays empty.
-        // Right hole (7): filled neighbours 2, 3, 8, 12, 13 = 5 -> fills.
         let out = fill_isolated_holes(&cells, 5, 3, mean_value);
         assert_eq!(out[7], Some(1.0));
-        // A chained pass would let the left hole see the new value at 7 (3 of 8 -> still
-        // empty), so also check a case where chaining WOULD flip the result below.
         assert_eq!(out[6], None);
-        // Left hole with 4 filled neighbours plus a hole next to it that itself fills:
-        // chaining would make it 5; judged against the original it has 4.
         let mut cells = vec![Some(1.0f32); 15];
         for i in [6, 7, 0, 1, 5] {
             cells[i] = None;
         }
-        // Left hole (6): filled 2, 10, 11, 12 = 4 (7 empty). Right hole (7): 2, 3, 8, 11,
-        // 12, 13 = 6 -> fills.
         let out = fill_isolated_holes(&cells, 5, 3, mean_value);
         assert_eq!(out[7], Some(1.0));
         assert_eq!(out[6], None);
@@ -725,14 +618,13 @@ mod tests {
     fn rgb_mean_is_per_channel() {
         let mut cells = vec![Some([10u16, 20, 30]); 9];
         cells[4] = None;
-        cells[0] = Some([90, 20, 30]); // R: (7 * 10 + 90) / 8 = 20
+        cells[0] = Some([90, 20, 30]);
         let out = fill_isolated_holes(&cells, 3, 3, mean_rgb);
         assert_eq!(out[4], Some([20, 20, 30]));
     }
 
     #[test]
     fn export_colouring_leaves_holes_empty_while_the_preview_fills_them() {
-        // 3 x 3 cells of 1 m, all filled but the centre.
         let spec = GridSpec::from_bounds(0.0, 0.0, 3.0, 3.0, 1.0, 100).expect("spec");
         let mut acc = CellAccumulator::new(spec, RasterValue::ZMean, ClassFilter::all());
         for row in 0..3 {
@@ -749,11 +641,8 @@ mod tests {
                 }
             }
         }
-        // Export path: `CellColorizer` over the accumulator, no fill (output.rs never
-        // calls `fill_isolated_holes`; this pins the behaviour of that path).
         let colorizer = CellColorizer::new(&acc, None);
         assert_eq!(colorizer.rgba(&acc, 4)[3], 0);
-        // Preview path: the same cells through the fill.
         let cells: Vec<Option<f32>> = (0..9).map(|i| acc.value_at(i)).collect();
         assert_eq!(fill_isolated_holes(&cells, 3, 3, mean_value)[4], Some(5.0));
     }

@@ -1,37 +1,3 @@
-//! G1-2: a small hand-written GeoTIFF writer.
-//!
-//! Why hand-written (plan `TaskSheets/G1-raster-and-dtm.md`, section 3): the GeoTIFF
-//! tags would have to be written through a generic tag API anyway, and the file is
-//! simple: classic TIFF (not BigTIFF), little-endian, **uncompressed**, stored in
-//! strips. Reading the whole writer takes one sitting, and `tiff` is used only by the
-//! tests to read the result back.
-//!
-//! # File layout
-//!
-//! ```text
-//! 8-byte header | IFD (the tag table) | out-of-line tag values | strips of pixels
-//! ```
-//!
-//! Every offset is known before anything is written (the tag table has a fixed size
-//! and the pixel data comes last), so the writer only goes forward and works with any
-//! `std::io::Write` (a file, a `Vec<u8>`, a download buffer). The pixels are taken
-//! from an iterator and written one strip (about 64 KiB) at a time, so **no second
-//! full copy of the image is built**.
-//!
-//! # Georeferencing
-//!
-//! - `ModelPixelScaleTag` (33550): `(cell, cell, 0)`.
-//! - `ModelTiepointTag` (33922): ties pixel `(0, 0, 0)` to `(origin_x, top_y, 0)`.
-//!   Pixel `(0, 0)` is the top-left (north-west) cell and the raster type is
-//!   PixelIsArea, so that is the top-left *corner* of the cell, as `GridSpec` has it.
-//! - `GeoKeyDirectoryTag` (34735) is written only when the caller has an EPSG code:
-//!   `GTModelType = 1` (projected), `GTRasterType = 1` (PixelIsArea) and
-//!   `ProjectedCSTypeGeoKey = epsg`. Without a code no CRS keys are written (a
-//!   "projected" model type with no CRS would claim more than we know); the caller is
-//!   expected to warn.
-//! - `GDAL_NODATA` (42113, ASCII) for the float form. The RGB form has an alpha band
-//!   instead (0 for empty cells).
-
 use std::io::Write;
 
 use crate::raster::{GridSpec, RasterError};
@@ -41,10 +7,48 @@ const TYPE_SHORT: u16 = 3;
 const TYPE_LONG: u16 = 4;
 const TYPE_DOUBLE: u16 = 12;
 
-/// Target size of one strip in bytes. The writer holds one strip at a time.
 const STRIP_TARGET_BYTES: u64 = 64 * 1024;
 
-/// One IFD entry. `data` is the value already in little-endian bytes.
+const TAG_IMAGE_WIDTH: u16 = 256;
+const TAG_IMAGE_LENGTH: u16 = 257;
+const TAG_BITS_PER_SAMPLE: u16 = 258;
+const TAG_COMPRESSION: u16 = 259;
+const TAG_PHOTOMETRIC_INTERPRETATION: u16 = 262;
+const TAG_STRIP_OFFSETS: u16 = 273;
+const TAG_SAMPLES_PER_PIXEL: u16 = 277;
+const TAG_ROWS_PER_STRIP: u16 = 278;
+const TAG_STRIP_BYTE_COUNTS: u16 = 279;
+const TAG_PLANAR_CONFIGURATION: u16 = 284;
+const TAG_EXTRA_SAMPLES: u16 = 338;
+const TAG_SAMPLE_FORMAT: u16 = 339;
+const TAG_MODEL_PIXEL_SCALE: u16 = 33550;
+const TAG_MODEL_TIEPOINT: u16 = 33922;
+const TAG_GEO_KEY_DIRECTORY: u16 = 34735;
+const TAG_GDAL_NODATA: u16 = 42113;
+
+const COMPRESSION_NONE: u16 = 1;
+const PLANAR_CONFIGURATION_CHUNKY: u16 = 1;
+const EXTRA_SAMPLES_UNASSOCIATED_ALPHA: u16 = 2;
+const SAMPLE_FORMAT_UNSIGNED_INTEGER: u16 = 1;
+const SAMPLE_FORMAT_IEEE_FLOAT: u16 = 3;
+const PHOTOMETRIC_BLACK_IS_ZERO: u16 = 1;
+const PHOTOMETRIC_RGB: u16 = 2;
+
+const GEO_KEY_DIRECTORY_VERSION: u16 = 1;
+const GEO_KEY_REVISION: u16 = 1;
+const GEO_KEY_MINOR_REVISION: u16 = 0;
+const GEO_KEY_COUNT: u16 = 3;
+const GEO_KEY_INLINE_VALUE: u16 = 0;
+const ONE_VALUE: u16 = 1;
+const GT_MODEL_TYPE_GEO_KEY: u16 = 1024;
+const GT_RASTER_TYPE_GEO_KEY: u16 = 1025;
+const PROJECTED_CS_TYPE_GEO_KEY: u16 = 3072;
+const MODEL_TYPE_PROJECTED: u16 = 1;
+const RASTER_PIXEL_IS_AREA: u16 = 1;
+const FIRST_USER_DEFINED_GEO_KEY_CODE: u32 = 32767;
+
+const NO_NEXT_IFD: u32 = 0;
+
 struct Entry {
     tag: u16,
     field_type: u16,
@@ -79,7 +83,6 @@ fn doubles(tag: u16, values: &[f64]) -> Entry {
     }
 }
 
-/// ASCII value, with the terminating NUL TIFF requires.
 fn ascii(tag: u16, text: &str) -> Entry {
     let mut data = text.as_bytes().to_vec();
     data.push(0);
@@ -91,21 +94,14 @@ fn ascii(tag: u16, text: &str) -> Entry {
     }
 }
 
-/// What differs between the two forms.
 struct PixelFormat {
     samples_per_pixel: u16,
     bits_per_sample: u16,
-    /// 3 = IEEE float, 1 = unsigned integer.
     sample_format: u16,
-    /// 1 = BlackIsZero (single band), 2 = RGB.
     photometric: u16,
-    /// The last sample is an unassociated alpha channel (`ExtraSamples` = 2).
     has_alpha: bool,
 }
 
-/// Writes a single-band float32 GeoTIFF. `values` is every cell in image order (row 0
-/// = north, see `grid`), `width * height` of them. Empty cells should already hold
-/// `nodata`, which is also written to the `GDAL_NODATA` tag.
 pub fn write_f32<W: Write>(
     out: &mut W,
     spec: &GridSpec,
@@ -121,8 +117,8 @@ pub fn write_f32<W: Write>(
     let format = PixelFormat {
         samples_per_pixel: 1,
         bits_per_sample: 32,
-        sample_format: 3,
-        photometric: 1,
+        sample_format: SAMPLE_FORMAT_IEEE_FLOAT,
+        photometric: PHOTOMETRIC_BLACK_IS_ZERO,
         has_alpha: false,
     };
     let nodata_text = format!("{nodata}");
@@ -137,10 +133,6 @@ pub fn write_f32<W: Write>(
     )
 }
 
-/// Writes a 4-band u16 GeoTIFF: red, green, blue and an alpha band (`ExtraSamples`
-/// = 2, unassociated alpha). `pixels` is every cell in image order; `None` is an
-/// empty cell and is written as (0, 0, 0) with alpha 0, i.e. transparent, so that
-/// viewers do not show empty cells as black. Cells with a colour get alpha 65535.
 pub fn write_rgb_u16<W: Write>(
     out: &mut W,
     spec: &GridSpec,
@@ -150,8 +142,8 @@ pub fn write_rgb_u16<W: Write>(
     let format = PixelFormat {
         samples_per_pixel: 4,
         bits_per_sample: 16,
-        sample_format: 1,
-        photometric: 2,
+        sample_format: SAMPLE_FORMAT_UNSIGNED_INTEGER,
+        photometric: PHOTOMETRIC_RGB,
         has_alpha: true,
     };
     write_tiff(out, spec, epsg, &format, None, pixels, |p, buf| {
@@ -166,11 +158,6 @@ pub fn write_rgb_u16<W: Write>(
     })
 }
 
-/// Writes a 4-band u8 GeoTIFF: red, green, blue and an alpha band (`ExtraSamples` = 2,
-/// unassociated alpha). This is the "picture as seen" form (G1-R1): Windows Photos shows
-/// it as a normal image, and GIS software places it with the same geo tags as the others.
-/// `pixels` is every cell in image order, already coloured (see `raster::color`);
-/// alpha 0 is an empty cell.
 pub fn write_rgba_u8<W: Write>(
     out: &mut W,
     spec: &GridSpec,
@@ -180,8 +167,8 @@ pub fn write_rgba_u8<W: Write>(
     let format = PixelFormat {
         samples_per_pixel: 4,
         bits_per_sample: 8,
-        sample_format: 1,
-        photometric: 2,
+        sample_format: SAMPLE_FORMAT_UNSIGNED_INTEGER,
+        photometric: PHOTOMETRIC_RGB,
         has_alpha: true,
     };
     write_tiff(out, spec, epsg, &format, None, pixels, |p, buf| {
@@ -189,7 +176,6 @@ pub fn write_rgba_u8<W: Write>(
     })
 }
 
-/// The tag table. `strip_offsets` / `strip_counts` are one entry per strip.
 fn build_entries(
     spec: &GridSpec,
     epsg: Option<u32>,
@@ -200,53 +186,60 @@ fn build_entries(
     strip_counts: &[u32],
 ) -> Vec<Entry> {
     let n = usize::from(format.samples_per_pixel);
-    // Tags must be in ascending order in a TIFF IFD.
     let mut entries = vec![
-        longs(256, &[spec.width]),                     // ImageWidth
-        longs(257, &[spec.height]),                    // ImageLength
-        shorts(258, &vec![format.bits_per_sample; n]), // BitsPerSample
-        shorts(259, &[1]),                             // Compression: none
-        shorts(262, &[format.photometric]),            // PhotometricInterpretation
-        longs(273, strip_offsets),                     // StripOffsets
-        shorts(277, &[format.samples_per_pixel]),      // SamplesPerPixel
-        longs(278, &[rows_per_strip]),                 // RowsPerStrip
-        longs(279, strip_counts),                      // StripByteCounts
-        shorts(284, &[1]),                             // PlanarConfiguration: chunky
+        longs(TAG_IMAGE_WIDTH, &[spec.width]),
+        longs(TAG_IMAGE_LENGTH, &[spec.height]),
+        shorts(TAG_BITS_PER_SAMPLE, &vec![format.bits_per_sample; n]),
+        shorts(TAG_COMPRESSION, &[COMPRESSION_NONE]),
+        shorts(TAG_PHOTOMETRIC_INTERPRETATION, &[format.photometric]),
+        longs(TAG_STRIP_OFFSETS, strip_offsets),
+        shorts(TAG_SAMPLES_PER_PIXEL, &[format.samples_per_pixel]),
+        longs(TAG_ROWS_PER_STRIP, &[rows_per_strip]),
+        longs(TAG_STRIP_BYTE_COUNTS, strip_counts),
+        shorts(TAG_PLANAR_CONFIGURATION, &[PLANAR_CONFIGURATION_CHUNKY]),
     ];
     if format.has_alpha {
-        entries.push(shorts(338, &[2])); // ExtraSamples: unassociated alpha
+        entries.push(shorts(
+            TAG_EXTRA_SAMPLES,
+            &[EXTRA_SAMPLES_UNASSOCIATED_ALPHA],
+        ));
     }
     entries.extend([
-        shorts(339, &vec![format.sample_format; n]), // SampleFormat
-        doubles(33550, &[spec.cell_size, spec.cell_size, 0.0]), // ModelPixelScaleTag
-        doubles(33922, &[0.0, 0.0, 0.0, spec.origin_x, spec.top_y(), 0.0]), // ModelTiepointTag
+        shorts(TAG_SAMPLE_FORMAT, &vec![format.sample_format; n]),
+        doubles(
+            TAG_MODEL_PIXEL_SCALE,
+            &[spec.cell_size, spec.cell_size, 0.0],
+        ),
+        doubles(
+            TAG_MODEL_TIEPOINT,
+            &[0.0, 0.0, 0.0, spec.origin_x, spec.top_y(), 0.0],
+        ),
     ]);
     if let Some(code) = epsg {
-        // Header (version 1.0.0, 3 keys), then key = (id, location 0 = inline, count 1, value).
         entries.push(shorts(
-            34735,
+            TAG_GEO_KEY_DIRECTORY,
             &[
-                1,
-                1,
-                0,
-                3, //
-                1024,
-                0,
-                1,
-                1, // GTModelTypeGeoKey = ModelTypeProjected
-                1025,
-                0,
-                1,
-                1, // GTRasterTypeGeoKey = RasterPixelIsArea
-                3072,
-                0,
-                1,
-                code as u16, // ProjectedCSTypeGeoKey
+                GEO_KEY_DIRECTORY_VERSION,
+                GEO_KEY_REVISION,
+                GEO_KEY_MINOR_REVISION,
+                GEO_KEY_COUNT,
+                GT_MODEL_TYPE_GEO_KEY,
+                GEO_KEY_INLINE_VALUE,
+                ONE_VALUE,
+                MODEL_TYPE_PROJECTED,
+                GT_RASTER_TYPE_GEO_KEY,
+                GEO_KEY_INLINE_VALUE,
+                ONE_VALUE,
+                RASTER_PIXEL_IS_AREA,
+                PROJECTED_CS_TYPE_GEO_KEY,
+                GEO_KEY_INLINE_VALUE,
+                ONE_VALUE,
+                code as u16,
             ],
         ));
     }
     if let Some(text) = nodata_text {
-        entries.push(ascii(42113, text)); // GDAL_NODATA
+        entries.push(ascii(TAG_GDAL_NODATA, text));
     }
     entries
 }
@@ -260,9 +253,8 @@ fn write_tiff<W: Write, S>(
     mut samples: impl Iterator<Item = S>,
     encode: impl Fn(&S, &mut Vec<u8>),
 ) -> Result<(), RasterError> {
-    // ProjectedCSTypeGeoKey is a SHORT: 0 and 32767 ("user defined") are not EPSG codes.
     if let Some(code) = epsg {
-        if code == 0 || code >= 32767 {
+        if code == 0 || code >= FIRST_USER_DEFINED_GEO_KEY_CODE {
             return Err(RasterError::InvalidArgument(format!(
                 "EPSGコード {code} はGeoTIFFに書けません"
             )));
@@ -281,8 +273,6 @@ fn write_tiff<W: Write, S>(
     let rows_per_strip = (STRIP_TARGET_BYTES / row_bytes).clamp(1, u64::from(spec.height)) as u32;
     let strip_count = spec.height.div_ceil(rows_per_strip) as usize;
 
-    // First pass with zero offsets only to measure the layout (sizes do not depend on
-    // the offset values); the second pass has the real ones.
     let zeros = vec![0u32; strip_count];
     let measure = build_entries(
         spec,
@@ -324,12 +314,10 @@ fn write_tiff<W: Write, S>(
         &strip_counts,
     );
 
-    // Header: little-endian, magic 42, the IFD follows right after the header.
     out.write_all(b"II")?;
     out.write_all(&42u16.to_le_bytes())?;
     out.write_all(&8u32.to_le_bytes())?;
 
-    // IFD.
     out.write_all(&(entries.len() as u16).to_le_bytes())?;
     let mut next_extra = extra_start;
     for e in &entries {
@@ -345,9 +333,8 @@ fn write_tiff<W: Write, S>(
             next_extra += (e.data.len() as u64).next_multiple_of(2);
         }
     }
-    out.write_all(&0u32.to_le_bytes())?; // no next IFD
+    out.write_all(&NO_NEXT_IFD.to_le_bytes())?;
 
-    // Out-of-line values, in the same order as the offsets above.
     for e in &entries {
         if e.data.len() > 4 {
             out.write_all(&e.data)?;
@@ -357,7 +344,6 @@ fn write_tiff<W: Write, S>(
         }
     }
 
-    // Pixels, one strip at a time.
     let mut buf: Vec<u8> = Vec::with_capacity(STRIP_TARGET_BYTES as usize + row_bytes as usize);
     let mut written = 0u64;
     let total = u64::from(spec.width) * u64::from(spec.height);
@@ -444,7 +430,6 @@ mod tests {
             .expect("pixel scale");
         assert_eq!(scale, vec![0.5, 0.5, 0.0]);
         let tie = d.get_tag_f64_vec(Tag::ModelTiepointTag).expect("tiepoint");
-        // Top-left corner: x = origin_x, y = origin_y + height * cell = 2000 + 5 * 0.5.
         assert_eq!(tie, vec![0.0, 0.0, 0.0, 1000.0, 2002.5, 0.0]);
         let keys = d
             .get_tag_u32_vec(Tag::GeoKeyDirectoryTag)
@@ -461,14 +446,12 @@ mod tests {
         let bytes = f32_image(&s, None);
         let mut d = Decoder::new(Cursor::new(bytes)).expect("decoder");
         assert!(d.find_tag(Tag::GeoKeyDirectoryTag).expect("find").is_none());
-        // The position tags are still there.
         assert!(d.get_tag_f64_vec(Tag::ModelTiepointTag).is_ok());
     }
 
     #[test]
     fn rgb_roundtrip() {
         let s = spec(3, 2);
-        // Pixel 4 is an empty cell.
         let pixels = (0..6u16).map(|i| (i != 4).then_some([i * 1000, 65_535 - i, i]));
         let mut out = Vec::new();
         write_rgb_u16(&mut out, &s, Some(6677), pixels).expect("write");
@@ -478,14 +461,12 @@ mod tests {
             DecodingResult::U16(v) => {
                 assert_eq!(v.len(), 24);
                 assert_eq!(&v[0..4], &[0, 65_535, 0, 65_535]);
-                // The empty cell is transparent black.
                 assert_eq!(&v[16..20], &[0, 0, 0, 0]);
                 assert_eq!(&v[20..24], &[5000, 65_530, 5, 65_535]);
             }
             other => panic!("unexpected sample type: {other:?}"),
         }
         assert!(d.find_tag(Tag::GdalNodata).expect("find").is_none());
-        // ExtraSamples = 2 (unassociated alpha) and four samples per pixel.
         assert_eq!(
             d.get_tag_u32_vec(Tag::ExtraSamples).expect("extra"),
             vec![2]
@@ -496,7 +477,6 @@ mod tests {
     #[test]
     fn rgba_u8_roundtrip_with_geo_tags() {
         let s = spec(3, 2);
-        // Pixel 4 is an empty cell (transparent).
         let pixels = (0..6u8).map(|i| {
             if i == 4 {
                 [0, 0, 0, 0]
@@ -522,8 +502,6 @@ mod tests {
             d.get_tag_u32_vec(Tag::ExtraSamples).expect("extra"),
             vec![2]
         );
-        // The geo tags are the same as for the other forms: scale, tiepoint (top-left
-        // corner) and the EPSG key.
         assert_eq!(
             d.get_tag_f64_vec(Tag::ModelPixelScaleTag).expect("scale"),
             vec![0.5, 0.5, 0.0]
@@ -541,8 +519,6 @@ mod tests {
 
     #[test]
     fn many_strips_roundtrip() {
-        // Wide enough that one strip holds a single row (row = 20 000 * 4 B > 64 KiB / 2),
-        // so there are many strips and the last one is checked too.
         let s = spec(20_000, 5);
         let values = (0..s.width * s.height).map(|i| i as f32);
         let mut out = Vec::new();
@@ -571,7 +547,6 @@ mod tests {
 
     #[test]
     fn refuses_images_that_do_not_fit_classic_tiff() {
-        // 40 000 x 40 000 x 4 B = 6.4 GB. The check happens before any pixel is read.
         let s = spec(40_000, 40_000);
         let mut out = Vec::new();
         let r = write_f32(&mut out, &s, None, -1.0, std::iter::empty());

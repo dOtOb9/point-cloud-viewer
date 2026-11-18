@@ -1,45 +1,11 @@
-//! G1-1: the raster grid and the per-cell accumulators.
-//!
-//! A raster is a grid of square cells laid over the XY extent of a point cloud. The
-//! points are streamed through `CellAccumulator::add` one at a time, so memory
-//! depends on the number of cells (area / cell size squared), never on the number of
-//! points.
-//!
-//! # Row order: row 0 is the NORTH row
-//!
-//! Cell `(col, row)`: `col` grows towards +X (east), and **`row` grows towards -Y
-//! (south)**. Row 0 is the row with the largest Y. This is the order GeoTIFF (and
-//! every image format) stores pixels in: the first pixel is the top-left corner of
-//! the image, which is the north-west corner of the map. The flat index is
-//! `row * width + col`, so iterating the accumulator output in index order gives a
-//! top-to-bottom, left-to-right image that can be written to a TIFF as is.
-//!
-//! # Alignment
-//!
-//! The origin (south-west corner) is snapped *down* to a multiple of the cell size,
-//! so rasters made from neighbouring layers with the same cell size line up cell for
-//! cell.
-//!
-//! # Edges
-//!
-//! A cell covers `[x0, x0 + cell)` in X and `[y0, y0 + cell)` in Y, except that points
-//! lying exactly on the maximum edge of the grid belong to the last column / the
-//! first row (north row). Without that, the point with the largest X or Y of a cloud
-//! would fall outside the grid it was built from.
-
 use crate::raster::RasterError;
 use copc_core::LasPointRecord;
 
-/// The value written into a single-band float32 raster for cells that received no point.
 pub const NODATA: f32 = -9999.0;
 
-/// Position and size of the grid. See the module docs for the row order.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GridSpec {
-    /// X of the west edge (a multiple of `cell_size`).
     pub origin_x: f64,
-    /// Y of the SOUTH edge (a multiple of `cell_size`). The north edge is
-    /// `origin_y + height * cell_size`, see `top_y`.
     pub origin_y: f64,
     pub cell_size: f64,
     pub width: u32,
@@ -47,9 +13,6 @@ pub struct GridSpec {
 }
 
 impl GridSpec {
-    /// Builds the grid that covers the XY bounds. `max_cells` is the largest number of
-    /// cells the caller accepts; more than that is refused (a raster whose size
-    /// follows the area would otherwise eat all memory on a huge cloud or a tiny cell).
     pub fn from_bounds(
         min_x: f64,
         min_y: f64,
@@ -71,10 +34,8 @@ impl GridSpec {
         }
         let origin_x = (min_x / cell_size).floor() * cell_size;
         let origin_y = (min_y / cell_size).floor() * cell_size;
-        // At least one cell, so a cloud that is a single point (or a line) still has a grid.
         let cols = (((max_x - origin_x) / cell_size).ceil()).max(1.0);
         let rows = (((max_y - origin_y) / cell_size).ceil()).max(1.0);
-        // Compare as f64 first: the product of two huge u32-range numbers must not wrap.
         if cols * rows > max_cells as f64 {
             return Err(RasterError::TooManyCells {
                 cols,
@@ -82,7 +43,6 @@ impl GridSpec {
                 max_cells,
             });
         }
-        // cols * rows <= max_cells, but each side alone must also fit u32.
         if cols > f64::from(u32::MAX) || rows > f64::from(u32::MAX) {
             return Err(RasterError::TooManyCells {
                 cols,
@@ -103,18 +63,14 @@ impl GridSpec {
         u64::from(self.width) * u64::from(self.height)
     }
 
-    /// Y of the north edge of the grid (the top of row 0).
     pub fn top_y(&self) -> f64 {
         self.origin_y + f64::from(self.height) * self.cell_size
     }
 
-    /// X of the east edge of the grid.
     pub fn right_x(&self) -> f64 {
         self.origin_x + f64::from(self.width) * self.cell_size
     }
 
-    /// Flat index (`row * width + col`, row 0 = north) of the cell containing the
-    /// point, or `None` when it is outside the grid (or not finite).
     pub fn cell_index(&self, x: f64, y: f64) -> Option<usize> {
         if !x.is_finite() || !y.is_finite() {
             return None;
@@ -124,18 +80,14 @@ impl GridSpec {
         if x < self.origin_x || x > right || y < self.origin_y || y > top {
             return None;
         }
-        // The max edge belongs to the last column / row 0 (see "Edges"), hence the clamps.
         let col =
             (((x - self.origin_x) / self.cell_size).floor() as u64).min(u64::from(self.width) - 1);
-        // Count rows from the south edge (same half-open rule as X), then flip so that
-        // row 0 is the north row.
         let south_row =
             (((y - self.origin_y) / self.cell_size).floor() as u64).min(u64::from(self.height) - 1);
         let row = u64::from(self.height) - 1 - south_row;
         usize::try_from(row * u64::from(self.width) + col).ok()
     }
 
-    /// Centre of the cell at the flat index.
     pub fn cell_center(&self, index: usize) -> (f64, f64) {
         let width = self.width as usize;
         let col = index % width;
@@ -147,19 +99,16 @@ impl GridSpec {
     }
 }
 
-/// Which classifications are counted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassFilter {
     mask: [bool; 256],
 }
 
 impl ClassFilter {
-    /// Every point, whatever its classification.
     pub fn all() -> Self {
         Self { mask: [true; 256] }
     }
 
-    /// Only points whose classification is in `classes`.
     pub fn only(classes: &[u8]) -> Self {
         let mut mask = [false; 256];
         for &c in classes {
@@ -173,43 +122,30 @@ impl ClassFilter {
     }
 }
 
-/// What each cell holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RasterValue {
     ZMin,
     ZMax,
     ZMean,
-    /// Number of points (density).
     Count,
     IntensityMean,
-    /// Mean of red, green, blue (u16 like LAS). Three-band output.
     RgbMean,
 }
 
-/// The per-cell storage. Only what the chosen value needs is kept (plan 2.1).
 enum Cells {
     Min(Vec<f32>),
     Max(Vec<f32>),
     Count(Vec<u32>),
-    /// Used by `ZMean` and `IntensityMean`.
-    Mean {
-        sum: Vec<f64>,
-        count: Vec<u32>,
-    },
-    Rgb {
-        sum: Vec<[u64; 3]>,
-        count: Vec<u32>,
-    },
+    Mean { sum: Vec<f64>, count: Vec<u32> },
+    Rgb { sum: Vec<[u64; 3]>, count: Vec<u32> },
 }
 
-/// Streams points into the grid and gives back one value per cell.
 pub struct CellAccumulator {
     spec: GridSpec,
     value: RasterValue,
     classes: ClassFilter,
     cells: Cells,
-    /// Points that were accepted by the class filter and fell inside the grid.
     accepted: u64,
 }
 
@@ -246,7 +182,6 @@ impl CellAccumulator {
         self.value
     }
 
-    /// Number of points counted so far.
     pub fn accepted_points(&self) -> u64 {
         self.accepted
     }
@@ -292,7 +227,6 @@ impl CellAccumulator {
         }
     }
 
-    /// Whether the cell received at least one point.
     pub fn is_filled(&self, i: usize) -> bool {
         match &self.cells {
             Cells::Min(v) => v[i] != f32::INFINITY,
@@ -302,8 +236,6 @@ impl CellAccumulator {
         }
     }
 
-    /// Single-band value of the cell; `None` when empty. For `RgbMean` this is
-    /// `None` (use `rgb_at`).
     pub fn value_at(&self, i: usize) -> Option<f32> {
         if !self.is_filled(i) {
             return None;
@@ -316,28 +248,20 @@ impl CellAccumulator {
         }
     }
 
-    /// Mean colour of the cell; `None` when empty or when the kind is not `RgbMean`.
     pub fn rgb_at(&self, i: usize) -> Option<[u16; 3]> {
         match &self.cells {
             Cells::Rgb { sum, count } if count[i] > 0 => {
                 let n = u64::from(count[i]);
-                // The mean of u16 values fits u16.
                 Some(sum[i].map(|s| u16::try_from(s / n).unwrap_or(u16::MAX)))
             }
             _ => None,
         }
     }
 
-    /// All cells in image order (row 0 = north) as f32, empty cells as `nodata`.
-    /// Lazy: no second copy of the grid is built. Feed it to
-    /// `geotiff::write_f32`.
     pub fn f32_samples(&self, nodata: f32) -> impl Iterator<Item = f32> + '_ {
         (0..self.spec.cell_count() as usize).map(move |i| self.value_at(i).unwrap_or(nodata))
     }
 
-    /// All cells in image order as RGB; empty cells are `None`, which
-    /// `geotiff::write_rgb_u16` writes as a transparent pixel (alpha band 0), not as
-    /// black. Feed it to that function.
     pub fn rgb_samples(&self) -> impl Iterator<Item = Option<[u16; 3]>> + '_ {
         (0..self.spec.cell_count() as usize).map(move |i| self.rgb_at(i))
     }
@@ -348,7 +272,6 @@ mod tests {
     use super::*;
 
     fn spec_10x10() -> GridSpec {
-        // Cells of 1 m: x in [100, 110], y in [200, 210].
         GridSpec::from_bounds(100.0, 200.0, 110.0, 210.0, 1.0, 1_000_000).expect("spec")
     }
 
@@ -357,13 +280,11 @@ mod tests {
         let s = GridSpec::from_bounds(100.3, 200.7, 104.2, 202.1, 2.0, 100).expect("spec");
         assert_eq!(s.origin_x, 100.0);
         assert_eq!(s.origin_y, 200.0);
-        assert_eq!(s.width, 3); // 100..106
-        assert_eq!(s.height, 2); // 200..204
+        assert_eq!(s.width, 3);
+        assert_eq!(s.height, 2);
         assert_eq!(s.top_y(), 204.0);
-        // Negative coordinates snap towards -infinity, not towards zero.
         let n = GridSpec::from_bounds(-0.5, -0.5, 0.5, 0.5, 1.0, 100).expect("spec");
         assert_eq!((n.origin_x, n.origin_y), (-1.0, -1.0));
-        // Neighbouring layers with the same cell size share the same lattice.
         let a = GridSpec::from_bounds(10.2, 0.0, 20.0, 5.0, 0.5, 10_000).expect("a");
         let b = GridSpec::from_bounds(13.9, 0.0, 30.0, 5.0, 0.5, 10_000).expect("b");
         assert_eq!((b.origin_x - a.origin_x) % 0.5, 0.0);
@@ -379,24 +300,17 @@ mod tests {
     #[test]
     fn cell_index_row_zero_is_north() {
         let s = spec_10x10();
-        // South-west corner: last row, first column.
         assert_eq!(s.cell_index(100.0, 200.0), Some(9 * 10));
-        // North-west corner area: row 0, col 0.
         assert_eq!(s.cell_index(100.5, 209.5), Some(0));
-        // Row 0, col 3.
         assert_eq!(s.cell_index(103.2, 209.9), Some(3));
-        // Cell edges belong to the cell on their east / north side...
         assert_eq!(s.cell_index(101.0, 205.0), Some(4 * 10 + 1));
     }
 
     #[test]
     fn points_on_max_edge_belong_to_last_cell() {
         let s = spec_10x10();
-        // Max X, min Y: last column, last row.
         assert_eq!(s.cell_index(110.0, 200.0), Some(9 * 10 + 9));
-        // Max Y, min X: row 0, col 0.
         assert_eq!(s.cell_index(100.0, 210.0), Some(0));
-        // Max X, max Y: row 0, last column.
         assert_eq!(s.cell_index(110.0, 210.0), Some(9));
     }
 
@@ -428,9 +342,7 @@ mod tests {
         assert!(text.contains("1000"), "{text}");
         assert!(text.contains("セルの大きさ"), "{text}");
         assert!(text.contains("範囲"), "{text}");
-        // Exactly at the cap is fine.
         assert!(GridSpec::from_bounds(0.0, 0.0, 1000.0, 1000.0, 1.0, 1_000_000).is_ok());
-        // A tiny cell on a big area does not overflow.
         assert!(GridSpec::from_bounds(0.0, 0.0, 1e9, 1e9, 1e-6, u64::MAX).is_err());
     }
 
@@ -444,12 +356,9 @@ mod tests {
     }
 
     fn acc(value: RasterValue, classes: ClassFilter) -> CellAccumulator {
-        // 2 x 2 cells of 1 m: x in [0, 2], y in [0, 2].
         let spec = GridSpec::from_bounds(0.0, 0.0, 2.0, 2.0, 1.0, 10).expect("spec");
         CellAccumulator::new(spec, value, classes)
     }
-
-    // Cell indices in the 2x2 grid: NW = 0, NE = 1, SW = 2, SE = 3.
 
     #[test]
     fn z_min_max_mean() {
@@ -457,16 +366,15 @@ mod tests {
         let mut max = acc(RasterValue::ZMax, ClassFilter::all());
         let mut mean = acc(RasterValue::ZMean, ClassFilter::all());
         for a in [&mut min, &mut max, &mut mean] {
-            a.add(0.5, 1.5, 3.0, 0, 2, [0; 3]); // NW
-            a.add(0.6, 1.4, 5.0, 0, 2, [0; 3]); // NW
-            a.add(0.7, 1.3, 1.0, 0, 2, [0; 3]); // NW
-            a.add(1.5, 0.5, 7.0, 0, 2, [0; 3]); // SE
+            a.add(0.5, 1.5, 3.0, 0, 2, [0; 3]);
+            a.add(0.6, 1.4, 5.0, 0, 2, [0; 3]);
+            a.add(0.7, 1.3, 1.0, 0, 2, [0; 3]);
+            a.add(1.5, 0.5, 7.0, 0, 2, [0; 3]);
         }
         assert_eq!(min.value_at(0), Some(1.0));
         assert_eq!(max.value_at(0), Some(5.0));
         assert_eq!(mean.value_at(0), Some(3.0));
         assert_eq!(min.value_at(3), Some(7.0));
-        // Empty cells are NoData.
         assert_eq!(min.value_at(1), None);
         assert_eq!(max.value_at(2), None);
         assert_eq!(mean.value_at(1), None);
@@ -480,9 +388,9 @@ mod tests {
         let mut count = acc(RasterValue::Count, ClassFilter::all());
         let mut inten = acc(RasterValue::IntensityMean, ClassFilter::all());
         for a in [&mut count, &mut inten] {
-            a.add(0.5, 0.5, 0.0, 100, 1, [0; 3]); // SW
-            a.add(0.5, 0.6, 0.0, 300, 1, [0; 3]); // SW
-            a.add(1.5, 1.5, 0.0, 65_535, 1, [0; 3]); // NE
+            a.add(0.5, 0.5, 0.0, 100, 1, [0; 3]);
+            a.add(0.5, 0.6, 0.0, 300, 1, [0; 3]);
+            a.add(1.5, 1.5, 0.0, 65_535, 1, [0; 3]);
         }
         assert_eq!(count.value_at(2), Some(2.0));
         assert_eq!(count.value_at(1), Some(1.0));
@@ -510,8 +418,8 @@ mod tests {
         let mut a = acc(RasterValue::Count, ClassFilter::only(&[2, 9]));
         a.add(0.5, 0.5, 0.0, 0, 2, [0; 3]);
         a.add(0.5, 0.5, 0.0, 0, 9, [0; 3]);
-        a.add(0.5, 0.5, 0.0, 0, 6, [0; 3]); // building: not counted
-        a.add(1.5, 1.5, 0.0, 0, 6, [0; 3]); // building only: cell stays empty
+        a.add(0.5, 0.5, 0.0, 0, 6, [0; 3]);
+        a.add(1.5, 1.5, 0.0, 0, 6, [0; 3]);
         assert_eq!(a.value_at(2), Some(2.0));
         assert_eq!(a.value_at(1), None);
         assert_eq!(a.accepted_points(), 2);
