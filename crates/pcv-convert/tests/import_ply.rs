@@ -1,11 +1,3 @@
-//! PLY → COPC の受け入れテスト(M4-4→M4-9で中間LASを経ない形に書き換え)。
-//!
-//! ASCII・binary_little_endian・binary_big_endianの3形式すべてを確かめる。
-//! `ply-rs`を使わず自前実装にした(`crates/pcv-convert/src/import/ply.rs`
-//! コメント参照)ため、テストデータも自分でバイト列/テキストを組み立てる。
-//! `face`要素(可変長のlistプロパティ)を混ぜたケースで、vertex以外の要素も
-//! 正しくスキップできる(バイト位置がずれない)ことも確認する。
-
 mod common;
 
 use copc_core::NeverCancel;
@@ -49,8 +41,6 @@ fn build_ascii_ply(points: &[SamplePoint], include_faces: bool) -> Vec<u8> {
         text.push_str(&format!("{x} {y} {z} {r} {g} {b} {intensity}\n"));
     }
     if include_faces {
-        // 全頂点を1つのfaceにまとめた、内容に意味の無いダミーのface行
-        // (点群としての読み込みには使わないが、正しくスキップできるかを見る)。
         let indices: Vec<String> = (0..points.len()).map(|i| i.to_string()).collect();
         text.push_str(&format!("{} {}\n", points.len(), indices.join(" ")));
     }
@@ -75,7 +65,7 @@ fn build_binary_ply(points: &[SamplePoint], little_endian: bool, include_faces: 
         push_f32(&mut out, intensity, little_endian);
     }
     if include_faces {
-        out.push(points.len() as u8); // list count (uchar)
+        out.push(points.len() as u8);
         for i in 0..points.len() {
             push_i32(&mut out, i as i32, little_endian);
         }
@@ -99,8 +89,6 @@ fn push_i32(out: &mut Vec<u8>, value: i32, little_endian: bool) {
     }
 }
 
-/// `in.ply`を変換して開き、`sample_points()`と座標・色・強度が一致することを
-/// 確認する(スケールの丸め誤差の範囲内。M4-9受け入れ条件)。
 fn assert_copc_matches_sample(copc_path: &std::path::Path) {
     let points = sample_points();
     let (declared, actual) = common::read_all_points(copc_path);
@@ -127,8 +115,6 @@ fn assert_copc_matches_sample(copc_path: &std::path::Path) {
         })
         .collect();
 
-    // スケールはmm以下精度で選ばれる(`scale.rs`)ので、丸め誤差は高々0.5mm。
-    // f32(ノードローカル相対座標)の丸めぶんの余裕も持たせる。
     common::assert_points_match_unordered(&expected, &actual, 0.001);
 }
 
@@ -192,10 +178,6 @@ fn binary_big_endian_ply_round_trips() {
     assert_copc_matches_sample(&output_path);
 }
 
-/// `face`要素(可変長のlistプロパティ)が`vertex`の後ろにあるメッシュ形式のPLYでも、
-/// バイト位置がずれずに`vertex`だけを正しく読めることを確認する
-/// (ASCII/binary_little_endianの両方で。big_endianの読み出し自体は上のテストで
-/// 別途確認済みなので、ここでは組み合わせを増やしすぎない)。
 #[test]
 fn ascii_ply_with_face_element_skips_it_correctly() {
     let dir = tempfile::tempdir().expect("tempdir");

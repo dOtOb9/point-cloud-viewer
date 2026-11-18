@@ -1,9 +1,3 @@
-//! 小規模な合成データで、変換パイプライン全体(読み込み→octree分割→書き出し)を
-//! 検証する。M4-1の受け入れ条件そのもの(2規模の実測)はサイズの都合でここでは
-//! 確認しない(手動での実行手順は`TaskSheets/M4-import-and-conversion.md`のM4-1
-//! 「結果」を参照)が、ここで小さく壊れていれば実データで測る意味が無いため、
-//! 素朴な実装の正しさはここで最低限確かめる。
-
 use las::{Builder, Color, Point, Transform, Vector};
 use pcv_convert::{octree, point, writer};
 
@@ -14,8 +8,8 @@ fn roundtrip_small_synthetic_cloud() {
     let output_path = dir.path().join("out.copc.laz");
 
     let mut builder = Builder::default();
-    builder.version = las::Version::new(1, 4); // point format 7はLAS 1.4が必要
-    builder.point_format = las::point::Format::new(7).expect("format 7"); // 色+GPS時刻あり
+    builder.version = las::Version::new(1, 4);
+    builder.point_format = las::point::Format::new(7).expect("format 7");
     builder.transforms = Vector {
         x: Transform {
             scale: 0.001,
@@ -33,8 +27,6 @@ fn roundtrip_small_synthetic_cloud() {
     let header = builder.into_header().expect("header");
     let mut las_writer = las::Writer::from_path(&input_path, header).expect("las writer");
 
-    // 立方体状に点をばらまく。ノード上限を小さくして複数ノード・複数階層に
-    // 分割されることを確かめる。
     const N: usize = 50_000;
     for i in 0..N {
         let t = i as f64;
@@ -53,7 +45,6 @@ fn roundtrip_small_synthetic_cloud() {
     las_writer.close().expect("close writer");
     drop(las_writer);
 
-    // ---- 変換 ----
     let source = point::read_all(&input_path).expect("read_all");
     assert_eq!(source.points.len(), N);
     assert!(source.has_color);
@@ -69,7 +60,6 @@ fn roundtrip_small_synthetic_cloud() {
     assert_eq!(stats.total_points, N as u64);
     assert_eq!(stats.node_count, nodes.len());
 
-    // ---- 検証: pcv-coreで開けて、点数が一致し、ノードが読めるか ----
     let mut file = pcv_core::CopcFile::open(&output_path).expect("CopcFile::open");
     assert_eq!(file.info().point_count, N as u64);
 

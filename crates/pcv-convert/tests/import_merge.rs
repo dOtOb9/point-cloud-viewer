@@ -1,8 +1,3 @@
-//! M4-17: merging several files of any format into one COPC
-//! (`pcv_convert::import::merge::convert_paths_to_copc_and_timings`).
-//!
-//! All inputs are synthetic and written by the tests.
-
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -16,7 +11,6 @@ use pcv_convert::import::merge::{
 use pcv_convert::import::ImportError;
 use pcv_convert::stage_timings::ConversionStageTimings;
 
-/// ASCII PLY with x y z only.
 fn write_ply_xyz(path: &Path, points: &[(f32, f32, f32)]) {
     let mut text = format!(
         "ply\nformat ascii 1.0\nelement vertex {}\n\
@@ -29,7 +23,6 @@ fn write_ply_xyz(path: &Path, points: &[(f32, f32, f32)]) {
     std::fs::write(path, text).expect("write ply");
 }
 
-/// ASCII PLY with x y z red green blue (uchar).
 fn write_ply_rgb(path: &Path, points: &[(f32, f32, f32)], rgb: [u8; 3]) {
     let mut text = format!(
         "ply\nformat ascii 1.0\nelement vertex {}\n\
@@ -43,7 +36,6 @@ fn write_ply_rgb(path: &Path, points: &[(f32, f32, f32)], rgb: [u8; 3]) {
     std::fs::write(path, text).expect("write ply");
 }
 
-/// ASCII PCD with x y z only (no color).
 fn write_pcd_xyz(path: &Path, points: &[(f32, f32, f32)]) {
     let n = points.len();
     let mut text = format!(
@@ -56,8 +48,6 @@ fn write_pcd_xyz(path: &Path, points: &[(f32, f32, f32)]) {
     std::fs::write(path, text).expect("write pcd");
 }
 
-/// LAS 1.2 point format 3 (GPS time + color), classification 5 on every point.
-/// `epsg` adds a GeoTIFF ProjectedCRSGeoKey VLR.
 fn write_las(path: &Path, points: &[(f64, f64, f64)], epsg: Option<u16>) {
     let mut builder = las::Builder::from((1, 2));
     builder.point_format = las::point::Format::new(3).expect("format 3");
@@ -115,7 +105,6 @@ fn ply_and_pcd_without_color_merge_into_one_cloud_without_color() {
     write_ply_xyz(&ply, &PLY_POINTS);
     write_pcd_xyz(&pcd, &PCD_POINTS);
 
-    // Selection order must not matter: pass the files reversed.
     let summary = merge(&[pcd, ply], &out).expect("merge");
     assert_eq!(summary.import.point_count, 5);
     assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
@@ -123,7 +112,6 @@ fn ply_and_pcd_without_color_merge_into_one_cloud_without_color() {
     let (declared, points) = common::read_all_points(&out);
     assert_eq!(declared, 5);
     assert_eq!(points.len(), 5);
-    // Bounds cover both clouds.
     let max_x = points.iter().map(|p| p.x).fold(f64::MIN, f64::max);
     let min_x = points.iter().map(|p| p.x).fold(f64::MAX, f64::min);
     assert!(min_x.abs() < 0.01 && (max_x - 101.0).abs() < 0.01);
@@ -131,7 +119,6 @@ fn ply_and_pcd_without_color_merge_into_one_cloud_without_color() {
         !output_has_color(&out),
         "no input has color, so the output has none"
     );
-    // Same color on every point (a leftover of the writer default, not a real color).
     assert!(points.iter().all(|p| p.color == points[0].color));
 }
 
@@ -152,14 +139,11 @@ fn colored_ply_and_uncolored_pcd_give_gray_to_the_pcd_points() {
         "one input has color, so the output has it"
     );
     let (_, points) = common::read_all_points(&out);
-    // PLY red = [65535, 0, 0] in 16 bit, PCD gray = [32768; 3]. The reader narrows to 8 bit
-    // when some channel is above 255.
     let expected = common::expected_u8_colors(&[[65535, 0, 0], [32768, 32768, 32768]]);
     let (red, gray) = (expected[0], expected[1]);
     let red_count = points.iter().filter(|p| p.color == red).count();
     let gray_count = points.iter().filter(|p| p.color == gray).count();
     assert_eq!((red_count, gray_count), (3, 2), "{points:?}");
-    // The gray ones are the PCD points (x >= 100).
     assert!(points
         .iter()
         .filter(|p| p.x >= 100.0)
@@ -177,11 +161,9 @@ fn las_and_ply_merge_with_the_attribute_warning() {
 
     let summary = merge(&[las, ply], &out).expect("merge");
     assert_eq!(summary.import.point_count, 5);
-    // No CRS anywhere, so only the attribute warning.
     assert_eq!(summary.warnings, vec![LAS_ATTRIBUTES_DROPPED_WARNING]);
     assert!(!summary.import.crs_known);
 
-    // The LAS has color, the PLY has none: the output has color and the PLY points are gray.
     let (_, points) = common::read_all_points(&out);
     assert_eq!(points.len(), 5);
     let expected = common::expected_u8_colors(&[[1000, 2000, 3000], [32768, 32768, 32768]]);
@@ -239,8 +221,6 @@ fn a_las_without_crs_agrees_with_one_that_has_a_crs() {
     assert!(summary.import.crs_known);
 }
 
-/// The existing LAS-only route (`pcv_convert::merge`) keeps classification, which the point
-/// merge cannot. `src-tauri` chooses the route with `is_las_or_laz`.
 #[test]
 fn all_las_inputs_keep_using_the_las_merge_which_keeps_classification() {
     let dir = tempfile::tempdir().expect("tempdir");
