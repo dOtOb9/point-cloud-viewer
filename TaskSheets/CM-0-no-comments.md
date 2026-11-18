@@ -53,20 +53,20 @@ YAML・TOML・`.gitattributes`・PowerShell は CM-0 の検査の対象外（数
 
 #### やったこと
 
-- `scripts/check-comments.mjs`（`npm run check:comments`）を足した。`git ls-files` のうち `*.ts`・`*.tsx`・`*.js`・`*.mjs`・`*.cjs`・`*.rs`（`vendor/`・`src/wasm/`・`docs/`・`TaskSheets/`・`*.generated.tsx` を除く）のコメントを数え、`scripts/comment-baseline.json` の上限と比べる
+- `scripts/check-comments.mjs`（`npm run check:comments`）を足した。`git ls-files` のうち `*.ts`・`*.tsx`・`*.js`・`*.mjs`・`*.cjs`・`*.rs`（`vendor/`・`src/wasm/`・`TaskSheets/`・`*.generated.tsx` を除く。`docs/` の下の `.md`・`.html` は拡張子で外れ、`docs/video/tools/*.mjs` は数える。R2 で直した。R1 では `docs/` をパスで外していた）。RP R1 で `*.wgsl` も足したのコメントを数え、`scripts/comment-baseline.json` の上限と比べる
   - 超えたファイル: `ファイル: N comments, the limit is M` の後に、そのファイルのコメントを全部 `ファイル:行: 本文の先頭 80 文字` で出して失敗する（どれが新しいかは分からないので全部出す）
   - 減ったファイル: `lower it to N`（0 なら `remove the entry`）と出して失敗する。`node scripts/check-comments.mjs --lower-baseline` は、各ファイルの上限を「今の数と上限の小さい方」に書き直し、0 の行を消す（上げない・ファイルを足さない。テスト `lowers the baseline without ever raising it or adding a file`）。CM-1〜CM-5 で数千件を消すときに手で直さずに済むように足した
   - 数える単位はコメント1つ（`//` の1行が1つ、`/* … */` は何行でも1つ）
 - TS・JS: `ts.createSourceFile` で構文木を作り、葉のトークン（`getChildren` が 0 個のノード）ごとに、その前の trivia（`pos` からトークンの前まで）を `ts.createScanner`（skipTrivia=false、`.tsx`・`.js` 系は `LanguageVariant.JSX`）で読んでコメントを集める。JSDoc のノードは葉として辿らない（その本文は次のトークンの trivia で1回だけ数える）。`JsxText` は trivia を持たないので読まない
 - Rust: 自前の字句解析（`findRustCommentRanges`）。`//`・`///`・`//!`、入れ子を数える `/* */`、`"…"`（エスケープ）、`r"…"`・`r#"…"#`・`br##"…"##`・`cr"…"`、`b"…"`・`c"…"`・`b'…'`、文字 `'/'`・`'\''`、ライフタイム・ラベル `'a`（`'` の次の1文字の後が `'` でなければライフタイム）。識別子は語ごとに読むので、`bar"` のように `r` で終わる語を raw 文字列と取り違えない
-- 許す物（数えない）: コメントの先頭が `eslint-disable`・`@ts-expect-error`・`@ts-ignore`・`/// <reference `・`@vitest-environment`（`/** @vitest-environment … */` も）・`// @ts-check`、shebang。`// SAFETY:` は、コメントの最後の行の次の空でない行に `unsafe` があるときだけ許す（TS でも同じ規則）
+- 許す物（数えない）: コメントの先頭が `eslint-disable`・`@ts-expect-error`・`/// <reference `・`@vitest-environment`（`/** @vitest-environment … */` も）・`// @ts-check`、shebang。`// SAFETY:` は、コメントの最後の行の次の空でない行に `unsafe` があるときだけ許す（TS でも同じ規則）
 - `scripts/check-comments.test.mjs`（19 ケース）で AC-2 の形を固定した
 - `package.json` に `check:comments`、`scripts/check-all.mjs` の STEPS と `.github/workflows/ci.yml` の frontend ジョブ（check docs の後、test の前）に足した。`AGENTS.md` の「作業役の決まり」の check:all の一覧に `check:comments` を足した
 
 #### 初期の数（`scripts/comment-baseline.json`）
 
-- 対象 432 ファイルのうち 407 ファイルにコメントがあり、合計 12,261（Rust 7,074、TS・JS 5,187）
-- CM の範囲ごと（baseline の JSON を範囲の正規表現で分けて合計した）: CM-1 2,138／CM-2 1,207／CM-3 1,842／CM-4 3,837／CM-5 3,237。範囲の表の「コメント行」は行の数で、こちらはコメントの数なので一致しない
+- 対象 446 ファイル（CM-0 が足した `scripts/check-comments*.mjs` の 2 つを含む）のうち 419 ファイルにコメントがあり、合計 12,434（Rust 7,074、TS・JS 5,360）。`npm run check:comments` の出力は `comments OK (419 files with 12434 comments left in scripts/comment-baseline.json)`（R2 で `docs/video/tools` の 12 ファイル・173 個を足した後の数。R1 では 407 ファイル・12,261 個と書いていた）
+- CM の範囲ごと（baseline の JSON を範囲の正規表現で分けて合計した）: CM-1 2,138／CM-2 1,207／CM-3 2,015（`docs/video/tools` を含む）／CM-4 3,837／CM-5 3,237。範囲の表の「コメント行」は行の数で、こちらはコメントの数なので一致しない
 
 #### 検査が数えないコメント（CM-1 への申し送り）
 
@@ -89,8 +89,8 @@ YAML・TOML・`.gitattributes`・PowerShell は CM-0 の検査の対象外（数
 
 #### 確かめ方
 
-- `npm run check:comments` → `comments OK (407 files with 12261 comments left in scripts/comment-baseline.json)`
-- `npx vitest run scripts/check-comments.test.mjs`（`C:\` の大文字から）→ 19 passed
+- `npm run check:comments` → `comments OK (419 files with 12434 comments left in scripts/comment-baseline.json)`（R2 の後）
+- `npx vitest run scripts/check-comments.test.mjs`（`C:\` の大文字から）→ 25 passed（R2 の後。R1 では 19）
 - AC-5 を自分で再現する: 対象のファイルの末尾に `// x` を足して `npm run check:comments` が `ファイル:行: // x` を出して終了コード 1 になること、`const s = "https://a // b";` を足しても OK のままであること、既存のコメントを1つ消すと `lower it to N` で落ちることを見て、`git checkout -- <ファイル>` で戻す
 
 ### 監査の指摘への対応（R1 の APPROVE の後、CM-0-RP R1）
@@ -100,3 +100,11 @@ YAML・TOML・`.gitattributes`・PowerShell は CM-0 の検査の対象外（数
 - F-3（nit）: 本文の先頭を `trimEnd()` して、CRLF の行の `\r` を出さない。テスト: `gives the beginning of a line comment without the \r of a CRLF line end`
 - F-4（nit）: **ファイルの名前を変えたら（`git mv`）、`scripts/comment-baseline.json` のキーも手で新しいパスに付け替える。** 検査は新しいパスを上限 0 として落とし、古いパスには「remove the entry」と出す。上限を上げずに済む付け替えを検査が自分で推し量ると、別のファイルへのコメントの持ち込みも通ってしまうので、手で付け替える決まりにした
 - 4 つのテストは、直す前の `scripts/check-comments.mjs`（`git checkout` で一時的に戻した）で 4 件落ちることを確かめ、直した版に戻した（`Tests  4 failed | 19 passed (23)`）
+
+### PR・CI の監査 R1 の指摘への対応（R2）
+
+- F-1（must）: `EXCLUDED_PATHS` から `/^docs\//` を消した。`docs/video/tools/*.mjs`（`git ls-files 'docs/*'` で対象の拡張子を持つのはこの 12 ファイルだけ）を今の数で baseline に足した（12 ファイル・173 個。`capture-app.mjs` 53、`lib/record.mjs` 25、`lib/capture-web-convert.mjs` 18 など）。テストの `docs/video/a.ts` は拡張子で外れる `docs/book/index.html`・`docs/book/chapter.md` に替えた。監査役の赤のテスト `check-comments: code under docs is still code > checks the video tools scripts that CM-3 has to clean` はそのまま一緒にコミットした
+- F-2（should）: 許す指示から `@ts-ignore` を外した（`@ts-expect-error` で代わりになり、エラーが無くなると落ちるので安全）。テスト: `counts @ts-ignore, because @ts-expect-error does the same job and fails once the error is gone`。今のコードの `@ts-ignore` と `@ts-check` は 0 個（`git grep -n "@ts-ignore\|@ts-check" -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' ':!vendor' ':!src/wasm' ':!scripts/check-comments*'` が 0 行）なので baseline は変わらない。`// @ts-check` は CLAUDE.md の例外の一覧に理由と一緒に足した。
+  **このシートの「メインが決めたこと」の例外の行は `@ts-ignore` を含んだままで、検査とずれている**（メインの部分なので作業役は直さない）。正本は CLAUDE.md と `scripts/check-comments.mjs` の `TOOL_DIRECTIVES`
+- F-3（should）: `isTypingTarget` と `isFormControl` の使い分けを、AGENTS.md の作業役の決まり（「入力欄にフォーカスがあるか」の行）に直接書いた（`src/app/typing-target.ts` の冒頭コメントと、`src/app/view.ts`・`src/state/useLayerTool.ts`・`src/state/useMeasureTool.ts`・`src/ui/layers/layer-delete-key.ts` の呼び出しを読んで書いた）。RECURRENCE.md の TP-1-CI の節の「冒頭コメント」の参照も、その行に向け直した
+- F-4（nit）: 直さない（`eslint-disable-next-line x -- 理由` の理由は ESLint の書き方の一部）
