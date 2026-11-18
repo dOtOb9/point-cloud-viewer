@@ -63,10 +63,10 @@ fn count_read_calls_to_parse_all_points(
         read_calls: read_calls.clone(),
     };
 
-    const READ_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+    const SAME_AS_READ_BUFFER_BYTES_IN_CONVERT_RS: usize = 4 * 1024 * 1024;
     let mut reader = if wrap_in_buf_reader {
         las::Reader::new(std::io::BufReader::with_capacity(
-            READ_BUFFER_BYTES,
+            SAME_AS_READ_BUFFER_BYTES_IN_CONVERT_RS,
             counting,
         ))
         .expect("valid LAS")
@@ -105,13 +105,16 @@ fn buffering_drastically_reduces_underlying_read_calls() {
     let raw_calls = count_read_calls_to_parse_all_points(bytes.clone(), point_count, false);
     let buffered_calls = count_read_calls_to_parse_all_points(bytes, point_count, true);
 
+    const MEASURED_ABOUT_90_PERCENT_SO_ASSERT_OVER_HALF: usize = 2;
     assert!(
-        raw_calls > point_count as usize / 2,
+        raw_calls > point_count as usize / MEASURED_ABOUT_90_PERCENT_SO_ASSERT_OVER_HALF,
         "バッファ無しでは点数に近い回数readが呼ばれるはず: raw_calls={raw_calls}, point_count={point_count}"
     );
 
-    const READ_BUFFER_BYTES: usize = 4 * 1024 * 1024;
-    let expected_upper_bound = file_size.div_ceil(READ_BUFFER_BYTES) + 4;
+    const SAME_AS_READ_BUFFER_BYTES_IN_CONVERT_RS: usize = 4 * 1024 * 1024;
+    const ROOM_FOR_THE_HEADER_READS: usize = 4;
+    let expected_upper_bound =
+        file_size.div_ceil(SAME_AS_READ_BUFFER_BYTES_IN_CONVERT_RS) + ROOM_FOR_THE_HEADER_READS;
     assert!(
         buffered_calls <= expected_upper_bound,
         "バッファ有りの呼び出し回数が想定より多い: buffered_calls={buffered_calls}, \
