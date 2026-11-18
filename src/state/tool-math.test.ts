@@ -13,7 +13,6 @@ describe("pixelToNdc", () => {
 });
 
 describe("projectToNdc with real file coordinates", () => {
-  // autzen-like coordinates (x about 6.4e5, y about 8.5e5): a camera looking at a target from the south-east.
   const target: [number, number, number] = [637905.5, 851209.9, 2733.9];
   const eye: [number, number, number] = [target[0] + 3000, target[1] - 4000, target[2] + 3000];
   const viewProj = multiply(perspective((60 * Math.PI) / 180, 2, 0.01, 1e7), lookAt(eye, target, [0, 0, 1]));
@@ -26,7 +25,6 @@ describe("projectToNdc with real file coordinates", () => {
   });
 
   it("a point to the right of the target (camera right) has a positive x", () => {
-    // The camera looks along (-3000, +4000, -3000); right = forward x up, so for this camera it points to (+4, +3, 0)/5.
     const right: [number, number, number] = [target[0] + 40, target[1] + 30, target[2]];
     const ndc = projectToNdc(viewProj, right);
     expect(ndc![0]).toBeGreaterThan(0);
@@ -46,8 +44,8 @@ describe("projectToNdc with real file coordinates", () => {
 describe("displayLengthToFile", () => {
   it("converts from the display unit to the file unit", () => {
     expect(displayLengthToFile(1, 1, "meter")).toBe(1);
-    expect(displayLengthToFile(1, 0.3048, "meter")).toBeCloseTo(3.2808399, 6); // 1 m in international feet
-    expect(displayLengthToFile(10, 0.3048, "foot")).toBeCloseTo(10, 12); // 10 ft in a feet file
+    expect(displayLengthToFile(1, 0.3048, "meter")).toBeCloseTo(3.2808399, 6);
+    expect(displayLengthToFile(10, 0.3048, "foot")).toBeCloseTo(10, 12);
   });
   it("takes the number as it is when the file unit is unknown", () => {
     expect(displayLengthToFile(7, null, "foot")).toBe(7);
@@ -70,9 +68,8 @@ describe("sectionBox", () => {
     const f = box!.filter;
     expect(f.center).toEqual([100, 250, 50]);
     expect(f.halfExtents).toEqual([50, 1, 50]);
-    expect(f.axes[0]).toEqual([0, 1, 0]); // along the line
-    expect(f.axes[2]).toEqual([0, 0, 1]); // up
-    // The normal is horizontal and perpendicular to the line: up x along = (0,0,1) x (0,1,0) = (-1,0,0)
+    expect(f.axes[0]).toEqual([0, 1, 0]);
+    expect(f.axes[2]).toEqual([0, 0, 1]);
     expect(f.axes[1][0]).toBeCloseTo(-1, 12);
     expect(f.axes[1][1]).toBeCloseTo(0, 12);
   });

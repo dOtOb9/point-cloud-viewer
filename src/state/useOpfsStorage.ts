@@ -1,8 +1,3 @@
-// Browser storage (OPFS) usage for the Web build: quota, usage, persistence, and the cache / scratch
-// entries that the settings page ("ブラウザの保存領域") lets the user delete (M4-6).
-// Every delete refreshes `opfsStorageInfo` afterwards. On desktop (Tauri) all of it is a no-op.
-// Used by: useCopcViewer.ts; `openFiles` calls `refreshOpfsStorageInfo` when the quota is too small.
-// Entry: `useOpfsStorage()`.
 import { useCallback, useState } from "react";
 import {
   cleanupStaleScratchDirs,
@@ -18,11 +13,6 @@ import {
 } from "../datasource/opfs";
 import { isTauriEnvironment } from "../datasource/environment";
 
-/**
- * The Web OPFS usage and persistence state shown in the settings ("browser storage" section). `quotaBytes` and
- * `usageBytes` come from `estimateQuota()`, `persisted` from `isPersisted()` and `breakdown` from
- * `getOpfsUsageBreakdown()`; `refreshOpfsStorageInfo` gathers them together.
- */
 export interface OpfsStorageInfo {
   quotaBytes: number;
   usageBytes: number;
@@ -31,19 +21,12 @@ export interface OpfsStorageInfo {
 }
 
 export interface OpfsStorage {
-  /** Web OPFS usage (cache and scratch breakdown) and persistence state. null before it is fetched and on desktop (check `isBrowser` first; see `SettingsModal`). */
   opfsStorageInfo: OpfsStorageInfo | null;
-  /** Fetch / recompute `opfsStorageInfo` (when the settings open, after a delete). */
   refreshOpfsStorageInfo: () => Promise<void>;
-  /** Ask for `persist()` if not yet persisted, then refresh `opfsStorageInfo` whatever the answer was. */
   requestOpfsPersistentStorage: () => Promise<void>;
-  /** Delete one converted cache entry, then refresh `opfsStorageInfo`. */
   removeOpfsCachedConversion: (entry: CachedConversionEntry) => Promise<void>;
-  /** Delete all converted caches, then refresh `opfsStorageInfo`. */
   clearOpfsCachedConversions: () => Promise<void>;
-  /** Delete one leftover scratch directory, then refresh `opfsStorageInfo`. */
   removeOpfsScratchDir: (name: string) => Promise<void>;
-  /** Delete all leftover scratch directories, then refresh `opfsStorageInfo`. */
   clearOpfsScratchDirs: () => Promise<void>;
 }
 
@@ -60,12 +43,10 @@ export function useOpfsStorage(): OpfsStorage {
       ]);
       setOpfsStorageInfo({ quotaBytes: estimate.quota, usageBytes: estimate.usage, persisted, breakdown });
     } catch (e: unknown) {
-      // The screen must not break when this fails: log it only. The settings page then stays on "loading".
       console.error("refreshOpfsStorageInfo failed", e);
     }
   }, []);
 
-  // Ask for persist() if not yet persisted, then refresh whatever the answer was.
   const requestOpfsPersistentStorage = useCallback(async () => {
     if (!isTauriEnvironment()) {
       try {

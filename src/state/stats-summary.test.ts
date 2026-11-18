@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { RenderStats } from "../renderer/point-cloud-renderer";
 import { formatStatsSummary } from "./stats-summary";
 
-// Only the fields the summary reads are filled in; the rest of RenderStats is not needed here.
 const stats = {
   drawnPoints: 1000,
   drawnNodes: 5,

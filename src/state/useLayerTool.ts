@@ -6,23 +6,8 @@ import type { CopcViewerState } from "./useCopcViewer";
 import { isMeasureLayer } from "./layers";
 import { pixelToNdc, sectionBox, type Vec3 } from "./tool-math";
 
-// L2-F: operation of the two tools that draw on the 3D view: "カット" (polygon on the screen) and
-// "断面" (a line between two picked 3D points). The result is made by `extractFromLayer` (src/app/point-cloud-tools.ts)
-// (a new layer; the source layer is never changed, ADR-0018).
-//
-// Click handling is the same as useMeasureTool.ts (L2-D): a click counts only if the pointer moved
-// 5 px or less since pointerdown, so dragging still moves the camera, and the second click of a
-// double click is ignored. It is written again here instead of shared so that the finished
-// measurement tool is not touched; the two could be merged later.
-//
-// Polygon and camera: the polygon is stored in screen pixels, and it is sent to Rust together with the
-// viewProj of the moment it was started. If the camera moves while it is being drawn, the vertices no
-// longer sit on the same points of the cloud, so the polygon is thrown away ("視点を動かしたので描き直し").
-// The owner can still rotate the camera between tools; only an unfinished polygon is lost.
-
 const CLICK_MOVE_TOLERANCE_PX = 5;
 const NOTICE_MS = 3000;
-/** A polygon needs at least this many vertices. */
 export const MIN_POLYGON_VERTICES = 3;
 
 export type LayerToolMode = "select" | "section";
@@ -34,20 +19,14 @@ export interface PixelPoint {
 
 export interface LayerToolState {
   mode: LayerToolMode | null;
-  /** "select": vertices entered so far (canvas CSS pixels). */
   polygon: readonly PixelPoint[];
-  /** "section": the 3D points picked so far (0 to 2). */
   sectionPoints: readonly Vec3[];
-  /** "section": both points are picked and the dialog for thickness and height range should be shown. */
   sectionReady: boolean;
   notice: string | null;
   stop: () => void;
   toggle: (mode: LayerToolMode) => void;
-  /** "select": close the polygon and extract (same as Enter or double click). */
   finishPolygon: () => void;
-  /** "section": run the extraction with the values from the dialog (thickness and height range in file units). */
   confirmSection: (thickness: number, heightMin: number, heightMax: number, linePreset: SectionLinePreset) => void;
-  /** "section": close the dialog and forget the two points (the tool stays on). */
   cancelSection: () => void;
 }
 
@@ -65,7 +44,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
   const modeRef = useRef<LayerToolMode | null>(null);
   const polygonRef = useRef<readonly PixelPoint[]>([]);
   const sectionRef = useRef<readonly Vec3[]>([]);
-  /** viewProj when the first polygon vertex was entered. */
   const anchorRef = useRef<number[] | null>(null);
   const viewerRef = useRef(viewer);
   const noticeTimerRef = useRef<number | null>(null);
@@ -105,7 +83,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
   const stop = useCallback(() => reset(null), [reset]);
   const toggle = useCallback((m: LayerToolMode) => reset(modeRef.current === m ? null : m), [reset]);
 
-  /** The point-cloud layer the tool acts on: the selected one, which must be a point cloud with a path. */
   const targetLayer = useCallback(() => {
     const layer = viewerRef.current.selectedLayer;
     if (!layer || isMeasureLayer(layer) || layer.sourcePath === undefined) {
@@ -136,7 +113,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     const polygonNdc = points.map((p) => pixelToNdc(p.x, p.y, width, height));
-    // Done drawing: leave the tool first (the extraction can take a long time), then start it.
     reset(null);
     void extractFromLayer(viewerRef.current.toolContext, layer.id, { kind: "screenPolygon", viewProj: [...anchor], polygonNdc }, "カット");
   }, [canvasRef, reset, setPolygonBoth, showNotice, targetLayer]);
@@ -146,7 +122,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
       const snapshot = viewerRef.current.getViewSnapshot();
       if (!snapshot) return;
       if (anchorRef.current !== null && !sameMatrix(snapshot.viewProj, anchorRef.current)) {
-        // The camera moved since the first vertex: start again from this click.
         setPolygonBoth([]);
         showNotice("視点を動かしたので、多角形を描き直します");
       }
@@ -188,14 +163,13 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
         return;
       }
       reset(null);
-      // --- G2: cross-section view --- the layer keeps A, B, up and the thickness for the 2D panel.
       const section = {
         a: [points[0][0], points[0][1], points[0][2]] as [number, number, number],
         b: [points[1][0], points[1][1], points[1][2]] as [number, number, number],
         up: [up[0], up[1], up[2]] as [number, number, number],
         thickness,
-        sourceLayerId: layer.id, // G2-4
-        linePreset, // G2-4
+        sourceLayerId: layer.id,
+        linePreset,
       };
       void extractFromLayer(viewerRef.current.toolContext, layer.id, box.filter, "断面", box.normal, section);
     },
@@ -203,7 +177,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
   );
   const cancelSection = useCallback(() => setSectionBoth([]), [setSectionBoth]);
 
-  // Listen to the canvas and the keyboard only while a tool is on.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (mode === null || !canvas) return;
@@ -216,8 +189,8 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
       const start = down;
       down = null;
       if (!start) return;
-      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_MOVE_TOLERANCE_PX) return; // a drag: the camera
-      if (e.detail >= 2) return; // the second click of a double click
+      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_MOVE_TOLERANCE_PX) return;
+      if (e.detail >= 2) return;
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
@@ -225,12 +198,11 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
       else addSectionPoint(x, y);
     };
     const onDoubleClick = (e: MouseEvent) => {
-      // Do not also fly the camera to the clicked point.
       e.stopImmediatePropagation();
       if (modeRef.current === "select") finishPolygon();
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isFormControl(e.target)) return; // Enter / Esc finish or cancel: any focused form control keeps them (typing-target.ts)
+      if (isFormControl(e.target)) return;
       if (e.key === "Escape") reset(null);
       else if (e.key === "Enter") finishPolygon();
     };
@@ -247,7 +219,6 @@ export function useLayerTool(viewer: CopcViewerState, canvasRef: RefObject<HTMLC
     };
   }, [mode, canvasRef, addPolygonVertex, addSectionPoint, finishPolygon, reset]);
 
-  // While a polygon is being drawn, throw it away as soon as the camera moves.
   const drawing = mode === "select" && polygon.length > 0;
   useEffect(() => {
     if (!drawing) return;

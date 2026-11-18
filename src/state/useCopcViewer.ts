@@ -1,20 +1,3 @@
-// The viewer state the UI sees: `useCopcViewer()` returns [canvasRef, CopcViewerState].
-// This file only assembles. Each group of fields is made by one hook, one file per concern (TaskSheets/R1-state-refactor.md):
-//
-//   viewer-types.ts          CopcViewerState, built with Pick from the hooks' interfaces below (types only; no field is declared twice)
-//   useRendererLifecycle.ts  create / dispose the renderer and the data source (rendererRef, sourceRef)
-//   useErrorLog.ts           gpuErrors, errorHistory, reportError, dismissGpuError
-//   useDisplaySettings.ts    point budget, background, grid, EDL, animation, render scale, shape, center priority, stats
-//   useLayers.ts             layer list, selection, per-layer actions, measurement layers
-//   useFileOpen.ts           conversion progress / file name state + the OpenFilesContext for src/app/open-files.ts
-//   usePointCloudTools.ts    tool progress state + the PointCloudToolsContext for src/app/point-cloud-tools.ts
-//   useOpfsStorage.ts        Web storage usage and cleanup (settings page)
-//   useTempDir.ts            desktop temp folder setting
-//
-// `status` (the ViewerStatus union, which holds the error message) stays here because almost every hook above writes it.
-// The mouse tools on the 3D view (useLayerTool.ts, useMeasureTool.ts) and the unit setting (useDisplayUnit.ts)
-// are separate hooks that take this state as input; they are not part of it.
-// The type re-exports below exist because src/ui must reach the renderer / datasource types through state (ARCHITECTURE.md rule 3).
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { addOpenedLayer } from "../app/open-files";
 import { followSelectedLayer } from "../app/section-view";
@@ -36,19 +19,12 @@ import type { ViewerStatus } from "./viewer-status";
 
 export type { CopcViewerState } from "./viewer-types";
 
-/**
- * M1-4: state of the COPC viewer. It binds src/renderer and src/datasource and shows only this hook to
- * src/ui (rule 3: the UI does not touch the renderer directly). The whole octree hierarchy is given to the
- * renderer, which selects the LOD by screen-space error.
- */
 export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewerState] {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<PointCloudRenderer | null>(null);
   const sourceRef = useRef<DataSource | null>(null);
   const [status, setStatus] = useState<ViewerStatus>({ kind: "idle" });
-  // A renderer init failure is shown like an open failure (R5). Stable, because an effect depends on it.
   const setInitError = useCallback((message: string) => setStatus({ kind: "error", message }), []);
-  // Shared by openFiles (to ignore tool progress) and the tool functions (set it). One object for the app's lifetime.
   const [toolLock] = useState(() => ({ running: false }));
 
   const errorLog = useErrorLog();
@@ -73,8 +49,6 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     pointShape: display.deviceProfileDefaults.pointShape,
     refreshOpfsStorageInfo: opfs.refreshOpfsStorageInfo,
   });
-  // M4-12: copy the breakdown text of the selected layer. Where `navigator.clipboard` is missing
-  // (non-HTTPS etc.) the screen must not break, so a failure is only logged.
   const selectedBreakdownText = layers.selectedLayer?.conversionBreakdownText ?? null;
   const copyConversionBreakdownText = useCallback(async (): Promise<boolean> => {
     if (selectedBreakdownText === null) return false;
@@ -86,15 +60,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
       return false;
     }
   }, [selectedBreakdownText]);
-  // --- G2: cross-section view --- the 2D panel's state; the section tool opens it when it has made a layer.
   const sectionViewHook = useSectionView({ sourceRef, layersStateRef: layers.layersStateRef, reportError: errorLog.reportError,
-    // G2-5: the edit history of a section line lives in the layers state.
     setSectionLineHistory: (layerId, history) => {
       const current = layers.layersStateRef.current;
       layers.commitLayers({ ...current, layers: setLayerSectionLineHistoryInList(current.layers, layerId, history) });
     },
   });
-  // G2-T14: the section panel follows the selected layer. Only the selection is watched; the steps are in section-view.ts.
   const sectionContext = sectionViewHook.sectionContext;
   useEffect(() => {
     followSelectedLayer(sectionContext, layers.selectedLayerId);
@@ -109,12 +80,10 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     tempDir: tempDirSetting.tempDir,
     isMobile: display.deviceProfileDefaults.isMobile,
     addOpenedLayer: (path, name, section) => addOpenedLayer(fileOpen.fileOpenContext, path, name, null, section),
-    // --- G2: section line ---
     setSectionLine: (layerId, line) => {
       const current = layers.layersStateRef.current;
       layers.commitLayers({ ...current, layers: setLayerSectionLineInList(current.layers, layerId, line) });
     },
-    // --- G1-T15: DTM ---
     setLayerColorMode: layers.setLayerColorMode,
     setLayerDtm: (layerId, dtm) => {
       const current = layers.layersStateRef.current;
@@ -126,16 +95,12 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     reportError: errorLog.reportError,
   });
 
-  // L2-D measurement: picking and fetching the view pass straight through to the renderer.
-  // The measurement operation itself (collecting points, finishing) is in useMeasureTool.ts; a finished one
-  // is added as a layer by `layers.addMeasurement`.
   const { reportError } = errorLog;
   const pickPoint = useCallback(
     async (cssX: number, cssY: number) => {
       try {
         return (await rendererRef.current?.pickPoint(cssX, cssY)) ?? null;
       } catch (e) {
-        // If reading the depth back fails, send the message as-is to the existing error display (ADR-0011). Never swallow it.
         reportError(`計測の点を取れませんでした: ${String(e)}`);
         return null;
       }
@@ -160,8 +125,8 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     selectLayerRange: layers.selectLayerRange,
     toolProgress: tools.toolProgress,
     toolContext: tools.toolContext,
-    sectionView: sectionViewHook.sectionView, // G2
-    sectionContext: sectionViewHook.sectionContext, // G2
+    sectionView: sectionViewHook.sectionView,
+    sectionContext: sectionViewHook.sectionContext,
     removeLayer: layers.removeLayer,
     pickPoint,
     getViewSnapshot,

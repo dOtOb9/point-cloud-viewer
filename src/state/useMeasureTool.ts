@@ -3,40 +3,15 @@ import { isFormControl } from "../app/typing-target";
 import type { CopcViewerState } from "./useCopcViewer";
 import { autoFinishCount, MIN_POINTS, type MeasureKind, type Vec3 } from "./measure";
 
-// L2-D: operation of the measurement tool. Holds "what is being measured (kind)" and the
-// points entered so far, adds a point on each click in the 3D view (canvas), and when
-// enough points exist turns them into a new measurement layer via `viewer.addMeasurement`.
-//
-// How clicks are told apart from camera drags:
-//  - Remember the canvas pointerdown position; only treat it as a click when the movement
-//    until `click` is small. Drags (rotate, pan) are still handled by orbit-camera.ts.
-//  - Canvas events are not stopped (we listen alongside orbit-camera.ts). The only event
-//    stopped is `dblclick`: the double click that closes an area must not also trigger the
-//    camera fly-to (stopped in the capture phase).
-//  - A double click delivers two clicks. The second one (detail >= 2) is ignored and the
-//    area is closed by dblclick.
-//
-// Picking a point is asynchronous (read back from the GPU). Work is chained on a single
-// Promise so quick successive clicks are processed in order.
-
-/** Moving more than this (CSS px) means a drag, not a click. */
 const CLICK_MOVE_TOLERANCE_PX = 5;
-/** How long a short notice such as "no point here" stays visible (ms). */
 const NOTICE_MS = 2500;
 
 export interface MeasureToolState {
-  /** Kind being measured. null means not measuring (normal camera operation only). */
   mode: MeasureKind | null;
-  /** Points entered so far (world coordinates). */
   points: readonly Vec3[];
-  /** Short notice to show on screen (e.g. "点がありません"), or null. */
   notice: string | null;
-  /** Start measuring. If another kind is active, its points are discarded and it switches. */
-  /** Stop (also discards points entered so far). */
   stop: () => void;
-  /** Stop if it is the same kind, otherwise start (for the toolbar buttons). */
   toggle: (kind: MeasureKind) => void;
-  /** Close and finish an area (same as Enter or double click). */
   finish: () => void;
 }
 
@@ -48,13 +23,11 @@ export function useMeasureTool(
   const [points, setPoints] = useState<readonly Vec3[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Refs so event handlers (which stay attached to the canvas) read the latest values.
   const modeRef = useRef<MeasureKind | null>(null);
   const pointsRef = useRef<readonly Vec3[]>([]);
   const viewerRef = useRef(viewer);
   const noticeTimerRef = useRef<number | null>(null);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
-  // Incremented when measuring stops or switches. Discards results of picks started before that.
   const generationRef = useRef(0);
 
   useEffect(() => {
@@ -85,7 +58,6 @@ export function useMeasureTool(
   const stop = useCallback(() => reset(null), [reset]);
   const toggle = useCallback((kind: MeasureKind) => reset(modeRef.current === kind ? null : kind), [reset]);
 
-  /** Finish the measurement with the current points and make a new layer. */
   const commit = useCallback(
     (kind: MeasureKind, pts: readonly Vec3[]) => {
       const up = viewerRef.current.getViewSnapshot()?.up ?? [0, 0, 1];
@@ -101,7 +73,6 @@ export function useMeasureTool(
   );
 
   const finish = useCallback(() => {
-    // Wait for queued picks (the preceding click) to finish before closing.
     const generation = generationRef.current;
     queueRef.current = queueRef.current.then(() => {
       const kind = modeRef.current;
@@ -114,14 +85,12 @@ export function useMeasureTool(
     });
   }, [commit, showNotice]);
 
-  /** Pick the point at the click position and add it to the points entered so far. */
   const addPointAt = useCallback(
     (cssX: number, cssY: number) => {
       const generation = generationRef.current;
       queueRef.current = queueRef.current.then(async () => {
         if (generation !== generationRef.current || modeRef.current === null) return;
         const picked = await viewerRef.current.pickPoint(cssX, cssY);
-        // Discard if measuring was stopped or switched during the pick.
         if (generation !== generationRef.current || modeRef.current === null) return;
         if (!picked) {
           showNotice("点がありません");
@@ -139,14 +108,12 @@ export function useMeasureTool(
     [commit, setPointsBoth, showNotice],
   );
 
-  // Only while measuring, listen to canvas click / double click and the keyboard (Esc, Enter).
   useEffect(() => {
     const canvas = canvasRef.current;
     if (mode === null || !canvas) return;
 
     let down: { x: number; y: number; id: number } | null = null;
     const onPointerDown = (e: PointerEvent) => {
-      // Left button only (including touch/pen contact). Ignore a second finger (pinch).
       if (e.button !== 0 || !e.isPrimary) {
         down = null;
         return;
@@ -157,20 +124,17 @@ export function useMeasureTool(
       const start = down;
       down = null;
       if (!start) return;
-      // Released after moving = a drag. Leave it to the camera.
       if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_MOVE_TOLERANCE_PX) return;
-      // Ignore the second click of a double click (closing is done by dblclick).
       if (e.detail >= 2) return;
       const rect = canvas.getBoundingClientRect();
       addPointAt(e.clientX - rect.left, e.clientY - rect.top);
     };
     const onDoubleClick = (e: MouseEvent) => {
-      // Do not trigger the camera fly-to (double click to approach).
       e.stopImmediatePropagation();
       finish();
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isFormControl(e.target)) return; // Enter / Esc finish or cancel: any focused form control keeps them (typing-target.ts)
+      if (isFormControl(e.target)) return;
       if (e.key === "Escape") {
         reset(null);
       } else if (e.key === "Enter") {
@@ -180,7 +144,6 @@ export function useMeasureTool(
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("click", onClick);
-    // capture: receive it before the dblclick of orbit-camera.ts and stop it.
     canvas.addEventListener("dblclick", onDoubleClick, true);
     window.addEventListener("keydown", onKeyDown);
     return () => {

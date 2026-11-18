@@ -47,7 +47,6 @@ describe("format", () => {
     expect(formatArea(10, null, "meter")).toBe(`10.00 ${UNKNOWN_UNIT_NOTE}²`);
   });
   it("3D distance combines horizontal and vertical after converting each unit", () => {
-    // horizontal 3000 ft, vertical 4000 US ft -> 914.4 m and 1219.2024 m -> 1524.0 m (approximately)
     const text = formatDistance3d(3000, 4000, AUTZEN);
     const expected = Math.hypot(3000 * FOOT, 4000 * US_FOOT);
     expect(text).toBe(`${expected.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m`);
@@ -57,7 +56,6 @@ describe("format", () => {
     expect(formatDistance3d(3, 4, units)).toBe(`5.00 ${UNKNOWN_UNIT_NOTE}`);
   });
   it("coordinate triple uses the horizontal factor for x/y and the vertical one for z", () => {
-    // 1000 ft = 304.80 m, 2000 ft = 609.60 m, 3000 US ft = 914.40 m (to 2 decimals)
     expect(formatCoordinate([1000, 2000, 3000], AUTZEN)).toBe("[304.80, 609.60, 914.40]");
     expect(coordinateUnitLabel(AUTZEN)).toBe("m");
     expect(coordinateUnitLabel({ ...AUTZEN, verticalToMeter: null })).toBe(UNKNOWN_UNIT_NOTE);

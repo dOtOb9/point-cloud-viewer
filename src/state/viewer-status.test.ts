@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isFileOpenBusy, openButtonLabel, type ViewerStatus } from "./viewer-status";
 
-// One row per kind. A new kind must be added here too (the helpers would not compile without it).
 const ALL: ViewerStatus[] = [
   { kind: "idle" },
   { kind: "opening" },
