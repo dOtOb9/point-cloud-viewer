@@ -93,7 +93,5 @@
   "scripts/make-test-las.ts": 68,
   "scripts/thin-filter-browser-bench.mjs": 13,
   "scripts/ui-shots.mjs": 14,
-  "src/code-limits.test.ts": 18,
-  "src/layer-rules.test.ts": 19,
   "vite.config.ts": 28
 }
