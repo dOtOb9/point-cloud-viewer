@@ -74,6 +74,7 @@
   `CSF.cpp` の `Cloth cloth(origin_pos, width, height, res, res, 0.3, 9999, rigidness, time_step)` を読むと、
   0.3 は 1 つ目の引数 `smoothThreshold`（IHV の差の判定）で、`heightThreshold` には **9999** が渡される。
   したがって高さの判定は実質ない。ソースのとおり `SLOPE_HEIGHT_THRESHOLD = 9999` を置いた。`hdiff` は `smoothThreshold` に当たる
+  （CM-4 で `SLOPE_HEIGHT_THRESHOLD` を `NEVER_REJECTING_SLOPE_HEIGHT_THRESHOLD` に改名した。2026-11-19）
 
 **参照実装との違いで残るもの**
 

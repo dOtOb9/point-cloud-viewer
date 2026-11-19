@@ -110,6 +110,7 @@ Worker内で直接呼ぶより複雑になる。
   範囲を切り出してから`FileReaderSync`で読む。**ファイル全体を読まない**ことの
   裏付けとして、実際に読んだバイト数を`Stats`（`Rc<Cell<u64>>`）に積算し、
   `WasmCopcFile::bytesRead()`/`totalSize()`から取り出せる。
+  （CM-4 で `Stats` を `BytesReadCounter` に改名した。2026-11-19）
 - `crates/pcv-wasm/src/http_reader.rs`: `HttpRangeReader`。コンストラクタで
   `bytes=0-0`のRangeリクエストを送り、`Content-Range`レスポンスヘッダから
   ファイル全体のサイズを得る。以降の`read()`は`Range: bytes=<start>-<end>`付きの
