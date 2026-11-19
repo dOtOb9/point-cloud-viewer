@@ -5,6 +5,8 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use crate::point_file_import::RawPoint;
 
 const U8_TO_U16_SCALE: u16 = 257;
+const U8_MAX: f64 = u8::MAX as f64;
+const U16_MAX: f64 = u16::MAX as f64;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -216,21 +218,21 @@ impl VertexLayout {
 fn scale_channel_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
-            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(U8_TO_U16_SCALE)
+            (value.round().clamp(0.0, U8_MAX) as u16).wrapping_mul(U8_TO_U16_SCALE)
         }
-        _ => value.round().clamp(0.0, 65535.0) as u16,
+        _ => value.round().clamp(0.0, U16_MAX) as u16,
     }
 }
 
 fn scale_intensity_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
-            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(U8_TO_U16_SCALE)
+            (value.round().clamp(0.0, U8_MAX) as u16).wrapping_mul(U8_TO_U16_SCALE)
         }
         ScalarType::Float32 | ScalarType::Float64 => {
-            (value.clamp(0.0, 1.0) * 65535.0).round() as u16
+            (value.clamp(0.0, 1.0) * U16_MAX).round() as u16
         }
-        _ => value.round().clamp(0.0, 65535.0) as u16,
+        _ => value.round().clamp(0.0, U16_MAX) as u16,
     }
 }
 

@@ -4,6 +4,11 @@ const MARGIN_CELLS: usize = 2;
 const START_ABOVE_TOP: f32 = 0.05;
 const MIN_GROUP_FOR_POST: usize = 50;
 const REBUILD_INTERVAL: u32 = 8;
+const SINGLE_MOVE_LIMIT: f32 = 1.0;
+const DOUBLE_MOVE_LIMIT: f32 = 0.5;
+const PARTICLES_PER_MILLION: f64 = 1.0e6;
+const F32_BYTES: usize = std::mem::size_of::<f32>();
+const U32_BYTES: usize = std::mem::size_of::<u32>();
 const NEVER_REJECTING_SLOPE_HEIGHT_THRESHOLD: f32 = 9999.0;
 
 const NEIGHBOURS: [(i32, i32); 16] = [
@@ -162,8 +167,8 @@ impl Cloth {
             return Err(format!(
                 "布の粒子が {:.1} 百万個必要で、上限の {:.1} 百万個を超えます。\
                  布の解像度を粗くするか、先に範囲を切り出してください",
-                total_f / 1.0e6,
-                max_particles as f64 / 1.0e6
+                total_f / PARTICLES_PER_MILLION,
+                max_particles as f64 / PARTICLES_PER_MILLION
             ));
         }
         let nx = nx_f as usize;
@@ -203,12 +208,12 @@ impl Cloth {
     }
 
     pub fn memory_bytes(&self) -> usize {
-        self.h.len() * 4
-            + self.prev.len() * 4
-            + self.ihv.len() * 4
-            + self.ihv_dist.len() * 4
+        self.h.len() * F32_BYTES
+            + self.prev.len() * F32_BYTES
+            + self.ihv.len() * F32_BYTES
+            + self.ihv_dist.len() * F32_BYTES
             + self.movable.len()
-            + self.active.capacity() * 4
+            + self.active.capacity() * U32_BYTES
     }
 
     pub fn add_point_for_ihv(&mut self, x: f64, y: f64, z: f64) {
@@ -414,8 +419,8 @@ impl Cloth {
 
     fn satisfy_constraints(&mut self) {
         let r = self.params.rigidness as usize;
-        let single = SINGLE_MOVE.get(r).copied().unwrap_or(1.0);
-        let double = DOUBLE_MOVE.get(r).copied().unwrap_or(0.5);
+        let single = SINGLE_MOVE.get(r).copied().unwrap_or(SINGLE_MOVE_LIMIT);
+        let double = DOUBLE_MOVE.get(r).copied().unwrap_or(DOUBLE_MOVE_LIMIT);
         let (nx, ny) = (self.nx, self.ny);
         let offsets: [isize; 16] =
             NEIGHBOURS.map(|(dx, dy)| dy as isize * nx as isize + dx as isize);
@@ -877,8 +882,8 @@ mod tests {
             }
         }
         let r = c.params.rigidness as usize;
-        let single = SINGLE_MOVE.get(r).copied().unwrap_or(1.0);
-        let double = DOUBLE_MOVE.get(r).copied().unwrap_or(0.5);
+        let single = SINGLE_MOVE.get(r).copied().unwrap_or(SINGLE_MOVE_LIMIT);
+        let double = DOUBLE_MOVE.get(r).copied().unwrap_or(DOUBLE_MOVE_LIMIT);
         let (nx, ny) = (c.nx as i64, c.ny as i64);
         for j in 0..ny {
             for i in 0..nx {
