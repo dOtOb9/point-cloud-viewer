@@ -3,10 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { findRustCommentRanges, findScriptCommentRanges } from "./check-comments.mjs";
 
-const USAGE = `usage: node scripts/removed-comment-reasons.mjs <base-ref> [paths...]
+const USAGE = `usage: node scripts/removed-comment-reasons.mjs <base-ref> [--head <ref>] [paths...]
        node scripts/removed-comment-reasons.mjs --docs
 
-<base-ref> [paths...]: every comment that was in <base-ref> and is gone now, whose text gives a reason
+<base-ref> [paths...]: every comment that was in <base-ref> and is gone in the working tree (or at --head <ref>), whose text gives a reason
 (because, so that, never, must, ため, ので, 避け, 未検証, 実測, ...). Each one must be moved to a name, a test name or the
 "移した理由" table of the task sheet before the comment goes (CM-0). Code files are lexed like check-comments;
 .yml / .toml / .ps1 / .gitattributes are read by their "#" lines.
@@ -14,7 +14,7 @@ const USAGE = `usage: node scripts/removed-comment-reasons.mjs <base-ref> [paths
 the reader to a comment in the code. Comments are being removed (CLAUDE.md), so such a line points at nothing.`;
 
 export const REASON_WORDS =
-  /\b(because|so that|so the|so it|otherwise|never|must|avoid|instead of|rather than|not in|same as|same construction|twin|agree|measured|unverified|workaround)\b|ため|ので|避け|未検証|実測|回避|理由|しないと|でないと|と同じ|に合わせ|揃え/i;
+  /\b(because|so|so that|so the|so it|to keep|in order to|why|otherwise|never|must|avoid|instead of|rather than|not in|same as|same construction|twin|agree|measured|unverified|workaround)\b|ため|ので|ように|避け|未検証|実測|回避|理由|しないと|でないと|と同じ|に合わせ|揃え/i;
 
 const HASH_COMMENTED = /\.(ya?ml|toml|ps1)$|(^|\/)\.gitattributes$/;
 const RUST_LIKE = /\.(rs|wgsl)$/;
@@ -42,7 +42,19 @@ export function commentsOf(text, fileName) {
     : SCRIPT_LIKE.test(fileName)
       ? findScriptCommentRanges(text, fileName)
       : [];
-  return ranges.map(([start, end]) => ({ line: lineOf(text, start), body: text.slice(start, end) }));
+  return joinedLineComments(text, ranges).map(([start, end]) => ({ line: lineOf(text, start), body: text.slice(start, end) }));
+}
+
+function joinedLineComments(text, ranges) {
+  const joined = [];
+  for (const [start, end] of ranges) {
+    const last = joined[joined.length - 1];
+    const between = last ? text.slice(last[1], start) : "";
+    const isLineComment = text.startsWith("//", start);
+    if (last && isLineComment && text.startsWith("//", last[0]) && /^[ \t]*\r?\n[ \t]*$/.test(between)) last[1] = end;
+    else joined.push([start, end]);
+  }
+  return joined;
 }
 
 function normalized(body) {
@@ -58,7 +70,7 @@ export const DOCS_THAT_MAY_POINT_AT_COMMENTS = /^(docs\/book\/.*\.md|TaskSheets\
 
 const MENTIONS_A_COMMENT = /コメント|comment/i;
 const NAMES_CODE = /\.(ts|tsx|js|mjs|cjs|rs|wgsl|ya?ml|toml|ps1)\b|冒頭|先頭|コード中|コードコメント|モジュール/;
-const NOT_A_CODE_COMMENT = /コメントアウト|所有者の(コメント)|のコメント（|コメントを書かない|コメントは英語|コメントに.*パッケージ名|コメントのみ|(remove|no)-comments|check[:-]comments|comment-baseline/;
+const NOT_A_CODE_COMMENT = /コメントアウト|所有者の(コメント)|のコメント（|コメントを書かない|コメントは英語|コメントに.*パッケージ名|コメントのみ|(remove|no)-comments|check[:-]comments|comment-baseline|removed-comment-reasons/;
 
 export function linesPointingAtComments(text) {
   return text
@@ -79,14 +91,22 @@ function baseTextOf(baseRef, file) {
   }
 }
 
-function listRemovedReasons(baseRef, paths) {
-  const files = git(["diff", "--name-only", "--diff-filter=MD", baseRef, "--", ...paths]).split("\n").filter(Boolean);
+function headTextOf(headRef, file) {
+  if (headRef === null) return existsSync(file) ? readFileSync(file, "utf8") : "";
+  return baseTextOf(headRef, file);
+}
+
+function listRemovedReasons(baseRef, headRef, paths) {
+  const range = headRef === null ? [baseRef] : [baseRef, headRef];
+  const files = git(["diff", "--name-only", "--diff-filter=MD", ...range, "--", ...paths]).split("\n").filter(Boolean);
   let count = 0;
   for (const file of files) {
-    const head = existsSync(file) ? readFileSync(file, "utf8") : "";
+    const head = headTextOf(headRef, file);
     for (const { line, body } of removedCommentsWithReasons(baseTextOf(baseRef, file), head, file)) {
       count++;
-      console.log(`${file}:${line} (${baseRef}): ${normalized(body).slice(0, 200)}`);
+      const bodyLines = body.split(/\r?\n/);
+      const at = Math.max(0, bodyLines.findIndex((l) => hasReasonWord(l)));
+      console.log(`${file}:${line + at} (${baseRef}): ${normalized(bodyLines.slice(at).join(" ")).slice(0, 200)}`);
     }
   }
   console.log(`${count} removed comments give a reason: each needs a name, a test name or a row of the task sheet's table`);
@@ -111,5 +131,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     process.exit(args.length === 0 ? 2 : 0);
   }
   if (args[0] === "--docs") listDocLines();
-  else listRemovedReasons(args[0], args.slice(1));
+  else {
+    const headAt = args.indexOf("--head");
+    const headRef = headAt >= 0 ? args[headAt + 1] : null;
+    if (headAt >= 0) args.splice(headAt, 2);
+    listRemovedReasons(args[0], headRef, args.slice(1));
+  }
 }

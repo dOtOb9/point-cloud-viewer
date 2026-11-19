@@ -12,9 +12,28 @@ describe("removed-comment-reasons: comments whose reason would be lost", () => {
     expect(hasReasonWord("/** Opens the DTM dialog. */")).toBe(false);
   });
 
+  it("finds reasons outside the F-1 examples too (src/state/measure.ts, moved to the table by CM-3 itself)", () => {
+    expect(hasReasonWord("// Coordinates are the world coordinates (f64) obtained by picking. To keep precision with")).toBe(true);
+    expect(hasReasonWord("* The area uses the shoelace formula, computed after subtracting the centroid (so squares")).toBe(true);
+    expect(hasReasonWord("// 点群がほぼ覆われるように、ドロワーを閉じておく")).toBe(true);
+    expect(hasReasonWord("// in order to keep the order of the picks")).toBe(true);
+  });
+
+  it("reads consecutive // lines as one comment, so a reason split over two lines is found", () => {
+    const base = [
+      "// Coordinates are the world coordinates (f64) obtained by picking. To keep precision with",
+      "// large real-world coordinates (600k range), the area is computed after subtracting the centroid.",
+      "const x = 1;",
+    ].join("\n");
+    const found = removedCommentsWithReasons(base, "const x = 1;", "src/state/measure.ts");
+    expect(found).toHaveLength(1);
+    expect(found[0].line).toBe(1);
+    expect(found[0].body).toContain("subtracting the centroid");
+  });
+
   it("lists a removed comment with a reason, and not one that is still there or one without a reason", () => {
-    const base = ["// kept because it is still here", "const a = 1;", "// moved away because the drawer covers the points", "// just a label", "const b = 2;"].join("\n");
-    const head = ["// kept because it is still here", "const a = 1;", "const b = 2;"].join("\n");
+    const base = ["// kept because it is still here", "const a = 1;", "// moved away because the drawer covers the points", "const c = 3;", "// just a label", "const b = 2;"].join("\n");
+    const head = ["// kept because it is still here", "const a = 1;", "const c = 3;", "const b = 2;"].join("\n");
     expect(removedCommentsWithReasons(base, head, "src/x.ts")).toEqual([{ line: 3, body: "// moved away because the drawer covers the points" }]);
   });
 
@@ -38,5 +57,6 @@ describe("removed-comment-reasons --docs: documents that send the reader to a co
   it("leaves lines that only talk about comments in general", () => {
     expect(linesPointingAtComments("確認後、コメントアウトした行を必ず元に戻すこと。`edl.ts`")).toEqual([]);
     expect(linesPointingAtComments("`StatusBar.tsx`(コメントのみ)")).toEqual([]);
+    expect(linesPointingAtComments("- **コメントを消すときは…** `node scripts/removed-comment-reasons.mjs <base>` が、消したコメントのうち…`--docs` は設計書のうちコードのコメントを指している行")).toEqual([]);
   });
 });
