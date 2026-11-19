@@ -164,3 +164,12 @@
   - `gpu-resources.ts`: `ignoreBecauseDeviceLostNeverRejects` → `ignoreRejection`（2。同じ形の理由の文だったので一緒に直した）
   - 同じ形の他の名前: `git grep -ohE` で `src/` の 5 語以上の名前 49 個を出し、`_SO_`・`_FOR_A_`・`Because`・`_IS_AN_`・`_MEASURED_IN_` で絞ると上の 4 つだけだった（4 語の `UP_IS_AN_AXIS` は別に見つけていた）。表の名前も新しい名前に直した
 - 再発防止: `TaskSheets/RECURRENCE.md` に「## CM-1」の節、AGENTS.md の作業役の決まりに「名前は何か、理由は表」の行を足した
+
+### 監査の記録
+
+| ラウンド | 監査役 | 判定 | 主な指摘 |
+|---|---|---|---|
+| R1 | ループ | CHANGES_REQUESTED | シェーダーの最終の文字列を base と組み立てて比べ、uniform の大きさも同じ。F-1 [must] `points.wgsl` の空行の跡（赤のテスト）。F-2 [should] 空の catch の理由が消えた、F-3 [should] 文の形の長い名前、F-4〜F-6 [nit] |
+| R2 | ループ | APPROVE | 全部直った。`uniform-layout.test.ts` で TS と WGSL の構造体を比べる。名前の無い数値に名前（CM-5 の道具で 354→341 件）。F-7 [nit] 文の形の名前が残る |
+| RP R1 | ループ | APPROVE | F-7 を直し、AGENTS.md に「名前は『それが何か』だけ、理由は表」。機械で見ない理由（5 語以上の名前の大半は普通の名前）。F-RP-1 main との衝突 → メインが付け替えで解いた（AGENTS.md は CM-2・CM-5 の行と並べた）。F-RP-2 CM-0 のシートの逆の手本 → メインが直した |
+| PR | PR・CI | （この後） | |
