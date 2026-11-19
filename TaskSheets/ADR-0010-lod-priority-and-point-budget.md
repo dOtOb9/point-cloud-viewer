@@ -869,3 +869,16 @@ npm run build       # 通った
 
 `selectNodesForLayers` が、見えている全レイヤーのノードを同じ優先度（画面空間誤差×中央優先度）で1つの候補リストに入れ、点予算を共有して選ぶ。「根から子へたどる」はレイヤーごとにそのまま使うので、全ノード走査には戻らない。
 1レイヤーのときは従来と同じ結果（等価性テストは無修正で合格）。時間は合成 octree で 1 レイヤー 21,845 ノード 0.03〜1.0 ms、2 レイヤー合計 43,690 ノード 0.07〜0.8 ms（視点 2 通り。詳細は `TaskSheets/L1-multi-layer.md` の「L1-C の記録」）。
+
+## 追記（CM-1、2026-11-19）: 上の文が指していたコメントは消えた
+
+CM-1（`TaskSheets/CM-1-remove-comments-src-renderer.md`）で `src/renderer/` のコメントを全部消した（CLAUDE.md の「コード中にコメントを書かない」）。上の本文のうち、次の箇所が案内していたコメントはもう無い。本文は書き換えず、行き先をここに書く。
+
+- 「`point-budget.ts`と`point-cloud-renderer.ts`のコメントに明記した」（数値について正直に書く）・「4msという値も実測ではなく設計判断であることをコメントに明記した」（追記3）: 値とその理由（どれも実測していない未検証の初期値・設計判断であること）は、CM-1 のシートの「移した理由の記録」の表の `point-budget.ts:DEFAULT_POINT_BUDGET_TUNING` の各値の行、`point-cloud-renderer.ts:AUTO_POINT_BUDGET_MIN` の行、`point-budget.ts:updateRefreshIntervalEstimate` の行にある
+- 「テスト内のコメントに、旧実装(`nextPointBudget`)では同じ入力で回復しないことを明記した」: 旧実装はこの ADR の本文（「なぜ作り直したか」）のとおり。テストは名前（`point-budget.test.ts` の「【最重要】vsyncに量子化されたフレーム間隔の列を与えたとき、コマ落ち区間の後に予算が元の水準へ向かって回復する」）で残っている
+- 「`point-budget.test.ts`のコメントに、テスト内の数値が何を計算した結果かを書いてある」・「該当テストのコメントに、何を確認しているかを書いてある」: 数値の出し方を、消える前のコメント（`git show cc516d8~:src/renderer/point-budget.test.ts`）から写す
+  - `START_BUDGET = 6_710_886`（と `pointBudgetMaxFromMemoryBudget(256 * 1024 * 1024, 20, 2)` の期待値）: 旧既定のメモリ予算 256MiB を、1 点 20 バイト（`POINT_STRIDE`）× キャッシュ倍率 2 で割る。256×1024×1024 / (20×2) = 6,710,886.4 → 切り捨てで 6,710,886
+  - 回復のテストの「500 回」: 下限 200,000 から上限 3,000,000 まで（15 倍）戻るのに要る評価の回数の見積もり。コメントを書いた時点の調整値（`growRate` 0.05・`sustainedHitsToGrow` 6）で log(15)/log(1.05) ≈ 55.5 回の増加 × 6 回 ≈ 333 回、ウィンドウが入れ替わる分の余裕を見て 500 回。今の既定（`growRate` 0.1・`sustainedHitsToGrow` 3、追記の後に変えた）では log(15)/log(1.1) ≈ 28.4 × 3 ≈ 85 回なので、500 回はさらに余裕がある（この 85 は式で出した見積もりで、テストで回数を数えてはいない）
+  - 「楽観的に上限から始めて下げる」テスト: `CAPACITY_POINTS = 500_000` はこのモデルで「ちょうど 1 周期に収まる」点数。下げは持続を要求せず 1 回 20% なので、上限 6,710,886 から適正域（`CAPACITY_POINTS` の 1.5 倍以内）まで 15 ステップ以内（評価 500ms ごとで数秒）に落ちることを見る
+  - 「際限なく増え続けない」テスト: `CAPACITY_POINTS = 2_000_000` のモデルで 500 回評価し、最大でも `CAPACITY_POINTS` の 1.5 倍未満、最後は 0.3 倍より上に落ち着く
+  - `WINDOW_SIZE = 20` は `point-cloud-renderer.ts` の `AUTO_POINT_BUDGET_FRAME_HISTORY` と同じ。`LOAD_DURATION_MS = 6_000` は所有者の実機で確かめられた負荷が続く時間の規模

@@ -87,11 +87,12 @@ Multiplicative Decrease）です。これは当初の実装（`requestAnimationF
 
 ## WebGPU を直接叩くところ: `gpu-resources.ts`
 
-[`gpu-resources.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/gpu-resources.ts)（1,000行超）が、デバイス・パイプライン・テクスチャの初期化、
+[`gpu-resources.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/gpu-resources.ts)（約650行）が、デバイス・パイプライン・テクスチャの初期化、
 リサイズ、1フレーム分の描画コマンドのエンコード（`drawFrame`）を持ちます。
 **`src/renderer/` の中でも WebGPU の API を直接叩くのはこのファイルだけ**です。
 
 描画パイプラインは EDL のオン/オフと点の形（丸/四角）で切り替わります。
+シェーダー（WGSL）は `src/renderer/shaders/*.wgsl` にあり、各 `.ts` が `?raw` で文字列として読みます（点は `points.wgsl`、EDL は `edl.wgsl`、空は `sky.wgsl`、グリッドは `ground-grid.wgsl`、ピッキングの深度の読み戻しは `depth-window.wgsl`）。
 
 - EDL オン: 点群を独立したオフスクリーンの色+深度テクスチャに描き、その後
   空・グリッドをスワップチェーンへ描いてから、EDL 合成パス（[`edl.ts`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/src/renderer/edl.ts)）が
