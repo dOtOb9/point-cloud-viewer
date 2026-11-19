@@ -14,7 +14,6 @@ const LINUX_SWIFTSHADER_FLAGS = [
   "--use-angle=swiftshader",
   "--use-webgpu-adapter=swiftshader",
 ];
-const REUSE_EXISTING_SERVER = false;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -49,7 +48,7 @@ export default defineConfig({
     command: `npm run build && npm run preview -- --port ${port} --strictPort --host ${PREVIEW_HOST}`,
     url: baseUrl,
     env: { GITHUB_PAGES_BUILD: "true" },
-    reuseExistingServer: REUSE_EXISTING_SERVER,
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });
