@@ -234,7 +234,7 @@ E57/PLY/PCDの取り込みを`crates/pcv-convert/src/import/`に実装した。�
 
 ### 属性の対応（座標・色・強度）
 
-各形式のモジュール冒頭コメント（`e57.rs`・`ply.rs`・`pcd.rs`）に詳細を記録した。要点:
+各形式のモジュール冒頭コメント（`e57.rs`・`ply.rs`・`pcd.rs`）に詳細を記録した（CM-5 でコードのコメントを消したので、今は下の要点と `TaskSheets/CM-5-remove-comments-pcv-convert-tauri.md` の「移した理由の記録」にある。2026-11-19）。要点:
 
 - **E57**: `intensityLimits`/`colorLimits`で申告される値域を`PointCloudReaderSimple`が
   既定で0.0..1.0へ正規化するため、こちら側は`* 65535`するだけでLASの16bit幅に写せる。
