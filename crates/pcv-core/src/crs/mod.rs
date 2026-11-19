@@ -125,6 +125,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn geotiff_epsg_code_range_is_written_only_in_is_geotiff_epsg_code() {
+        for (path, source) in [
+            ("crs/describe.rs", include_str!("describe.rs")),
+            ("raster/output.rs", include_str!("../raster/output.rs")),
+            ("raster/geotiff.rs", include_str!("../raster/geotiff.rs")),
+        ] {
+            for number in ["32766", "32767"] {
+                assert!(
+                    !source.contains(number),
+                    "{path} has {number}; call is_geotiff_epsg_code"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn geotiff_epsg_code_is_1_to_32766() {
         assert!(!is_geotiff_epsg_code(0));
         assert!(is_geotiff_epsg_code(1));
