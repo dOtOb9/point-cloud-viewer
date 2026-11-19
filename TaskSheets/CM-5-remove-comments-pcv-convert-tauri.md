@@ -84,12 +84,12 @@
 
 ### 監査の指摘への対応（CM-5 R1 の APPROVE の後、CM-5-RP R1）
 
-- F-1（should）: 3 ファイルの小さいメモリ予算を定数 `MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK` にした（300daac）。テストは同じ値で走る
-- F-2（should）: `pcv://` の4つの応答の CORS ヘッダを関数 `allow_fetch_from_dev_server_origin` に出し、4つの応答が全部ヘッダを持つことをテスト `every_pcv_response_allows_fetch_from_the_dev_server_origin` で確かめる（bbcf472）。ヘッダを足す順番が `status` の前に変わったが、HTTP のヘッダの集合は同じ
-- 構成の負債（should）: `import/convert.rs` の `PROGRESS_REPORT_STRIDE` を消して `streaming.rs` のものを使う（2294929）。下のスクリプトで見つけた同じ形の `READ_BATCH_SIZE`（`merge.rs`・`import/las.rs`）も `streaming.rs` の1つにした（`pub(crate)`）。examples の `READ_BATCH_SIZE` はクレートの外なので残した
-- F-3（nit）: リターン別の旧点数に `LEGACY_POINTS_BY_RETURN_UNUSED_IN_LAS_1_4` を足した（38f1a78）
-- F-4（nit）: `statvfs` の2つ目の `unsafe` の前にも `// SAFETY:` の1行を置き、1つ目の行は `zeroed` の根拠に書き直した（61394b7）
-- 再発防止: `scripts/removed-comments-near-literals.mjs` を足した（`TaskSheets/RECURRENCE.md` の「CM-5」）。CM-5 の範囲に当てた結果（186 件）を見て、PLY の `257` を `U8_TO_U16_FULL_RANGE_FACTOR` にし（a29c619）、上の表に 6 行を足した。残りはテストのデータ・LAS の書式の固定値・既に名前のある定数で、名前にしなかった
+- F-1（should）: 3 ファイルの小さいメモリ予算を定数 `MEMORY_BUDGET_SMALL_ENOUGH_TO_SPLIT_THE_OCTREE_ON_DISK` にした（9bb3794）。テストは同じ値で走る
+- F-2（should）: `pcv://` の4つの応答の CORS ヘッダを関数 `allow_fetch_from_dev_server_origin` に出し、4つの応答が全部ヘッダを持つことをテスト `every_pcv_response_allows_fetch_from_the_dev_server_origin` で確かめる（9ce7be9）。ヘッダを足す順番が `status` の前に変わったが、HTTP のヘッダの集合は同じ
+- 構成の負債（should）: `import/convert.rs` の `PROGRESS_REPORT_STRIDE` を消して `streaming.rs` のものを使う（4410008）。下のスクリプトで見つけた同じ形の `READ_BATCH_SIZE`（`merge.rs`・`import/las.rs`）も `streaming.rs` の1つにした（`pub(crate)`）。examples の `READ_BATCH_SIZE` はクレートの外なので残した
+- F-3（nit）: リターン別の旧点数に `LEGACY_POINTS_BY_RETURN_UNUSED_IN_LAS_1_4` を足した（2131c14）
+- F-4（nit）: `statvfs` の2つ目の `unsafe` の前にも `// SAFETY:` の1行を置き、1つ目の行は `zeroed` の根拠に書き直した（177954c）
+- 再発防止: `scripts/removed-comments-near-literals.mjs` を足した（`TaskSheets/RECURRENCE.md` の「CM-5」）。CM-5 の範囲に当てた結果（186 件）を見て、PLY の `257` を `U8_TO_U16_FULL_RANGE_FACTOR` にし（509f471）、上の表に 6 行を足した。残りはテストのデータ・LAS の書式の固定値・既に名前のある定数で、名前にしなかった
 
 ### 監査の記録
 
