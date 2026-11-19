@@ -261,4 +261,5 @@
 |---|---|---|---|
 | R1 | ループ | APPROVE | コメントを除いた比較で差は改名・切り出し・rustfmt だけ。`gamma` の符号・206・GeoTIFF のタグと GeoKey の値は元と同じ。生成物の d.ts・js は削除だけ、wasm のエクスポート 72・インポート 76 は同じ。F-1 [should] wasm の大きさの理由（主因はビルドした場所の絶対パス）、F-2 [should] 32767 の境界が3か所に数値のまま、F-3 [should] 読み違えやすい名前、F-4・F-5 [nit] |
 | RP R1 | ループ | APPROVE | 境界を `crs::is_geotiff_epsg_code` 1つにまとめ5か所から呼ぶ（全部元と同値）。`ZeroLength` の型で4か所の呼び出しの意味は元と同じ。テスト2つ（境界の4点、数値が他のファイルに戻ったら落ちる）。nit N-1〜N-4 |
-| PR | PR・CI | （この後） | |
+| PR R1 | PR・CI | CHANGES_REQUESTED | CI run 44506672189 は緑、作り直した生成物はコミットと一致。F-1 [must] ADR-0008:188・202 が消したコメントを指す。F-2 [should] IFD のタグの昇順の制約が消えた。F-3 [should] main で入った2つの道具を範囲に当てていない。F-4・F-5 [nit] |
+| PR R2 | PR・CI | APPROVE | CI run 44510308923 は緑。全部直った。定数化の値・型・計算は元と同じ、`.wasm` は作り直しとバイト一致。N-1 [nit] `LAS_FORMATS_WITH_RGB` は COPC の中だけの話（後のタスクへ） |
