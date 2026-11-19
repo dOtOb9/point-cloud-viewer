@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use crate::crs::is_geotiff_epsg_code;
 use crate::raster::color::CellColorizer;
 use crate::raster::geotiff;
 use crate::raster::{CellAccumulator, ClassFilter, RasterError, RasterValue, NODATA};
@@ -56,7 +57,7 @@ pub fn write_geotiff<W: Write>(
 
 pub fn missing_crs_warning(epsg: Option<u32>) -> Option<String> {
     match epsg {
-        Some(code) if code != 0 && code < 32767 => None,
+        Some(code) if is_geotiff_epsg_code(code) => None,
         _ => Some(
             "座標系(EPSG)が分からないため、GeoTIFFには座標系を書いていません。\
              GISで開くときは座標系を指定してください"

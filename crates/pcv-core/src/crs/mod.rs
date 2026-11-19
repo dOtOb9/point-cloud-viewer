@@ -45,6 +45,12 @@ impl Crs {
     }
 }
 
+pub const MAX_GEOTIFF_EPSG_CODE: u32 = 32766;
+
+pub fn is_geotiff_epsg_code(code: u32) -> bool {
+    (1..=MAX_GEOTIFF_EPSG_CODE).contains(&code)
+}
+
 pub fn detect_crs_from_las_header(header: &las::Header) -> Crs {
     if let Some(wkt) = header.get_wkt_crs_bytes() {
         if let Some(code) = epsg_from_wkt(wkt) {
@@ -54,7 +60,7 @@ pub fn detect_crs_from_las_header(header: &las::Header) -> Crs {
     }
     match header.get_geotiff_crs() {
         Ok(Some(geotiff)) => match geotiff.get_projected_crs_geo_key_value() {
-            Some(code) if (1..=32766).contains(&code) => Crs::from_epsg(code as u32),
+            Some(code) if is_geotiff_epsg_code(u32::from(code)) => Crs::from_epsg(code as u32),
             _ => Crs::Unknown,
         },
         _ => Crs::Unknown,
@@ -92,7 +98,7 @@ pub fn crs_id_from_las_header(header: &las::Header) -> CrsId {
                 .get_projected_crs_geo_key_value()
                 .or_else(|| geotiff.get_geodetic_crs_geo_key_value());
             match code {
-                Some(code) if (1..=32766).contains(&code) => CrsId::Epsg(u32::from(code)),
+                Some(code) if is_geotiff_epsg_code(u32::from(code)) => CrsId::Epsg(u32::from(code)),
                 _ => CrsId::Other("GeoTIFF keys without an EPSG code".to_string()),
             }
         }
@@ -117,6 +123,14 @@ fn epsg_from_wkt(bytes: &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geotiff_epsg_code_is_1_to_32766() {
+        assert!(!is_geotiff_epsg_code(0));
+        assert!(is_geotiff_epsg_code(1));
+        assert!(is_geotiff_epsg_code(32766));
+        assert!(!is_geotiff_epsg_code(32767));
+    }
 
     fn assert_close_m(actual: f64, expected: f64, tol_m: f64, what: &str) {
         let diff = (actual - expected).abs();

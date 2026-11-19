@@ -1,6 +1,6 @@
 use std::io::{Read, Seek, SeekFrom};
 
-use super::{epsg_from_wkt, Crs, JgdEpoch};
+use super::{epsg_from_wkt, is_geotiff_epsg_code, Crs, JgdEpoch};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrsKind {
@@ -200,7 +200,7 @@ fn describe_names(header: &las::Header) -> CrsInfo {
     }
     match header.get_geotiff_crs() {
         Ok(Some(geotiff)) => match geotiff.get_projected_crs_geo_key_value() {
-            Some(code) if (1..=32766).contains(&code) => {
+            Some(code) if is_geotiff_epsg_code(u32::from(code)) => {
                 let epsg = code as u32;
                 match recognized_name(Crs::from_epsg(epsg)) {
                     Some((kind, name)) => CrsInfo {

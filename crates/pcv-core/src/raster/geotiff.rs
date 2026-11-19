@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use crate::crs::is_geotiff_epsg_code;
 use crate::raster::{GridSpec, RasterError};
 
 const TYPE_ASCII: u16 = 2;
@@ -45,7 +46,6 @@ const GT_RASTER_TYPE_GEO_KEY: u16 = 1025;
 const PROJECTED_CS_TYPE_GEO_KEY: u16 = 3072;
 const MODEL_TYPE_PROJECTED: u16 = 1;
 const RASTER_PIXEL_IS_AREA: u16 = 1;
-const FIRST_USER_DEFINED_GEO_KEY_CODE: u32 = 32767;
 
 const NO_NEXT_IFD: u32 = 0;
 
@@ -254,7 +254,7 @@ fn write_tiff<W: Write, S>(
     encode: impl Fn(&S, &mut Vec<u8>),
 ) -> Result<(), RasterError> {
     if let Some(code) = epsg {
-        if code == 0 || code >= FIRST_USER_DEFINED_GEO_KEY_CODE {
+        if !is_geotiff_epsg_code(code) {
             return Err(RasterError::InvalidArgument(format!(
                 "EPSGコード {code} はGeoTIFFに書けません"
             )));
