@@ -57,13 +57,9 @@ fn make_copc(dir: &std::path::Path, side: u32, max_points_per_node: u32) -> std:
 #[test]
 fn all_yields_exactly_the_header_point_count() {
     let dir = tempfile::tempdir().expect("tempdir");
-    const SIDE_GIVING_1600_POINTS: u32 = 40;
-    const NODE_SIZE_GIVING_MANY_NODES: u32 = 300;
-    let path = make_copc(
-        dir.path(),
-        SIDE_GIVING_1600_POINTS,
-        NODE_SIZE_GIVING_MANY_NODES,
-    );
+    const SIDE_POINTS: u32 = 40;
+    const POINTS_PER_NODE: u32 = 300;
+    let path = make_copc(dir.path(), SIDE_POINTS, POINTS_PER_NODE);
     let reader = CopcReader::from_path(&path).expect("open");
     let header_count = reader.file().header().number_of_points();
     assert_eq!(header_count, 1600);

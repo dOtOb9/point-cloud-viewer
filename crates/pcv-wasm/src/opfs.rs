@@ -10,18 +10,21 @@ use wasm_bindgen::JsValue;
 use web_sys::{FileSystemReadWriteOptions, FileSystemSyncAccessHandle};
 use web_time::Instant;
 
-const ZERO_IS_END_OF_FILE: bool = true;
-const ZERO_IS_AN_ERROR: bool = false;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZeroLength {
+    EndOfFile,
+    Error,
+}
 
 fn check_opfs_len(
     op: &str,
     raw: f64,
     pos: u64,
     buf_len: usize,
-    zero_is_end_of_file: bool,
+    zero_length: ZeroLength,
 ) -> std::result::Result<usize, String> {
     let valid = raw.is_finite() && raw >= 0.0 && raw.fract() == 0.0 && raw <= buf_len as f64;
-    if valid && (zero_is_end_of_file || raw > 0.0) {
+    if valid && (zero_length == ZeroLength::EndOfFile || raw > 0.0) {
         return Ok(raw as usize);
     }
     let hint = if op == "書き込み" {
@@ -258,7 +261,7 @@ impl Write for OpfsTempWriter {
                 .map_err(|e| js_io_err("OPFS scratch write", e))?
         };
         self.timer.record(write_start.elapsed());
-        let written = check_opfs_len("書き込み", written, self.pos, buf.len(), ZERO_IS_AN_ERROR)
+        let written = check_opfs_len("書き込み", written, self.pos, buf.len(), ZeroLength::Error)
             .map_err(io::Error::other)?;
         self.pos += written as u64;
         Ok(written)
@@ -366,7 +369,7 @@ impl OpfsTempReader {
             let n = handle
                 .read_with_u8_array_and_options(&mut buf[read_total..], &at(pos))
                 .map_err(|e| js_copc_err("OPFS scratch read", e))?;
-            let n = check_opfs_len("読み出し", n, pos, remaining, ZERO_IS_AN_ERROR)
+            let n = check_opfs_len("読み出し", n, pos, remaining, ZeroLength::Error)
                 .map_err(Error::InvalidData)?;
             read_total += n;
         }
@@ -455,7 +458,7 @@ impl Read for OpfsSeqReader {
         let elapsed = read_start.elapsed();
         self.timer.record(elapsed);
         self.seq_read_counters.record(elapsed);
-        let n = check_opfs_len("読み出し", n, self.pos, buf.len(), ZERO_IS_END_OF_FILE)
+        let n = check_opfs_len("読み出し", n, self.pos, buf.len(), ZeroLength::EndOfFile)
             .map_err(io::Error::other)?;
         self.pos += n as u64;
         Ok(n)
@@ -476,7 +479,7 @@ impl Write for OpfsOutputWriter {
             .write_with_u8_array_and_options(buf, &at(self.pos))
             .map_err(|e| js_io_err("OPFS output write", e))?;
         self.timer.record(write_start.elapsed());
-        let written = check_opfs_len("書き込み", written, self.pos, buf.len(), ZERO_IS_AN_ERROR)
+        let written = check_opfs_len("書き込み", written, self.pos, buf.len(), ZeroLength::Error)
             .map_err(io::Error::other)?;
         self.pos += written as u64;
         Ok(written)
@@ -573,24 +576,34 @@ mod tests {
 
     #[test]
     fn check_opfs_len_accepts_normal_value() {
-        assert_eq!(check_opfs_len("書き込み", 1024.0, 0, 1024, false), Ok(1024));
-        assert_eq!(check_opfs_len("書き込み", 10.0, 0, 1024, false), Ok(10));
+        assert_eq!(
+            check_opfs_len("書き込み", 1024.0, 0, 1024, ZeroLength::Error),
+            Ok(1024)
+        );
+        assert_eq!(
+            check_opfs_len("書き込み", 10.0, 0, 1024, ZeroLength::Error),
+            Ok(10)
+        );
     }
 
     #[test]
-    fn check_opfs_len_zero_depends_on_allow_zero() {
-        assert_eq!(check_opfs_len("読み出し", 0.0, 5, 16, true), Ok(0));
-        assert!(check_opfs_len("書き込み", 0.0, 5, 16, false).is_err());
+    fn check_opfs_len_zero_depends_on_zero_length() {
+        assert_eq!(
+            check_opfs_len("読み出し", 0.0, 5, 16, ZeroLength::EndOfFile),
+            Ok(0)
+        );
+        assert!(check_opfs_len("書き込み", 0.0, 5, 16, ZeroLength::Error).is_err());
     }
 
     #[test]
     fn check_opfs_len_rejects_larger_than_buffer() {
-        assert!(check_opfs_len("書き込み", 1025.0, 0, 1024, false).is_err());
+        assert!(check_opfs_len("書き込み", 1025.0, 0, 1024, ZeroLength::Error).is_err());
     }
 
     #[test]
     fn check_opfs_len_rejects_2_pow_32_minus_8_with_clear_message() {
-        let err = check_opfs_len("書き込み", 4294967288.0, 100, 1048576, false).unwrap_err();
+        let err =
+            check_opfs_len("書き込み", 4294967288.0, 100, 1048576, ZeroLength::Error).unwrap_err();
         assert!(err.contains("4294967288"), "{err}");
         assert!(err.contains("シークレットウィンドウ"), "{err}");
         assert!(err.contains("1048576"), "{err}");
@@ -600,7 +613,7 @@ mod tests {
     fn check_opfs_len_rejects_nan_infinite_negative_and_fraction() {
         for raw in [f64::NAN, f64::INFINITY, -8.0, 0.5] {
             assert!(
-                check_opfs_len("読み出し", raw, 0, 16, true).is_err(),
+                check_opfs_len("読み出し", raw, 0, 16, ZeroLength::EndOfFile).is_err(),
                 "{raw}"
             );
         }

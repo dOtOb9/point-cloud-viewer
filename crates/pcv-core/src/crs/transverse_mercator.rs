@@ -119,8 +119,8 @@ impl SeriesConstants {
     }
 }
 
-fn gamma_with_the_sign_of_gsi_grid_conv(gamma_as_kawase: f64) -> f64 {
-    -gamma_as_kawase
+fn gsi_signed_gamma(kawase_gamma: f64) -> f64 {
+    -kawase_gamma
 }
 
 pub fn forward(params: &TransverseMercatorParams, lat_rad: f64, lon_rad: f64) -> ForwardResult {
@@ -165,9 +165,9 @@ pub fn forward(params: &TransverseMercatorParams, lat_rad: f64, lon_rad: f64) ->
     let x = c.k * x_sum - c.m0_s_phi0;
     let y = c.k * y_sum;
 
-    let gamma_as_kawase_eq_7 = (tau * sec_chi * cos_dlambda + sigma * tan_chi * sin_dlambda)
+    let kawase_gamma = (tau * sec_chi * cos_dlambda + sigma * tan_chi * sin_dlambda)
         .atan2(sigma * sec_chi * cos_dlambda - tau * tan_chi * sin_dlambda);
-    let gamma = gamma_with_the_sign_of_gsi_grid_conv(gamma_as_kawase_eq_7);
+    let gamma = gsi_signed_gamma(kawase_gamma);
 
     let m = (c.k / params.ellipsoid.semi_major_axis)
         * ((sigma * sigma + tau * tau) / (tan_chi * tan_chi + cos_dlambda * cos_dlambda)
@@ -225,9 +225,9 @@ pub fn inverse(params: &TransverseMercatorParams, x: f64, y: f64) -> InverseResu
 
     let tan_xi_p = xi_p.tan();
     let tanh_eta_p = eta_p.tanh();
-    let gamma_as_kawase_eq_15 =
+    let kawase_gamma =
         (tau_p + sigma_p * tan_xi_p * tanh_eta_p).atan2(sigma_p - tau_p * tan_xi_p * tanh_eta_p);
-    let gamma = gamma_with_the_sign_of_gsi_grid_conv(gamma_as_kawase_eq_15);
+    let gamma = gsi_signed_gamma(kawase_gamma);
 
     let m = (c.k / params.ellipsoid.semi_major_axis)
         * ((xi_p.cos().powi(2) + eta_p.sinh().powi(2)) / (sigma_p * sigma_p + tau_p * tau_p)

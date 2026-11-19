@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::tiles::{TileData, TilePoint, TileRect};
 
-const HALF_A_CELL_PLUS_ONE_PERCENT_SLACK: f64 = 0.51;
+const MARGIN_PER_CELL_SIZE: f64 = 0.51;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridKeep {
@@ -32,7 +32,7 @@ impl ThinSettings {
     }
 
     pub fn margin(&self) -> f64 {
-        self.size * HALF_A_CELL_PLUS_ONE_PERCENT_SLACK
+        self.size * MARGIN_PER_CELL_SIZE
     }
 
     pub fn check_coordinates(&self, max_abs_coordinate: f64) -> Result<(), String> {

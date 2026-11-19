@@ -586,11 +586,10 @@ mod tests {
             largest = largest.max(tile.points.len());
             tile_count += 1;
         }
-        const ROOM_FOR_THE_ESTIMATE_ERROR: usize = 2;
-        const PERIMETER_POINTS_PER_M_OF_MARGIN_AT_ONE_POINT_PER_M2: usize = 4 * 40;
-        let core_plus_margin_band =
-            cap as usize + PERIMETER_POINTS_PER_M_OF_MARGIN_AT_ONE_POINT_PER_M2 * margin as usize;
-        let bound = ROOM_FOR_THE_ESTIMATE_ERROR * core_plus_margin_band;
+        const ESTIMATE_ERROR_FACTOR: usize = 2;
+        const PERIMETER_M_BOUND: usize = 4 * 40;
+        let core_plus_margin_band = cap as usize + PERIMETER_M_BOUND * margin as usize;
+        let bound = ESTIMATE_ERROR_FACTOR * core_plus_margin_band;
         assert!(largest <= bound, "largest {largest} bound {bound}");
         assert!(largest < total / 2, "largest {largest} total {total}");
         assert!(tile_count > 4);

@@ -668,7 +668,7 @@ mod tests {
             }
         }
 
-        const TOO_SMALL_TO_HOLD_THE_FILE_BYTES: usize = 64;
+        const BUFFER_BYTES: usize = 64;
         let count = 50_000usize;
         let header = "ply\nformat binary_little_endian 1.0\nelement vertex 50000\n\
                       property float x\nproperty float y\nproperty float z\n\
@@ -681,11 +681,8 @@ mod tests {
             row,
             row_pos: row.len(),
         };
-        let mut stream = PlyStream::open(std::io::BufReader::with_capacity(
-            TOO_SMALL_TO_HOLD_THE_FILE_BYTES,
-            source,
-        ))
-        .expect("open");
+        let mut stream =
+            PlyStream::open(std::io::BufReader::with_capacity(BUFFER_BYTES, source)).expect("open");
         let mut n = 0usize;
         while let Some(p) = stream.next_point().expect("next_point") {
             assert_eq!(p.x, 1.0);

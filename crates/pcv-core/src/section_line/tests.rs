@@ -193,13 +193,14 @@ fn ground_points_are_bounded_by_the_cells_not_by_the_points() {
         max_cells: 2_000_000,
     };
     let points = ground((-5.0, 15.0), (-5.0, 5.0), 0.0625, |_| 0.0);
-    const MANY_MORE_POINTS_THAN_CELLS: usize = 50_000;
-    const CELLS_OF_A_20_BY_10_M_CORRIDOR_AT_1_M: usize = 200;
-    assert!(points.len() > MANY_MORE_POINTS_THAN_CELLS);
+    const MIN_POINTS: usize = 50_000;
+    const CORRIDOR_LENGTH_CELLS: usize = 20;
+    const CORRIDOR_WIDTH_CELLS: usize = 10;
+    assert!(points.len() > MIN_POINTS);
     let (_dir, mut file) = open(points);
     let mut job = SectionLineJob::new(&file, &line_x(10.0), &params).expect("job");
     let cells = job.cell_count();
-    assert_eq!(cells, CELLS_OF_A_20_BY_10_M_CORRIDOR_AT_1_M);
+    assert_eq!(cells, CORRIDOR_LENGTH_CELLS * CORRIDOR_WIDTH_CELLS);
     loop {
         let p = job.advance(&mut file).expect("advance");
         assert!(job.ground_point_count() <= cells);

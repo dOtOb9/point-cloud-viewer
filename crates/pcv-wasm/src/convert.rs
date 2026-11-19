@@ -554,33 +554,28 @@ mod tests {
 
     #[test]
     fn concatenated_ranges_match_a_single_full_range_read() {
-        const ABOUT_SIX_LAZ_CHUNKS_OF_POINTS: u32 = 300_000;
-        const BATCH_THAT_CROSSES_CHUNK_BOUNDARIES: u32 = 1_000;
+        const POINT_COUNT: u32 = 300_000;
+        const BATCH_SIZE: u32 = 1_000;
 
-        let bytes = synthetic_multi_chunk_laz_bytes(ABOUT_SIX_LAZ_CHUNKS_OF_POINTS);
+        let bytes = synthetic_multi_chunk_laz_bytes(POINT_COUNT);
 
         let full = decompress_range_in_batches(
             Cursor::new(bytes.clone()),
             0,
-            u64::from(ABOUT_SIX_LAZ_CHUNKS_OF_POINTS),
-            ABOUT_SIX_LAZ_CHUNKS_OF_POINTS,
+            u64::from(POINT_COUNT),
+            POINT_COUNT,
         )
         .expect("全体の展開に失敗した");
 
-        let three_workers = [
-            0u64,
-            70_000,
-            180_000,
-            u64::from(ABOUT_SIX_LAZ_CHUNKS_OF_POINTS),
-        ];
+        let boundaries_of_three_workers = [0u64, 70_000, 180_000, u64::from(POINT_COUNT)];
         let mut concatenated = Vec::new();
-        for window in three_workers.windows(2) {
+        for window in boundaries_of_three_workers.windows(2) {
             let (start, end) = (window[0], window[1]);
             let part = decompress_range_in_batches(
                 Cursor::new(bytes.clone()),
                 start,
                 end - start,
-                BATCH_THAT_CROSSES_CHUNK_BOUNDARIES,
+                BATCH_SIZE,
             )
             .unwrap_or_else(|e| panic!("範囲[{start}, {end})の展開に失敗した: {e}"));
             concatenated.extend_from_slice(&part);

@@ -259,10 +259,10 @@ mod tests {
 
         let mut stream = E57Stream::open(Cursor::new(bytes.clone())).expect("open");
         let mut next_expected = 0u32;
-        const FEED_LIKE_BATCH_THAT_DOES_NOT_DIVIDE_THE_SCAN: usize = 777;
+        const BATCH_SIZE: usize = 777;
         loop {
             let mut batch = Vec::new();
-            while batch.len() < FEED_LIKE_BATCH_THAT_DOES_NOT_DIVIDE_THE_SCAN {
+            while batch.len() < BATCH_SIZE {
                 match stream.next_point().expect("next_point") {
                     Some(p) => batch.push(p),
                     None => break,
@@ -272,7 +272,7 @@ mod tests {
                 assert_eq!(p.x, f64::from(next_expected));
                 next_expected += 1;
             }
-            if batch.len() < FEED_LIKE_BATCH_THAT_DOES_NOT_DIVIDE_THE_SCAN {
+            if batch.len() < BATCH_SIZE {
                 break;
             }
         }

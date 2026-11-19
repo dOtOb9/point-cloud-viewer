@@ -84,10 +84,9 @@ impl Seek for HttpRangeReader {
     }
 }
 
-const SYNCHRONOUS_ONLY_IN_A_WORKER: bool = false;
 const HTTP_PARTIAL_CONTENT: u16 = 206;
 
-fn is_a_range_response_and_not_the_whole_file(status: u16) -> bool {
+fn is_partial_content(status: u16) -> bool {
     status == HTTP_PARTIAL_CONTENT
 }
 
@@ -97,13 +96,14 @@ fn send_range_request(
     last_byte_inclusive: u64,
 ) -> Result<XmlHttpRequest, JsValue> {
     let xhr = XmlHttpRequest::new()?;
-    xhr.open_with_async("GET", url, SYNCHRONOUS_ONLY_IN_A_WORKER)?;
+    let is_async = false;
+    xhr.open_with_async("GET", url, is_async)?;
     xhr.set_response_type(XmlHttpRequestResponseType::Arraybuffer);
     xhr.set_request_header("Range", &format!("bytes={start}-{last_byte_inclusive}"))?;
     xhr.send()?;
 
     let status = xhr.status()?;
-    if !is_a_range_response_and_not_the_whole_file(status) {
+    if !is_partial_content(status) {
         return Err(JsValue::from_str(&format!(
             "Rangeリクエストが206を返さなかった(status={status}, url={url})。\
              サーバーがHTTP Rangeに対応していないか、CORSでブロックされている可能性がある"
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn a_200_that_ignored_the_range_header_is_rejected_so_the_whole_file_is_never_read() {
-        assert!(is_a_range_response_and_not_the_whole_file(206));
-        assert!(!is_a_range_response_and_not_the_whole_file(200));
+        assert!(is_partial_content(206));
+        assert!(!is_partial_content(200));
     }
 }

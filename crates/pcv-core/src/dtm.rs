@@ -276,14 +276,11 @@ fn with_exponent(digits: f64, exp: i32) -> f64 {
         .unwrap_or(digits * 10f64.powi(exp))
 }
 
-const KEEP_ALREADY_ROUND_VALUES: f64 = 1e-9;
+const ROUND_UP_TOLERANCE: f64 = 1e-9;
 
 fn round_up_2_digits(x: f64) -> f64 {
     let exp = x.log10().floor() as i32 - 1;
-    with_exponent(
-        (x / 10f64.powi(exp) - KEEP_ALREADY_ROUND_VALUES).ceil(),
-        exp,
-    )
+    with_exponent((x / 10f64.powi(exp) - ROUND_UP_TOLERANCE).ceil(), exp)
 }
 
 fn smallest_fitting(start: f64, fits: impl Fn(f64) -> bool) -> Option<f64> {

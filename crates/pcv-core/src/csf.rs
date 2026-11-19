@@ -4,7 +4,7 @@ const MARGIN_CELLS: usize = 2;
 const START_ABOVE_TOP: f32 = 0.05;
 const MIN_GROUP_FOR_POST: usize = 50;
 const REBUILD_INTERVAL: u32 = 8;
-const REFERENCE_SLOPE_HEIGHT_THRESHOLD_THAT_NEVER_REJECTS: f32 = 9999.0;
+const NEVER_REJECTING_SLOPE_HEIGHT_THRESHOLD: f32 = 9999.0;
 
 const NEIGHBOURS: [(i32, i32); 16] = [
     (-1, -1),
@@ -489,8 +489,7 @@ impl Cloth {
                     let hit = self.axis_neighbours(c).into_iter().flatten().any(|q| {
                         !self.movable[q]
                             && (self.ihv[c] - self.ihv[q]).abs() < hdiff
-                            && self.h[c] - self.ihv[c]
-                                < REFERENCE_SLOPE_HEIGHT_THRESHOLD_THAT_NEVER_REJECTS
+                            && self.h[c] - self.ihv[c] < NEVER_REJECTING_SLOPE_HEIGHT_THRESHOLD
                     });
                     if hit {
                         self.h[c] = self.ihv[c];
@@ -510,7 +509,7 @@ impl Cloth {
                         if visited[q]
                             && (self.ihv[c] - self.ihv[q]).abs() < hdiff
                             && (self.h[q] - self.ihv[q]).abs()
-                                < REFERENCE_SLOPE_HEIGHT_THRESHOLD_THAT_NEVER_REJECTS
+                                < NEVER_REJECTING_SLOPE_HEIGHT_THRESHOLD
                         {
                             self.h[q] = self.ihv[q];
                             self.movable[q] = false;
@@ -689,13 +688,10 @@ mod tests {
         let pred = classify(&cloth, &pts);
         let (recall, precision) = recall_precision(&pred, &truth);
         eprintln!("scene A standard: recall {recall:.4} precision {precision:.4}");
-        const ONLY_THE_CLOTH_EDGE_AROUND_THE_BUILDING_AND_THE_OUTLIER_MAY_BE_LOST: f64 = 0.98;
+        const MIN_RECALL_AND_PRECISION: f64 = 0.98;
+        assert!(recall >= MIN_RECALL_AND_PRECISION, "recall {recall}");
         assert!(
-            recall >= ONLY_THE_CLOTH_EDGE_AROUND_THE_BUILDING_AND_THE_OUTLIER_MAY_BE_LOST,
-            "recall {recall}"
-        );
-        assert!(
-            precision >= ONLY_THE_CLOTH_EDGE_AROUND_THE_BUILDING_AND_THE_OUTLIER_MAY_BE_LOST,
+            precision >= MIN_RECALL_AND_PRECISION,
             "precision {precision}"
         );
         for (k, t) in tag.iter().enumerate() {
@@ -763,15 +759,15 @@ mod tests {
             );
             const STEEP_SLOPE_DEG: f64 = 30.0;
             const HEAVY_CANOPY_GROUND_FRACTION: f64 = 0.1;
-            const MEASURED_RECALL_GAIN_ABOUT_0_19_ASSERTED_AS: f64 = 0.1;
-            const PRECISION_MAY_DROP_AT_MOST: f64 = 0.05;
+            const MIN_RECALL_GAIN: f64 = 0.1;
+            const MAX_PRECISION_DROP: f64 = 0.05;
             if angle >= STEEP_SLOPE_DEG && frac == HEAVY_CANOPY_GROUND_FRACTION {
                 assert!(
-                    r_steep > r_std + MEASURED_RECALL_GAIN_ABOUT_0_19_ASSERTED_AS,
+                    r_steep > r_std + MIN_RECALL_GAIN,
                     "{angle}: steep {r_steep} std {r_std}"
                 );
                 assert!(
-                    p_steep > p_std - PRECISION_MAY_DROP_AT_MOST,
+                    p_steep > p_std - MAX_PRECISION_DROP,
                     "{angle}: steep {p_steep} std {p_std}"
                 );
             }
@@ -822,19 +818,14 @@ mod tests {
             max_x: 1000.0,
             max_y: 1000.0,
         };
-        const CAP_FAR_BELOW_THE_CLOTH: u64 = 1_000_000;
-        const CAP_JUST_ABOVE_2004_SQUARED_PARTICLES_OF_1000_M_AT_0_5_M_PLUS_MARGIN: u64 = 4_100_000;
-        let err = Cloth::new(e, CsfParams::standard(), CAP_FAR_BELOW_THE_CLOTH)
+        const SMALL_PARTICLE_CAP: u64 = 1_000_000;
+        const LARGE_PARTICLE_CAP: u64 = 4_100_000;
+        let err = Cloth::new(e, CsfParams::standard(), SMALL_PARTICLE_CAP)
             .err()
             .unwrap();
         assert!(err.contains("解像度"), "{err}");
         assert!(err.contains("範囲"), "{err}");
-        assert!(Cloth::new(
-            e,
-            CsfParams::standard(),
-            CAP_JUST_ABOVE_2004_SQUARED_PARTICLES_OF_1000_M_AT_0_5_M_PLUS_MARGIN
-        )
-        .is_ok());
+        assert!(Cloth::new(e, CsfParams::standard(), LARGE_PARTICLE_CAP).is_ok());
     }
 
     #[test]
@@ -999,12 +990,12 @@ mod tests {
     #[ignore]
     #[allow(clippy::disallowed_methods)]
     fn timing() {
-        const EXTENT_GIVING_996_CELLS_PLUS_4_MARGIN_IS_1000_PARTICLES_PER_SIDE: f64 = 498.0;
+        const EXTENT_M: f64 = 498.0;
         let e = XyExtent {
             min_x: 0.0,
             min_y: 0.0,
-            max_x: EXTENT_GIVING_996_CELLS_PLUS_4_MARGIN_IS_1000_PARTICLES_PER_SIDE,
-            max_y: EXTENT_GIVING_996_CELLS_PLUS_4_MARGIN_IS_1000_PARTICLES_PER_SIDE,
+            max_x: EXTENT_M,
+            max_y: EXTENT_M,
         };
         for threshold in [0.005f32, 0.0] {
             let params = CsfParams {
