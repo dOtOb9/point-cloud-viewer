@@ -375,6 +375,54 @@ fn write_tiff<W: Write, S>(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn ifd_tags(bytes: &[u8]) -> Vec<u16> {
+        let u16_at = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
+        let ifd = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let count = usize::from(u16_at(ifd));
+        const ENTRY_BYTES: usize = 12;
+        (0..count)
+            .map(|i| u16_at(ifd + 2 + i * ENTRY_BYTES))
+            .collect()
+    }
+
+    #[test]
+    fn ifd_tags_are_in_strictly_ascending_order() {
+        let s = spec(3, 2);
+        let cells = (s.width * s.height) as usize;
+        for epsg in [None, Some(6677)] {
+            let mut f32_out = Vec::new();
+            write_f32(
+                &mut f32_out,
+                &s,
+                epsg,
+                NODATA_FOR_TEST,
+                (0..cells).map(|i| i as f32),
+            )
+            .expect("f32");
+            let mut rgb_out = Vec::new();
+            write_rgb_u16(&mut rgb_out, &s, epsg, (0..cells).map(|_| Some([1, 2, 3])))
+                .expect("rgb");
+            let mut rgba_out = Vec::new();
+            write_rgba_u8(&mut rgba_out, &s, epsg, (0..cells).map(|_| [1, 2, 3, 255]))
+                .expect("rgba");
+            for (form, bytes) in [("f32", &f32_out), ("rgb", &rgb_out), ("rgba", &rgba_out)] {
+                let tags = ifd_tags(bytes);
+                assert!(
+                    tags.windows(2).all(|w| w[0] < w[1]),
+                    "{form} epsg={epsg:?}: {tags:?}"
+                );
+                assert_eq!(
+                    tags.contains(&TAG_GEO_KEY_DIRECTORY),
+                    epsg.is_some(),
+                    "{form}"
+                );
+                assert_eq!(tags.contains(&TAG_GDAL_NODATA), form == "f32", "{form}");
+            }
+        }
+    }
+
+    const NODATA_FOR_TEST: f32 = -9999.0;
     use tiff::decoder::{Decoder, DecodingResult};
     use tiff::tags::Tag;
 
@@ -519,7 +567,8 @@ mod tests {
 
     #[test]
     fn many_strips_roundtrip() {
-        let s = spec(20_000, 5);
+        const WIDE_IMAGE_WIDTH: u32 = 20_000;
+        let s = spec(WIDE_IMAGE_WIDTH, 5);
         let values = (0..s.width * s.height).map(|i| i as f32);
         let mut out = Vec::new();
         write_f32(&mut out, &s, None, -1.0, values).expect("write");
@@ -547,7 +596,8 @@ mod tests {
 
     #[test]
     fn refuses_images_that_do_not_fit_classic_tiff() {
-        let s = spec(40_000, 40_000);
+        const HUGE_IMAGE_SIDE: u32 = 40_000;
+        let s = spec(HUGE_IMAGE_SIDE, HUGE_IMAGE_SIDE);
         let mut out = Vec::new();
         let r = write_f32(&mut out, &s, None, -1.0, std::iter::empty());
         assert!(matches!(r, Err(RasterError::TooLargeForTiff)));
