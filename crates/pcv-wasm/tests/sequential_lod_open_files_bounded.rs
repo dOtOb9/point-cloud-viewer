@@ -188,10 +188,17 @@ fn peak_open_temp_files_at_depth(depth: u32) -> usize {
     tracker.peak()
 }
 
+const OCTANTS: usize = 8;
+const ORDER_TEMP_FILES: usize = 1;
+
+fn open_temp_files_upper_bound(depth: usize) -> usize {
+    OCTANTS * (depth + 1) + ORDER_TEMP_FILES
+}
+
 #[test]
 fn depth_zero_has_minimal_peak() {
     let peak = peak_open_temp_files_at_depth(0);
-    const ONE_LEVEL_UPPER_BOUND: usize = 8 + 1;
+    const ONE_LEVEL_UPPER_BOUND: usize = OCTANTS + ORDER_TEMP_FILES;
     assert!(
         peak <= ONE_LEVEL_UPPER_BOUND,
         "深さ0(アンカーによる不可避の1回の分割のみ)のピーク{peak}が理論上限を超えた"
@@ -203,7 +210,7 @@ fn peak_grows_linearly_with_depth_not_with_point_count() {
     let mut peaks = Vec::new();
     for depth in [0u32, 1, 2, 3, 5, 8, 12, 16] {
         let peak = peak_open_temp_files_at_depth(depth);
-        let theoretical_upper_bound = 8 * (depth as usize + 1) + 1;
+        let theoretical_upper_bound = open_temp_files_upper_bound(depth as usize);
         assert!(
             peak <= theoretical_upper_bound,
             "depth={depth}: ピーク{peak}が理論上の上限{theoretical_upper_bound}を超えた"
@@ -212,7 +219,7 @@ fn peak_grows_linearly_with_depth_not_with_point_count() {
     }
     let (_, deepest_peak) = *peaks.last().unwrap();
     assert!(
-        deepest_peak <= 8 * 17 + 1,
+        deepest_peak <= open_temp_files_upper_bound(16),
         "深さ16のピーク({deepest_peak})が理論上の上限を超えた(詳細: {peaks:?})"
     );
     println!("sequential build_lod_index peak open temp files by depth: {peaks:?}");

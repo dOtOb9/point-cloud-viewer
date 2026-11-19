@@ -4,6 +4,8 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
 use crate::point_file_import::RawPoint;
 
+const U8_TO_U16_SCALE: u16 = 257;
+
 type Result<T> = std::result::Result<T, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +216,7 @@ impl VertexLayout {
 fn scale_channel_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
-            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(257)
+            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(U8_TO_U16_SCALE)
         }
         _ => value.round().clamp(0.0, 65535.0) as u16,
     }
@@ -223,7 +225,7 @@ fn scale_channel_to_u16(value: f64, ty: ScalarType) -> u16 {
 fn scale_intensity_to_u16(value: f64, ty: ScalarType) -> u16 {
     match ty {
         ScalarType::UInt8 | ScalarType::Int8 => {
-            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(257)
+            (value.round().clamp(0.0, 255.0) as u16).wrapping_mul(U8_TO_U16_SCALE)
         }
         ScalarType::Float32 | ScalarType::Float64 => {
             (value.clamp(0.0, 1.0) * 65535.0).round() as u16
@@ -593,7 +595,11 @@ mod tests {
             assert_eq!((p.x, p.y, p.z), (f64::from(x), f64::from(y), f64::from(z)));
             assert_eq!(
                 p.color,
-                [u16::from(r) * 257, u16::from(g) * 257, u16::from(b) * 257]
+                [
+                    u16::from(r) * U8_TO_U16_SCALE,
+                    u16::from(g) * U8_TO_U16_SCALE,
+                    u16::from(b) * U8_TO_U16_SCALE,
+                ]
             );
             assert_eq!(p.intensity, (f64::from(i) * 65535.0).round() as u16);
         }

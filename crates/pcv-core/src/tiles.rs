@@ -60,6 +60,8 @@ pub fn estimate_points(rect: &TileRect, nodes: &[NodeFootprint]) -> f64 {
     sum
 }
 
+const MAX_START_TILES_PER_AXIS: f64 = 4096.0;
+
 pub fn plan_tiles(
     extent: TileRect,
     nodes: &[NodeFootprint],
@@ -88,11 +90,14 @@ pub fn plan_tiles(
     let (nx, ny) = if width > 0.0 && height > 0.0 {
         let nx = (wanted * width / height).sqrt().ceil().max(1.0);
         let ny = (wanted / nx).ceil().max(1.0);
-        (nx.min(4096.0) as usize, ny.min(4096.0) as usize)
+        (
+            nx.min(MAX_START_TILES_PER_AXIS) as usize,
+            ny.min(MAX_START_TILES_PER_AXIS) as usize,
+        )
     } else if width > 0.0 {
-        (wanted.min(4096.0) as usize, 1)
+        (wanted.min(MAX_START_TILES_PER_AXIS) as usize, 1)
     } else if height > 0.0 {
-        (1, wanted.min(4096.0) as usize)
+        (1, wanted.min(MAX_START_TILES_PER_AXIS) as usize)
     } else {
         (1, 1)
     };

@@ -34,9 +34,11 @@ fn escape(text: &str) -> String {
     out
 }
 
+const SECONDS_PER_DAY: i64 = 86_400;
+
 pub fn utc_date_time(unix_seconds: i64) -> (String, String) {
-    let days = unix_seconds.div_euclid(86_400);
-    let secs = unix_seconds.rem_euclid(86_400);
+    let days = unix_seconds.div_euclid(SECONDS_PER_DAY);
+    let secs = unix_seconds.rem_euclid(SECONDS_PER_DAY);
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

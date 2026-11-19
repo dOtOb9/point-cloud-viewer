@@ -638,7 +638,9 @@ mod copc_file_tests {
         let buf = file.read_node(key).unwrap();
 
         let origin_x = f32::from_le_bytes(buf.bytes[16..20].try_into().unwrap());
-        assert!(origin_x.abs() > 1000.0, "origin_x={origin_x}");
+        const MIN_WORLD_ORIGIN_M: f32 = 1000.0;
+        const MAX_RELATIVE_M: f32 = 200.0;
+        assert!(origin_x.abs() > MIN_WORLD_ORIGIN_M, "origin_x={origin_x}");
 
         let mut offset = crate::node_format::HEADER_BYTES;
         let mut checked_any = false;
@@ -646,11 +648,11 @@ mod copc_file_tests {
             let rel_x = f32::from_le_bytes(buf.bytes[offset..offset + 4].try_into().unwrap());
             let rel_y = f32::from_le_bytes(buf.bytes[offset + 4..offset + 8].try_into().unwrap());
             assert!(
-                rel_x.abs() < 200.0,
+                rel_x.abs() < MAX_RELATIVE_M,
                 "rel_x={rel_x} が想定より大きい（相対座標になっていない疑い）"
             );
             assert!(
-                rel_y.abs() < 200.0,
+                rel_y.abs() < MAX_RELATIVE_M,
                 "rel_y={rel_y} が想定より大きい（相対座標になっていない疑い）"
             );
             checked_any = true;

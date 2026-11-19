@@ -233,7 +233,8 @@ fn keeps_the_ground_point_nearest_the_cell_centre() {
 fn refuses_a_corridor_over_the_cell_cap() {
     let points = ground((0.0, 10.0), (-5.0, 5.0), 1.0, |_| 0.0);
     let (_dir, file) = open(points);
-    let result = SectionLineJob::new(&file, &line_x(500.0), &standard(10_000));
+    const SMALL_CELL_CAP: u64 = 10_000;
+    let result = SectionLineJob::new(&file, &line_x(500.0), &standard(SMALL_CELL_CAP));
     match result {
         Err(SectionLineError::Cloth(m)) => {
             assert!(m.contains("解像度") && m.contains("範囲"), "{m}");

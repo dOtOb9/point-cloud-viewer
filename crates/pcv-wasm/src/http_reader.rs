@@ -131,9 +131,10 @@ mod tests {
 
     #[test]
     fn parses_total_size_for_large_files() {
+        const SOFI_COPC_BYTES: u64 = 2_180_000_000;
         assert_eq!(
-            parse_total_size_from_content_range("bytes 0-0/2180000000"),
-            Some(2_180_000_000)
+            parse_total_size_from_content_range(&format!("bytes 0-0/{SOFI_COPC_BYTES}")),
+            Some(SOFI_COPC_BYTES)
         );
     }
 

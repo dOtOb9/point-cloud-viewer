@@ -273,8 +273,8 @@ mod tests {
         let lon = 139.767125_f64.to_radians();
         let f = forward(&p, lat, lon);
         let inv = inverse(&p, f.x, f.y);
-        let lat_diff_m = (inv.lat_rad - lat) * 6_378_137.0;
-        let lon_diff_m = (inv.lon_rad - lon) * 6_378_137.0 * lat.cos();
+        let lat_diff_m = (inv.lat_rad - lat) * GRS80.semi_major_axis;
+        let lon_diff_m = (inv.lon_rad - lon) * GRS80.semi_major_axis * lat.cos();
         assert!(lat_diff_m.abs() < 1e-6, "lat diff {lat_diff_m} m");
         assert!(lon_diff_m.abs() < 1e-6, "lon diff {lon_diff_m} m");
     }

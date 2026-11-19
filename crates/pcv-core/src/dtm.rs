@@ -116,7 +116,7 @@ impl SizeWording {
         };
         let v = file_value / self.scale;
         let shown = if v.is_finite() && v != 0.0 {
-            let exp = v.abs().log10().floor() as i32 - 3;
+            let exp = v.abs().log10().floor() as i32 - (SIGNIFICANT_DIGITS_SHOWN - 1);
             with_exponent((v / 10f64.powi(exp)).round(), exp)
         } else {
             v
@@ -277,6 +277,7 @@ fn with_exponent(digits: f64, exp: i32) -> f64 {
 }
 
 const ROUND_UP_TOLERANCE: f64 = 1e-9;
+const SIGNIFICANT_DIGITS_SHOWN: i32 = 4;
 
 fn round_up_2_digits(x: f64) -> f64 {
     let exp = x.log10().floor() as i32 - 1;

@@ -45,7 +45,7 @@ impl Crs {
     }
 }
 
-pub const MAX_GEOTIFF_EPSG_CODE: u32 = 32766;
+const MAX_GEOTIFF_EPSG_CODE: u32 = 32766;
 
 pub fn is_geotiff_epsg_code(code: u32) -> bool {
     (1..=MAX_GEOTIFF_EPSG_CODE).contains(&code)

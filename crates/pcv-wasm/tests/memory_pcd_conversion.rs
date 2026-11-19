@@ -7,6 +7,8 @@ use copc_writer::{
 };
 use pcd_rs::{DataKind, DynReader, DynRecord, DynWriter, Field, Schema, ValueKind, WriterInit};
 
+const SMALL_MAX_POINTS_PER_NODE: u32 = 50;
+
 fn xyz_rgb_intensity_schema() -> Schema {
     Schema::from_iter([
         ("x", ValueKind::F32, 1),
@@ -130,7 +132,7 @@ fn batched_pcd_feed_via_memory_scratch_fs_produces_openable_copc() {
         &fs,
         output_path,
         spill_reader,
-        &CopcWriterParams::new(50),
+        &CopcWriterParams::new(SMALL_MAX_POINTS_PER_NODE),
         &NeverCancel,
         &CopcWriteMetadata::default(),
     )

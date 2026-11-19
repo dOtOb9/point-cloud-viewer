@@ -7,6 +7,7 @@ pub const PROFILE_HEADER_BYTES: usize = 24;
 pub const PROFILE_RECORD_BYTES: usize = 12;
 pub const PROFILE_FLAG_THINNED: u32 = 1;
 pub const PROFILE_FLAG_COLOR: u32 = 2;
+const MIN_LENGTH: f64 = 1e-9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileError {
@@ -66,7 +67,7 @@ impl SectionAxes {
             ab[2] - up[2] * ab_up,
         ];
         let length = dot(horizontal, horizontal).sqrt();
-        if length <= 1e-9 {
+        if length <= MIN_LENGTH {
             return Err(ProfileError::InvalidSection(
                 "2点が同じ鉛直線上にあります".to_string(),
             ));
@@ -131,8 +132,8 @@ const EMPTY_CELL: ProfilePoint = ProfilePoint {
 };
 
 fn grid_dims(s_span: f64, z_span: f64, cells: usize) -> (usize, usize) {
-    let s_span = s_span.max(1e-9);
-    let z_span = z_span.max(1e-9);
+    let s_span = s_span.max(MIN_LENGTH);
+    let z_span = z_span.max(MIN_LENGTH);
     let side = (s_span * z_span / cells as f64).sqrt();
     let clamp = |n: f64| (n.floor().max(1.0) as usize).min(cells);
     let height = clamp(z_span / side);
@@ -211,7 +212,7 @@ pub fn read_section_profile<R: Read + Seek + Send>(
     let thinned = total > cap as u64;
     let mut sink = if thinned {
         let ((s_lo, s_hi), (z_lo, z_hi)) = axes.ranges_of_box(min, max);
-        let (s_span, z_span) = ((s_hi - s_lo).max(1e-9), (z_hi - z_lo).max(1e-9));
+        let (s_span, z_span) = ((s_hi - s_lo).max(MIN_LENGTH), (z_hi - z_lo).max(MIN_LENGTH));
         let (width, height) = grid_dims(s_span, z_span, cap);
         Sink::Grid {
             cells: vec![EMPTY_CELL; width * height],

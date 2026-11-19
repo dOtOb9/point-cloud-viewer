@@ -16,8 +16,11 @@ pub struct UtmZone {
     pub central_meridian_deg: f64,
 }
 
+const ZONE_WIDTH_DEG: f64 = 6.0;
+const CENTRAL_MERIDIAN_OF_ZONE_0_DEG: f64 = -183.0;
+
 fn central_meridian_deg(zone: u8) -> f64 {
-    6.0 * zone as f64 - 183.0
+    ZONE_WIDTH_DEG * zone as f64 + CENTRAL_MERIDIAN_OF_ZONE_0_DEG
 }
 
 pub fn zone_by_number(number: u8) -> Option<UtmZone> {

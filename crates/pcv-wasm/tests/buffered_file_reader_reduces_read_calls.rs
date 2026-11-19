@@ -105,9 +105,10 @@ fn buffering_drastically_reduces_underlying_read_calls() {
     let raw_calls = count_read_calls_to_parse_all_points(bytes.clone(), point_count, false);
     let buffered_calls = count_read_calls_to_parse_all_points(bytes, point_count, true);
 
-    let over_half_of_the_points = point_count as usize / 2;
+    const MIN_REDUCTION_FACTOR: usize = 10;
+    let half_of_the_points = point_count as usize / 2;
     assert!(
-        raw_calls > over_half_of_the_points,
+        raw_calls > half_of_the_points,
         "バッファ無しでは点数に近い回数readが呼ばれるはず: raw_calls={raw_calls}, point_count={point_count}"
     );
 
@@ -121,7 +122,7 @@ fn buffering_drastically_reduces_underlying_read_calls() {
     );
 
     assert!(
-        buffered_calls * 10 < raw_calls,
+        buffered_calls * MIN_REDUCTION_FACTOR < raw_calls,
         "バッファ有りの呼び出し回数がバッファ無しよりずっと少ないはず: \
          buffered_calls={buffered_calls}, raw_calls={raw_calls}"
     );

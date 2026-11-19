@@ -53,7 +53,8 @@ mod tests {
 
     #[test]
     fn seek_from_end_computes_from_total_size() {
-        let total: u64 = 2_180_000_000;
+        const SOFI_COPC_BYTES: u64 = 2_180_000_000;
+        let total = SOFI_COPC_BYTES;
         assert_eq!(resolve_seek_from_end(total, -100), Some(total - 100));
         assert_eq!(resolve_seek_from_end(total, 0), Some(total));
         assert_eq!(resolve_seek_from_end(100, -200), None, "0未満はNone");

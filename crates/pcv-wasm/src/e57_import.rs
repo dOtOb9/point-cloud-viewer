@@ -98,7 +98,7 @@ impl<R: Read + Seek + 'static> Drop for E57Stream<R> {
 }
 
 fn normalize_unit_to_u16(value: f32) -> u16 {
-    (value.clamp(0.0, 1.0) * 65535.0).round() as u16
+    (value.clamp(0.0, 1.0) * f32::from(u16::MAX)).round() as u16
 }
 
 #[cfg(test)]

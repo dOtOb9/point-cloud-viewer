@@ -4,6 +4,8 @@ use copc_writer::{
     SpillWriter,
 };
 
+const SMALL_MAX_POINTS_PER_NODE: u32 = 50;
+
 fn write_synthetic_las(path: &std::path::Path, point_count: u32) {
     let mut builder = las::Builder::from((1, 2));
     builder.point_format = las::point::Format::new(2).expect("format 2(RGBあり)");
@@ -76,7 +78,7 @@ fn batched_feed_via_memory_scratch_fs_produces_openable_copc() {
         &fs,
         output_path,
         spill_reader,
-        &CopcWriterParams::new(50),
+        &CopcWriterParams::new(SMALL_MAX_POINTS_PER_NODE),
         &NeverCancel,
         &CopcWriteMetadata::default(),
     )

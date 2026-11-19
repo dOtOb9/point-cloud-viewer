@@ -13,9 +13,11 @@ impl ColorBitDepth {
     }
 }
 
+const MAX_8_BIT: u16 = u8::MAX as u16;
+
 pub fn detect<I: IntoIterator<Item = (u16, u16, u16)>>(colors: I) -> ColorBitDepth {
     for (r, g, b) in colors {
-        if r > 255 || g > 255 || b > 255 {
+        if r > MAX_8_BIT || g > MAX_8_BIT || b > MAX_8_BIT {
             return ColorBitDepth::Sixteen;
         }
     }

@@ -698,7 +698,10 @@ mod tests {
             "full read returns every point"
         );
 
-        let mut ranges: Vec<(u64, u64)> = (0..8u64).map(|i| (i * 625, 625)).collect();
+        const WORKERS: u64 = 8;
+        let range_len = u64::from(POINT_COUNT) / WORKERS;
+        let mut ranges: Vec<(u64, u64)> =
+            (0..WORKERS).map(|i| (i * range_len, range_len)).collect();
         ranges.extend([
             (1, 10),
             (49, 3),

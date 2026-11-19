@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::tiles::{TileData, TilePoint, TileRect};
 
 const MARGIN_PER_CELL_SIZE: f64 = 0.51;
+const MAX_CELL_INDEX: f64 = 1.0e15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridKeep {
@@ -36,7 +37,7 @@ impl ThinSettings {
     }
 
     pub fn check_coordinates(&self, max_abs_coordinate: f64) -> Result<(), String> {
-        if max_abs_coordinate / self.size > 1.0e15 {
+        if max_abs_coordinate / self.size > MAX_CELL_INDEX {
             return Err("大きさが座標に比べて小さすぎます".to_string());
         }
         Ok(())
