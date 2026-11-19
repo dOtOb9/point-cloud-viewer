@@ -223,3 +223,11 @@
   消えた「なぜ」と計算は、上の「移した理由の記録」の表に移した（テストの定数の5行と `is_geotiff_epsg_code` の行を足し、名前の変わった7行を直した）。範囲の名前を `git grep -nE "(const|let|fn|static|struct|enum) [A-Za-z_]*(_THE_|_the_|_AND_|_and_|_THAN_|_than_|_WHEN_|_when_|_SO_|_so_|_IS_|_is_)" -- crates/pcv-core crates/pcv-wasm` で探し、残りは GeoTIFF の仕様の名前（`PHOTOMETRIC_BLACK_IS_ZERO`・`RASTER_PIXEL_IS_AREA`）、`MIN_RECALL_AND_PRECISION`、元からあった `check_layout_and_crs_match`・`crs_is_missing`・`push_order_and_reopen`、テスト名（振る舞いの文にする決まり）だけ。元からある名前はこれ以上変えていない
 - F-4（nit）: `ADR-0012-web-worker-sync-io.md` と `G1-T3-csf-core.md` に改名の1行を足した（範囲外、メインの許し）
 - 確かめ方: `cargo test -p pcv-core`（193 passed、1 ignored）、`cargo test --manifest-path crates/pcv-wasm/Cargo.toml`（lib 58 passed、1 ignored、統合テストも ok）、pcv-wasm の wasm32 の clippy（`-D warnings`、終了コード 0）、`cargo clippy -p pcv-core --all-targets -- -D warnings`。wasm に見える名前（`js_name`）は変えていない。生成物を作り直して `check:wasm-glue` が通ることを確かめた
+
+### 監査の記録
+
+| ラウンド | 監査役 | 判定 | 主な指摘 |
+|---|---|---|---|
+| R1 | ループ | APPROVE | コメントを除いた比較で差は改名・切り出し・rustfmt だけ。`gamma` の符号・206・GeoTIFF のタグと GeoKey の値は元と同じ。生成物の d.ts・js は削除だけ、wasm のエクスポート 72・インポート 76 は同じ。F-1 [should] wasm の大きさの理由（主因はビルドした場所の絶対パス）、F-2 [should] 32767 の境界が3か所に数値のまま、F-3 [should] 読み違えやすい名前、F-4・F-5 [nit] |
+| RP R1 | ループ | APPROVE | 境界を `crs::is_geotiff_epsg_code` 1つにまとめ5か所から呼ぶ（全部元と同値）。`ZeroLength` の型で4か所の呼び出しの意味は元と同じ。テスト2つ（境界の4点、数値が他のファイルに戻ったら落ちる）。nit N-1〜N-4 |
+| PR | PR・CI | （この後） | |
