@@ -148,7 +148,7 @@ M4-4 の最初の設計は「いったんプレーンな LAS に書き出す」�
 
 [`scale.rs`](https://github.com/dOtOb9/point-cloud-viewer/blob/main/crates/pcv-convert/src/import/scale.rs) は、座標の値域から LAS の scale/offset（mm 以下の精度を狙う）を
 選ぶ純粋関数です。CRS は推測せず「不明」のままです。色・強度の値域の扱いは形式ごとに異なり、
-[ADR-0008 の M4-4 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#追記2026-09-25-e57--ply--pcd--lasの実装m4-4) にあります。PCD の `binary_compressed` だけが展開後の大きさの2倍のメモリを使うことは、
+[ADR-0008 の M4-4 の追記](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#追記2026-09-25-e57--ply--pcd--las-の実装m4-4) にあります。PCD の `binary_compressed` だけが展開後の大きさの2倍のメモリを使うことは、
 [M4-9 の追記の「例外: PCDの`binary_compressed`」](https://github.com/dOtOb9/point-cloud-viewer/blob/main/TaskSheets/ADR-0008-formats-and-crs.md#例外-pcdのbinary_compressed) にあります。
 
 ### 複数ファイルの結合(M4-17): 形式が混ざっていても1つの COPC にする

@@ -96,5 +96,6 @@
 | ラウンド | 監査役 | 判定 | 主な指摘 |
 |---|---|---|---|
 | R1 | ループ | APPROVE | コメントを除いた比較で差は5ファイルの定数化と関数の切り出しだけ。F-1 [should] テストの小さいメモリ予算の理由が消えた、F-2 [should] `pcv://` の CORS ヘッダの理由（開発サーバーのオリジン）が消えた、F-3〜F-5 [nit]、構成の負債 `PROGRESS_REPORT_STRIDE` の重複 |
-| RP R1 | ループ | APPROVE | 仕組み `scripts/removed-comments-near-literals.mjs` が R1 のコミットで F-1・F-2 を全部出すことを確かめた（193 件中）。nit F-1〜F-3（行の数値を全部出す、根以外から実行すると 0 件、テスト名が長い）は 466a070・415756f で直した |
-| PR | PR・CI | （この後） | |
+| RP R1 | ループ | APPROVE | 仕組み `scripts/removed-comments-near-literals.mjs` が R1 のコミットで F-1・F-2 を全部出すことを確かめた（193 件中）。nit F-1〜F-3（行の数値を全部出す、根以外から実行すると 0 件、テスト名が長い）は 4fb7e82・2bd2f7b で直した |
+| PR R1 | PR・CI | CHANGES_REQUESTED | CI run 44442780113 は緑。F-1 [must] `docs/book/src/rust/pcv-convert.md:151` が消えた冒頭のコメントを指す。F-2 [should] RECURRENCE のハッシュが付け替え前。F-3 [nit] 6→7 ケース |
+| PR R2 | PR・CI | APPROVE | CI run 44444111622 は緑。F-4 [should] この表のハッシュ、F-5 [should] M4-4 の追記へのアンカーのずれ（もとから）→ メインがマージ前に直した |
