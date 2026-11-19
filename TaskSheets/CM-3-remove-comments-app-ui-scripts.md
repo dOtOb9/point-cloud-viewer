@@ -159,7 +159,7 @@
 
 ### CM-3-RP R2 での直し（監査 F-RP-1〜F-RP-4）
 
-- F-RP-1（should）: 理由の語が F-1 の例に寄っていて、CM-3 が自分で表に移した `src/state/measure.ts` の2文（To keep precision … / so squares do not get huge）を出さなかった。語に `so`・`to keep`・`in order to`・`why`・`ように` を足し、続いた `//` の行を1つのコメントとして読むようにした（理由が2行に分かれても拾う）。出力の行番号は、コメントのうち理由の語がある最初の行。テスト「finds reasons outside the F-1 examples too」「reads consecutive // lines as one comment」で、F-1 以外の文での再現を固定した。d05c858→874a964 で 226 件を出し、`measure.ts:5`・`:76` と F-1 の箇所が入る（同じコメントの塊の中の `useCopcViewer.ts:17` は、塊の最初の理由の行 `:14` として出る）
+- F-RP-1（should）: 理由の語が F-1 の例に寄っていて、CM-3 が自分で表に移した `src/state/measure.ts` の2文（To keep precision … / so squares do not get huge）を出さなかった。語に `so`・`to keep`・`in order to`・`why`・`ように` を足し、続いた `//` の行を1つのコメントとして読むようにした（理由が2行に分かれても拾う）。出力の行番号は、コメントのうち理由の語がある最初の行。テスト「finds reasons outside the F-1 examples too」「reads consecutive // lines as one comment」で、F-1 以外の文での再現を固定した。d05c858→c718aff（付け替え前の 874a964） で 226 件を出し、`measure.ts:5`・`:76` と F-1 の箇所が入る（同じコメントの塊の中の `useCopcViewer.ts:17` は、塊の最初の理由の行 `:14` として出る）
 - F-RP-2（nit）: `--head <ref>` を足し、作業コピー以外のコミットにも当てられるようにした
 - F-RP-3（nit）: `--docs` が AGENTS.md の自分の決まりの行を出していたので、`removed-comment-reasons` を含む行を除いた（テストのケースを足した）。今は 17 行
 - F-RP-4（nit、CM-3 のコード）: `playwright.config.ts` の `REUSE_EXISTING_SERVER` は設定のキーをなぞっただけだったので、リテラルの `false` に戻した（理由は CM-3 のシートの表）
@@ -170,5 +170,5 @@
 |---|---|---|---|
 | R1 | ループ | CHANGES_REQUESTED | トークン比較で振る舞いの差は報告どおり、`make-test-las.ts` の出力は4通りでバイト一致。F-1 [must] コードから読めない「なぜ」7件が移されずに消えた。F-2 [should] 消したコメントを指す文書（state.md・ADR-0016）。F-3 [nit] |
 | R2 | ループ | APPROVE | F-1〜F-3 直った（section-3d のテストの期待値は Rust の SectionAxes の式と一致、表に 23 行）。F-4 [should] 理由を入れた長い名前 |
-| RP R1 | ループ | APPROVE | F-4 を直した（17 個）。`scripts/removed-comment-reasons.mjs` が 874a964 で F-1 の7件と F-2 の3行を全部出す。F-RP-1 [should] 語の一覧が F-1 に寄る → 語を足しテスト（RP R2）、F-RP-2〜4 [nit] も直した |
-| PR | PR・CI | （この後） | |
+| RP R1 | ループ | APPROVE | F-4 を直した（17 個）。`scripts/removed-comment-reasons.mjs` が c718aff（付け替え前の 874a964） で F-1 の7件と F-2 の3行を全部出す。F-RP-1 [should] 語の一覧が F-1 に寄る → 語を足しテスト（RP R2）、F-RP-2〜4 [nit] も直した |
+| PR R1 | PR・CI | APPROVE | CI run 44503155910 は緑（ジョブ・ステップは main の直近の run と 58 ステップ同じ、e2e 6 passed）。印字して比べて振る舞いの差は定数・改名・関数の切り出し・`--help` だけ、`make-test-las.ts` は5通りで sha256 一致。表は 77 行。F-1 [should] 付け替え前のハッシュ → メインが直した。F-2 [nit] 行数。F-3 [nit・前からの負債] ADR-0017:467-468、`docs/book/src/conventions.md:69-71` が古い（別タスクへ） |
