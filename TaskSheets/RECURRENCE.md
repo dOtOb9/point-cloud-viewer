@@ -126,7 +126,7 @@ PF-0 は 4 ラウンドかかった。指摘は 3 つの根本原因に集まる
 | CI の rust ジョブが `cargo fmt --check` で落ちた（run 43932290047。Rust の example の整形）。ループの中では誰も気づかなかった | should | 作業役の「終わる前に必ず」の一覧に `cargo fmt` が無く、ループの監査役も Rust を触った差分で fmt を走らせなかった。CI が見るものと手元で走らせるものが別々に書かれていて、差が出ても気づく手段が無かった。決まりを後から AGENTS.md に足した（867e58a）だけでは、人の注意に頼ったまま | スクリプト: `npm run check:all`（`scripts/check-all.mjs`）。typecheck・lint・check:circular・check:docs・vitest・`cargo fmt --all -- --check`・vendor の fmt を1つ落ちても最後まで走らせ、OK / FAILED の一覧を出す（Windows では作業ディレクトリのドライブ名を大文字にして vitest の失敗も避ける）。決まり: AGENTS.md の作業役の「終わる前に必ず」を check:all に置き換え、一覧を作業報告に貼る形にした。元の誤り（Rust の example `compare_copc_nodes.rs` に整形の崩れた行を一時的に足す）で `check:all` が `FAILED cargo fmt (workspace)` を出すことを確かめた（その後 `git checkout` で戻した）。限界: wasm・e2e・tauri のビルドは CI だけ（時間と環境が要るため）。clippy（`cargo clippy --workspace --all-targets -- -D warnings`）も check:all に足した（PR 監査 R2-F-2） | `scripts/check-all.mjs`、`package.json`、AGENTS.md |
 | 判定を共有する関数の直しで、Delete（確認なしでレイヤーを消す）の安全が黙って外れた（PR 監査 R2 F-1）。R1 の直しで気づかなかった | must | 「視点のキーがラジオで効かない」を直すために共有の `isTypingTarget` を変え、同じ関数を使う他の使い手（Delete・計測の Enter/Esc）の数と、その向き（壊れて困る側）を数えなかった。破壊的なキーと害のないキーでは、安全な側が逆 | テスト: `layer-delete-key.test.ts` の「チェックボックス・ラジオ・スライダーでも消さない」と、`code-limits.test.ts` の「どのキーがどちらの判定を使うか」（破壊的な3か所は `isFormControl`、視点は `isTypingTarget`）。決まり: 「どちらをいつ使うか」は AGENTS.md の作業役の決まり（「入力欄にフォーカスがあるか」の行）に書く（当初は `typing-target.ts` の冒頭コメントに書いたが、コードにコメントを書かない決まり（CM-0）で消えるため、2026-11-18 に AGENTS.md へ移した。CM-0 の PR 監査 R1 F-3）。共有の関数を変えるときは、その関数の使い手を全部数えて報告に書く（AGENTS.md の確認に足した） | `src/app/typing-target.ts`、`src/ui/layers/layer-delete-key.ts`、`src/state/useMeasureTool.ts`、`src/state/useLayerTool.ts` |
 
-## CM-0（2026-11-17、監査: R1 で APPROVE、再発防止: 未判定）
+## CM-0（2026-11-17、監査: R1 で APPROVE、再発防止: RP R1 で APPROVE 2026-11-17）
 
 | 指摘 | 重さ | 根本原因 | 防ぐ仕組み（種類: テスト / lint / CI / スクリプト / 決まり / 注意） | 置いた場所・コミット |
 |---|---|---|---|---|
@@ -144,7 +144,7 @@ PF-0 は 4 ラウンドかかった。指摘は 3 つの根本原因に集まる
 | F-3 表に `openFiles`・`reportPreparing` の理由が無かった | nit | 仕組みにしない。1,207 個のコメントから「なぜ」を選ぶ判断の漏れで、機械で拾えない。監査役が消したコメントと表を突き合わせて見つけられた | — |
 | F-4 先頭の BOM が 3 ファイルで消えた | nit | 仕組みにしない。一時的なスクリプト（コミットしていない）の `trim()` が BOM も空白として扱った。BOM は動作に影響せず、そのスクリプトは使い回さない | — |
 
-## CM-5（2026-11-18、監査: R1 で APPROVE、再発防止: 未判定）
+## CM-5（2026-11-18、監査: R1 で APPROVE、再発防止: RP R1 で APPROVE 2026-11-19）
 
 | 指摘 | 重さ | 根本原因 | 防ぐ仕組み（種類: テスト / lint / CI / スクリプト / 決まり / 注意） | 置いた場所・コミット |
 |---|---|---|---|---|

@@ -90,3 +90,11 @@
 - F-3（nit）: リターン別の旧点数に `LEGACY_POINTS_BY_RETURN_UNUSED_IN_LAS_1_4` を足した（38f1a78）
 - F-4（nit）: `statvfs` の2つ目の `unsafe` の前にも `// SAFETY:` の1行を置き、1つ目の行は `zeroed` の根拠に書き直した（61394b7）
 - 再発防止: `scripts/removed-comments-near-literals.mjs` を足した（`TaskSheets/RECURRENCE.md` の「CM-5」）。CM-5 の範囲に当てた結果（186 件）を見て、PLY の `257` を `U8_TO_U16_FULL_RANGE_FACTOR` にし（a29c619）、上の表に 6 行を足した。残りはテストのデータ・LAS の書式の固定値・既に名前のある定数で、名前にしなかった
+
+### 監査の記録
+
+| ラウンド | 監査役 | 判定 | 主な指摘 |
+|---|---|---|---|
+| R1 | ループ | APPROVE | コメントを除いた比較で差は5ファイルの定数化と関数の切り出しだけ。F-1 [should] テストの小さいメモリ予算の理由が消えた、F-2 [should] `pcv://` の CORS ヘッダの理由（開発サーバーのオリジン）が消えた、F-3〜F-5 [nit]、構成の負債 `PROGRESS_REPORT_STRIDE` の重複 |
+| RP R1 | ループ | APPROVE | 仕組み `scripts/removed-comments-near-literals.mjs` が R1 のコミットで F-1・F-2 を全部出すことを確かめた（193 件中）。nit F-1〜F-3（行の数値を全部出す、根以外から実行すると 0 件、テスト名が長い）は 466a070・415756f で直した |
+| PR | PR・CI | （この後） | |
