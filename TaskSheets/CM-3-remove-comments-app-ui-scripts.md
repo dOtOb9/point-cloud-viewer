@@ -163,3 +163,12 @@
 - F-RP-2（nit）: `--head <ref>` を足し、作業コピー以外のコミットにも当てられるようにした
 - F-RP-3（nit）: `--docs` が AGENTS.md の自分の決まりの行を出していたので、`removed-comment-reasons` を含む行を除いた（テストのケースを足した）。今は 17 行
 - F-RP-4（nit、CM-3 のコード）: `playwright.config.ts` の `REUSE_EXISTING_SERVER` は設定のキーをなぞっただけだったので、リテラルの `false` に戻した（理由は CM-3 のシートの表）
+
+### 監査の記録
+
+| ラウンド | 監査役 | 判定 | 主な指摘 |
+|---|---|---|---|
+| R1 | ループ | CHANGES_REQUESTED | トークン比較で振る舞いの差は報告どおり、`make-test-las.ts` の出力は4通りでバイト一致。F-1 [must] コードから読めない「なぜ」7件が移されずに消えた。F-2 [should] 消したコメントを指す文書（state.md・ADR-0016）。F-3 [nit] |
+| R2 | ループ | APPROVE | F-1〜F-3 直った（section-3d のテストの期待値は Rust の SectionAxes の式と一致、表に 23 行）。F-4 [should] 理由を入れた長い名前 |
+| RP R1 | ループ | APPROVE | F-4 を直した（17 個）。`scripts/removed-comment-reasons.mjs` が 874a964 で F-1 の7件と F-2 の3行を全部出す。F-RP-1 [should] 語の一覧が F-1 に寄る → 語を足しテスト（RP R2）、F-RP-2〜4 [nit] も直した |
+| PR | PR・CI | （この後） | |
