@@ -172,4 +172,4 @@
 | R1 | ループ | CHANGES_REQUESTED | シェーダーの最終の文字列を base と組み立てて比べ、uniform の大きさも同じ。F-1 [must] `points.wgsl` の空行の跡（赤のテスト）。F-2 [should] 空の catch の理由が消えた、F-3 [should] 文の形の長い名前、F-4〜F-6 [nit] |
 | R2 | ループ | APPROVE | 全部直った。`uniform-layout.test.ts` で TS と WGSL の構造体を比べる。名前の無い数値に名前（CM-5 の道具で 354→341 件）。F-7 [nit] 文の形の名前が残る |
 | RP R1 | ループ | APPROVE | F-7 を直し、AGENTS.md に「名前は『それが何か』だけ、理由は表」。機械で見ない理由（5 語以上の名前の大半は普通の名前）。F-RP-1 main との衝突 → メインが付け替えで解いた（AGENTS.md は CM-2・CM-5 の行と並べた）。F-RP-2 CM-0 のシートの逆の手本 → メインが直した |
-| PR | PR・CI | （この後） | |
+| PR R1 | PR・CI | APPROVE | CI run 44499631759 は緑（e2e 6 passed、build OK）。シェーダー5つが元と同じこと、本番のバンドルに入ることを監査役が確かめた。F-1 [should] ADR-0010 が消したコメントを案内 → 末尾に追記（41bd931）。F-2 [nit] ARCHITECTURE.md の図に `shaders/`（41bd931）。F-3 [nit] REVIEW の記録はそのまま |
