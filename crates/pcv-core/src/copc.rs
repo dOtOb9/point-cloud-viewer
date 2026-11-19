@@ -241,6 +241,8 @@ impl<R: Read + Seek + Send> CopcFile<R> {
     }
 }
 
+const LAS_FORMATS_WITH_RGB: [u8; 2] = [7, 8];
+
 fn build_cloud_info<R>(reader: &CopcReader<R>, crs: CrsInfo) -> CloudInfo
 where
     R: std::io::Read + std::io::Seek + Send,
@@ -257,7 +259,7 @@ where
             header.z_scale_factor,
         ],
         offset: [header.x_offset, header.y_offset, header.z_offset],
-        has_color: matches!(point_format_id, 7 | 8),
+        has_color: LAS_FORMATS_WITH_RGB.contains(&point_format_id),
         crs,
     }
 }

@@ -6,6 +6,8 @@ use copc_reader::CopcReader;
 
 use crate::copc::voxel_bounds;
 
+const MIN_POLYGON_VERTICES: usize = 3;
+
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenPolygon {
@@ -32,7 +34,7 @@ impl ExtractFilter {
     pub fn validate(&self) -> Result<(), String> {
         match self {
             ExtractFilter::ScreenPolygon(p) => {
-                if p.polygon_ndc.len() < 3 {
+                if p.polygon_ndc.len() < MIN_POLYGON_VERTICES {
                     return Err("多角形の頂点が3つ未満です".to_string());
                 }
                 if p.view_proj.iter().any(|v| !v.is_finite()) {
@@ -103,7 +105,7 @@ fn project(m: &[f64; 16], p: [f64; 3]) -> Option<[f64; 2]> {
 fn point_in_polygon(p: [f64; 2], polygon: &[[f64; 2]]) -> bool {
     let mut inside = false;
     let n = polygon.len();
-    if n < 3 {
+    if n < MIN_POLYGON_VERTICES {
         return false;
     }
     let mut j = n - 1;

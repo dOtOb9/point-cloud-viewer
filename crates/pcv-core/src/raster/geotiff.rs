@@ -48,6 +48,7 @@ const MODEL_TYPE_PROJECTED: u16 = 1;
 const RASTER_PIXEL_IS_AREA: u16 = 1;
 
 const NO_NEXT_IFD: u32 = 0;
+const INLINE_VALUE_BYTES: usize = 4;
 
 struct Entry {
     tag: u16,
@@ -286,7 +287,7 @@ fn write_tiff<W: Write, S>(
     let ifd_size = 2 + measure.len() as u64 * 12 + 4;
     let mut extra_bytes = 0u64;
     for e in &measure {
-        if e.data.len() > 4 {
+        if e.data.len() > INLINE_VALUE_BYTES {
             extra_bytes += (e.data.len() as u64).next_multiple_of(2);
         }
     }
@@ -324,7 +325,7 @@ fn write_tiff<W: Write, S>(
         out.write_all(&e.tag.to_le_bytes())?;
         out.write_all(&e.field_type.to_le_bytes())?;
         out.write_all(&e.count.to_le_bytes())?;
-        if e.data.len() <= 4 {
+        if e.data.len() <= INLINE_VALUE_BYTES {
             let mut inline = [0u8; 4];
             inline[..e.data.len()].copy_from_slice(&e.data);
             out.write_all(&inline)?;
@@ -336,7 +337,7 @@ fn write_tiff<W: Write, S>(
     out.write_all(&NO_NEXT_IFD.to_le_bytes())?;
 
     for e in &entries {
-        if e.data.len() > 4 {
+        if e.data.len() > INLINE_VALUE_BYTES {
             out.write_all(&e.data)?;
             if e.data.len() % 2 == 1 {
                 out.write_all(&[0])?;

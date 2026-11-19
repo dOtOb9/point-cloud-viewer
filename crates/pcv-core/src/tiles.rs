@@ -61,6 +61,7 @@ pub fn estimate_points(rect: &TileRect, nodes: &[NodeFootprint]) -> f64 {
 }
 
 const MAX_START_TILES_PER_AXIS: f64 = 4096.0;
+const RELATIVE_PAD: f64 = 1e-9;
 
 pub fn plan_tiles(
     extent: TileRect,
@@ -308,7 +309,7 @@ where
         let m = self.margin;
         let lo = [tile.core.min[0] - m, tile.core.min[1] - m];
         let hi = [tile.core.max[0] + m, tile.core.max[1] + m];
-        let pad = |c: f64| (1.0 + c.abs()) * 1e-9;
+        let pad = |c: f64| (1.0 + c.abs()) * RELATIVE_PAD;
         let center = [
             (lo[0] + hi[0]) / 2.0,
             (lo[1] + hi[1]) / 2.0,
