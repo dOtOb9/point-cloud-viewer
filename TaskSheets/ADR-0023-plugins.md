@@ -122,3 +122,25 @@ export interface PluginHost {
 
 - **組み込みはそのままで、第三者用の口だけ足す**: 口が実際に使えるかを誰も確かめないまま腐る。組み込みが同じ口を使うことが保証になる
 - **Rust の計算もプラグインにする（wasm のプラグイン）**: 所有者の依頼は TS 側。wasm のプラグインは ABI・メモリの上限・デスクトップとの二重化が重く、今は割に合わない
+
+## 改訂（PL-0、2026-11-21）: PL-0 で作った API の形
+
+PL-0（`src/plugin-api/index.ts`・`src/core/plugin-host.ts`・`src/ui/plugins/`）で、上の「形」の `PluginHost` を次のように決めた。本文は書き換えない。
+
+- **PL-0 の口は `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`program` だけ。** `layers`・`tools`・`view`・`units`・`settings` は、使う機能を移すとき（PL-1 以降）に足す。使えない口を見せない
+- **`program(init, update, effectFailed)`**: ADR-0022 の改訂（PL-0）の3つ目の引数のうち、`effectFailed` だけをプラグインが渡す。
+  効果の失敗はホストが `errors.report(プラグインの id, error)` に流してから Msg にし、失敗の Msg の処理中の失敗は報告だけにする
+- **`shortcuts.add({ key, label, kind, run })`**: 上の `add(key, label, run)` に、入力欄での扱いの種類 `kind` を足した。
+  `"harmless"` は `isTypingTarget`（文字を打つ欄でだけ止める）、`"irreversible"` は `isFormControl`（フォーム部品なら止める）で、判定はホストがする（プラグインは判定を書かない）。
+  位置の引数が4つになるので、名前つきの1つのオブジェクトにした
+- **アプリが使っているキーはプラグインに渡さない**: `APP_SHORTCUT_KEYS`（`src/core/plugin-host.ts`。F・1〜7 は視点、Delete はレイヤーの削除、Enter・Escape は計測・範囲選択とダイアログ、Tab はダイアログのフォーカスの巡回）を
+  登録しようとしたら、同じキーの2度目の登録と同じく断って `errors.report` に流す（PL-0 監査 R1 F-5。同じキーで既存の処理とプラグインの両方が走るのを防ぐ）。
+  `src/core/app-shortcut-keys.test.ts` が、視点のキーの一覧（`VIEW_SHORTCUTS`）と、ソースの中のキーの比較（`e.key === "…"` の形）が全部この一覧に入っていることを確かめる。
+  PL-1 で視点が `pcv.view` に移ったら、F・1〜7 をこの一覧から外す（その時は視点のプラグインが登録する）
+- **描く物の型は `ViewNode`、アイコンは `IconComponent`**: `src/plugin-api` は React を import しない（型も）ので、`ReactNode` の代わりに広い型
+  （`ViewNode` は object・文字列・数・真偽・null・undefined、`IconComponent` は object）を置き、`src/ui/plugins` が `ReactNode`・lucide のアイコンとして描く。
+  誤った物を渡されたら描画で投げ、Error Boundary が受け止める。アイコンを名前の文字列にしてホストが引く案は、全アイコンを読み込む表が要るので採らなかった（外部のプラグインの宣言の形は PL-9a で決める）
+- **リボンの `enabled` の条件とグループは PL-1 で足す**: 「点群があるか」を知る `layers` の口がまだ無く、PL-0 では使い手がいないため
+- **Error Boundary は ADR-0021 の「クラスは長く生きる資源を持つものだけ」の例外**: React の Error Boundary はクラスの部品でしか書けない（フックの API が無い、React の仕様）。
+  `src/ui/plugins/PluginErrorBoundary.tsx` が持つ状態は `failed` 1つだけで、手順は持たない。リボンの項目・ステータスの項目・ダイアログごとに置き、ダイアログの中身が投げたらダイアログごと閉じる
+- **エラーの行き先**: `errors.report(source, error)` は既存の `reportError("<source>: <本文>", "tool")` に流れる（ErrorDialog の見出しは「点群ツール」）。新しいバナーは作らない

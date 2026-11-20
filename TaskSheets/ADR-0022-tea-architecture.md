@@ -55,3 +55,24 @@ function createProgram<Model, Msg>(init: Model, update: Update<Model, Msg>): {
 
 - `src/app/tea.ts` に `createProgram` とテスト（効果が順に走る、効果の中の `dispatch` が次の `update` に届く、効果の例外が Msg のエラーとして戻る）
 - 効果の例外を黙って捨てない（ADR-0015: 既存のエラーのバナーとログに流す）
+
+## 改訂（PL-0、2026-11-21）: 効果の失敗の扱いを `createProgram` の3つ目の引数にする
+
+PL-0 で `src/app/tea.ts` を作ったとき、上の「決定」の形（`createProgram(init, update)` の2引数）を次のように変えた。本文は書き換えない。
+
+```ts
+interface Failures<Msg> {
+  effectFailed(error: unknown): Msg;  // 効果の失敗を Msg にして update に戻す
+  report(error: unknown): void;       // update に戻さない失敗の行き先
+}
+function createProgram<Model, Msg>(init: Model, update: Update<Model, Msg>, failures: Failures<Msg>): Program<Model, Msg>;
+```
+
+- **`effectFailed`**: 効果の同期の throw と Promise の reject を、プログラムを作るときに渡した関数で Msg に変え、`update` に戻す（PL-0 の AC-1 の3）。
+  2引数のままでは、失敗をどの Msg にするかを `createProgram` が知りようがない
+- **`report`**: 「`effectFailed` から出た Msg の処理中に、また効果が失敗した」ときは `update` に戻さず、ここへ流す（PL-0 監査 R1 F-2、メインの決定）。
+  戻すと、失敗の Msg への `update` がまた同期で投げる効果を返したときに、同期の無限ループで画面が固まる（監査役が 1 万回まで回ることを確かめた）。
+  回数の上限という根拠の無い数は作らない。失敗の Msg の効果が `dispatch` した普通の Msg は、また普通に扱う
+- 購読者（`subscribe` に渡した関数）が投げた例外も `report` に流し、残りの購読者と効果は続ける（PL-0 監査 R1 N-3）
+- プラグインのホストの `program`（ADR-0023）は、`effectFailed` だけをプラグインから受け取り、`report` はホストの `errors.report(プラグインの id, error)` にする。
+  `effectFailed` で Msg にする前にも `errors.report` に流すので、プラグインの `update` が失敗の Msg を無視しても失敗は画面に出る（PL-0 監査 R1 F-3、上の「受け入れの目安」の「黙って捨てない」）

@@ -158,13 +158,13 @@ point-cloud-viewer/
 
 ## TEA とプラグインの土台（PL-0 で入った物）
 
-- **TEA（Model / Msg / update / view）**（[ADR-0022](./ADR-0022-tea-architecture.md)）: `src/app/tea.ts` の `createProgram(init, update, effectFailed)` が
+- **TEA（Model / Msg / update / view）**（[ADR-0022](./ADR-0022-tea-architecture.md)）: `src/app/tea.ts` の `createProgram(init, update, { effectFailed, report })` が
   `getModel`・`dispatch`・`subscribe` を返す。`update` は純粋な関数で、I/O は `Effect` だけが行う。効果の例外（同期の throw・Promise の reject）は
-  `effectFailed` で Msg に変えて `update` に戻す。ライブラリは入れていない。テストは `src/app/tea.test.ts`。
+  `effectFailed` で Msg に変えて `update` に戻す。その失敗の Msg の処理中にまた効果が失敗したら、`update` に戻さず `report` に流す（同期の無限ループを作らない。ADR-0022 の改訂）。ライブラリは入れていない。テストは `src/app/tea.test.ts`。
 - **プラグインの API**（[ADR-0023](./ADR-0023-plugins.md)）: `src/plugin-api/index.ts` に `PcvPlugin`・`PluginHost` の型。PL-0 の口は
   `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`program` だけ。React を import しないので、描く物は `ViewNode`（ReactNode と互換の型）で受け取る。
 - **ホスト**: `src/core/plugin-host.ts` の `createPluginHost` が、プラグインを順に `activate` し、登録された物を React に依存しないストアとして持つ。
-  `activate` の例外・知らない `apiVersion`・同じ id・同じキーのショートカットは、既存の `reportError`（`ErrorDialog` とログ）に流す。
+  `activate` の例外・知らない `apiVersion`・同じ id・同じキーのショートカット・アプリが使っているキー（`APP_SHORTCUT_KEYS`）・プラグインのプログラムの効果の失敗は、既存の `reportError`（`ErrorDialog` とログ）に流す。
   ショートカットの「入力欄では効かない」判定は、登録の種類（`harmless` → `isTypingTarget`、`irreversible` → `isFormControl`）でホストが行う。テストは `src/core/plugin-host.test.ts`。
 - **描画**: `src/ui/plugins/` が `useSyncExternalStore` でホストを読み、リボンの項目を `Toolbar.tsx` の「開く」の次の区切りの後に、
   ステータスの項目を `StatusBar.tsx` の「ログ」の前に、ダイアログを既存の `Dialog` の枠で描く。プラグインの UI ごとに Error Boundary がある。`window` の `keydown` は `usePluginHost` が1つだけ登録する。
