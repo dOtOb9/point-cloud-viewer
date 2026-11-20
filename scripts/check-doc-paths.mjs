@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DOCS = ["TaskSheets/ARCHITECTURE.md", "TaskSheets/ROADMAP.md", "CLAUDE.md"];
-export const NOT_BUILT_YET = ["src/plugin-api", "src/plugins", "src/ui/kit", "src/core/plugin-host.ts", "src/app/tea.ts"];
+export const NOT_BUILT_YET = ["src/ui/kit"];
 const PATH_RE = /(?:src|crates|src-tauri|TaskSheets|docs|e2e|scripts|vendor)\/[A-Za-z0-9_./*-]+/g;
 const LINK_RE = /\]\((\.\/[^)#\s]+)/g;
 

@@ -39,6 +39,10 @@ point-cloud-viewer/
 │   │                       shaders/*.wgsl(WGSL のシェーダー。各 .ts が ?raw で読む)
 │   │                       ほかに projection.ts・view-presets.ts など。責務の詳細は「守る規約」の下の注記参照
 │   ├─ app/               手順（開く・変換・レイヤー・ツール・視点）。React を知らない普通の関数と小さなストア（ADR-0021）
+│   │                     → tea.ts: TEA の createProgram（ADR-0022。まだ使う機能は無い）
+│   ├─ plugin-api/        プラグインが import してよいコアの唯一の入口（型と PLUGIN_API_VERSION だけ。ADR-0023）
+│   ├─ core/              plugin-host.ts: プラグインを読み込み、登録された物を React に依存しないストアとして持つホスト
+│   ├─ plugins/           builtin.ts: 組み込みプラグインの一覧（PL-0 では空）。1プラグイン = 1フォルダ（PL-1 から）
 │   ├─ state/             React のフック（use*.ts）と、フックから出された純粋なモジュール。移行の途中（A-2）
 │   └─ ui/                React コンポーネント。役割ごとのフォルダに分かれる(R2。一覧は R2-ui-components.md)
 │       ├─ shell/         AppShell(全体の組み立て)・ViewerPanel(canvas)・UnsupportedDeviceScreen
@@ -49,6 +53,7 @@ point-cloud-viewer/
 │       ├─ tools/         計測・抽出・間引き・フィルタ・DTM・視点などの、3Dビュー上のオーバーレイと操作ダイアログ、ラスタの窓
 │       ├─ section/       断面線のオーバーレイと断面図のパネル
 │       ├─ status/        下部のステータスバーと更新通知
+│       ├─ plugins/       ホストに登録された物（リボンの項目・ステータスの項目・ダイアログ）を描く部品と、プラグインの UI ごとの Error Boundary
 │       └─ common/        glass.ts・crs-format.ts など、複数のフォルダが使う小さな部品
 ├─ Cargo.toml             cargo workspace (pcv-wasm と vendor は含まない)
 └─ package.json
@@ -151,15 +156,28 @@ point-cloud-viewer/
 | ラスタ・DTM・間引き・フィルタ | 実装済み（G1）: 点群をラスタ（GeoTIFF）にする、布シミュレーション（CSF）の DTM と LandXML、LOD の間引き・外れ値のフィルタ。`crates/pcv-core`（`raster/`・`dtm/`・`csf.rs`・`thin.rs`・`outlier.rs`）と、`pcv-convert`・`pcv-wasm`・`src-tauri/src/conversion.rs` |
 | 視点（TP-1） | 実装済み: 平行投影・定位置の視点（`src/renderer/projection.ts`・`view-presets.ts`）、手順は `src/app/view.ts`。[TP-trendpoint-parity.md](./TP-trendpoint-parity.md) |
 
+## TEA とプラグインの土台（PL-0 で入った物）
+
+- **TEA（Model / Msg / update / view）**（[ADR-0022](./ADR-0022-tea-architecture.md)）: `src/app/tea.ts` の `createProgram(init, update, effectFailed)` が
+  `getModel`・`dispatch`・`subscribe` を返す。`update` は純粋な関数で、I/O は `Effect` だけが行う。効果の例外（同期の throw・Promise の reject）は
+  `effectFailed` で Msg に変えて `update` に戻す。ライブラリは入れていない。テストは `src/app/tea.test.ts`。
+- **プラグインの API**（[ADR-0023](./ADR-0023-plugins.md)）: `src/plugin-api/index.ts` に `PcvPlugin`・`PluginHost` の型。PL-0 の口は
+  `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`program` だけ。React を import しないので、描く物は `ViewNode`（ReactNode と互換の型）で受け取る。
+- **ホスト**: `src/core/plugin-host.ts` の `createPluginHost` が、プラグインを順に `activate` し、登録された物を React に依存しないストアとして持つ。
+  `activate` の例外・知らない `apiVersion`・同じ id・同じキーのショートカットは、既存の `reportError`（`ErrorDialog` とログ）に流す。
+  ショートカットの「入力欄では効かない」判定は、登録の種類（`harmless` → `isTypingTarget`、`irreversible` → `isFormControl`）でホストが行う。テストは `src/core/plugin-host.test.ts`。
+- **描画**: `src/ui/plugins/` が `useSyncExternalStore` でホストを読み、リボンの項目を `Toolbar.tsx` の「開く」の次の区切りの後に、
+  ステータスの項目を `StatusBar.tsx` の「ログ」の前に、ダイアログを既存の `Dialog` の枠で描く。プラグインの UI ごとに Error Boundary がある。`window` の `keydown` は `usePluginHost` が1つだけ登録する。
+- **組み込み**: `src/plugins/builtin.ts` は空。画面は PL-0 の前と同じ。
+- **層の規約**（`eslint.config.js`、テストは `src/layer-rules.test.ts`）: `src/plugin-api/**` は React・`src/ui`・`src/state`・`src/renderer`・`src/datasource` を、
+  `src/core/**` は React・`src/ui`・`src/state` を import しない（JSX も書かない）。`src/plugins/**` が import してよいのは `src/plugin-api`・自分のフォルダ・`react`・`lucide-react`・`src/ui/kit` だけ（RF-1 で先に入れた）。
+
 ## これから（まだ無い。決まっただけ）
 
-次の 2 つは決定済みの**将来の形**で、今のコードにはまだ無い。無いものを「ある」と読まないこと。
+次は決定済みの**将来の形**で、今のコードにはまだ無い。無いものを「ある」と読まないこと。
 
-- **TEA（Model / Msg / update / view）**（[ADR-0022](./ADR-0022-tea-architecture.md)）: 状態を変える道を `dispatch(msg)` の 1 本にする。
-  `update` は純粋な関数で、I/O は `Effect` だけが行う。`src/app/tea.ts`（`createProgram`）に約 60 行で書き、ライブラリは入れない。
-  今の `{ get, set, subscribe }` のストア（ADR-0021 の RF-5 の改訂）は、プラグイン化のときにこの形へ移す。
-- **プラグイン**（[ADR-0023](./ADR-0023-plugins.md)）: TS 側の機能（視点・計測・断面・結合・ラスタ・間引き・フィルタ・DTM）を、
-  `src/plugins/<id>/` の 1 機能 1 フォルダに分ける。コアが残すのは WebGPU のレンダラ・データの読み込み・レイヤーの一覧・殻（リボン・ダイアログの枠・ステータスバー）。
-  プラグインが import してよいのは `src/plugin-api/`（コアの唯一の入口）・自分のフォルダ・`react`・`lucide-react`・`src/ui/kit` だけで、
-  ホストの実装は `src/core/plugin-host.ts`。組み込みも同じ API で書く。外部のプラグインは `sandbox="allow-scripts"` の iframe の中で動かし、権限は利用者に許可を求める。
-  段階は PL-0〜PL-9（ADR-0023 の表）。前提の RF-1（層の規約の検査）で、`src/plugins/**` の import 制限は ESLint のルールに先に入れてある（フォルダが無くても効く形。`src/layer-rules.test.ts` がテストする）。
+- 既存の `{ get, set, subscribe }` のストア（ADR-0021 の RF-5 の改訂）は、プラグイン化のときに TEA の形へ移す
+- TS 側の機能（視点・計測・断面・結合・ラスタ・間引き・フィルタ・DTM）を、`src/plugins/<id>/` の 1 機能 1 フォルダに分ける（PL-1 の視点 `pcv.view` から）。
+  コアが残すのは WebGPU のレンダラ・データの読み込み・レイヤーの一覧・殻（リボン・ダイアログの枠・ステータスバー）。組み込みも同じ API で書く。
+  API の `layers`・`tools`・`view`・`units`・`settings` は、使う機能を移すときに足す。`src/ui/kit` もまだ無い
+- 外部のプラグインは `sandbox="allow-scripts"` の iframe の中で動かし、権限は利用者に許可を求める（PL-9a・PL-9b）。段階は ADR-0023 の表
