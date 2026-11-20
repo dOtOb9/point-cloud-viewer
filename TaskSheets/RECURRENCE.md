@@ -227,3 +227,12 @@ PF-0 は 4 ラウンドかかった。指摘は 3 つの根本原因に集まる
 
 - R1 の nit（N-1 報告の文を `new Error` で包む、N-3 購読者の例外、N-5 描き方の不揃い）は R2 で直した。一度きりの形で、仕組みにはしない（N-5 は F-1 のテストが全部の描き場所を同じ形で見るので、ずれは同じテストで出る）
 - R2 の N-7（`DialogSpec` に閉じたことの通知が無い）は直していない。使い手（自分のダイアログの開閉を Model に持つプラグイン）がまだいないため、PL-1 で `pcv.view` を移すときに要るかを決める（PL-0 のシートの記録に書いた）
+
+### PL-0-RP R2 での直し（監査 RP-F1〜RP-F3）
+
+- RP-F1（must）: `src/core/adr-shape.test.ts` が ```` ```ts\n ```` の LF だけを前提にしていて、`core.autocrlf=true` で ADR が CRLF になると塊が 0 個で落ちる形だった。読み込んだ直後に全部（ADR-0022・ADR-0023・`tea.ts`）の改行を LF にそろえ、塊を探す関数・行に分ける関数の中でもそろえる。
+  監査役の赤のテスト "reads the createProgram signature from ADR-0022 checked out with CRLF (core.autocrlf=true on Windows)" を弱めずに一緒にコミットした。ADR-0022・ADR-0023・`tea.ts` を一時的に CRLF にして `adr-shape.test.ts` が全部通ることを確かめてから戻した。
+  同じ前提がほかの新しいテストに無いか見た: `app-shortcut-keys.test.ts` の走査は `\s` で改行を読むので CRLF でも拾える（CRLF の `switch`・比較のケースを足して固定した）。`plugin-ui.test.tsx`・`plugin-host.test.ts`・`tea.test.ts` はソースを文字列で読まない
+- RP-F2（should）: ADR-0023 の口の一覧を「PL-0 の口は」の最初の行に結びつけていた。改訂の節に「口の一覧:」の行を置き、テストは最後の「口の一覧:」の行を読む。PL-1 の作業役は、改訂の節に新しい「口の一覧:」の行を書けばテストを直さずに通る（テスト "a later revision with its own "口の一覧:" line replaces the earlier list"）
+- RP-F3（nit）: ADR-0022 の突き合わせを両方向にした。`interface Failures` の中身の行が、ADR とコードで同じ（数も中身も）であることを確かめる（"interface Failures has the same members in the ADR and in src/app/tea.ts, both ways"）
+- 根本原因（RP-F1）: Windows のこの PC で、ファイルを文字列で読むテストの改行の形を考えなかった。作業ツリーの ADR が LF だったので手元では通った。仕組み: 決まりには足さず、ファイルを読むテストは読んだ直後に改行をそろえる形を `adr-shape.test.ts` に置いた（今ある、Markdown を読む新しいテストはこれだけ）

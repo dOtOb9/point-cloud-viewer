@@ -163,3 +163,4 @@ R1 の記録のうち、`createProgram` の3つ目の引数・`PluginView.tsx`�
   - `src/ui/plugins/plugin-ui.test.tsx` の "a plugin UI that throws leaves nothing behind, in every place the host draws"（7ca3d42）
   - `src/core/adr-shape.test.ts`（fc317e1）。そろえるため `src/app/tea.ts` の `Failures.effectFailed` をメソッドの書き方にした（型の意味は同じ）
   - AGENTS.md の作業役の決まりに2行（475706b）
+- **PL-0-RP R2**: 監査の RP-F1（CRLF で `adr-shape.test.ts` が落ちる形）・RP-F2（ADR-0023 の口の一覧の行を「口の一覧:」の最後の行で読む）・RP-F3（`Failures` の突き合わせを両方向に）を直した。中身は `TaskSheets/RECURRENCE.md` の PL-0 の節の「PL-0-RP R2 での直し」
