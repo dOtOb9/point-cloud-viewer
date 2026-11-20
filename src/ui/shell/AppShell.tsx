@@ -35,6 +35,9 @@ import { SettingsModal } from "../settings/SettingsModal";
 import { StatusBar } from "../status/StatusBar";
 import { UnsupportedDeviceScreen } from "./UnsupportedDeviceScreen";
 import { UpdateNotice } from "../status/UpdateNotice";
+import { builtinPlugins } from "../../plugins/builtin";
+import { usePluginHost } from "../plugins/usePluginHost";
+import { PluginDialogs } from "../plugins/PluginDialogs";
 
 function layerPanelStartsOpen(): boolean {
   return !(typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches);
@@ -45,6 +48,7 @@ export function AppShell() {
   const theme = useTheme();
   const webGpuSupport = useWebGpuSupport();
   const update = useUpdateCheck();
+  const pluginHost = usePluginHost(builtinPlugins, viewer.reportError);
   const measureRaw = useMeasureTool(viewer, canvasRef);
   const layerToolRaw = useLayerTool(viewer, canvasRef);
   const measure = { ...measureRaw, toggle: (kind: Parameters<typeof measureRaw.toggle>[0]) => { layerToolRaw.stop(); measureRaw.toggle(kind); } };
@@ -117,6 +121,7 @@ export function AppShell() {
         onOpenFilter={() => setThinFilterDialog("filter")}
         onOpenDtm={() => setDtmDialogOpen(true)}
         onOpenView={() => setViewDialogOpen(true)}
+        pluginHost={pluginHost}
       />
 
       <LayerPanel viewer={viewer} open={layerOpen} onToggleOpen={() => setLayerOpen((v) => !v)} glassEnabled={glassEnabled} />
@@ -128,6 +133,7 @@ export function AppShell() {
         onOpenConversion={() => setConversionDialogOpen(true)}
         toolDialogCollapsed={!toolDialogOpen}
         onOpenToolProgress={() => setToolDialogOpen(true)}
+        pluginHost={pluginHost}
       />
 
       <SettingsModal
@@ -154,6 +160,7 @@ export function AppShell() {
       {dtmDialogOpen && <DtmDialog viewer={viewer} onClose={() => setDtmDialogOpen(false)} />}
       {viewDialogOpen && <ViewDialog viewer={viewer} onClose={() => setViewDialogOpen(false)} />}
       <ToolProgressDialog viewer={viewer} open={toolDialogOpen} onCollapse={() => setToolDialogOpen(false)} />
+      <PluginDialogs host={pluginHost} />
 
       <ConversionDialog viewer={viewer} open={conversionDialogVisible} onClose={() => setConversionDialogOpen(false)} />
 

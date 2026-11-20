@@ -2,7 +2,9 @@ import type { CopcViewerState } from "../../state/useCopcViewer";
 import type { MeasureToolState } from "../../state/useMeasureTool";
 import type { LayerToolState } from "../../state/useLayerTool";
 import { useNarrowViewport } from "../../state/useNarrowViewport";
+import type { PluginHostCore } from "../../core/plugin-host";
 import { glassSurfaceClass } from "../common/glass";
+import { PluginRibbonItems } from "../plugins/PluginRibbonItems";
 import { FilterButton } from "./buttons/FilterButton";
 import { ThinButton } from "./buttons/ThinButton";
 import { DtmButton } from "./buttons/DtmButton";
@@ -28,9 +30,10 @@ interface Props {
   onOpenFilter: () => void;
   onOpenDtm: () => void;
   onOpenView: () => void;
+  pluginHost: PluginHostCore;
 }
 
-export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter, onOpenDtm, onOpenView }: Props) {
+export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter, onOpenDtm, onOpenView, pluginHost }: Props) {
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useToolbarDragScroll();
   const placement = narrow ? "inset-x-0 top-0" : "inset-x-3 top-3 rounded-2xl";
@@ -44,6 +47,7 @@ export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTo
     >
       <OpenFileButton viewer={viewer} />
       <ToolbarSeparator />
+      <PluginRibbonItems host={pluginHost} />
       <ViewButton viewer={viewer} onOpen={onOpenView} />
       <ToolbarSeparator />
       <MeasureButton kind="distance" viewer={viewer} measure={measure} />

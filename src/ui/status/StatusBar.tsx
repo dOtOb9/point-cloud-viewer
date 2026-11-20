@@ -3,6 +3,8 @@ import { viewContext, viewStatusText } from "../../app/view";
 import { useStore } from "../../state/useStore";
 import { formatCrsShort } from "../common/crs-format";
 import { glassSurfaceClass } from "../common/glass";
+import type { PluginHostCore } from "../../core/plugin-host";
+import { PluginStatusItems } from "../plugins/PluginStatusItems";
 
 export function StatusBar({
   viewer,
@@ -11,6 +13,7 @@ export function StatusBar({
   onOpenConversion,
   toolDialogCollapsed,
   onOpenToolProgress,
+  pluginHost,
 }: {
   viewer: CopcViewerState;
   glassEnabled: boolean;
@@ -18,6 +21,7 @@ export function StatusBar({
   onOpenConversion: () => void;
   toolDialogCollapsed: boolean;
   onOpenToolProgress: () => void;
+  pluginHost: PluginHostCore;
 }) {
   const stats = viewer.stats;
   const projectionMode = useStore(viewContext.projection);
@@ -73,6 +77,7 @@ export function StatusBar({
           {toolLabel}
         </button>
       ) : null}
+      <PluginStatusItems host={pluginHost} />
       <button
         type="button"
         onClick={onOpenErrorLog}
