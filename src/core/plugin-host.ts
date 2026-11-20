@@ -44,6 +44,8 @@ export interface PluginHostCore {
   handleKeyDown(event: ShortcutKeyEvent): void;
 }
 
+export const APP_SHORTCUT_KEYS: readonly string[] = ["F", "1", "2", "3", "4", "5", "6", "7", "Delete", "Enter", "Escape", "Tab"];
+
 const NO_REGISTRATIONS: PluginHostState = { ribbon: [], status: [], dialogs: [], shortcuts: [] };
 
 export function pluginErrorMessage(source: string, error: unknown): string {
@@ -102,9 +104,13 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
   }
 
   function addShortcut(pluginId: string, shortcut: Shortcut): void {
+    if (APP_SHORTCUT_KEYS.some((key) => sameShortcutKey(key, shortcut.key))) {
+      report(pluginId, `ショートカット「${shortcut.key}」はアプリが使っているので登録しませんでした`);
+      return;
+    }
     const taken = store.get().shortcuts.find((s) => sameShortcutKey(s.item.key, shortcut.key));
     if (taken) {
-      report(pluginId, new Error(`ショートカット「${shortcut.key}」は ${taken.pluginId} が使っているので登録しませんでした`));
+      report(pluginId, `ショートカット「${shortcut.key}」は ${taken.pluginId} が使っているので登録しませんでした`);
       return;
     }
     register("shortcuts", pluginId, shortcut);
@@ -135,11 +141,11 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
 
   function activateOne(plugin: PcvPlugin): void {
     if (plugin.apiVersion !== PLUGIN_API_VERSION) {
-      report(plugin.id, new Error(`apiVersion ${String(plugin.apiVersion)} に対応していないので読み込みませんでした（このアプリは ${PLUGIN_API_VERSION}）`));
+      report(plugin.id, `apiVersion ${String(plugin.apiVersion)} に対応していないので読み込みませんでした（このアプリは ${PLUGIN_API_VERSION}）`);
       return;
     }
     if (active.has(plugin.id)) {
-      report(plugin.id, new Error("同じ id のプラグインが既に読み込まれているので、後のものを読み込みませんでした"));
+      report(plugin.id, "同じ id のプラグインが既に読み込まれているので、後のものを読み込みませんでした");
       return;
     }
     active.set(plugin.id, () => {});

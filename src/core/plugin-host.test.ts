@@ -160,13 +160,13 @@ describe("plugin host: shortcuts", () => {
     const first = vi.fn();
     const second = vi.fn();
     host.activate([
-      fakePlugin("a", (h) => h.shortcuts.add({ key: "F", label: "fit", kind: "harmless", run: first })),
-      fakePlugin("b", (h) => h.shortcuts.add({ key: "f", label: "other", kind: "harmless", run: second })),
+      fakePlugin("a", (h) => h.shortcuts.add({ key: "K", label: "fit", kind: "harmless", run: first })),
+      fakePlugin("b", (h) => h.shortcuts.add({ key: "k", label: "other", kind: "harmless", run: second })),
     ]);
     expect(host.getState().shortcuts.map((s) => s.pluginId)).toEqual(["a"]);
     expect(reported).toHaveLength(1);
     expect(reported[0]).toMatch(/^b: /);
-    host.handleKeyDown(keyEvent("f"));
+    host.handleKeyDown(keyEvent("k"));
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).not.toHaveBeenCalled();
   });
@@ -174,10 +174,10 @@ describe("plugin host: shortcuts", () => {
   it("runs a harmless shortcut on a checkbox but not in a text input", () => {
     const { host } = makeHost();
     const run = vi.fn();
-    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "1", label: "top", kind: "harmless", run }))]);
-    host.handleKeyDown(keyEvent("1", { tagName: "INPUT", type: "text" }));
+    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "8", label: "top", kind: "harmless", run }))]);
+    host.handleKeyDown(keyEvent("8", { tagName: "INPUT", type: "text" }));
     expect(run).not.toHaveBeenCalled();
-    const onCheckbox = keyEvent("1", { tagName: "INPUT", type: "checkbox" });
+    const onCheckbox = keyEvent("8", { tagName: "INPUT", type: "checkbox" });
     host.handleKeyDown(onCheckbox);
     expect(run).toHaveBeenCalledTimes(1);
     expect(onCheckbox.prevented).toBe(true);
@@ -186,25 +186,25 @@ describe("plugin host: shortcuts", () => {
   it("does not run an irreversible shortcut on any form control, a checkbox included", () => {
     const { host } = makeHost();
     const run = vi.fn();
-    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "Delete", label: "delete", kind: "irreversible", run }))]);
-    const onCheckbox = keyEvent("Delete", { tagName: "INPUT", type: "checkbox" });
+    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "Backspace", label: "delete", kind: "irreversible", run }))]);
+    const onCheckbox = keyEvent("Backspace", { tagName: "INPUT", type: "checkbox" });
     host.handleKeyDown(onCheckbox);
-    host.handleKeyDown(keyEvent("Delete", { tagName: "SELECT" }));
+    host.handleKeyDown(keyEvent("Backspace", { tagName: "SELECT" }));
     expect(run).not.toHaveBeenCalled();
     expect(onCheckbox.prevented).toBe(false);
-    host.handleKeyDown(keyEvent("Delete", { tagName: "DIV" }));
+    host.handleKeyDown(keyEvent("Backspace", { tagName: "DIV" }));
     expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("ignores keys pressed with Ctrl, Meta or Alt, repeats and composition", () => {
     const { host } = makeHost();
     const run = vi.fn();
-    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "f", label: "fit", kind: "harmless", run }))]);
-    host.handleKeyDown(keyEvent("f", null, { ctrlKey: true }));
-    host.handleKeyDown(keyEvent("f", null, { metaKey: true }));
-    host.handleKeyDown(keyEvent("f", null, { altKey: true }));
-    host.handleKeyDown(keyEvent("f", null, { repeat: true }));
-    host.handleKeyDown(keyEvent("f", null, { isComposing: true }));
+    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "k", label: "fit", kind: "harmless", run }))]);
+    host.handleKeyDown(keyEvent("k", null, { ctrlKey: true }));
+    host.handleKeyDown(keyEvent("k", null, { metaKey: true }));
+    host.handleKeyDown(keyEvent("k", null, { altKey: true }));
+    host.handleKeyDown(keyEvent("k", null, { repeat: true }));
+    host.handleKeyDown(keyEvent("k", null, { isComposing: true }));
     expect(run).not.toHaveBeenCalled();
   });
 
