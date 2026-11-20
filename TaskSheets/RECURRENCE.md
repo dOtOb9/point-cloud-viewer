@@ -203,3 +203,12 @@ PF-0 は 4 ラウンドかかった。指摘は 3 つの根本原因に集まる
 
 - lint は `createStore` を直接呼ぶ形だけを見る。生成関数をモジュールの最上位で呼ぶ形（`src/app/view.ts:26` の `export const viewContext = createViewContext()`）は落ちない。これは既存の形で、使い手が `src/ui/status/`・`src/ui/shell/`（PL-0 が並行して触る）にあるため、この節では変えていない。ビューアごとに作るかはメインの判断（構成の負債の候補）
 - F-1 の「いつ消えるか」は機械で見られない（どの状態が一時的な案内かを lint は知らない）ので決まりにした
+
+### CM-F1-RP R2 での直し（監査 F-1〜F-3）
+
+- F-1（must）: R1 のセレクタは `VariableDeclarator > CallExpression` の直下しか見ず、`createStore(null) as Store<…>`・`{ blocked: createStore(null) }`・`export default createStore(null)`・名前空間の import（`st.createStore`）・`Object.freeze(createStore(null))` ですり抜けた。
+  `CallExpression:matches([callee.name="createStore"], [callee.property.name="createStore"]):not(:function CallExpression)`（関数の外のどこでも）に替え、別名の import（`ImportSpecifier[imported.name="createStore"][local.name!="createStore"]`）も落とす。
+  監査役の赤のテスト "rejects module state in src/app written another way: …"（4 件）と、足した "rejects module state in src/app hidden behind a call or a rename: …"（`Object.freeze`・別名、2 件）で固定。`npx eslint --stdin --stdin-filename src/app/zz-probe.ts` で上の 6 つの形が rc=1、関数の中の `createStore` が rc=0
+- F-2（should）: テストのファイル（`src/app/**/*.test.*`）は `ignores` で外し、層の規則（React・フックの import、JSX）だけを当てる別の設定にした。監査役の赤のテスト "allows a top-level let in a test file in src/app" と、足した "still applies the layer rules to test files in src/app" で固定
+- F-3（nit）: 直さない（上の「限界」のとおり、`viewContext` はメインが構成の負債として扱う）
+- 残る限界: 最上位のブロック（`{ let x; }`）の中の `let`、`store["createStore"]` の形は見ない（書く理由の無い形で、手間に見合わないため）
