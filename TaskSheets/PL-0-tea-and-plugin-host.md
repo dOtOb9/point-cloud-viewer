@@ -164,3 +164,13 @@ R1 の記録のうち、`createProgram` の3つ目の引数・`PluginView.tsx`�
   - `src/core/adr-shape.test.ts`（fc317e1）。そろえるため `src/app/tea.ts` の `Failures.effectFailed` をメソッドの書き方にした（型の意味は同じ）
   - AGENTS.md の作業役の決まりに2行（475706b）
 - **PL-0-RP R2**: 監査の RP-F1（CRLF で `adr-shape.test.ts` が落ちる形）・RP-F2（ADR-0023 の口の一覧の行を「口の一覧:」の最後の行で読む）・RP-F3（`Failures` の突き合わせを両方向に）を直した。中身は `TaskSheets/RECURRENCE.md` の PL-0 の節の「PL-0-RP R2 での直し」
+
+### 監査の記録
+
+| ラウンド | 監査役 | 判定 | 主な指摘 |
+|---|---|---|---|
+| R1 | ループ | CHANGES_REQUESTED | F-1 [must] プラグインのダイアログの中身が投げると空の枠が残る（赤のテスト）。F-2 [should] 失敗の Msg への update がまた失敗すると同期の無限ループ、F-3 効果の失敗が errors.report に出ない、F-4 ADR と API の形が違う、F-5 アプリのキーとプラグインのキーが両方走る。N-1 エラーの言葉 → メインが CLAUDE.md を直した（04fc794） |
+| R2 | ループ | APPROVE | 全部直った（使い捨てのテストで止まることを確かめた）。F-6 [should] キーの一覧のテストが `switch`・`.code` をすり抜ける。N-7 閉じたことの通知が無い（PL-1 へ） |
+| RP R1 | ループ | CHANGES_REQUESTED | 仕組みは元に戻すと落ちる。RP-F1 [must] `adr-shape.test.ts` が CRLF の checkout で落ちる（赤のテスト）。RP-F2 ADR-0023 の一覧の読み方が PL-1 で追いつけない |
+| RP R2 | ループ | APPROVE | 実ファイルを CRLF にしても通る。「口の一覧:」の最後の行を読む |
+| PR | PR・CI | （この後） | |
