@@ -64,3 +64,28 @@
 
 - 実際の変換が走っている最中に押したとき（上はロックを手で持っただけ）。所有者の確認手順: Web 版で大きな LAS の変換を始め、別のタブで 設定 → 保存領域 → 一時ファイルの「すべて消す」を押す。押した近くに「変換・ツールの実行中なので消せません。…」が出て、一時ファイルが残り、変換が最後まで終わること。変換が終わってからもう一度押すと消えること
 - デスクトップ版・Android は保存領域の画面を出さない（`isBrowser` のときだけ）ので対象外
+
+### 実装の記録 R2（2026-11-21、作業役。監査 R1 の指摘への対応）
+
+コミット `f613f87`。
+
+- F-1（文が実際の状態より長く残る）: 直した。
+  - 止められた記録は、押すたび（R1 から）に加えて、保存領域を開いたとき（`SettingsModal.tsx` の開いたときの読み直しを `refreshStorageAndForgetBlockedCleanup` に替えた）と「更新」を押したときにも忘れるようにした
+  - 「すべて消す」の文は、ボタンと同じ「一時ファイルが 1 件以上」の条件のときだけ出す。行の文は、その行があるときだけ出る（R1 から）
+  - テスト: "forgets the busy notice when the storage page is opened again after the conversion ended"、"forgets the busy notice of a row when the list is refreshed"
+- F-2（ストアがモジュールに 1 つ）: 直した。`scratchCleanupBlockedByConversion` を消し、`createBlockedCleanupStore()` を `useOpfsStorage` の `useState` の初期化で呼んで、ビューアごとに作る。
+  文脈は `useMemo` で組み、依存（`refreshOpfsStorageInfo`・`reportError`・ストア）はどれも作り直されないので、文脈も描画ごとに変わらない（開いたときの effect の依存に使うため）。
+  テスト: "keeps the busy notice of one viewer out of another viewer"
+- F-3（消すのに失敗したとき何も出ない）: 直した。`removeScratchDirsUnlessConverting` が失敗を受け止め、`reportError("一時ファイルを消せませんでした: …", "conversion")` で既存のエラー表示（ADR-0011）に流し、`"failed"` を返す。
+  種類は `"conversion"`（変換エラー）にした。`GpuErrorSource` に保存領域の種類を足すには `src/renderer/gpu-error-log.ts` と `src/ui/dialogs/ErrorDialog.tsx` を触ることになり、このシートの範囲の外のため。
+  テスト: "shows a failure to remove in the error log instead of dropping it"、"releases the lock when removing throws, so a later conversion can take it"（失敗しても投げずに `"failed"` を返す形に合わせた）
+- 変えた共有の関数の使い手: `useOpfsStorage` は引数に `reportError` を取るようになり、呼び手は `useCopcViewer.ts` の 1 か所（`grep -rn "useOpfsStorage(" src`）。`refreshOpfsStorageInfo` は消していない（`open-files.ts` の変換後の読み直しが使う）
+
+画面で見たこと（R1 と同じ台本を (a)(b) の手順を足して撮り直した。`npx vite --port 5391` を自分で立てて止めた）:
+
+- 375px・1280px とも、スクリプトの出力は `namesWhileBusy` 2 件、`noticesAfterReopen: 0`、`noticesAfterRefresh: 0`、`namesAfter: []`、`noticesAtEnd: 0`
+- (b) 止められた後にロックを離し、「戻る」→「保存領域」で開き直すと文は出ない（`*-5-reopened-after-conversion.png`）
+- (a) 止められた後に、別のタブが一時ファイルを片付けてロックを離し、「更新」を押すと、一覧は「無し」で文も出ない（`*-6-refreshed-after-conversion-cleaned-up.png`）
+- 止められたときの文の位置は R1 と同じ（`375-3-remove-one-busy.png` で行の下に 2 行で出て、はみ出さない）
+
+確かめていないこと（未確認）: R1 と同じ（実際の変換中に押す確認は所有者の手順のとおり）。消すのに失敗したときのエラー表示は、画面では出していない（失敗させる手段が無いため。テストだけ）
