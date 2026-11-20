@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   cleanupStaleScratchDirs,
   clearAllCachedConversions,
@@ -12,7 +12,7 @@ import {
   type OpfsUsageBreakdown,
 } from "../datasource/opfs";
 import { isTauriEnvironment } from "../datasource/environment";
-import { scratchCleanupBlockedByConversion, type ScratchCleanupContext } from "../app/scratch-cleanup";
+import { createBlockedCleanupStore, type ScratchCleanupContext } from "../app/scratch-cleanup";
 
 export interface OpfsStorageInfo {
   quotaBytes: number;
@@ -30,7 +30,7 @@ export interface OpfsStorage {
   scratchCleanupContext: ScratchCleanupContext;
 }
 
-export function useOpfsStorage(): OpfsStorage {
+export function useOpfsStorage(reportError: ScratchCleanupContext["reportError"]): OpfsStorage {
   const [opfsStorageInfo, setOpfsStorageInfo] = useState<OpfsStorageInfo | null>(null);
 
   const refreshOpfsStorageInfo = useCallback(async () => {
@@ -71,13 +71,18 @@ export function useOpfsStorage(): OpfsStorage {
     await refreshOpfsStorageInfo();
   }, [refreshOpfsStorageInfo]);
 
-  const scratchCleanupContext: ScratchCleanupContext = {
-    lockManager: navigator.locks,
-    removeAllScratchDirs: cleanupStaleScratchDirs,
-    removeScratchDir: removeScratchDirByName,
-    refreshStorageInfo: refreshOpfsStorageInfo,
-    blockedByConversion: scratchCleanupBlockedByConversion,
-  };
+  const [blockedByConversion] = useState(createBlockedCleanupStore);
+  const scratchCleanupContext = useMemo<ScratchCleanupContext>(
+    () => ({
+      lockManager: navigator.locks,
+      removeAllScratchDirs: cleanupStaleScratchDirs,
+      removeScratchDir: removeScratchDirByName,
+      refreshStorageInfo: refreshOpfsStorageInfo,
+      reportError,
+      blockedByConversion,
+    }),
+    [refreshOpfsStorageInfo, reportError, blockedByConversion],
+  );
 
   return {
     opfsStorageInfo,

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { CONVERSION_LOCK_NAME, type LockManagerLike } from "../datasource/opfs";
 import {
+  createBlockedCleanupStore,
   isBlockedCleanupFor,
+  refreshStorageAndForgetBlockedCleanup,
   removeScratchDirsUnlessConverting,
   type ScratchCleanupContext,
-  type ScratchCleanupTarget,
 } from "./scratch-cleanup";
-import { createStore } from "./store";
 
 interface FakeLockManager extends LockManagerLike {
   held: boolean;
@@ -37,7 +37,8 @@ function fakeContext(lockManager: LockManagerLike): ScratchCleanupContext {
     removeAllScratchDirs: vi.fn(async () => {}),
     removeScratchDir: vi.fn(async () => {}),
     refreshStorageInfo: vi.fn(async () => {}),
-    blockedByConversion: createStore<ScratchCleanupTarget | null>(null),
+    reportError: vi.fn(),
+    blockedByConversion: createBlockedCleanupStore(),
   };
 }
 
@@ -96,13 +97,49 @@ describe("removeScratchDirsUnlessConverting", () => {
   it("releases the lock when removing throws, so a later conversion can take it", async () => {
     const lockManager = fakeLockManager(false);
     const ctx = fakeContext(lockManager);
-    const failure = new Error("removeEntry failed");
     ctx.removeAllScratchDirs = vi.fn(async () => {
-      throw failure;
+      throw new Error("removeEntry failed");
     });
-    await expect(removeScratchDirsUnlessConverting(ctx, { kind: "all" })).rejects.toBe(failure);
+    const outcome = await removeScratchDirsUnlessConverting(ctx, { kind: "all" });
+    expect(outcome).toBe("failed");
     expect(lockManager.held).toBe(false);
     expect(ctx.refreshStorageInfo).not.toHaveBeenCalled();
+  });
+
+  it("shows a failure to remove in the error log instead of dropping it", async () => {
+    const ctx = fakeContext(fakeLockManager(false));
+    ctx.removeScratchDir = vi.fn(async () => {
+      throw new Error("getDirectory failed");
+    });
+    await removeScratchDirsUnlessConverting(ctx, { kind: "one", name: "pcv-scratch-a" });
+    expect(ctx.reportError).toHaveBeenCalledWith("一時ファイルを消せませんでした: getDirectory failed", "conversion");
+    expect(ctx.blockedByConversion.get()).toBeNull();
+  });
+
+  it("keeps the busy notice of one viewer out of another viewer", async () => {
+    const busyViewer = fakeContext(fakeLockManager(true));
+    const otherViewer = fakeContext(fakeLockManager(true));
+    await removeScratchDirsUnlessConverting(busyViewer, { kind: "all" });
+    expect(otherViewer.blockedByConversion.get()).toBeNull();
+  });
+});
+
+describe("refreshStorageAndForgetBlockedCleanup", () => {
+  it("forgets the busy notice when the storage page is opened again after the conversion ended", async () => {
+    const lockManager = fakeLockManager(true);
+    const ctx = fakeContext(lockManager);
+    await removeScratchDirsUnlessConverting(ctx, { kind: "all" });
+    lockManager.held = false;
+    await refreshStorageAndForgetBlockedCleanup(ctx);
+    expect(ctx.blockedByConversion.get()).toBeNull();
+    expect(ctx.refreshStorageInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("forgets the busy notice of a row when the list is refreshed", async () => {
+    const ctx = fakeContext(fakeLockManager(true));
+    await removeScratchDirsUnlessConverting(ctx, { kind: "one", name: "pcv-scratch-a" });
+    await refreshStorageAndForgetBlockedCleanup(ctx);
+    expect(ctx.blockedByConversion.get()).toBeNull();
   });
 });
 

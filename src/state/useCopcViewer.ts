@@ -34,7 +34,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     { onStats: display.onStats, reportError: errorLog.reportError, setError: setInitError },
   );
   const layers = useLayers({ rendererRef, sourceRef, setStatus, reportError: errorLog.reportError });
-  const opfs = useOpfsStorage();
+  const opfs = useOpfsStorage(errorLog.reportError);
   const tempDirSetting = useTempDir();
   const fileOpen = useFileOpen({
     rendererRef,

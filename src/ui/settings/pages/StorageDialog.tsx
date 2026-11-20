@@ -1,5 +1,6 @@
 import {
   isBlockedCleanupFor,
+  refreshStorageAndForgetBlockedCleanup,
   removeScratchDirsUnlessConverting,
   SCRATCH_CLEANUP_BUSY_MESSAGE,
 } from "../../../app/scratch-cleanup";
@@ -112,7 +113,9 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
                 </button>
               )}
             </div>
-            {isBlockedCleanupFor(blockedCleanup, { kind: "all" }) && <ScratchCleanupBusyNotice />}
+            {info.breakdown.staleScratchDirs.length > 0 && isBlockedCleanupFor(blockedCleanup, { kind: "all" }) && (
+              <ScratchCleanupBusyNotice />
+            )}
             <p className="mt-1 opacity-60">
               タブを閉じる・クラッシュする等で後始末できなかった変換の一時ファイル。使用中の変換のものは
               消せない(失敗しても実害は無い)。
@@ -150,7 +153,7 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
 
           <button
             type="button"
-            onClick={() => void viewer.refreshOpfsStorageInfo()}
+            onClick={() => void refreshStorageAndForgetBlockedCleanup(viewer.scratchCleanupContext)}
             className="self-start rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
           >
             更新
