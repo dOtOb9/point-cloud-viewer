@@ -27,8 +27,14 @@ const update: Update<Model, Msg> = (model, msg) => {
 
 const toFailed = (error: unknown): Msg => ({ type: "failed", error });
 
-function makeProgram() {
-  return createProgram<Model, Msg>({ total: 0, log: [] }, update, toFailed);
+function makeProgram(reported: unknown[] = []) {
+  return createProgram<Model, Msg>({ total: 0, log: [] }, update, { effectFailed: toFailed, report: (error) => reported.push(error) });
+}
+
+function throwing<M = Msg>(message: string): Effect<M> {
+  return () => {
+    throw new Error(message);
+  };
 }
 
 function nextTick(): Promise<void> {
@@ -158,5 +164,55 @@ describe("createProgram", () => {
       ],
     });
     expect(ran).toEqual(["first effect", "second effect", "effect of the queued msg"]);
+  });
+it("reports, instead of feeding back to update, an effect that fails while update handles an effect failure", () => {
+    const reported: unknown[] = [];
+    let updates = 0;
+    const program = createProgram<number, "start" | "failed">(
+      0,
+      (model, msg) => {
+        updates++;
+        return [model, [msg === "start" ? throwing("first") : throwing("again")]];
+      },
+      { effectFailed: () => "failed", report: (error) => reported.push(error) },
+    );
+    program.dispatch("start");
+    expect(updates).toBe(2);
+    expect(reported.map((e) => (e as Error).message)).toEqual(["again"]);
+  });
+
+  it("reports a promise that rejects while update handles an effect failure", async () => {
+    const reported: unknown[] = [];
+    const program = createProgram<number, "start" | "failed">(
+      0,
+      (model, msg) => [model, [msg === "start" ? () => Promise.reject(new Error("first")) : () => Promise.reject(new Error("again"))]],
+      { effectFailed: () => "failed", report: (error) => reported.push(error) },
+    );
+    program.dispatch("start");
+    await nextTick();
+    await nextTick();
+    expect(reported.map((e) => (e as Error).message)).toEqual(["again"]);
+  });
+
+  it("treats msgs dispatched by the effects of a failure msg as ordinary msgs again", () => {
+    const program = makeProgram();
+    program.dispatch({ type: "run", effects: [throwing("boom"), (dispatch) => dispatch({ type: "run", effects: [throwing("later")] })] });
+    expect(program.getModel().log).toEqual(["failed boom", "failed later"]);
+  });
+
+  it("reports a subscriber that throws and still runs the effects and the other subscribers", () => {
+    const reported: unknown[] = [];
+    const program = makeProgram(reported);
+    let otherCalls = 0;
+    program.subscribe(() => {
+      throw new Error("listener failed");
+    });
+    program.subscribe(() => otherCalls++);
+    const ran: string[] = [];
+    program.dispatch({ type: "add", amount: 1 });
+    program.dispatch({ type: "run", effects: [(dispatch) => dispatch({ type: "add", amount: 1 }), () => void ran.push("effect")] });
+    expect(otherCalls).toBe(2);
+    expect(ran).toEqual(["effect"]);
+    expect(reported.map((e) => (e as Error).message)).toEqual(["listener failed", "listener failed"]);
   });
 });
