@@ -12,6 +12,7 @@ import {
   type OpfsUsageBreakdown,
 } from "../datasource/opfs";
 import { isTauriEnvironment } from "../datasource/environment";
+import { scratchCleanupBlockedByConversion, type ScratchCleanupContext } from "../app/scratch-cleanup";
 
 export interface OpfsStorageInfo {
   quotaBytes: number;
@@ -26,8 +27,7 @@ export interface OpfsStorage {
   requestOpfsPersistentStorage: () => Promise<void>;
   removeOpfsCachedConversion: (entry: CachedConversionEntry) => Promise<void>;
   clearOpfsCachedConversions: () => Promise<void>;
-  removeOpfsScratchDir: (name: string) => Promise<void>;
-  clearOpfsScratchDirs: () => Promise<void>;
+  scratchCleanupContext: ScratchCleanupContext;
 }
 
 export function useOpfsStorage(): OpfsStorage {
@@ -71,18 +71,13 @@ export function useOpfsStorage(): OpfsStorage {
     await refreshOpfsStorageInfo();
   }, [refreshOpfsStorageInfo]);
 
-  const removeOpfsScratchDir = useCallback(
-    async (name: string) => {
-      await removeScratchDirByName(name);
-      await refreshOpfsStorageInfo();
-    },
-    [refreshOpfsStorageInfo],
-  );
-
-  const clearOpfsScratchDirs = useCallback(async () => {
-    await cleanupStaleScratchDirs();
-    await refreshOpfsStorageInfo();
-  }, [refreshOpfsStorageInfo]);
+  const scratchCleanupContext: ScratchCleanupContext = {
+    lockManager: navigator.locks,
+    removeAllScratchDirs: cleanupStaleScratchDirs,
+    removeScratchDir: removeScratchDirByName,
+    refreshStorageInfo: refreshOpfsStorageInfo,
+    blockedByConversion: scratchCleanupBlockedByConversion,
+  };
 
   return {
     opfsStorageInfo,
@@ -90,7 +85,6 @@ export function useOpfsStorage(): OpfsStorage {
     requestOpfsPersistentStorage,
     removeOpfsCachedConversion,
     clearOpfsCachedConversions,
-    removeOpfsScratchDir,
-    clearOpfsScratchDirs,
+    scratchCleanupContext,
   };
 }

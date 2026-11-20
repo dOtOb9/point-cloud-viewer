@@ -1,12 +1,27 @@
+import {
+  isBlockedCleanupFor,
+  removeScratchDirsUnlessConverting,
+  SCRATCH_CLEANUP_BUSY_MESSAGE,
+} from "../../../app/scratch-cleanup";
 import type { CopcViewerState } from "../../../state/useCopcViewer";
+import { useStore } from "../../../state/useStore";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
 
 function toGiBLabel(bytes: number): string {
   return `約${(bytes / 1024 ** 3).toFixed(1)}GiB`;
 }
 
+function ScratchCleanupBusyNotice() {
+  return (
+    <p role="status" data-testid="scratch-cleanup-busy" className="mt-1 text-secondary">
+      {SCRATCH_CLEANUP_BUSY_MESSAGE}
+    </p>
+  );
+}
+
 export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   const info = viewer.opfsStorageInfo;
+  const blockedCleanup = useStore(viewer.scratchCleanupContext.blockedByConversion);
   return (
     <SettingsPageDialog {...page} title="ブラウザの保存領域" widthClass="max-w-2xl">
       <p className="text-xs opacity-60">
@@ -89,13 +104,15 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
               {info.breakdown.staleScratchDirs.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => void viewer.clearOpfsScratchDirs()}
+                  onClick={() => void removeScratchDirsUnlessConverting(viewer.scratchCleanupContext, { kind: "all" })}
+                  data-testid="scratch-remove-all"
                   className="rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-600"
                 >
                   すべて消す
                 </button>
               )}
             </div>
+            {isBlockedCleanupFor(blockedCleanup, { kind: "all" }) && <ScratchCleanupBusyNotice />}
             <p className="mt-1 opacity-60">
               タブを閉じる・クラッシュする等で後始末できなかった変換の一時ファイル。使用中の変換のものは
               消せない(失敗しても実害は無い)。
@@ -105,18 +122,26 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
             ) : (
               <ul className="mt-1 flex flex-col gap-1">
                 {info.breakdown.staleScratchDirs.map((dir) => (
-                  <li key={dir.name} className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 truncate font-mono" title={dir.name}>
-                      {dir.name}
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap opacity-70">{toGiBLabel(dir.sizeBytes)}</span>
-                    <button
-                      type="button"
-                      onClick={() => void viewer.removeOpfsScratchDir(dir.name)}
-                      className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"
-                    >
-                      消す
-                    </button>
+                  <li key={dir.name}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 flex-1 truncate font-mono" title={dir.name}>
+                        {dir.name}
+                      </span>
+                      <span className="shrink-0 whitespace-nowrap opacity-70">{toGiBLabel(dir.sizeBytes)}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void removeScratchDirsUnlessConverting(viewer.scratchCleanupContext, {
+                            kind: "one",
+                            name: dir.name,
+                          })
+                        }
+                        className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"
+                      >
+                        消す
+                      </button>
+                    </div>
+                    {isBlockedCleanupFor(blockedCleanup, { kind: "one", name: dir.name }) && <ScratchCleanupBusyNotice />}
                   </li>
                 ))}
               </ul>

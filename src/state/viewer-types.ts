@@ -58,8 +58,7 @@ export type CopcViewerState = Pick<
     | "requestOpfsPersistentStorage"
     | "removeOpfsCachedConversion"
     | "clearOpfsCachedConversions"
-    | "removeOpfsScratchDir"
-    | "clearOpfsScratchDirs"
+    | "scratchCleanupContext"
   > &
   Pick<TempDirSetting, "tempDir" | "supportsCustomTempDir" | "pickAndSetTempDir" | "clearTempDir"> & {
     status: ViewerStatus;
