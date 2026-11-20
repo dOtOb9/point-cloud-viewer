@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Circle } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PcvPlugin, PluginHost } from "../../plugin-api";
-import type { PluginHostCore } from "../../core/plugin-host";
+import { createPluginHost, type PluginHostCore, type PluginHostState } from "../../core/plugin-host";
 import { PluginDialogs } from "./PluginDialogs";
 import { PluginRibbonItems } from "./PluginRibbonItems";
 import { PluginStatusItems } from "./PluginStatusItems";
@@ -179,5 +179,34 @@ describe("plugin UI", () => {
     act(() => root!.unmount());
     root = null;
     expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+});
+
+function throwingRender(): never {
+  throw new Error("render failed");
+}
+
+const THROWING_UI_BY_PLACE: Record<Exclude<keyof PluginHostState, "shortcuts">, (host: PluginHost) => void> = {
+  ribbon: (host) => host.ribbon.add({ label: "壊れたアイコン", icon: throwingRender, onClick: () => {} }),
+  status: (host) => host.status.add({ render: throwingRender }),
+  dialogs: (host) => void host.dialogs.open({ title: "壊れたダイアログ", render: throwingRender }),
+};
+
+describe("a plugin UI that throws leaves nothing behind, in every place the host draws", () => {
+  it("covers every drawn list of the host state (a new place must be added here)", () => {
+    const drawn = Object.keys(createPluginHost({ reportError: () => {} }).getState()).filter((k) => k !== "shortcuts");
+    expect(drawn.sort()).toEqual(Object.keys(THROWING_UI_BY_PLACE).sort());
+  });
+
+  it.each(Object.entries(THROWING_UI_BY_PLACE))("%s: the whole frame goes and the error is reported", (_place, register) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mount([]);
+    const empty = container.innerHTML;
+    act(() => root!.unmount());
+    root = null;
+    container.innerHTML = "";
+    const reported = mount([fakePlugin("demo.broken", register)]);
+    expect(container.innerHTML).toBe(empty);
+    expect(reported).toContain("demo.broken: render failed");
   });
 });
