@@ -1,4 +1,4 @@
-# 次のセッション用のプロンプト（2026-11-19 に前のセッションが書いた）
+# 次のセッション用のプロンプト（2026-11-21 に前のセッションが書いた）
 
 下の「プロンプト」をそのまま新しいセッションに貼る。前のセッションのサブエージェントには続きを頼めないので、必要な文脈はこのファイル・タスクシート・PLAN に置いてある。
 
@@ -19,7 +19,13 @@
 6. ADR-0021（React は表示だけ・状態は小さなストア）、ADR-0022（TEA）、ADR-0023（プラグイン・外部プラグインと権限）、ADR-0024（初回の読み込み、提案）
 7. GitHub の PR・Issue に所有者のコメントがあれば、それを最初に読む（`gh pr list --state all`、`gh issue list`）
 
-### いまの状態（2026-11-19）
+### いまの状態（2026-11-21）
+
+- **PL-0（TEA の `createProgram`、プラグインの API・ホスト・描画）が完了して main にマージ済み**（main `e7f3572`）。組み込みのプラグインは空で、画面は前と同じ。
+  `src/app/tea.ts`（`createProgram(init, update, { effectFailed, report })`）、`src/plugin-api/`（口は ribbon・dialogs・status・shortcuts・errors・program）、`src/core/plugin-host.ts`、`src/ui/plugins/`、`src/plugins/builtin.ts`。
+  ADR-0022・0023 の末尾の「改訂（PL-0）」が今の API の形。`src/core/adr-shape.test.ts` が ADR の「口の一覧:」の最後の行とコードを突き合わせる（口を足したら ADR に新しい「口の一覧:」の行を書く）
+- **CM-F1（設定の「保存領域」の一時ファイルの削除を変換のロックの中で）も完了**（main `4fa9026`）。`src/app` の関数の外の `createStore`・最上位の `let`・`var` は lint が落とす
+- CLAUDE.md の言葉の決まりを直した（2026-11-21）: 画面に出る文はエラーの本文も日本語、内部の不変条件の違反は英語
 
 - **CM（コードのコメントを消す）が完了して main にマージ済み**（main `7725a37`。CI・Pages はマージ後に走っている。最初に `gh run list --branch main --limit 2` で緑か確かめる）
   - 所有者の指示（2026-11-17）「コメントをできる限り書かないで。あったら削除しよう。コードから類推できるようにして」
@@ -27,16 +33,19 @@
   - CM-1〜5: renderer・datasource・app/ui/state/scripts/設定・pcv-core/pcv-wasm・pcv-convert/src-tauri のコメントを全部消し、理由は名前・テスト・各シートの「移した理由の記録」の表へ。シェーダーは `src/renderer/shaders/*.wgsl`（`?raw`）に出した
   - 再発防止で入った道具（AGENTS.md の作業役の決まり）: `scripts/removed-comments-near-literals.mjs`（消したコメントの近くに残った名前の無い数値）、`scripts/removed-comment-reasons.mjs`（消したコメントのうち理由を書いたもの、`--docs` で古くなった文書）。名前は「それが何か」だけ、理由は表、「何が起きるか」を名前に
 - **所有者の確認待ち（画面・実機。どれも未確認）**:
+  - CM-F1: Web 版で大きな LAS の変換を始め、別のタブで 設定 → 保存領域 → 一時ファイルの「すべて消す」を押し、「変換・ツールの実行中なので消せません」が出て一時ファイルが残り、変換が最後まで終わること。終わってから開き直すと文が出ず、押すと消えること
   - GPU の描画（CM-1 でシェーダーを .wgsl に出した）: `npm run dev` で sofi か autzen を開き、空・グリッド・EDL のオンとオフ、着色の4モード、点の丸と四角、計測のピックを試し、エラーのバナーが出ないこと
   - 開発モードの `pcv://`（CM-5 で CORS のヘッダを関数に出した）: `npm run tauri dev` で LAS を開き、点群が出て、開発者ツールに "Failed to fetch" が出ないこと
   - Web 版の OPFS の後始末（CM-2）: Web 版で LAS を変換し、設定の「保存領域」で一覧・「消す」・「すべて消す」が前と同じに動くこと
   - Android のビルド（CM-5 の `cfg` の分岐。CI は Windows・Linux だけ）
   - 前からの残り: 平行投影での計測値の一致、EDL の強さ、Y-up のデータでの北、実機のタッチ（`TaskSheets/TP-trendpoint-parity.md`）
-- **所有者の判断待ち**: マージ済みのリモートのブランチ（`trendpoint-parity`・`handoff-2026-11-17`・`CM-0`〜`CM-5`）とローカルの `backup/trendpoint-parity-before-author` を消してよいか（2026-11-17 に消そうとして権限の確認で止まった）
+- **所有者の判断待ち**: マージ済みのリモートのブランチ（`trendpoint-parity`・`handoff-2026-11-17`・`handoff-2026-11-19`・`handoff-2026-11-21`・`CM-0`〜`CM-5`・`CM-F1`・`PL-0`）とローカルの `backup/trendpoint-parity-before-author` を消してよいか（2026-11-17 に消そうとして権限の確認で止まった）
 
 ### 次にやること（`PLAN-2026-11.md` の順）
 
-1. **PL-0**: `src/app/tea.ts`（`createProgram`、ADR-0022）と `src/plugin-api/`・`src/core/plugin-host.ts`・`src/plugins/builtin.ts`（ADR-0023）。リボン・ダイアログ・ステータス・ショートカット・エラー境界。組み込みは空で、殻は今と同じに見える。
+1. **PL-1**: 視点（TP-1）を最初のプラグイン `pcv.view` に。受け入れ基準はまだ。**前提**（PL-1 の AC に入れる）: PL-0 の PR 監査 F-1（`tea.ts` の update が投げるとキューの Msg が次の dispatch まで残る）の扱いを決めてテストで固定、N-7（ダイアログを閉じたことのプラグインへの通知）、`APP_SHORTCUT_KEYS` から F・1〜7 を外す、`viewContext` のモジュールに1つの文脈（PLAN の F11）を解消
+2. **CM-F**（並行可）: PLAN の F2（wasm に絶対パスとユーザー名）・F9（変換済みキャッシュの削除もロックの外）を先に
+3. （済み）**PL-0**: `src/app/tea.ts`（`createProgram`、ADR-0022）と `src/plugin-api/`・`src/core/plugin-host.ts`・`src/plugins/builtin.ts`（ADR-0023）。リボン・ダイアログ・ステータス・ショートカット・エラー境界。組み込みは空で、殻は今と同じに見える。
    受け入れ基準はまだ書いていない → メインが `TaskSheets/PL-0-*.md` に書いてから作業役を起こす。新しいコードはコメント無しで書く（`check:comments` が落とす）
 2. **CM-F**（PL-0 と並行可。触るファイルが重ならないものから）: PLAN の「CM で見つかった後のタスク」F1〜F8。F1（OPFS の掃除がロックの外）と F2（wasm に絶対パスとユーザー名が入る）を先に
 3. **RF-2・RF-3**: ツールを `DataSource` に入れ、`src/app` の `instanceof WebSource` の分岐を 0 に

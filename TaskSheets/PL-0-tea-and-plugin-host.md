@@ -173,4 +173,4 @@ R1 の記録のうち、`createProgram` の3つ目の引数・`PluginView.tsx`�
 | R2 | ループ | APPROVE | 全部直った（使い捨てのテストで止まることを確かめた）。F-6 [should] キーの一覧のテストが `switch`・`.code` をすり抜ける。N-7 閉じたことの通知が無い（PL-1 へ） |
 | RP R1 | ループ | CHANGES_REQUESTED | 仕組みは元に戻すと落ちる。RP-F1 [must] `adr-shape.test.ts` が CRLF の checkout で落ちる（赤のテスト）。RP-F2 ADR-0023 の一覧の読み方が PL-1 で追いつけない |
 | RP R2 | ループ | APPROVE | 実ファイルを CRLF にしても通る。「口の一覧:」の最後の行を読む |
-| PR | PR・CI | （この後） | |
+| PR R1 | PR・CI | APPROVE | CI run 44771355757 は緑（e2e 6 passed）。付け替えで解いた eslint の両方の規則が効くこと、14 ファイルを CRLF にしてもテストが通ることを確かめた。F-1 [should] update が投げるとキューの Msg が次の dispatch まで残る → PL-1 の前提に。F-2〜F-4 [nit]（記録の古い1行、tea.test.ts の字下げ、ADR-0023 の改訂の順の文）→ PLAN の F12。main e7f3572 |
