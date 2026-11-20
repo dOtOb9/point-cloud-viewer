@@ -98,4 +98,4 @@
 | R2 | ループ | APPROVE | 全部直った（開いたとき・更新で忘れる、ストアはビューアごと、失敗はエラーのログへ）。F-4 [nit] 失敗が「変換エラー」の見出しで出る（範囲外、後のタスクへ）。構成の負債: 変換済みキャッシュの削除もロックの外 |
 | RP R1 | ループ | CHANGES_REQUESTED | `src/app` のモジュールの状態を落とす lint が `as`・オブジェクトの中・`export default`・名前空間・別名ですり抜ける（赤のテスト5件）。テストのファイルを誤って落とす |
 | RP R2 | ループ | APPROVE | 関数の外の `createStore` を書き方によらず落とし、テストのファイルは層の規則だけ。残る限界（`viewContext` など）は RECURRENCE に |
-| PR | PR・CI | （この後） | |
+| PR R1 | PR・CI | APPROVE | CI run 44769319905 は緑（e2e 6 passed）。指摘なし。main 4fa9026 にマージ。参考: `removeEntry` の失敗は `ignoreFailure` で捨てる（前から） |
