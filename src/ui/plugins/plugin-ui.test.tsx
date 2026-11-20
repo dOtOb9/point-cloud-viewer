@@ -143,6 +143,27 @@ describe("plugin UI", () => {
     expect(buttonLabelled("デモ")).toBeDefined();
   });
 
+  it("removes the whole dialog of a plugin whose dialog content throws, not only its content", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const throwing = fakePlugin("demo.throwing-dialog", (host) => {
+      host.ribbon.add({
+        label: "壊れた",
+        icon: Circle,
+        onClick: () => {
+          host.dialogs.open({
+            title: "壊れたダイアログ",
+            render: () => {
+              throw new Error("dialog render failed");
+            },
+          });
+        },
+      });
+    });
+    mount([throwing]);
+    act(() => buttonLabelled("壊れた")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it("passes window keydown to the host once, so a plugin shortcut runs", () => {
     const run = vi.fn();
     mount([fakePlugin("demo.key", (host) => host.shortcuts.add({ key: "q", label: "q", kind: "harmless", run }))]);

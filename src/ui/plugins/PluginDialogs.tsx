@@ -1,6 +1,7 @@
 import type { PluginHostCore } from "../../core/plugin-host";
 import { Dialog } from "../dialogs/Dialog";
-import { PluginView } from "./PluginView";
+import { PluginErrorBoundary } from "./PluginErrorBoundary";
+import { RenderedByPlugin } from "./RenderedByPlugin";
 import { usePluginHostState } from "./usePluginHost";
 
 export function PluginDialogs({ host }: { host: PluginHostCore }) {
@@ -8,9 +9,18 @@ export function PluginDialogs({ host }: { host: PluginHostCore }) {
   return (
     <>
       {dialogs.map((entry) => (
-        <Dialog key={entry.key} open title={entry.item.title} placement={entry.item.placement} onClose={() => host.closeDialog(entry.key)}>
-          <PluginView host={host} pluginId={entry.pluginId} render={entry.item.render} />
-        </Dialog>
+        <PluginErrorBoundary
+          key={entry.key}
+          pluginId={entry.pluginId}
+          onError={(pluginId, error) => {
+            host.report(pluginId, error);
+            host.closeDialog(entry.key);
+          }}
+        >
+          <Dialog open title={entry.item.title} placement={entry.item.placement} onClose={() => host.closeDialog(entry.key)}>
+            <RenderedByPlugin render={entry.item.render} />
+          </Dialog>
+        </PluginErrorBoundary>
       ))}
     </>
   );
