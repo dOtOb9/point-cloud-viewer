@@ -152,3 +152,14 @@ R1 の記録のうち、`createProgram` の3つ目の引数・`PluginView.tsx`�
 `TaskSheets/ADR-0022-tea-architecture.md`・`ADR-0023-plugins.md`・`ARCHITECTURE.md`
 
 確かめていないこと（R2）: 画面は撮り直していない（変えたのはプラグインが登録したときだけ描かれる部分で、組み込みは空のまま）。F-2 のテストが R1 のコードで落ちること（無限ループ）は、引数の形が変わったので戻して確かめていない（監査役が R1 で実測した）
+
+### 実装の記録 R3（監査 R2 の F-6・nit と、再発防止 PL-0-RP R1）
+
+- **F-6**（should）: `src/core/app-shortcut-keys.test.ts` の検査の範囲を広げた。キーを扱うファイルの一覧を `KEYBOARD_FILES` に固定し、その中のキーの名指し（どの変数名でも `.key` との比較・逆向き・配列の `includes`・`switch` の `case`）を拾う。名前の付いた一覧・Set でのキーの引き当てと `event.code` は、読めない形として「無いこと」を確かめる。
+  監査役が挙げた5つの形と `keydown` を持つ新しいファイルを一時的に置くと落ちることを確かめてから戻した（3083fdf）
+- **N-8**（nit）: `effectFailed` 自身が投げたら、元の失敗とその例外を両方 `report` に流し、`dispatch` の外へは投げない。ホストは、プラグインの `effectFailed` を呼んでから `errors.report` するので、元の失敗は1度だけ報告される（dcce8fc）。ADR-0022 の改訂に1行足した
+- **N-7**（nit）: 直していない。`DialogSpec` に閉じたことの通知（`onClose`）を足すかは、使い手（自分のダイアログの開閉を Model に持つプラグイン）が出る PL-1 で決める
+- **再発防止（PL-0-RP R1）**: `TaskSheets/RECURRENCE.md` の「## PL-0」。仕組みとして足した物:
+  - `src/ui/plugins/plugin-ui.test.tsx` の "a plugin UI that throws leaves nothing behind, in every place the host draws"（7ca3d42）
+  - `src/core/adr-shape.test.ts`（fc317e1）。そろえるため `src/app/tea.ts` の `Failures.effectFailed` をメソッドの書き方にした（型の意味は同じ）
+  - AGENTS.md の作業役の決まりに2行（475706b）
