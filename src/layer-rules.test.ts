@@ -70,6 +70,31 @@ describe("rule 3 and 5: React and hooks", () => {
     expect(await layerMessages("src/app/x.ts", code)).toHaveLength(1);
   });
 
+  it.each([
+    ["a store cast with as", 'import { createStore, type Store } from "./store";\nexport const blocked = createStore(null) as Store<null>;'],
+    ["a store inside an object literal", 'import { createStore } from "./store";\nexport const ctx = { blocked: createStore(null) };'],
+    ["a default-exported store", 'import { createStore } from "./store";\nexport default createStore(null);'],
+    ["a store through a namespace import", 'import * as store from "./store";\nexport const blocked = store.createStore(null);'],
+  ])("rejects module state in src/app written another way: %s", async (_name, code) => {
+    expect(await layerMessages("src/app/x.ts", code)).toHaveLength(1);
+  });
+
+  it.each([
+    ["a store wrapped in Object.freeze", 'import { createStore } from "./store";\nexport const blocked = Object.freeze(createStore(null));'],
+    ["createStore imported under another name", 'import { createStore as make } from "./store";\nexport function f() {\n  return make(null);\n}'],
+  ])("rejects module state in src/app hidden behind a call or a rename: %s", async (_name, code) => {
+    expect(await layerMessages("src/app/x.ts", code)).toHaveLength(1);
+  });
+
+  it("still applies the layer rules to test files in src/app", async () => {
+    expect(await layerMessages("src/app/x.test.ts", 'import { useState } from "react";')).toHaveLength(1);
+  });
+
+  it("allows a top-level let in a test file in src/app", async () => {
+    const code = 'import { beforeEach, expect, it } from "vitest";\nlet count = 0;\nbeforeEach(() => {\n  count = 1;\n});\nit("x", () => {\n  expect(count).toBe(1);\n});';
+    expect(await layerMessages("src/app/x.test.ts", code)).toEqual([]);
+  });
+
   it("allows a store created inside a function in src/app, and module state outside src/app", async () => {
     const factory =
       'import { createStore } from "./store";\nexport function createBlocked() {\n  let made = createStore(null);\n  return made;\n}';
