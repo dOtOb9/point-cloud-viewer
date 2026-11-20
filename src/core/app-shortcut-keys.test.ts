@@ -75,6 +75,7 @@ describe("the scanner finds every way a key handler names a key", () => {
     ['if (["Home", "End"].includes(e.key)) jump();', ["Home", "End"]],
     ['switch (e.key) {\n  case "Backspace":\n    back();\n    break;\n  case "x": {\n    x();\n  }\n}\nswitch (mode) { case "draw": break; }', ["Backspace", "x"]],
     ["VIEW_SHORTCUTS.find((s) => s.key === key);", []],
+    ['switch (e.key) {\r\n  case "Home":\r\n    home();\r\n}\r\nif (e.key === "End") end();\r\n', ["End", "Home"]],
   ])("keysComparedIn(%s)", (code, keys) => {
     expect(keysComparedIn(code)).toEqual(keys);
   });

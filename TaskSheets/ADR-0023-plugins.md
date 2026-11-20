@@ -128,6 +128,7 @@ export interface PluginHost {
 PL-0（`src/plugin-api/index.ts`・`src/core/plugin-host.ts`・`src/ui/plugins/`）で、上の「形」の `PluginHost` を次のように決めた。本文は書き換えない。
 
 - **PL-0 の口は `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`program` だけ。** `layers`・`tools`・`view`・`units`・`settings` は、使う機能を移すとき（PL-1 以降）に足す。使えない口を見せない
+- 口の一覧: `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`program`（後の改訂で口を足したら、その改訂の節に同じ「口の一覧:」の行を書く。`src/core/adr-shape.test.ts` が最後の「口の一覧:」の行と、ホストがプラグインに渡す口を突き合わせる）
 - **`program(init, update, effectFailed)`**: ADR-0022 の改訂（PL-0）の3つ目の引数のうち、`effectFailed` だけをプラグインが渡す。
   効果の失敗はホストが `errors.report(プラグインの id, error)` に流してから Msg にし、失敗の Msg の処理中の失敗は報告だけにする
 - **`shortcuts.add({ key, label, kind, run })`**: 上の `add(key, label, run)` に、入力欄での扱いの種類 `kind` を足した。
