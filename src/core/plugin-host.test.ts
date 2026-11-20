@@ -287,4 +287,55 @@ describe("plugin host: ribbon, dialogs, errors and programs", () => {
     ]);
     expect(count).toBe(1);
   });
+
+  it("reports an effect failure of a plugin program under the plugin's id and still gives the msg to update", () => {
+    const { host, reported } = makeHost();
+    const seen: string[] = [];
+    host.activate([
+      fakePlugin("a", (h) => {
+        const program = h.program<number, "start" | "failed">(
+          0,
+          (model, msg) => {
+            seen.push(msg);
+            return [
+              model,
+              msg === "start"
+                ? [
+                    () => {
+                      throw new Error("effect failed");
+                    },
+                  ]
+                : [],
+            ];
+          },
+          () => "failed",
+        );
+        program.dispatch("start");
+      }),
+    ]);
+    expect(seen).toEqual(["start", "failed"]);
+    expect(reported).toEqual(["a: effect failed"]);
+  });
+
+  it("reports under the plugin's id an effect that fails again while its update handles a failure", () => {
+    const { host, reported } = makeHost();
+    host.activate([
+      fakePlugin("a", (h) => {
+        const program = h.program<number, "start" | "failed">(
+          0,
+          (model, msg) => [
+            model,
+            [
+              () => {
+                throw new Error(msg === "start" ? "first" : "again");
+              },
+            ],
+          ],
+          () => "failed",
+        );
+        program.dispatch("start");
+      }),
+    ]);
+    expect(reported).toEqual(["a: first", "a: again"]);
+  });
 });

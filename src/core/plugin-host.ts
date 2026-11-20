@@ -122,7 +122,14 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
       status: { add: (item) => void register("status", pluginId, item) },
       shortcuts: { add: (shortcut) => addShortcut(pluginId, shortcut) },
       errors: { report },
-      program: (init, update, effectFailed) => createProgram(init, update, effectFailed),
+      program: (init, update, effectFailed) =>
+        createProgram(init, update, {
+          effectFailed(error) {
+            report(pluginId, error);
+            return effectFailed(error);
+          },
+          report: (error) => report(pluginId, error),
+        }),
     };
   }
 
