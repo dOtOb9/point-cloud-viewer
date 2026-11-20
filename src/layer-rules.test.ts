@@ -270,3 +270,83 @@ describe("audit RF-0/1/15-RP R1: file extensions the old greps also saw", () => 
     expect(await layerMessages(filePath, code)).not.toEqual([]);
   });
 });
+
+describe("PL-0: src/plugin-api and src/core", () => {
+  const pluginApiForbidden = [
+    'import { useState } from "react";',
+    'import type { ReactNode } from "react";',
+    'export { useState } from "react";',
+    'export const f = () => import("react");',
+    'export type A = import("react").ReactNode;',
+    'import { Dialog } from "../ui/dialogs/Dialog";',
+    'export { Dialog } from "../ui/dialogs/Dialog";',
+    'export const f = () => import("../ui/dialogs/Dialog");',
+    'export type A = import("../ui/dialogs/Dialog").Dialog;',
+    'import { findLayer } from "../state/layers";',
+    'export * from "../state/layers";',
+    'export const f = () => import("../state/layers");',
+    'export type A = import("../state/layers").ViewerLayer;',
+    'import type { GpuErrorSource } from "../renderer/gpu-error-log";',
+    'export type { GpuErrorSource } from "../renderer/gpu-error-log";',
+    'export const f = () => import("../renderer/gpu-error-log");',
+    'export type A = import("../renderer/gpu-error-log").GpuErrorSource;',
+    'import type { DataSource } from "../datasource/types";',
+    'export * from "../datasource/types";',
+    'export const f = () => import("../datasource/types");',
+    'export type A = import("../datasource/types").DataSource;',
+    'import { x } from "../app/../ui/x";',
+  ];
+  it.each(pluginApiForbidden)("rejects in src/plugin-api: %s", async (code) => {
+    expect(await layerMessages("src/plugin-api/index.ts", code)).not.toEqual([]);
+  });
+
+  it("rejects JSX in src/plugin-api", async () => {
+    expect(await layerMessages("src/plugin-api/x.tsx", "export const a = <div />;")).not.toEqual([]);
+  });
+
+  it.each([
+    'import type { Update } from "../app/tea";',
+    'export type { Update } from "../app/tea";',
+    'import { thing } from "./thing";',
+  ])("allows in src/plugin-api: %s", async (code) => {
+    expect(await layerMessages("src/plugin-api/index.ts", code)).toEqual([]);
+  });
+
+  const coreForbidden = [
+    'import { useState } from "react";',
+    'import type { ReactNode } from "react";',
+    'export * from "react";',
+    'export const f = () => import("react-dom/client");',
+    'export type A = import("react").ReactNode;',
+    'import { Dialog } from "../ui/dialogs/Dialog";',
+    'export { Dialog } from "../ui/dialogs/Dialog";',
+    'export const f = () => import("../ui/plugins/PluginDialogs");',
+    'export type A = import("../ui/dialogs/Dialog").Dialog;',
+    'import { useErrorLog } from "../state/useErrorLog";',
+    'import { findLayer } from "../state/layers";',
+    'export * from "../state/layers";',
+    'export const f = () => import("../state/layers");',
+    'export type A = import("../state/layers").ViewerLayer;',
+    'import { x } from "../app/../state/x";',
+  ];
+  it.each(coreForbidden)("rejects in src/core: %s", async (code) => {
+    expect(await layerMessages("src/core/plugin-host.ts", code)).not.toEqual([]);
+  });
+
+  it("rejects JSX in src/core", async () => {
+    expect(await layerMessages("src/core/x.tsx", "export const a = <></>;")).not.toEqual([]);
+  });
+
+  it.each([
+    'import { createStore } from "../app/store";',
+    'import type { PcvPlugin } from "../plugin-api";',
+    'import type { GpuErrorSource } from "../renderer/gpu-error-log";',
+  ])("allows in src/core: %s", async (code) => {
+    expect(await layerMessages("src/core/plugin-host.ts", code)).toEqual([]);
+  });
+
+  it("still rejects Tauri in src/plugin-api and src/core", async () => {
+    expect(await layerMessages("src/plugin-api/index.ts", 'import { invoke } from "@tauri-apps/api/core";')).not.toEqual([]);
+    expect(await layerMessages("src/core/plugin-host.ts", 'import { invoke } from "@tauri-apps/api/core";')).not.toEqual([]);
+  });
+});

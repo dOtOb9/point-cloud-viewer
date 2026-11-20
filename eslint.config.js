@@ -48,6 +48,30 @@ const MODULE_STATE_SYNTAX = [
 const APP_FILES = ["src/app/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"];
 const APP_TEST_FILES = ["src/app/**/*.test.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"];
 const APP_LAYER = [TAURI, REACT, STATE_HOOKS, UNNORMALIZED];
+const PLUGIN_API_REACT = {
+  regex: REACT.regex,
+  message: "src/plugin-api は型と小さな関数だけで、React を import しない（ADR-0023）。描く物の型は ViewNode を使う。",
+};
+const PLUGIN_API_LAYERS = {
+  regex: "(^|/)(ui|state|renderer|datasource)(/|$)",
+  message: "src/plugin-api は src/ui・src/state・src/renderer・src/datasource を import しない（ADR-0023）。プラグインに見せる入口なので、コアの中身に依存しない。",
+};
+const PLUGIN_API_JSX = ["JSXElement", "JSXFragment"].map((selector) => ({
+  selector,
+  message: "src/plugin-api は React を知らない（JSX を書かない）。ADR-0023",
+}));
+const CORE_REACT = {
+  regex: REACT.regex,
+  message: "src/core は React を import しない（ADR-0023）。React で描くのは src/ui/plugins。",
+};
+const CORE_LAYERS = {
+  regex: "(^|/)(ui|state)(/|$)",
+  message: "src/core は src/ui・src/state を import しない（ADR-0023）。ホストは React に依存しないストアとして持つ。",
+};
+const CORE_JSX = ["JSXElement", "JSXFragment"].map((selector) => ({
+  selector,
+  message: "src/core は React を知らない（JSX を書かない）。ADR-0023",
+}));
 
 function selectorRegex(regex) {
   let out = "";
@@ -147,5 +171,10 @@ export default tseslint.config(
   { files: APP_FILES, ignores: APP_TEST_FILES, rules: layerRules(APP_LAYER, [...JSX_SYNTAX, ...MODULE_STATE_SYNTAX]) },
   { files: APP_TEST_FILES, rules: layerRules(APP_LAYER, JSX_SYNTAX) },
   { files: ["src/ui/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, RENDERER_CLASS]) },
+  {
+    files: ["src/plugin-api/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
+    rules: layerRules([TAURI, PLUGIN_API_REACT, PLUGIN_API_LAYERS, UNNORMALIZED], PLUGIN_API_JSX),
+  },
+  { files: ["src/core/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, CORE_REACT, CORE_LAYERS, UNNORMALIZED], CORE_JSX) },
   ...pluginZones(),
 );
