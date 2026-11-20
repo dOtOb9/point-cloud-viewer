@@ -122,3 +122,33 @@
 - 実際のプラグインが登録したボタン・ダイアログの見た目（組み込みが空なので画面には出ない。jsdom のテストで DOM だけ確かめた）。PL-1 で `pcv.view` を移したときに撮る
 - 既存のキー（視点の F・1〜7、Delete、計測の Enter・Esc）とプラグインのショートカットが同じキーを取り合ったときの扱い（ホストはプラグイン同士の重なりしか見ない）。PL-1 で視点のキーを移すときに既存側が消える
 - デスクトップ（Tauri）・Android での表示（ホストは画面に何も足さないので変わらない見込み。未確認）
+
+### 実装の記録 R2（監査 R1 の指摘への対応）
+
+R1 の記録のうち、`createProgram` の3つ目の引数・`PluginView.tsx`・報告の `new Error` は、下のとおり変えた（R1 の文は当時の記録として残す）。
+
+- **F-1**（must）: `src/ui/plugins/PluginDialogs.tsx` で `PluginErrorBoundary` を `Dialog` の外に出し、`onError` で報告してから `host.closeDialog(entry.key)` を呼ぶ。中身が投げたら空の枠を残さずダイアログごと閉じる。
+  監査役の赤のテスト "removes the whole dialog of a plugin whose dialog content throws, not only its content" を弱めずに一緒にコミットした。
+  `PluginView.tsx` は使い手が無くなったので消し、`RenderedByPlugin.tsx` に分けた（ステータスとダイアログが同じ「Boundary の中で `RenderedByPlugin`」の形になり、N-5 も揃った）
+- **F-2**（should）: `createProgram(init, update, failures)` の3つ目を `{ effectFailed, report }` にした。列の Msg に「効果の失敗から出た Msg か」を持たせ、その Msg の効果がまた失敗したら `update` に戻さず `report` に流す。
+  失敗の Msg の効果が `dispatch` した Msg は普通の Msg として扱う。回数の上限は作らない（メインの決定）。
+  テスト（`src/app/tea.test.ts`）: "reports, instead of feeding back to update, an effect that fails while update handles an effect failure"、"reports a promise that rejects while update handles an effect failure"、"treats msgs dispatched by the effects of a failure msg as ordinary msgs again"
+- **N-3**（nit）: 購読者の例外は `report` に流し、残りの購読者と効果を続ける。テスト "reports a subscriber that throws and still runs the effects and the other subscribers"
+- **F-3**（should）: ホストの `program` が `effectFailed` を包み、`errors.report(プラグインの id, error)` してから Msg を返す。失敗の Msg の処理中の失敗も同じ id で報告する。
+  テスト（`src/core/plugin-host.test.ts`）: "reports an effect failure of a plugin program under the plugin's id and still gives the msg to update"、"reports under the plugin's id an effect that fails again while its update handles a failure"
+- **F-5**（should）: `src/core/plugin-host.ts` の `APP_SHORTCUT_KEYS`（F・1〜7・Delete・Enter・Escape・Tab）を登録しようとしたら断って報告する。
+  数えた物: `grep -rn 'e.key ===\|event.key ===' src`（テスト以外）で Escape・Enter（`useMeasureTool.ts:138,140`・`useLayerTool.ts:206,207`・`Dialog.tsx:51`・`LayerContextMenu.tsx:31`）、
+  `layer-delete-key.ts:13` の Delete、`Dialog.tsx` の Tab（`e.key !== "Tab"`、フォーカスの巡回）、`view.ts` の `VIEW_SHORTCUTS` の F・1〜7。
+  指摘の例にあった Backspace はアプリのどこでも比べていない（grep で 0 件）ので入れていない。Tab は指摘の例に無いが、Dialog が使っているので入れた。
+  テスト `src/core/app-shortcut-keys.test.ts`: `VIEW_SHORTCUTS` の全キーと、ソース中の `e.key`・`event.key`・`input.key` と比べている文字列の全部が一覧に入っていること、一覧の各キー（と小文字の f）が断られて報告されること。
+  一覧から "Tab" を一時的に外すと "lists every key the app compares in a key handler" が落ちることを確かめてから戻した。
+  既存のテストで使っていた F・1・Delete は K・8・Backspace に替えた。PL-1 で視点が移ったら F・1〜7 を外す（ADR-0023 の改訂に書いた）
+- **N-1**（nit）: 報告にしか使わない文は `new Error` で包まず文字列で `report` に渡す（`pluginErrorMessage` が `String(error)` にする）。
+  文は日本語のまま（04fc794 の CLAUDE.md の改訂: 画面に出る文はエラーの本文も日本語）
+- **F-4**（should）: ADR-0022・ADR-0023 の末尾に「改訂（PL-0、2026-11-21）」の節を足した（本文は変えていない）。`TaskSheets/ARCHITECTURE.md` の TEA とホストの説明も新しい形に合わせた。`npm run check:docs` は OK
+
+触ったファイル（R2）: `src/app/tea.ts`・`tea.test.ts`、`src/core/plugin-host.ts`・`plugin-host.test.ts`・`app-shortcut-keys.test.ts`（新規）、
+`src/ui/plugins/PluginDialogs.tsx`・`PluginStatusItems.tsx`・`RenderedByPlugin.tsx`（新規）・`plugin-ui.test.tsx`（監査役の赤のテスト）、`PluginView.tsx`（削除）、
+`TaskSheets/ADR-0022-tea-architecture.md`・`ADR-0023-plugins.md`・`ARCHITECTURE.md`
+
+確かめていないこと（R2）: 画面は撮り直していない（変えたのはプラグインが登録したときだけ描かれる部分で、組み込みは空のまま）。F-2 のテストが R1 のコードで落ちること（無限ループ）は、引数の形が変わったので戻して確かめていない（監査役が R1 で実測した）
