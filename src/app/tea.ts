@@ -4,7 +4,7 @@ export type Update<Model, Msg> = (model: Model, msg: Msg) => [Model, Effect<Msg>
 export type EffectFailed<Msg> = (error: unknown) => Msg;
 
 export interface Failures<Msg> {
-  effectFailed: EffectFailed<Msg>;
+  effectFailed(error: unknown): Msg;
   report(error: unknown): void;
 }
 
