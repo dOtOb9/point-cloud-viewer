@@ -61,6 +61,23 @@ describe("rule 3 and 5: React and hooks", () => {
     expect(await layerMessages("src/renderer/x.tsx", "export const a = <></>;")).toHaveLength(1);
   });
 
+  it.each([
+    ["a store created at the top of the module", 'import { createStore } from "./store";\nexport const blocked = createStore(null);'],
+    ["an unexported store created at the top of the module", 'import { createStore } from "./store";\nconst blocked = createStore(null);'],
+    ["a let at the top of the module", "export let current = 0;"],
+    ["a var at the top of the module", "var current = 0;"],
+  ])("rejects module state in src/app: %s", async (_name, code) => {
+    expect(await layerMessages("src/app/x.ts", code)).toHaveLength(1);
+  });
+
+  it("allows a store created inside a function in src/app, and module state outside src/app", async () => {
+    const factory =
+      'import { createStore } from "./store";\nexport function createBlocked() {\n  let made = createStore(null);\n  return made;\n}';
+    expect(await layerMessages("src/app/x.ts", factory)).toEqual([]);
+    expect(await layerMessages("src/app/x.ts", "export const LIMIT = 3;")).toEqual([]);
+    expect(await layerMessages("src/state/useX.ts", "let current = 0;\nexport const read = () => current;")).toEqual([]);
+  });
+
   it("rejects the PointCloudRenderer class in src/ui but allows its pure helpers", async () => {
     const cls = 'import { PointCloudRenderer } from "../../renderer/point-cloud-renderer";';
     expect(await layerMessages("src/ui/tools/X.tsx", cls)).toHaveLength(1);

@@ -29,6 +29,15 @@ const JSX_SYNTAX = ["JSXElement", "JSXFragment"].map((selector) => ({
   selector,
   message: "src/renderer と src/app は React を知らない（JSX を書かない）。ADR-0021",
 }));
+const MODULE_STATE_MESSAGE =
+  "src/app のモジュールの最上位に状態を置かない（let・var・createStore）。ストアは生成関数の中で作り、文脈で渡す（ADR-0021、CM-F1 の F-2）。";
+const MODULE_STATE_SYNTAX = ["Program", "Program > ExportNamedDeclaration"].flatMap((parent) => [
+  { selector: `${parent} > VariableDeclaration[kind!="const"]`, message: MODULE_STATE_MESSAGE },
+  {
+    selector: `${parent} > VariableDeclaration > VariableDeclarator > CallExpression[callee.name="createStore"]`,
+    message: MODULE_STATE_MESSAGE,
+  },
+]);
 
 function selectorRegex(regex) {
   let out = "";
@@ -125,7 +134,7 @@ export default tseslint.config(
   },
   { files: SRC_FILES, ignores: ["src/datasource/tauri.ts", GENERATED_WASM], rules: layerRules([TAURI]) },
   { files: ["src/renderer/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, REACT], JSX_SYNTAX) },
-  { files: ["src/app/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, REACT, STATE_HOOKS, UNNORMALIZED], JSX_SYNTAX) },
+  { files: ["src/app/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, REACT, STATE_HOOKS, UNNORMALIZED], [...JSX_SYNTAX, ...MODULE_STATE_SYNTAX]) },
   { files: ["src/ui/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"], rules: layerRules([TAURI, RENDERER_CLASS]) },
   ...pluginZones(),
 );
