@@ -215,4 +215,21 @@ it("reports, instead of feeding back to update, an effect that fails while updat
     expect(ran).toEqual(["effect"]);
     expect(reported.map((e) => (e as Error).message)).toEqual(["listener failed", "listener failed"]);
   });
+  it("reports both errors when effectFailed itself throws, and keeps the program usable", () => {
+    const reported: unknown[] = [];
+    const program = createProgram<number, "start" | "add">(
+      0,
+      (model, msg) => (msg === "start" ? [model, [throwing("effect")]] : [model + 1, []]),
+      {
+        effectFailed: () => {
+          throw new Error("conversion");
+        },
+        report: (error) => reported.push(error),
+      },
+    );
+    expect(() => program.dispatch("start")).not.toThrow();
+    expect(reported.map((e) => (e as Error).message)).toEqual(["effect", "conversion"]);
+    program.dispatch("add");
+    expect(program.getModel()).toBe(1);
+  });
 });

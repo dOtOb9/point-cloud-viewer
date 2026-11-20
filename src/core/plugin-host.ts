@@ -131,8 +131,9 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
       program: (init, update, effectFailed) =>
         createProgram(init, update, {
           effectFailed(error) {
+            const msg = effectFailed(error);
             report(pluginId, error);
-            return effectFailed(error);
+            return msg;
           },
           report: (error) => report(pluginId, error),
         }),

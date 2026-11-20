@@ -64,7 +64,15 @@ export function createProgram<Model, Msg>(init: Model, update: Update<Model, Msg
       failures.report(error);
       return;
     }
-    enqueue({ msg: failures.effectFailed(error), isEffectFailure: true });
+    let msg: Msg;
+    try {
+      msg = failures.effectFailed(error);
+    } catch (conversionError) {
+      failures.report(error);
+      failures.report(conversionError);
+      return;
+    }
+    enqueue({ msg, isEffectFailure: true });
   }
 
   function runEffect(effect: Effect<Msg>, whileHandlingEffectFailure: boolean): void {

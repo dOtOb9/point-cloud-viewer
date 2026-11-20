@@ -338,4 +338,28 @@ describe("plugin host: ribbon, dialogs, errors and programs", () => {
     ]);
     expect(reported).toEqual(["a: first", "a: again"]);
   });
+
+  it("reports an effect failure once, and the error of an effectFailed that throws, under the plugin's id", () => {
+    const { host, reported } = makeHost();
+    host.activate([
+      fakePlugin("a", (h) => {
+        const program = h.program<number, "start">(
+          0,
+          (model) => [
+            model,
+            [
+              () => {
+                throw new Error("effect");
+              },
+            ],
+          ],
+          () => {
+            throw new Error("conversion");
+          },
+        );
+        program.dispatch("start");
+      }),
+    ]);
+    expect(reported).toEqual(["a: effect", "a: conversion"]);
+  });
 });
