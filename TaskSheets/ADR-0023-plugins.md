@@ -166,9 +166,12 @@ PL-1 で視点（TP-1）を組み込みプラグイン `pcv.view`（`src/plugins
   `preset` はレンダラの stats の `viewPreset`（`matchViewPreset` で今の向きから求めた値）、`rendererHasLayers` は stats の `layerCount > 0`（ステータスバーの視点の文を出す条件。TP-1 と同じ）。
   `ProjectionMode`・`ViewPresetId`・`VIEW_PRESET_IDS` は `src/plugin-api` に置いた（`src/plugin-api` は `src/renderer` を import しないため）。レンダラの型と同じであることは、ホストの配線の型検査（`ViewState` へ渡す向きと `showPreset` の向きの両方）と、`src/ui/plugins/view-plugin.test.tsx` の "the plugin API's viewpoints and the plugin's labels are the renderer's" で確かめる
 - **投影の正本はビューの文脈**: 選んだ投影は、プラグインの Model ではなく、ビューアごとのビューの文脈（`ViewContext.state`）に置く。レンダラを作り直したとき（`attachViewRenderer`）に、選んでいた投影を新しいレンダラに渡すため（F11）。`pcv.view` の Model は `view.subscribe` でその値を写す。
-  プラグインの Model に正本を置く案は、レンダラの付け外しがプラグインの外（`src/state/useRendererLifecycle.ts`）で起きるので、新しいレンダラに投影を渡す道がホストに無くなり採らなかった
+  採らなかった案は2つある。
+  (1) プラグインの Model だけに正本を置き、ホストは何も覚えない案: レンダラの付け外しはプラグインの外（`src/state/useRendererLifecycle.ts`）で起きるので、新しいレンダラに投影を渡すには、ホストがプラグインに「レンダラを付けた」ことを知らせる口が別に要る（今の口には無い）。
+  (2) その口を足し、ホストが「レンダラを付けた」ことを知らせて、プラグインが投影を送り直す案: 付けてから送り直すまでの間、新しいレンダラの投影が既定（透視投影）に戻り、平行投影を選んでいたら、その間に透視投影で描かれうる（推定。フレームの順を測っていない。既定は `point-cloud-renderer.ts` の `projectionMode = DEFAULT_PROJECTION_MODE`、`projection.ts` で `"perspective"`）。今の形は `attachViewRenderer` の中で同期に渡すので、その間が無い
 - **ビューの文脈はビューアごと（F11）**: `export const viewContext`（モジュールに1つ）を消し、`useCopcViewer` がビューアごとに `createViewContext()` を作って、レンダラの付け外しとホスト（`createPluginHost({ reportError, view })`）に渡す
 - **購読の失敗**: `layers.subscribe`・`view.subscribe` に渡した関数が投げたら、ホストが `errors.report(プラグインの id, error)` に流し、ほかの購読者とレイヤー・ビューの更新は続ける
+- **購読はプラグインと一緒に終わる**（PL-1 監査 R1 F-1）: ホストはプラグインの id ごとに `layers.subscribe`・`view.subscribe` の購読を覚え、そのプラグインを止めるとき（`deactivate`、`activate` が投げたとき）に、登録（リボン・ダイアログなど）を消すのと一緒に全部外す。cleanup を返さないプラグインや、購読した後に `activate` で投げたプラグインの購読が残らないようにするため。プラグインが返した購読の解除の関数は、ホストが先に外した後に呼んでも何もしない。止まったプラグインの `subscribe` は何も登録しない
 - **視点のキー（F・1〜7）は `pcv.view` が持つ**: `pcv.view` が `shortcuts.add` で `kind: "harmless"` として登録し、点群が無い間は `setEnabled(false)` にする。`APP_SHORTCUT_KEYS` から F・1〜7 を外し、Delete・Enter・Escape・Tab だけにした。他のプラグインが同じキーを登録しようとすると、2度目の登録として断って報告する（`src/core/app-shortcut-keys.test.ts`）
 - **ステータスバーのプラグインの場所**: プラグインの項目を、fps の後（視点の文があった場所）に描く。中身が何も描かないとき（点群が無いとき）は包む `span` を `empty:hidden` で消し、空の項目の間隔が残らないようにした
 - 口の一覧: `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`layers`・`view`・`program`

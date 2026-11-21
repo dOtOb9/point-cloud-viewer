@@ -81,3 +81,4 @@ function createProgram<Model, Msg>(init: Model, update: Update<Model, Msg>, fail
 ## 改訂（PL-1、2026-11-21）: `update` が投げたとき
 
 - `update` が投げたら、その Msg は捨てて Model を変えず（購読者にも知らせず）、例外を `failures.report` に流し、キューに残っている Msg は同じ `dispatch` の中で続けて処理する。`dispatch` の外へは投げない（メインの決定。購読者の例外（PL-0 の N-3）と同じ扱いにそろえ、1つのバグで後ろの Msg が止まらないようにするため。PL-0 PR 監査 F-1）。プラグインのホストの `program` では、`report` が `errors.report(プラグインの id, error)` なので、プラグインの id で出る
+- 視点の投影は、ホストのビューアごとの文脈（`src/app/view.ts` の `ViewContext.state`、`{ get, set, subscribe }` のストア）に残し、プラグイン `pcv.view` の Model はその写しにした（上の「移行」の「TP-1 のストアはプラグイン化のときにこの形に移す」と違う。PL-1 監査 R1 F-2）。理由と採らなかった案は ADR-0023 の改訂（PL-1）の「投影の正本はビューの文脈」
