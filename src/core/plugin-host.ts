@@ -94,6 +94,7 @@ function withoutPlugin<T>(entries: readonly Registered<T>[], pluginId: string): 
 export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
   const store = createStore<PluginHostState>(NO_REGISTRATIONS);
   const active = new Map<string, () => void>();
+  const subscriptions = new Map<string, Set<() => void>>();
   let nextKey = 1;
 
   function report(source: string, error: unknown): void {
@@ -163,7 +164,22 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
   }
 
   function subscribeReported(pluginId: string, subscribe: (listener: () => void) => () => void, listener: () => void): () => void {
-    return subscribe(() => runReported(pluginId, listener));
+    if (!active.has(pluginId)) return () => {};
+    const stopListening = subscribe(() => runReported(pluginId, listener));
+    const ofPlugin = subscriptions.get(pluginId) ?? new Set<() => void>();
+    subscriptions.set(pluginId, ofPlugin);
+    const unsubscribe = () => {
+      if (!ofPlugin.delete(unsubscribe)) return;
+      stopListening();
+    };
+    ofPlugin.add(unsubscribe);
+    return unsubscribe;
+  }
+
+  function dropSubscriptions(pluginId: string): void {
+    const ofPlugin = subscriptions.get(pluginId);
+    subscriptions.delete(pluginId);
+    for (const unsubscribe of ofPlugin ?? []) unsubscribe();
   }
 
   function layersFor(pluginId: string): LayersApi {
@@ -225,6 +241,7 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
     } catch (error) {
       active.delete(plugin.id);
       removeRegistrations(plugin.id);
+      dropSubscriptions(plugin.id);
       report(plugin.id, error);
     }
   }
@@ -234,6 +251,7 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
     if (!cleanup) return;
     active.delete(pluginId);
     removeRegistrations(pluginId);
+    dropSubscriptions(pluginId);
     try {
       cleanup();
     } catch (error) {

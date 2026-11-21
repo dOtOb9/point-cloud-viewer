@@ -566,3 +566,33 @@ describe("plugin host: layers and view", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+describe("plugin host: the subscriptions a plugin leaves behind", () => {
+  it("lets a cleanup call the unsubscribe the host has already run, and a stopped plugin cannot subscribe again", () => {
+    const view = createViewContext();
+    const host = createPluginHost({ reportError: () => {}, view });
+    const listener = vi.fn();
+    let saved: PluginHost | null = null;
+    host.activate([
+      fakePlugin("a", (h) => {
+        saved = h;
+        const stop = h.layers.subscribe(listener);
+        return stop;
+      }),
+    ]);
+    expect(() => host.deactivate("a")).not.toThrow();
+    saved!.layers.subscribe(listener);
+    view.pointCloud.set(true);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("keeps the subscriptions of the other plugins when one is deactivated", () => {
+    const view = createViewContext();
+    const host = createPluginHost({ reportError: () => {}, view });
+    const kept = vi.fn();
+    host.activate([fakePlugin("a", (h) => void h.layers.subscribe(() => {})), fakePlugin("b", (h) => void h.layers.subscribe(kept))]);
+    host.deactivate("a");
+    view.pointCloud.set(true);
+    expect(kept).toHaveBeenCalledTimes(1);
+  });
+});
