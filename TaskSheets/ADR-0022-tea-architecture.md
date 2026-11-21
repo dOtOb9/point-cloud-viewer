@@ -77,3 +77,7 @@ function createProgram<Model, Msg>(init: Model, update: Update<Model, Msg>, fail
 - プラグインのホストの `program`（ADR-0023）は、`effectFailed` だけをプラグインから受け取り、`report` はホストの `errors.report(プラグインの id, error)` にする。
   `effectFailed` で Msg にする前にも `errors.report` に流すので、プラグインの `update` が失敗の Msg を無視しても失敗は画面に出る（PL-0 監査 R1 F-3、上の「受け入れの目安」の「黙って捨てない」）
 - `effectFailed` 自身が投げたときは、元の失敗とその例外の両方を `report` に流し、`dispatch` の外へは投げない（PL-0 監査 R2 N-8）
+
+## 改訂（PL-1、2026-11-21）: `update` が投げたとき
+
+- `update` が投げたら、その Msg は捨てて Model を変えず（購読者にも知らせず）、例外を `failures.report` に流し、キューに残っている Msg は同じ `dispatch` の中で続けて処理する。`dispatch` の外へは投げない（メインの決定。購読者の例外（PL-0 の N-3）と同じ扱いにそろえ、1つのバグで後ろの Msg が止まらないようにするため。PL-0 PR 監査 F-1）。プラグインのホストの `program` では、`report` が `errors.report(プラグインの id, error)` なので、プラグインの id で出る

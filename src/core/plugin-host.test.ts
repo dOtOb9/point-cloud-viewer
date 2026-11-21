@@ -362,4 +362,26 @@ describe("plugin host: ribbon, dialogs, errors and programs", () => {
     ]);
     expect(reported).toEqual(["a: effect", "a: conversion"]);
   });
+
+  it("reports an update that throws once under the plugin's id and keeps the program running", () => {
+    const { host, reported } = makeHost();
+    let total = -1;
+    host.activate([
+      fakePlugin("a", (h) => {
+        const program = h.program<number, "explode" | "inc">(
+          0,
+          (model, msg) => {
+            if (msg === "explode") throw new Error("update failed");
+            return [model + 1, []];
+          },
+          () => "inc",
+        );
+        program.dispatch("explode");
+        program.dispatch("inc");
+        total = program.getModel();
+      }),
+    ]);
+    expect(reported).toEqual(["a: update failed"]);
+    expect(total).toBe(1);
+  });
 });

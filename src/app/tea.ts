@@ -40,8 +40,19 @@ export function createProgram<Model, Msg>(init: Model, update: Update<Model, Msg
     enqueue({ msg, isEffectFailure: false });
   }
 
+  function updateOrReport(msg: Msg): [Model, Effect<Msg>[]] | null {
+    try {
+      return update(model, msg);
+    } catch (error) {
+      failures.report(error);
+      return null;
+    }
+  }
+
   function step({ msg, isEffectFailure }: Queued<Msg>): void {
-    const [next, effects] = update(model, msg);
+    const updated = updateOrReport(msg);
+    if (updated === null) return;
+    const [next, effects] = updated;
     if (!Object.is(next, model)) {
       model = next;
       notifyListeners();

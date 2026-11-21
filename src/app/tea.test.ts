@@ -233,3 +233,53 @@ it("reports, instead of feeding back to update, an effect that fails while updat
     expect(program.getModel()).toBe(1);
   });
 });
+
+describe("createProgram: an update that throws", () => {
+  type FailingMsg = Msg | { type: "explode" };
+  const failingUpdate: Update<Model, FailingMsg> = (model, msg) => {
+    if (msg.type === "explode") throw new Error("update failed");
+    return update(model, msg);
+  };
+
+  function makeFailingProgram(reported: unknown[]) {
+    return createProgram<Model, FailingMsg>({ total: 0, log: [] }, failingUpdate, { effectFailed: toFailed, report: (error) => reported.push(error) });
+  }
+
+  it("drops the msg, keeps the model, tells no subscriber, reports once and does not throw out of dispatch", () => {
+    const reported: unknown[] = [];
+    const program = makeFailingProgram(reported);
+    const before = program.getModel();
+    let told = 0;
+    program.subscribe(() => told++);
+    expect(() => program.dispatch({ type: "explode" })).not.toThrow();
+    expect(program.getModel()).toBe(before);
+    expect(told).toBe(0);
+    expect(reported.map((e) => (e as Error).message)).toEqual(["update failed"]);
+  });
+
+  it("processes the msgs queued behind the failed one within the same dispatch", () => {
+    const reported: unknown[] = [];
+    const program = makeFailingProgram(reported);
+    let told = 0;
+    program.subscribe(() => told++);
+    program.dispatch({
+      type: "run",
+      effects: [
+        (dispatch) => {
+          dispatch({ type: "explode" });
+          dispatch({ type: "add", amount: 3 });
+        },
+      ],
+    });
+    expect(program.getModel()).toEqual({ total: 3, log: ["add 3"] });
+    expect(told).toBe(1);
+    expect(reported).toHaveLength(1);
+  });
+
+  it("keeps the program usable after the failure", () => {
+    const program = makeFailingProgram([]);
+    program.dispatch({ type: "explode" });
+    program.dispatch({ type: "add", amount: 1 });
+    expect(program.getModel().total).toBe(1);
+  });
+});
