@@ -15,7 +15,6 @@ import { RasterizeButton } from "./buttons/RasterizeButton";
 import { SectionButton } from "./buttons/SectionButton";
 import { SelectPointsButton } from "./buttons/SelectPointsButton";
 import { SettingsButton } from "./buttons/SettingsButton";
-import { ViewButton } from "./buttons/ViewButton";
 import { ToolbarSeparator } from "./ToolbarSeparator";
 import { useToolbarDragScroll } from "./useToolbarDragScroll";
 
@@ -29,11 +28,10 @@ interface Props {
   onOpenThin: () => void;
   onOpenFilter: () => void;
   onOpenDtm: () => void;
-  onOpenView: () => void;
   pluginHost: PluginHostCore;
 }
 
-export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter, onOpenDtm, onOpenView, pluginHost }: Props) {
+export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTool, onOpenRaster, onOpenThin, onOpenFilter, onOpenDtm, pluginHost }: Props) {
   const narrow = useNarrowViewport();
   const { ref, onClickCapture } = useToolbarDragScroll();
   const placement = narrow ? "inset-x-0 top-0" : "inset-x-3 top-3 rounded-2xl";
@@ -48,7 +46,6 @@ export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTo
       <OpenFileButton viewer={viewer} />
       <ToolbarSeparator />
       <PluginRibbonItems host={pluginHost} group="view" />
-      <ViewButton viewer={viewer} onOpen={onOpenView} />
       <ToolbarSeparator />
       <MeasureButton kind="distance" viewer={viewer} measure={measure} />
       <MeasureButton kind="height" viewer={viewer} measure={measure} />

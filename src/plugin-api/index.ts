@@ -57,12 +57,39 @@ export interface ShortcutHandle {
   setEnabled(enabled: boolean): void;
 }
 
+export interface LayersApi {
+  hasPointCloud(): boolean;
+  subscribe(listener: () => void): () => void;
+}
+
+export type ProjectionMode = "perspective" | "orthographic";
+
+export type ViewPresetId = "top" | "front" | "back" | "left" | "right" | "isometric";
+
+export const VIEW_PRESET_IDS: readonly ViewPresetId[] = ["top", "front", "back", "left", "right", "isometric"];
+
+export interface ViewState {
+  readonly projection: ProjectionMode;
+  readonly preset: ViewPresetId | null;
+  readonly rendererHasLayers: boolean;
+}
+
+export interface ViewApi {
+  get(): ViewState;
+  subscribe(listener: () => void): () => void;
+  fitAll(): void;
+  showPreset(id: ViewPresetId): void;
+  setProjection(mode: ProjectionMode): void;
+}
+
 export interface PluginHost {
   ribbon: { add(item: RibbonItem): RibbonHandle };
   dialogs: { open(dialog: DialogSpec): DialogHandle };
   status: { add(item: StatusItem): void };
   shortcuts: { add(shortcut: Shortcut): ShortcutHandle };
   errors: { report(source: string, error: unknown): void };
+  layers: LayersApi;
+  view: ViewApi;
   program<Model, Msg>(init: Model, update: Update<Model, Msg>, effectFailed: EffectFailed<Msg>): Program<Model, Msg>;
 }
 

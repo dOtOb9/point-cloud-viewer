@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PluginHost } from "../plugin-api";
+import { createViewContext } from "../app/view";
 import { createPluginHost } from "./plugin-host";
 
 const RAW = import.meta.glob(["../../TaskSheets/ADR-0022-tea-architecture.md", "../../TaskSheets/ADR-0023-plugins.md", "../app/tea.ts"], {
@@ -49,7 +50,7 @@ function lastPluginHostPartsInAdr(markdown: string): string[] {
 
 function hostGivenToPlugins(): PluginHost {
   let given: PluginHost | null = null;
-  createPluginHost({ reportError: () => {} }).activate([{ id: "probe", name: "probe", apiVersion: 1, activate: (host) => void (given = host) }]);
+  createPluginHost({ reportError: () => {}, view: createViewContext() }).activate([{ id: "probe", name: "probe", apiVersion: 1, activate: (host) => void (given = host) }]);
   return given!;
 }
 

@@ -9,7 +9,7 @@ export function PluginStatusItems({ host }: { host: PluginHostCore }) {
     <>
       {status.map((entry) => (
         <PluginErrorBoundary key={entry.key} pluginId={entry.pluginId} onError={host.report}>
-          <span className="whitespace-nowrap">
+          <span className="whitespace-nowrap empty:hidden">
             <RenderedByPlugin render={entry.item.render} />
           </span>
         </PluginErrorBoundary>

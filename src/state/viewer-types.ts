@@ -1,4 +1,5 @@
 import type { OpenFilesContext } from "../app/open-files";
+import type { ViewContext } from "../app/view";
 import type { ConversionProgress } from "../datasource/conversion-dto";
 import type { ViewerStatus } from "./viewer-status";
 import type { DisplaySettings } from "./useDisplaySettings";
@@ -62,6 +63,7 @@ export type CopcViewerState = Pick<
   > &
   Pick<TempDirSetting, "tempDir" | "supportsCustomTempDir" | "pickAndSetTempDir" | "clearTempDir"> & {
     status: ViewerStatus;
+    viewContext: ViewContext;
     fileOpenContext: OpenFilesContext;
     conversionProgress: ConversionProgress | null;
     convertingFileName: string | null;

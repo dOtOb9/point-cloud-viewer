@@ -160,3 +160,15 @@ PL-1 で視点（TP-1）を組み込みプラグイン `pcv.view`（`src/plugins
 - **`DialogSpec.width`（`"normal"`・`"narrow"`）と `closeButtonLabel`**: ダイアログの枠の幅と、フッターの閉じるボタン。ホストが既存の `Dialog` の `widthClass`（`normal` は今の既定の `max-w-lg`、`narrow` は視点のダイアログが使っていた `max-w-xs`）と、
   既存のダイアログと同じ形のボタン（`DIALOG_TERTIARY_BUTTON_CLASS`）で描く。押したら、ホストが閉じたのと同じに `onClose` を呼ぶ。
   幅をクラス名の文字列で渡す案と、フッターを `ViewNode` で渡す案は、プラグインが `src/ui/dialogs` の見た目の定数を import できない（ADR-0023 の import の決まり）ので、同じ見た目を保つ道が無く採らなかった
+- **`layers`（読む側だけ）: `{ hasPointCloud(): boolean; subscribe(listener) }`**: 点群のレイヤー（計測のレイヤー以外）が1つでもあるか。上の「形」の `LayerApi`（一覧・選択・新しいレイヤーを足す）のうち、`pcv.view` が使う読む側だけを置いた。一覧・選択・足す側は、使うプラグイン（PL-2 以降）を移すときに足す。
+  今の値はビューの文脈（`src/app/view.ts` の `ViewContext.pointCloud`、`syncViewWithLayers` がレイヤーの一覧から作る）にある。レイヤーの一覧を移すときにレイヤーの文脈へ分ける
+- **`view`: `{ get(): ViewState; subscribe(listener); fitAll(); showPreset(id); setProjection(mode) }`**（`ViewState` は `projection`・`preset`・`rendererHasLayers`）: 上の「形」の `ViewApi` のうち、視点（全体・決まった視点・投影）と、その読み取りだけ。ピック・2D の重ね描き・表示の範囲は、使うプラグイン（計測・TP-2）を移すときに足す。
+  `preset` はレンダラの stats の `viewPreset`（`matchViewPreset` で今の向きから求めた値）、`rendererHasLayers` は stats の `layerCount > 0`（ステータスバーの視点の文を出す条件。TP-1 と同じ）。
+  `ProjectionMode`・`ViewPresetId`・`VIEW_PRESET_IDS` は `src/plugin-api` に置いた（`src/plugin-api` は `src/renderer` を import しないため）。レンダラの型と同じであることは、ホストの配線の型検査（`ViewState` へ渡す向きと `showPreset` の向きの両方）と、`src/ui/plugins/view-plugin.test.tsx` の "the plugin API's viewpoints and the plugin's labels are the renderer's" で確かめる
+- **投影の正本はビューの文脈**: 選んだ投影は、プラグインの Model ではなく、ビューアごとのビューの文脈（`ViewContext.state`）に置く。レンダラを作り直したとき（`attachViewRenderer`）に、選んでいた投影を新しいレンダラに渡すため（F11）。`pcv.view` の Model は `view.subscribe` でその値を写す。
+  プラグインの Model に正本を置く案は、レンダラの付け外しがプラグインの外（`src/state/useRendererLifecycle.ts`）で起きるので、新しいレンダラに投影を渡す道がホストに無くなり採らなかった
+- **ビューの文脈はビューアごと（F11）**: `export const viewContext`（モジュールに1つ）を消し、`useCopcViewer` がビューアごとに `createViewContext()` を作って、レンダラの付け外しとホスト（`createPluginHost({ reportError, view })`）に渡す
+- **購読の失敗**: `layers.subscribe`・`view.subscribe` に渡した関数が投げたら、ホストが `errors.report(プラグインの id, error)` に流し、ほかの購読者とレイヤー・ビューの更新は続ける
+- **視点のキー（F・1〜7）は `pcv.view` が持つ**: `pcv.view` が `shortcuts.add` で `kind: "harmless"` として登録し、点群が無い間は `setEnabled(false)` にする。`APP_SHORTCUT_KEYS` から F・1〜7 を外し、Delete・Enter・Escape・Tab だけにした。他のプラグインが同じキーを登録しようとすると、2度目の登録として断って報告する（`src/core/app-shortcut-keys.test.ts`）
+- **ステータスバーのプラグインの場所**: プラグインの項目を、fps の後（視点の文があった場所）に描く。中身が何も描かないとき（点群が無いとき）は包む `span` を `empty:hidden` で消し、空の項目の間隔が残らないようにした
+- 口の一覧: `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`layers`・`view`・`program`

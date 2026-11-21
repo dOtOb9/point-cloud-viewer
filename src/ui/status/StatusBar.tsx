@@ -1,6 +1,4 @@
 import type { CopcViewerState } from "../../state/useCopcViewer";
-import { viewContext, viewStatusText } from "../../app/view";
-import { useStore } from "../../state/useStore";
 import { formatCrsShort } from "../common/crs-format";
 import { glassSurfaceClass } from "../common/glass";
 import type { PluginHostCore } from "../../core/plugin-host";
@@ -24,7 +22,6 @@ export function StatusBar({
   pluginHost: PluginHostCore;
 }) {
   const stats = viewer.stats;
-  const projectionMode = useStore(viewContext.projection);
 
   let loadProgressLabel: string;
   if (viewer.status.kind === "converting" && viewer.conversionProgress?.phase === "reading") {
@@ -58,12 +55,7 @@ export function StatusBar({
         </span>
       ) : null}
       <span className="whitespace-nowrap">fps:{stats ? stats.fps.toFixed(0) : "―"}</span>
-      {stats && stats.layerCount > 0 ? (
-        <span className="whitespace-nowrap" data-testid="view-status">
-          <span className="hidden md:inline">{viewStatusText(stats.viewPreset, projectionMode, false)}</span>
-          <span className="md:hidden">{viewStatusText(stats.viewPreset, projectionMode, true)}</span>
-        </span>
-      ) : null}
+      <PluginStatusItems host={pluginHost} />
       <span className="hidden whitespace-nowrap md:inline">CRS: {viewer.selectedLayer ? formatCrsShort(viewer.selectedLayer.info.crs) : "―"}</span>
       {viewer.status.kind === "converting" ? (
         <button type="button" onClick={onOpenConversion} className="min-h-8 min-w-0 truncate rounded bg-secondary px-2 text-on-secondary">
@@ -77,7 +69,6 @@ export function StatusBar({
           {toolLabel}
         </button>
       ) : null}
-      <PluginStatusItems host={pluginHost} />
       <button
         type="button"
         onClick={onOpenErrorLog}

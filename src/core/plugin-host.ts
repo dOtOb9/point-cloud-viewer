@@ -1,6 +1,7 @@
 import { createStore } from "../app/store";
 import { createProgram } from "../app/tea";
 import { isFormControl, isTypingTarget } from "../app/typing-target";
+import { fitAllView, setViewProjection, showViewPreset, type ViewContext } from "../app/view";
 import {
   PLUGIN_API_VERSION,
   type DialogSpec,
@@ -12,6 +13,8 @@ import {
   type Shortcut,
   type ShortcutHandle,
   type StatusItem,
+  type ViewApi,
+  type LayersApi,
 } from "../plugin-api";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 
@@ -41,6 +44,7 @@ export interface ShortcutKeyEvent {
 
 export interface PluginHostDeps {
   reportError(message: string, source?: GpuErrorSource): void;
+  view: ViewContext;
 }
 
 export interface PluginHostCore {
@@ -55,7 +59,7 @@ export interface PluginHostCore {
   handleKeyDown(event: ShortcutKeyEvent): void;
 }
 
-export const APP_SHORTCUT_KEYS: readonly string[] = ["F", "1", "2", "3", "4", "5", "6", "7", "Delete", "Enter", "Escape", "Tab"];
+export const APP_SHORTCUT_KEYS: readonly string[] = ["Delete", "Enter", "Escape", "Tab"];
 
 const NO_REGISTRATIONS: PluginHostState = { ribbon: [], status: [], dialogs: [], shortcuts: [] };
 
@@ -158,6 +162,27 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
     return enabledHandle("shortcuts", register("shortcuts", pluginId, shortcut));
   }
 
+  function subscribeReported(pluginId: string, subscribe: (listener: () => void) => () => void, listener: () => void): () => void {
+    return subscribe(() => runReported(pluginId, listener));
+  }
+
+  function layersFor(pluginId: string): LayersApi {
+    return {
+      hasPointCloud: () => deps.view.pointCloud.get(),
+      subscribe: (listener) => subscribeReported(pluginId, deps.view.pointCloud.subscribe, listener),
+    };
+  }
+
+  function viewFor(pluginId: string): ViewApi {
+    return {
+      get: () => deps.view.state.get(),
+      subscribe: (listener) => subscribeReported(pluginId, deps.view.state.subscribe, listener),
+      fitAll: () => void fitAllView(deps.view),
+      showPreset: (id) => void showViewPreset(deps.view, id),
+      setProjection: (mode) => setViewProjection(deps.view, mode),
+    };
+  }
+
   function hostFor(pluginId: string): PluginHost {
     return {
       ribbon: { add: (item) => enabledHandle("ribbon", register("ribbon", pluginId, item)) },
@@ -170,6 +195,8 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
       status: { add: (item) => void register("status", pluginId, item) },
       shortcuts: { add: (shortcut) => addShortcut(pluginId, shortcut) },
       errors: { report },
+      layers: layersFor(pluginId),
+      view: viewFor(pluginId),
       program: (init, update, effectFailed) =>
         createProgram(init, update, {
           effectFailed(error) {

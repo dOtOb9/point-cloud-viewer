@@ -1,18 +1,7 @@
-import {
-  fitAllView,
-  PROJECTION_LABELS,
-  runViewAction,
-  setProjection,
-  shortcutKeyOfPreset,
-  viewContext,
-  type ViewContext,
-} from "../../app/view";
-import { VIEW_PRESET_IDS, VIEW_PRESET_LABELS } from "../../renderer/view-presets";
-import type { ProjectionMode } from "../../renderer/projection";
-import type { CopcViewerState } from "../../state/useCopcViewer";
-import { useStore } from "../../state/useStore";
-import { Dialog } from "../dialogs/Dialog";
-import { DIALOG_TERTIARY_BUTTON_CLASS } from "../dialogs/dialog-styles";
+import { VIEW_PRESET_IDS, type ProjectionMode, type Program } from "../../../plugin-api";
+import { PROJECTION_HINTS, PROJECTION_LABELS, shortcutKeyOfPreset, VIEW_PRESET_LABELS } from "../labels";
+import type { ViewModel, ViewMsg } from "../model";
+import { useViewModel } from "./useViewModel";
 
 const PROJECTIONS: ProjectionMode[] = ["perspective", "orthographic"];
 
@@ -20,34 +9,15 @@ const VIEW_BUTTON_CLASS =
   "min-h-11 min-w-11 rounded border border-slate-300 px-2 py-2 text-sm whitespace-nowrap hover:bg-black/5 dark:border-slate-600 dark:hover:bg-white/10";
 const VIEW_BUTTON_ACTIVE_CLASS = "border-primary bg-primary/15 font-semibold";
 
-export function ViewDialog({
-  viewer,
-  onClose,
-  context = viewContext,
-}: {
-  viewer: CopcViewerState;
-  onClose: () => void;
-  context?: ViewContext;
-}) {
-  const projectionMode = useStore(context.projection);
-  const currentPreset = viewer.stats?.viewPreset ?? null;
+export function ViewDialogBody({ program }: { program: Program<ViewModel, ViewMsg> }) {
+  const { view } = useViewModel(program);
+  const currentPreset = view.preset;
   return (
-    <Dialog
-      open
-      title="視点"
-      onClose={onClose}
-      placement="side"
-      widthClass="max-w-xs"
-      footer={
-        <button type="button" onClick={onClose} className={DIALOG_TERTIARY_BUTTON_CLASS}>
-          閉じる
-        </button>
-      }
-    >
+    <>
       <div className="grid grid-cols-4 gap-2 md:grid-cols-3" data-testid="view-presets">
         <button
           type="button"
-          onClick={() => fitAllView(context)}
+          onClick={() => program.dispatch({ type: "fitRequested" })}
           className={`${VIEW_BUTTON_CLASS} font-semibold md:col-span-3`}
           title="見えているレイヤーが全部入るように、向きはそのままで寄る（F キー）"
           data-testid="view-fit"
@@ -58,7 +28,7 @@ export function ViewDialog({
           <button
             key={id}
             type="button"
-            onClick={() => runViewAction(context, { kind: "preset", id })}
+            onClick={() => program.dispatch({ type: "presetRequested", id })}
             aria-pressed={currentPreset === id}
             className={`${VIEW_BUTTON_CLASS} ${currentPreset === id ? VIEW_BUTTON_ACTIVE_CLASS : ""}`}
             title={`${VIEW_PRESET_LABELS[id]}から見る（${shortcutKeyOfPreset(id)} キー）`}
@@ -79,17 +49,15 @@ export function ViewDialog({
               type="radio"
               name="view-projection"
               value={mode}
-              checked={projectionMode === mode}
-              onChange={() => setProjection(context, mode)}
+              checked={view.projection === mode}
+              onChange={() => program.dispatch({ type: "projectionRequested", mode })}
             />
             <span>{PROJECTION_LABELS[mode]}</span>
-            <span className="hidden text-xs whitespace-normal opacity-70 md:inline">
-              {mode === "perspective" ? "（遠くが小さく見える）" : "（どこも同じ大きさ。図面向き）"}
-            </span>
+            <span className="hidden text-xs whitespace-normal opacity-70 md:inline">{PROJECTION_HINTS[mode]}</span>
           </label>
         ))}
       </fieldset>
       <p className="hidden text-xs opacity-70 md:block">押すとすぐ動きます。Esc か「閉じる」で閉じます。「全体」でいつでも戻れます。</p>
-    </Dialog>
+    </>
   );
 }

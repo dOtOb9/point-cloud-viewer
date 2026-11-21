@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { addOpenedLayer } from "../app/open-files";
 import { followSelectedLayer } from "../app/section-view";
+import { createViewContext, syncViewWithLayers, syncViewWithStats } from "../app/view";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import type { PointCloudRenderer } from "../renderer/point-cloud-renderer";
@@ -26,14 +27,17 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
   const [status, setStatus] = useState<ViewerStatus>({ kind: "idle" });
   const setInitError = useCallback((message: string) => setStatus({ kind: "error", message }), []);
   const [toolLock] = useState(() => ({ running: false }));
+  const [viewContext] = useState(createViewContext);
 
   const errorLog = useErrorLog();
   const display = useDisplaySettings(rendererRef);
   useRendererLifecycle(
-    { canvasRef, rendererRef, sourceRef },
+    { canvasRef, rendererRef, sourceRef, viewContext },
     { onStats: display.onStats, reportError: errorLog.reportError, setError: setInitError },
   );
   const layers = useLayers({ rendererRef, sourceRef, setStatus, reportError: errorLog.reportError });
+  useEffect(() => syncViewWithLayers(viewContext, layers.layers), [viewContext, layers.layers]);
+  useEffect(() => syncViewWithStats(viewContext, display.stats), [viewContext, display.stats]);
   const opfs = useOpfsStorage(errorLog.reportError);
   const tempDirSetting = useTempDir();
   const fileOpen = useFileOpen({
@@ -134,6 +138,7 @@ export function useCopcViewer(): [RefObject<HTMLCanvasElement | null>, CopcViewe
     pointBudget: display.pointBudget,
     autoPointBudgetEnabled: display.autoPointBudgetEnabled,
     stats: display.stats,
+    viewContext,
     backgroundMode: display.backgroundMode,
     gridEnabled: display.gridEnabled,
     edlEnabled: display.edlEnabled,

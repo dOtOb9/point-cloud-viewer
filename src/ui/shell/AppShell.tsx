@@ -18,9 +18,6 @@ import { RasterWindow } from "../tools/RasterWindow";
 import { ThinDialog } from "../tools/ThinDialog";
 import { FilterDialog } from "../tools/FilterDialog";
 import { DtmDialog } from "../tools/DtmDialog";
-import { ViewDialog } from "../tools/ViewDialog";
-import { useViewShortcuts } from "../toolbar/useViewShortcuts";
-import { viewContext } from "../../app/view";
 import { openRasterWindow } from "../../app/raster-window";
 import { useRasterWindow } from "../../state/useRasterWindow";
 import { selectedPointCloudLayer } from "../toolbar/toolbar-state";
@@ -48,7 +45,7 @@ export function AppShell() {
   const theme = useTheme();
   const webGpuSupport = useWebGpuSupport();
   const update = useUpdateCheck();
-  const pluginHost = usePluginHost(builtinPlugins, viewer.reportError);
+  const pluginHost = usePluginHost(builtinPlugins, { reportError: viewer.reportError, view: viewer.viewContext });
   const measureRaw = useMeasureTool(viewer, canvasRef);
   const layerToolRaw = useLayerTool(viewer, canvasRef);
   const measure = { ...measureRaw, toggle: (kind: Parameters<typeof measureRaw.toggle>[0]) => { layerToolRaw.stop(); measureRaw.toggle(kind); } };
@@ -58,8 +55,6 @@ export function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [thinFilterDialog, setThinFilterDialog] = useState<"thin" | "filter" | null>(null);
   const [dtmDialogOpen, setDtmDialogOpen] = useState(false);
-  useViewShortcuts(viewContext, viewer.layers);
-  const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const raster = useRasterWindow(viewer.toolContext);
   const dragging = useFileDrop((items) => openFiles(viewer.fileOpenContext, items));
   const [conversionDialogOpen, setConversionDialogOpen] = useState(false);
@@ -120,7 +115,6 @@ export function AppShell() {
         onOpenThin={() => setThinFilterDialog("thin")}
         onOpenFilter={() => setThinFilterDialog("filter")}
         onOpenDtm={() => setDtmDialogOpen(true)}
-        onOpenView={() => setViewDialogOpen(true)}
         pluginHost={pluginHost}
       />
 
@@ -158,7 +152,6 @@ export function AppShell() {
       {thinFilterDialog === "thin" && <ThinDialog viewer={viewer} onClose={() => setThinFilterDialog(null)} />}
       {thinFilterDialog === "filter" && <FilterDialog viewer={viewer} onClose={() => setThinFilterDialog(null)} />}
       {dtmDialogOpen && <DtmDialog viewer={viewer} onClose={() => setDtmDialogOpen(false)} />}
-      {viewDialogOpen && <ViewDialog viewer={viewer} onClose={() => setViewDialogOpen(false)} />}
       <ToolProgressDialog viewer={viewer} open={toolDialogOpen} onCollapse={() => setToolDialogOpen(false)} />
       <PluginDialogs host={pluginHost} />
 

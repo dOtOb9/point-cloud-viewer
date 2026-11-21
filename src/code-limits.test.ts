@@ -94,8 +94,9 @@ describe("which typing check a key uses", () => {
       expect(text, path).not.toContain("isTypingTarget(");
     }
   });
-  it("the view keys use isTypingTarget", () => {
-    expect(FILES.find(([p]) => p === "src/app/view.ts")?.[1] ?? "").toContain("isTypingTarget(");
+  it("the view keys are harmless plugin shortcuts, which the host checks with isTypingTarget", () => {
+    expect(FILES.find(([p]) => p === "src/plugins/view/index.ts")?.[1] ?? "").toContain('kind: "harmless"');
+    expect(FILES.find(([p]) => p === "src/core/plugin-host.ts")?.[1] ?? "").toContain('kind === "harmless" ? isTypingTarget(target) : isFormControl(target)');
   });
 });
 

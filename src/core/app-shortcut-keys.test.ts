@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { VIEW_SHORTCUTS } from "../app/view";
+import { createViewContext } from "../app/view";
+import { viewPlugin } from "../plugins/view";
 import { APP_SHORTCUT_KEYS, createPluginHost } from "./plugin-host";
 
 const RAW = import.meta.glob(["../**/*.{ts,tsx}", "!../wasm/**", "!../**/*.test.{ts,tsx}", "!./plugin-host.ts"], {
@@ -14,7 +15,6 @@ const SOURCES: [string, string][] = Object.entries(RAW).map(([path, text]) => [
 ]);
 
 const KEYBOARD_FILES = [
-  "src/app/view.ts",
   "src/state/useLayerTool.ts",
   "src/state/useMeasureTool.ts",
   "src/ui/dialogs/Dialog.tsx",
@@ -23,8 +23,9 @@ const KEYBOARD_FILES = [
   "src/ui/layers/LayerList.tsx",
   "src/ui/layers/layer-delete-key.ts",
   "src/ui/plugins/usePluginHost.ts",
-  "src/ui/toolbar/useViewShortcuts.ts",
 ];
+
+const VIEW_KEYS = ["F", "1", "2", "3", "4", "5", "6", "7"];
 
 const KEY = String.raw`(?:[\w$]+\.)*key`;
 
@@ -93,8 +94,8 @@ describe("keys the app already uses are not given to plugins", () => {
     expect(SOURCES.filter(([, text]) => handlesKeyboard(text)).map(([path]) => path).sort()).toEqual(KEYBOARD_FILES);
   });
 
-  it("lists every view shortcut key", () => {
-    for (const { key } of VIEW_SHORTCUTS) expect(APP_SHORTCUT_KEYS).toContain(key);
+  it("leaves the view keys to the pcv.view plugin instead of keeping them for the app", () => {
+    for (const key of VIEW_KEYS) expect(APP_SHORTCUT_KEYS).not.toContain(key);
   });
 
   it("lists every key named in a keyboard file: comparisons with any variable, reversed, in a literal list, or a switch case", () => {
@@ -109,13 +110,38 @@ describe("keys the app already uses are not given to plugins", () => {
     expect(keyboard.flatMap(([path, text]) => keyCodeUses(text).map((c) => `${path}: ${c}`))).toEqual([]);
   });
 
-  it.each([...APP_SHORTCUT_KEYS, "f"])("refuses a plugin shortcut on %s and reports it", (key) => {
+  it.each(APP_SHORTCUT_KEYS)("refuses a plugin shortcut on %s and reports it", (key) => {
     const reported: string[] = [];
-    const host = createPluginHost({ reportError: (message) => reported.push(message) });
+    const host = createPluginHost({ reportError: (message) => reported.push(message), view: createViewContext() });
     const run = vi.fn();
     host.activate([{ id: "a", name: "a", apiVersion: 1, activate: (h) => void h.shortcuts.add({ key, label: key, kind: "harmless", run }) }]);
     expect(host.getState().shortcuts).toEqual([]);
     expect(reported).toHaveLength(1);
     expect(reported[0]).toMatch(/^a: /);
+  });
+});
+
+describe("the view keys belong to the pcv.view plugin", () => {
+  function hostWithViewPlugin() {
+    const reported: string[] = [];
+    const host = createPluginHost({ reportError: (message) => reported.push(message), view: createViewContext() });
+    host.activate([viewPlugin]);
+    return { host, reported };
+  }
+
+  it("pcv.view registers F and 1 to 7 as harmless shortcuts", () => {
+    const { host, reported } = hostWithViewPlugin();
+    const viewShortcuts = host.getState().shortcuts.filter((s) => s.pluginId === "pcv.view");
+    expect(viewShortcuts.map((s) => s.item.key)).toEqual(VIEW_KEYS);
+    expect(viewShortcuts.every((s) => s.item.kind === "harmless")).toBe(true);
+    expect(reported).toEqual([]);
+  });
+
+  it.each([...VIEW_KEYS, "f"])("another plugin cannot take %s, and it is reported under that plugin's id", (key) => {
+    const { host, reported } = hostWithViewPlugin();
+    const run = vi.fn();
+    host.activate([{ id: "other", name: "other", apiVersion: 1, activate: (h) => void h.shortcuts.add({ key, label: key, kind: "harmless", run }) }]);
+    expect(host.getState().shortcuts.filter((s) => s.pluginId === "other")).toEqual([]);
+    expect(reported).toEqual([`other: ショートカット「${key}」は pcv.view が使っているので登録しませんでした`]);
   });
 });

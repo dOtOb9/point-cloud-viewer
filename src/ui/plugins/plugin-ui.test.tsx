@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Circle } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PcvPlugin, PluginHost, RibbonHandle } from "../../plugin-api";
+import { createViewContext } from "../../app/view";
 import { createPluginHost, type PluginHostCore, type PluginHostState } from "../../core/plugin-host";
 import { PluginDialogs } from "./PluginDialogs";
 import { PluginRibbonItems } from "./PluginRibbonItems";
@@ -20,7 +21,7 @@ function fakePlugin(id: string, activate: (host: PluginHost) => void | (() => vo
 }
 
 function Shell({ plugins, reportError }: { plugins: readonly PcvPlugin[]; reportError: (message: string) => void }) {
-  const host: PluginHostCore = usePluginHost(plugins, reportError);
+  const host: PluginHostCore = usePluginHost(plugins, { reportError, view: createViewContext() });
   return (
     <div>
       <div data-testid="ribbon-slot">
@@ -289,7 +290,7 @@ const THROWING_UI_BY_PLACE: Record<Exclude<keyof PluginHostState, "shortcuts">, 
 
 describe("a plugin UI that throws leaves nothing behind, in every place the host draws", () => {
   it("covers every drawn list of the host state (a new place must be added here)", () => {
-    const drawn = Object.keys(createPluginHost({ reportError: () => {} }).getState()).filter((k) => k !== "shortcuts");
+    const drawn = Object.keys(createPluginHost({ reportError: () => {}, view: createViewContext() }).getState()).filter((k) => k !== "shortcuts");
     expect(drawn.sort()).toEqual(Object.keys(THROWING_UI_BY_PLACE).sort());
   });
 

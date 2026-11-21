@@ -5,173 +5,148 @@ import {
   detachViewRenderer,
   fitAllView,
   hasPointCloudLayer,
-  runViewAction,
-  shortcutKeyOfPreset,
+  setViewProjection,
   showViewPreset,
-  syncViewEnabled,
-  viewActionForKey,
-  viewStatusText,
-  VIEW_SHORTCUTS,
-  type ViewContext,
+  syncViewWithLayers,
+  syncViewWithStats,
 } from "./view";
-import { VIEW_PRESET_IDS } from "../renderer/view-presets";
 import type { ViewerLayer } from "../state/layers";
 
-function makeContext(opts: { attach?: boolean; mode?: "perspective" | "orthographic" } = {}) {
-  const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
-  const ctx: ViewContext = createViewContext();
-  ctx.pointCloud.set(true);
-  if (opts.mode) ctx.projection.set(opts.mode);
-  if (opts.attach !== false) attachViewRenderer(ctx, renderer);
-  return { ctx, renderer, setProjectionMode: renderer.setProjectionMode };
+function fakeRenderer() {
+  return { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
 }
 
-const plain = { ctrlKey: false, metaKey: false, altKey: false, target: { tagName: "DIV" } };
+function attachedContext() {
+  const ctx = createViewContext();
+  const renderer = fakeRenderer();
+  attachViewRenderer(ctx, renderer);
+  return { ctx, renderer };
+}
 
-describe("view actions", () => {
+describe("view commands go to the renderer of this viewer", () => {
   it("a preset goes to the renderer", () => {
-    const { ctx, renderer } = makeContext();
+    const { ctx, renderer } = attachedContext();
     expect(showViewPreset(ctx, "front")).toBe(true);
     expect(renderer.setViewPreset).toHaveBeenCalledWith("front");
   });
 
   it("fit all goes to the renderer", () => {
-    const { ctx, renderer } = makeContext();
+    const { ctx, renderer } = attachedContext();
     expect(fitAllView(ctx)).toBe(true);
     expect(renderer.fitAll).toHaveBeenCalledTimes(1);
   });
 
   it("does nothing (and does not fail) before the renderer exists", () => {
-    const { ctx } = makeContext({ attach: false });
+    const ctx = createViewContext();
     expect(fitAllView(ctx)).toBe(false);
     expect(showViewPreset(ctx, "top")).toBe(false);
+    expect(() => setViewProjection(ctx, "orthographic")).not.toThrow();
   });
 
   it("reports false when the renderer has no visible layer", () => {
-    const { ctx, renderer } = makeContext();
+    const { ctx, renderer } = attachedContext();
     renderer.fitAll.mockReturnValue(false);
     expect(fitAllView(ctx)).toBe(false);
   });
 
-  it("the projection toggle flips between the two modes", () => {
-    const a = makeContext({ mode: "perspective" });
-    runViewAction(a.ctx, { kind: "toggleProjection" });
-    expect(a.setProjectionMode).toHaveBeenLastCalledWith("orthographic");
-    expect(a.ctx.projection.get()).toBe("orthographic");
-    const b = makeContext({ mode: "orthographic" });
-    runViewAction(b.ctx, { kind: "toggleProjection" });
-    expect(b.setProjectionMode).toHaveBeenLastCalledWith("perspective");
-    expect(b.ctx.projection.get()).toBe("perspective");
+  it("two viewers do not share a view context", () => {
+    const a = attachedContext();
+    const b = attachedContext();
+    setViewProjection(a.ctx, "orthographic");
+    expect(b.ctx.state.get().projection).toBe("perspective");
+    expect(b.renderer.setProjectionMode).not.toHaveBeenCalledWith("orthographic");
+  });
+});
+
+describe("the projection lives in the view context, not in the renderer", () => {
+  it("setting it stores it and tells the renderer", () => {
+    const { ctx, renderer } = attachedContext();
+    setViewProjection(ctx, "orthographic");
+    expect(ctx.state.get().projection).toBe("orthographic");
+    expect(renderer.setProjectionMode).toHaveBeenLastCalledWith("orthographic");
   });
 
-  it("the store is the one source of the projection: a new renderer gets the mode chosen before it existed", () => {
+  it("a new renderer gets the mode chosen before it existed", () => {
     const ctx = createViewContext();
-    ctx.pointCloud.set(true);
-    runViewAction(ctx, { kind: "toggleProjection" });
-    expect(ctx.projection.get()).toBe("orthographic");
-    const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
+    setViewProjection(ctx, "orthographic");
+    const renderer = fakeRenderer();
     attachViewRenderer(ctx, renderer);
     expect(renderer.setProjectionMode).toHaveBeenCalledWith("orthographic");
     detachViewRenderer(ctx);
     expect(fitAllView(ctx)).toBe(false);
   });
 
+  it("a renderer made again after the first one is gone gets the mode chosen with the first one", () => {
+    const { ctx } = attachedContext();
+    setViewProjection(ctx, "orthographic");
+    detachViewRenderer(ctx);
+    const next = fakeRenderer();
+    attachViewRenderer(ctx, next);
+    expect(next.setProjectionMode).toHaveBeenCalledTimes(1);
+    expect(next.setProjectionMode).toHaveBeenCalledWith("orthographic");
+  });
+
   it("subscribers are told when the projection changes, and only then", () => {
-    const { ctx } = makeContext();
+    const { ctx } = attachedContext();
     const listener = vi.fn();
-    const stop = ctx.projection.subscribe(listener);
-    runViewAction(ctx, { kind: "toggleProjection" });
+    const stop = ctx.state.subscribe(listener);
+    setViewProjection(ctx, "orthographic");
     expect(listener).toHaveBeenCalledTimes(1);
-    ctx.projection.set("orthographic");
+    setViewProjection(ctx, "orthographic");
     expect(listener).toHaveBeenCalledTimes(1);
     stop();
-    runViewAction(ctx, { kind: "toggleProjection" });
+    setViewProjection(ctx, "perspective");
     expect(listener).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("hasPointCloudLayer / syncViewEnabled (the one rule for the button and the keys)", () => {
+describe("hasPointCloudLayer / syncViewWithLayers (the one rule for the button and the keys)", () => {
   const point = { id: "a" } as unknown as ViewerLayer;
   const measure = { id: "m", measurement: { kind: "distance" } } as unknown as ViewerLayer;
+
   it("only measurement layers (or none) -> false; a point-cloud layer -> true", () => {
     expect(hasPointCloudLayer([])).toBe(false);
     expect(hasPointCloudLayer([measure])).toBe(false);
     expect(hasPointCloudLayer([measure, point])).toBe(true);
   });
-  it("syncViewEnabled puts the answer into the context", () => {
+
+  it("syncViewWithLayers puts the answer into the context", () => {
     const ctx = createViewContext();
-    syncViewEnabled(ctx, [measure]);
+    syncViewWithLayers(ctx, [measure]);
     expect(ctx.pointCloud.get()).toBe(false);
-    syncViewEnabled(ctx, [measure, point]);
+    syncViewWithLayers(ctx, [measure, point]);
     expect(ctx.pointCloud.get()).toBe(true);
   });
 });
 
-describe("no point cloud (TP-1 F-10: the keys agree with the grayed-out button)", () => {
-  it("every view function does nothing while no point-cloud layer is open (only measurement layers left)", () => {
-    const { ctx, renderer } = makeContext();
-    ctx.pointCloud.set(false);
-    runViewAction(ctx, { kind: "toggleProjection" });
-    expect(ctx.projection.get()).toBe("perspective");
-    expect(renderer.setProjectionMode).toHaveBeenCalledTimes(1);
-    expect(showViewPreset(ctx, "top")).toBe(false);
-    expect(fitAllView(ctx)).toBe(false);
-    expect(renderer.setViewPreset).not.toHaveBeenCalled();
-    expect(renderer.fitAll).not.toHaveBeenCalled();
-    ctx.pointCloud.set(true);
-    runViewAction(ctx, { kind: "toggleProjection" });
-    expect(ctx.projection.get()).toBe("orthographic");
-  });
-});
-
-describe("keyboard shortcuts (UX-4)", () => {
-  it("F / 1 / 2 / 3 / 4 / 5 are fit, top, front, right, isometric, projection", () => {
-    expect(viewActionForKey({ ...plain, key: "f" })).toEqual({ kind: "fit" });
-    expect(viewActionForKey({ ...plain, key: "F" })).toEqual({ kind: "fit" });
-    expect(viewActionForKey({ ...plain, key: "1" })).toEqual({ kind: "preset", id: "top" });
-    expect(viewActionForKey({ ...plain, key: "2" })).toEqual({ kind: "preset", id: "front" });
-    expect(viewActionForKey({ ...plain, key: "3" })).toEqual({ kind: "preset", id: "right" });
-    expect(viewActionForKey({ ...plain, key: "4" })).toEqual({ kind: "preset", id: "isometric" });
-    expect(viewActionForKey({ ...plain, key: "5" })).toEqual({ kind: "toggleProjection" });
+describe("syncViewWithStats (the current viewpoint comes from the renderer stats)", () => {
+  it("takes the viewpoint and whether the renderer draws a layer", () => {
+    const ctx = createViewContext();
+    syncViewWithStats(ctx, { viewPreset: "top", layerCount: 2 });
+    expect(ctx.state.get()).toEqual({ projection: "perspective", preset: "top", rendererHasLayers: true });
+    syncViewWithStats(ctx, { viewPreset: null, layerCount: 0 });
+    expect(ctx.state.get()).toEqual({ projection: "perspective", preset: null, rendererHasLayers: false });
   });
 
-  it("every preset has a key and no key is used twice", () => {
-    for (const id of VIEW_PRESET_IDS) expect(shortcutKeyOfPreset(id)).not.toBe("");
-    const keys = VIEW_SHORTCUTS.map((s) => s.key);
-    expect(new Set(keys).size).toBe(keys.length);
+  it("knows nothing before the first stats", () => {
+    const ctx = createViewContext();
+    syncViewWithStats(ctx, null);
+    expect(ctx.state.get()).toEqual({ projection: "perspective", preset: null, rendererHasLayers: false });
   });
 
-  it("keys typed in a field are not shortcuts", () => {
-    for (const tagName of ["INPUT", "TEXTAREA", "SELECT"]) {
-      expect(viewActionForKey({ ...plain, key: "1", target: { tagName } })).toBeNull();
-    }
-    expect(viewActionForKey({ ...plain, key: "f", target: { tagName: "DIV", isContentEditable: true } })).toBeNull();
+  it("does not tell subscribers when the stats change something else", () => {
+    const ctx = createViewContext();
+    syncViewWithStats(ctx, { viewPreset: "front", layerCount: 1 });
+    const listener = vi.fn();
+    ctx.state.subscribe(listener);
+    syncViewWithStats(ctx, { viewPreset: "front", layerCount: 3 });
+    expect(listener).not.toHaveBeenCalled();
   });
 
-  it("keys with Ctrl / Meta / Alt, held keys and IME composition are not shortcuts", () => {
-    expect(viewActionForKey({ ...plain, key: "f", ctrlKey: true })).toBeNull();
-    expect(viewActionForKey({ ...plain, key: "f", metaKey: true })).toBeNull();
-    expect(viewActionForKey({ ...plain, key: "1", altKey: true })).toBeNull();
-    expect(viewActionForKey({ ...plain, key: "1", repeat: true })).toBeNull();
-    expect(viewActionForKey({ ...plain, key: "1", isComposing: true })).toBeNull();
-  });
-
-  it("other keys are ignored", () => {
-    expect(viewActionForKey({ ...plain, key: "Enter" })).toBeNull();
-    expect(viewActionForKey({ ...plain, key: "x" })).toBeNull();
-    expect(viewActionForKey({ ...plain, key: "Escape" })).toBeNull();
-  });
-});
-
-describe("viewStatusText (UX-1)", () => {
-  it("names the viewpoint and the projection", () => {
-    expect(viewStatusText("front", "perspective", false)).toBe("視点: 正面（透視投影）");
-    expect(viewStatusText("top", "orthographic", false)).toBe("視点: 上（平行投影）");
-  });
-  it("says 自由 when the camera is not at a fixed viewpoint", () => {
-    expect(viewStatusText(null, "perspective", false)).toBe("視点: 自由（透視投影）");
-  });
-  it("is short on a narrow screen", () => {
-    expect(viewStatusText("isometric", "orthographic", true)).toBe("等角・平行");
+  it("keeps the projection chosen by the user", () => {
+    const ctx = createViewContext();
+    setViewProjection(ctx, "orthographic");
+    syncViewWithStats(ctx, { viewPreset: "left", layerCount: 1 });
+    expect(ctx.state.get().projection).toBe("orthographic");
   });
 });

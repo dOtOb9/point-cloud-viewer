@@ -4,7 +4,7 @@ import { WebSource } from "../datasource/web";
 import { isTauriEnvironment } from "../datasource/environment";
 import type { DataSource } from "../datasource/DataSource";
 import { PointCloudRenderer, type RenderStats } from "../renderer/point-cloud-renderer";
-import { attachViewRenderer, detachViewRenderer, viewContext } from "../app/view";
+import { attachViewRenderer, detachViewRenderer, type ViewContext } from "../app/view";
 import { readStoredAnimationEnabled } from "./motion-setting";
 import { getLocalStorage } from "./useDisplaySettings";
 import { formatStatsSummary } from "./stats-summary";
@@ -20,10 +20,11 @@ export interface RendererLifecycleRefs {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   rendererRef: RefObject<PointCloudRenderer | null>;
   sourceRef: RefObject<DataSource | null>;
+  viewContext: ViewContext;
 }
 
 export function useRendererLifecycle(
-  { canvasRef, rendererRef, sourceRef }: RendererLifecycleRefs,
+  { canvasRef, rendererRef, sourceRef, viewContext }: RendererLifecycleRefs,
   { onStats, reportError, setError }: RendererLifecycleCallbacks,
 ): void {
   useEffect(() => {
@@ -80,5 +81,5 @@ export function useRendererLifecycle(
       detachViewRenderer(viewContext);
       renderer.dispose();
     };
-  }, [canvasRef, rendererRef, sourceRef, onStats, reportError, setError]);
+  }, [canvasRef, rendererRef, sourceRef, viewContext, onStats, reportError, setError]);
 }

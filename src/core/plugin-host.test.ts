@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PcvPlugin, PluginHost, RibbonHandle, ShortcutHandle } from "../plugin-api";
+import { attachViewRenderer, createViewContext } from "../app/view";
 import { createPluginHost, isEnabled, pluginErrorMessage, ribbonInGroup, type ShortcutKeyEvent } from "./plugin-host";
 
 function fakePlugin(id: string, activate: (host: PluginHost) => void | (() => void)): PcvPlugin {
@@ -8,7 +9,7 @@ function fakePlugin(id: string, activate: (host: PluginHost) => void | (() => vo
 
 function makeHost() {
   const reported: string[] = [];
-  const host = createPluginHost({ reportError: (message) => reported.push(message) });
+  const host = createPluginHost({ reportError: (message) => reported.push(message), view: createViewContext() });
   return { host, reported };
 }
 
@@ -389,7 +390,7 @@ describe("plugin host: ribbon, dialogs, errors and programs", () => {
 
   it("files plugin errors under the existing tool source of the error log", () => {
     const reportError = vi.fn();
-    createPluginHost({ reportError }).report("a", new Error("x"));
+    createPluginHost({ reportError, view: createViewContext() }).report("a", new Error("x"));
     expect(reportError).toHaveBeenCalledWith("a: x", "tool");
   });
 
@@ -501,5 +502,67 @@ describe("plugin host: ribbon, dialogs, errors and programs", () => {
     ]);
     expect(reported).toEqual(["a: update failed"]);
     expect(total).toBe(1);
+  });
+});
+
+describe("plugin host: layers and view", () => {
+  function hostWithView() {
+    const reported: string[] = [];
+    const view = createViewContext();
+    const renderer = { setViewPreset: vi.fn(() => true), fitAll: vi.fn(() => true), setProjectionMode: vi.fn() };
+    attachViewRenderer(view, renderer);
+    const host = createPluginHost({ reportError: (message) => reported.push(message), view });
+    let given: PluginHost | null = null;
+    host.activate([fakePlugin("a", (h) => void (given = h))]);
+    return { host, reported, view, renderer, api: given! };
+  }
+
+  it("layers tells whether a point cloud is open and when that changes", () => {
+    const { api, view } = hostWithView();
+    const listener = vi.fn();
+    api.layers.subscribe(listener);
+    expect(api.layers.hasPointCloud()).toBe(false);
+    view.pointCloud.set(true);
+    expect(api.layers.hasPointCloud()).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("view passes fit, a viewpoint and a projection to the renderer of this viewer, and reads them back", () => {
+    const { api, renderer } = hostWithView();
+    const listener = vi.fn();
+    api.view.subscribe(listener);
+    api.view.fitAll();
+    api.view.showPreset("left");
+    api.view.setProjection("orthographic");
+    expect(renderer.fitAll).toHaveBeenCalledTimes(1);
+    expect(renderer.setViewPreset).toHaveBeenCalledWith("left");
+    expect(renderer.setProjectionMode).toHaveBeenLastCalledWith("orthographic");
+    expect(api.view.get()).toEqual({ projection: "orthographic", preset: null, rendererHasLayers: false });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a subscriber that throws under the plugin's id, and the other subscribers still hear the change", () => {
+    const { api, view, reported } = hostWithView();
+    const other = vi.fn();
+    api.view.subscribe(() => {
+      throw new Error("listener failed");
+    });
+    api.view.subscribe(other);
+    api.layers.subscribe(() => {
+      throw new Error("layers listener failed");
+    });
+    expect(() => api.view.setProjection("orthographic")).not.toThrow();
+    expect(() => view.pointCloud.set(true)).not.toThrow();
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(reported).toEqual(["a: listener failed", "a: layers listener failed"]);
+  });
+
+  it("stops telling a subscriber after it unsubscribes", () => {
+    const { api, view } = hostWithView();
+    const listener = vi.fn();
+    const stop = api.layers.subscribe(listener);
+    stop();
+    view.pointCloud.set(true);
+    expect(listener).not.toHaveBeenCalled();
   });
 });
