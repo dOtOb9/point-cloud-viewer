@@ -1,4 +1,4 @@
-export type GpuErrorSource = "gpu" | "node-read" | "conversion" | "crs" | "tool" | "file-dialog";
+export type GpuErrorSource = "gpu" | "node-read" | "conversion" | "crs" | "tool" | "file-dialog" | "storage";
 
 export interface GpuErrorEntry {
   readonly id: number;

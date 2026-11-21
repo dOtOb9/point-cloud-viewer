@@ -38,7 +38,7 @@ export async function removeScratchDirsUnlessConverting(
     }
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
-    ctx.reportError(`一時ファイルを消せませんでした: ${message}`, "conversion");
+    ctx.reportError(`一時ファイルを消せませんでした: ${message}`, "storage");
     return "failed";
   }
   await ctx.refreshStorageInfo();

@@ -106,13 +106,13 @@ describe("removeScratchDirsUnlessConverting", () => {
     expect(ctx.refreshStorageInfo).not.toHaveBeenCalled();
   });
 
-  it("shows a failure to remove in the error log instead of dropping it", async () => {
+  it("shows a failure to remove in the error log under the storage heading, not as a conversion error", async () => {
     const ctx = fakeContext(fakeLockManager(false));
     ctx.removeScratchDir = vi.fn(async () => {
       throw new Error("getDirectory failed");
     });
     await removeScratchDirsUnlessConverting(ctx, { kind: "one", name: "pcv-scratch-a" });
-    expect(ctx.reportError).toHaveBeenCalledWith("一時ファイルを消せませんでした: getDirectory failed", "conversion");
+    expect(ctx.reportError).toHaveBeenCalledWith("一時ファイルを消せませんでした: getDirectory failed", "storage");
     expect(ctx.blockedByConversion.get()).toBeNull();
   });
 
