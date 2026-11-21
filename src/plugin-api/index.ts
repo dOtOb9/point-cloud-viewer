@@ -22,6 +22,7 @@ export interface DialogSpec {
   title: string;
   placement?: "center" | "side";
   render(): ViewNode;
+  onClose?(): void;
 }
 
 export interface DialogHandle {

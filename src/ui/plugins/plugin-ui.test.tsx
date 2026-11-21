@@ -182,6 +182,43 @@ describe("plugin UI", () => {
   });
 });
 
+describe("a plugin is told once when the host closes its dialog", () => {
+  function closingPlugin(onClose: () => void, render: () => unknown = () => <p data-testid="demo-body">中身</p>) {
+    return fakePlugin("demo.closing", (host) => void host.dialogs.open({ title: "閉じるデモ", render: render as () => null, onClose }));
+  }
+
+  it("on Escape", () => {
+    const onClose = vi.fn();
+    mount([closingPlugin(onClose)]);
+    act(() => {
+      document.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("on a click outside the frame", () => {
+    const onClose = vi.fn();
+    mount([closingPlugin(onClose)]);
+    const backdrop = document.querySelector('[role="dialog"]')!.parentElement!;
+    act(() => {
+      backdrop.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("when its content throws and the host closes it", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onClose = vi.fn();
+    const reported = mount([closingPlugin(onClose, throwingRender)]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(reported).toContain("demo.closing: render failed");
+  });
+});
+
 function throwingRender(): never {
   throw new Error("render failed");
 }

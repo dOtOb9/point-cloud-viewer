@@ -254,6 +254,54 @@ describe("plugin host: ribbon, dialogs, errors and programs", () => {
     expect(host.getState().dialogs).toEqual([]);
   });
 
+  it("tells the plugin exactly once when the host closes its dialog", () => {
+    const { host } = makeHost();
+    const onClose = vi.fn();
+    host.activate([fakePlugin("a", (h) => void h.dialogs.open({ title: "one", render: () => "1", onClose }))]);
+    const key = host.getState().dialogs[0].key;
+    host.closeDialog(key);
+    host.closeDialog(key);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(host.getState().dialogs).toEqual([]);
+  });
+
+  it("does not tell the plugin when the plugin closes its own dialog through the handle", () => {
+    const { host } = makeHost();
+    const onClose = vi.fn();
+    let handle: { close(): void } | null = null;
+    host.activate([fakePlugin("a", (h) => void (handle = h.dialogs.open({ title: "one", render: () => "1", onClose })))]);
+    const key = host.getState().dialogs[0].key;
+    handle!.close();
+    host.closeDialog(key);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("does not tell a plugin that is being deactivated about its dialogs", () => {
+    const { host } = makeHost();
+    const onClose = vi.fn();
+    host.activate([fakePlugin("a", (h) => void h.dialogs.open({ title: "one", render: () => "1", onClose }))]);
+    host.deactivate("a");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("reports an onClose that throws under the plugin's id and the dialog stays closed", () => {
+    const { host, reported } = makeHost();
+    host.activate([
+      fakePlugin("a", (h) =>
+        void h.dialogs.open({
+          title: "one",
+          render: () => "1",
+          onClose: () => {
+            throw new Error("close failed");
+          },
+        }),
+      ),
+    ]);
+    expect(() => host.closeDialog(host.getState().dialogs[0].key)).not.toThrow();
+    expect(reported).toEqual(["a: close failed"]);
+    expect(host.getState().dialogs).toEqual([]);
+  });
+
   it("notifies subscribers when a registration changes", () => {
     const { host } = makeHost();
     const listener = vi.fn();

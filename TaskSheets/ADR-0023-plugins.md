@@ -145,3 +145,11 @@ PL-0（`src/plugin-api/index.ts`・`src/core/plugin-host.ts`・`src/ui/plugins/`
 - **Error Boundary は ADR-0021 の「クラスは長く生きる資源を持つものだけ」の例外**: React の Error Boundary はクラスの部品でしか書けない（フックの API が無い、React の仕様）。
   `src/ui/plugins/PluginErrorBoundary.tsx` が持つ状態は `failed` 1つだけで、手順は持たない。リボンの項目・ステータスの項目・ダイアログごとに置き、ダイアログの中身が投げたらダイアログごと閉じる
 - **エラーの行き先**: `errors.report(source, error)` は既存の `reportError("<source>: <本文>", "tool")` に流れる（ErrorDialog の見出しは「点群ツール」）。新しいバナーは作らない
+
+## 改訂（PL-1、2026-11-21）: 視点を `pcv.view` に移すために足した口
+
+PL-1 で視点（TP-1）を組み込みプラグイン `pcv.view`（`src/plugins/view/`）に移したとき、上の「改訂（PL-0）」の形に次を足した。本文と PL-0 の改訂は書き換えない。
+
+- **`DialogSpec.onClose`（閉じたことの通知、PL-0 の N-7）**: ホストが閉じたとき（Esc・枠の外のクリック・フッターの閉じるボタン、中身が投げてホストが閉じたとき）に、ちょうど1度呼ぶ。
+  プラグインが自分で `handle.close()` したときと、プラグインを止めるとき（`deactivate`）は呼ばない（閉じたことをプラグインが知っている、またはプラグインがもう居ないため）。
+  `onClose` が投げたら `errors.report(プラグインの id, error)` に流し、ダイアログは閉じたままにする。使い手は `pcv.view`（ダイアログが開いているかを Model に持ち、リボンを2度押しても2つ開かない）

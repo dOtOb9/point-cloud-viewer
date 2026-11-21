@@ -99,8 +99,16 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
     });
   }
 
+  function removeDialog(key: number): Registered<DialogSpec> | undefined {
+    const entry = store.get().dialogs.find((d) => d.key === key);
+    if (entry) change((s) => ({ ...s, dialogs: s.dialogs.filter((d) => d.key !== key) }));
+    return entry;
+  }
+
   function closeDialog(key: number): void {
-    change((s) => (s.dialogs.some((d) => d.key === key) ? { ...s, dialogs: s.dialogs.filter((d) => d.key !== key) } : s));
+    const entry = removeDialog(key);
+    const onClose = entry?.item.onClose;
+    if (entry && onClose) runReported(entry.pluginId, () => onClose.call(entry.item));
   }
 
   function addShortcut(pluginId: string, shortcut: Shortcut): void {
@@ -122,7 +130,7 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
       dialogs: {
         open(dialog) {
           const key = register("dialogs", pluginId, dialog);
-          return { close: () => closeDialog(key) };
+          return { close: () => void removeDialog(key) };
         },
       },
       status: { add: (item) => void register("status", pluginId, item) },
