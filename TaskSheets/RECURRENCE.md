@@ -213,12 +213,13 @@ PF-0 は 4 ラウンドかかった。指摘は 3 つの根本原因に集まる
 - F-3（nit）: 直さない（上の「限界」のとおり、`viewContext` はメインが構成の負債として扱う）
 - 残る限界: 最上位のブロック（`{ let x; }`）の中の `let`、`store["createStore"]` の形は見ない（書く理由の無い形で、手間に見合わないため）
 
-## CM-F2（2026-11-21、監査: R1 で APPROVE、再発防止: RP R1）
+## CM-F2（2026-11-21、監査: R1・R2 で APPROVE、再発防止: RP R1 で APPROVE、RP R2）
 
 | 指摘 | 重さ | 根本原因 | 防ぐ仕組み（種類: テスト / lint / CI / スクリプト / 決まり / 注意） | 置いた場所・コミット |
 |---|---|---|---|---|
 | R1 F-1 `check:wasm-paths` が利用者名を大文字・小文字を問わず語の中のどこでも探したので、よくある利用者名（root・node・build・data など）が wasm の普通の文字列に当たり、コンテナや別の PC で走らせると、パスが無いのに落ちる | should | 環境から読む値（`os.userInfo().username`）を使う検査を、今の PC（Masa1）と CI（runner）の名前でしか確かめなかった。「名前が wasm に現れない」ことは、その 2 つの名前でしか成り立っていなかった | テスト: `scripts/check-wasm-paths.test.mjs` の "passes when the check runs as a user named %s"。コミットした wasm に、よくある利用者名 24 個（監査の 10 個に、runner・admin・ubuntu・vscode・docker・jenkins・github・cargo・rust・wasm・src・lib・core・std を足した）で検査をかけ、どれも当たらないことを確かめる。決まり: AGENTS.md の作業役の決まりに「環境から読む値を使う検査・コードは、ありそうな別の値でもテストする」を足した | 直し: f37bacf（監査役の赤のテストを含む）。仕組み: 8d067b3、AGENTS.md はこの節と同じコミット |
 | R1 F-2 `build-wasm.mjs` の `--help` に「and is the same from any folder」が残った（測って成り立たないと分かり、AC-1 から外した性質） | should | 止まって報告する前に書いた `--help` の文を、メインが AC を直した（54ac58c）後に読み返さなかった。作業の再開を「報告に書いた次の手順」から始め、それより前に書いた物を AC の変更と突き合わせなかった | 決まり: AGENTS.md の作業役の決まりに「AC が途中で直ったら、外した・変えた性質の語で自分の差分を grep し、語と件数を作業報告に書く」を足した。機械の検査にしない理由: 「外した性質」を表す語は AC ごとに違い（今回は "same"・"同じ wasm"・"reproducible"）、どの語を探すかを機械は決められない。差分の grep は作業役が語を選べば 1 行で済む | 直し: a1be9e3。決まり: この節と同じコミット |
+| R2 F-3 `startsInsideRemappedRoot` が、付け替えた根の名前（`/pcv/`・`/cargo/`・`/rustc/`・`/rust/deps/`）がパスの途中にあるだけでも例外にしたので、付け替えていないパス（`/mnt/pcv/someone/…`）の利用者名のフォルダを見逃した | should | F-1 の裏返し。誤って落ちる側（よくある利用者名 24 個）を直すために例外を足したとき、その例外のせいで見逃す側（根の名前が途中に出る、付け替えていないパス）を考えず、テストも誤って落ちる側にしか置かなかった | テスト: 監査役の赤のテスト `audit CM-F2 R2 red`（根の名前 4 つが途中のフォルダにあるパスで、利用者名のフォルダを捕まえる）。決まり: AGENTS.md の「環境から読む値」の行に「誤って落ちるのを避ける例外を足したら、その例外のせいで見逃す側のテストも置く」を足した。直す前のコード（`git show 8d067b3:scripts/check-wasm-paths.mjs`）に一時的に戻すと、このテストが 4 件落ちることを確かめてから戻した | 直し: b84d8d7。決まり: この行と同じコミット |
 
 - 確かめたこと（F-1 の仕組み）: `scripts/check-wasm-paths.mjs` を R1 の形（`git show e4819e2:scripts/check-wasm-paths.mjs`）に一時的に戻し、`npx vitest run scripts/check-wasm-paths.test.mjs -t "committed wasm"` が 24 件中 17 件で落ちる（root・user・dev・ken・test・build・app・data・node・pcv・cargo・rust・wasm・src・lib・core・std）ことを見てから戻した。
   f37bacf の形（フォルダ名として探すが、付け替えた根の中も見る）でも src・lib・core・std・rust の 5 件で落ち、この仕組みを足したときに見つかった（`/pcvendorlazsrc…`、`/rustc/<hash>/library/std/…`、`/rust/deps/…`）。8d067b3 で、付け替えた根と Rust の配布物が付け替えた根（`/rustc/`・`/rust/deps/`）より後ろの利用者名のフォルダは見ないようにした
