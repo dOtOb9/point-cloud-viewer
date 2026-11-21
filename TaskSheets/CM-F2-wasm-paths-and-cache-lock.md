@@ -41,3 +41,72 @@
 ## 記録
 
 （作業役が足す）
+
+### 実装の記録 R1（2026-11-21、作業役）
+
+コミット: `e4819e2`（F2）、`f28726d`（F10）、`710f528`（F9）。
+
+#### F2（AC-1・AC-2）
+
+- `scripts/build-wasm.mjs`（`npm run build:wasm`）: 作業フォルダ・`CARGO_HOME`（無ければ `~/.cargo`）・`rustc --print sysroot` を `--remap-path-prefix` で `/pcv`・`/cargo`・`/rustc-sysroot` に付け替えて `cargo build --release` し、`wasm-bindgen` を走らせる。
+  フラグは `CARGO_ENCODED_RUSTFLAGS` で渡す（空白を含むパスでも割れないため）。Windows のパスはドライブ名の大文字・小文字と `\`・`/` の 4 通りを渡す（`npm` から走らせると作業フォルダが `c:\` の小文字で来ることがあった）。`CARGO_TARGET_DIR` に従う（前の `build:wasm` は `crates/pcv-wasm/target` を決め打ちしていた）
+- `pages.yml` は `cargo build` と `wasm-bindgen` を直に書いていたのを `npm run build:wasm` にし、続けて Pages に出す wasm を `npm run check:wasm-paths` で見る（setup-node を前に動かした。どちらも node の組み込みだけを使うので `npm ci` の前でよい）
+- `scripts/check-wasm-paths.mjs`（`npm run check:wasm-paths`）: 前の文字が英字でないドライブ名のパス（`http://` の末尾は数えない）・`/home/…`・`/Users/…`・`.cargo`・`.rustup`・検査を走らせた利用者の名前（`os.userInfo()`。3 文字以上のとき）を探し、あれば落ちる。名前は書かず、走らせた PC の利用者名を使う（私的な名前をリポジトリに書かないため）。
+  `check:all`・`ci.yml` の frontend（コミットした wasm）・`pages.yml`（作った wasm）で走る
+- 再現できるビルドは求めない（上の「メインの決定」）。同じフォルダ・同じ共有の target で作り直すと同じ sha256 だった（`b570a9d42de071031d7311a580f0cb9968aac8b31dc7b7a0a2ebb8e02327c441`、2 回）
+
+確かめたこと（コミットした wasm、`e4819e2`）:
+
+| 見たもの | 件数 | コマンド |
+|---|---|---|
+| `Masa1`・`.rustup`・`.cargo`・`/Users/`・`/home/` | 各 0 | `grep -aoF "<語>" src/wasm/pcv-wasm/pcv_wasm_bg.wasm \| wc -l` |
+| 前の文字が英字でないドライブ名のパス | 0 | `LC_ALL=C.UTF-8 grep -aoP "(?<![A-Za-z])[A-Za-z]:[\\\\/][A-Za-z0-9_./\\\\-]{3,60}" … \| wc -l` |
+| （参考）元のシートの grep の形 | 4 | 4 件とも `http://` の末尾（`p://laszip.orgCOPC`・`p://www.landxml.org/…`・`p://www.w3.org/…` 2 件） |
+| `npm run check:wasm-paths` | OK | 終了コード 0 |
+| 前の wasm（`git show e0ff21b:src/wasm/pcv-wasm/pcv_wasm_bg.wasm`）に同じ検査 | 59 件で落ちる | `node scripts/check-wasm-paths.mjs <前の wasm>` が終了コード 1 |
+
+- 付け替えた後の wasm に残る形: `/cargo\registry\src\…` 40、`/rustc-sysroot\lib/rustlib\…` 28、`/pcv\vendor\laz\…` 20、`/pcv\crates\pcv-core\…` 11、`/pcv\vendor\copc-writer\…` 6（パニックの場所の文字列）
+- CI の Linux で作る wasm: 付け替えは `CARGO_HOME`・sysroot・作業フォルダを実行時に読むので、`/home/runner/.cargo`・`/home/runner/.rustup/toolchains/…`・`/home/runner/work/…` も付け替わる見込み（推定、CI では未実行）。
+  付け替えが漏れても `pages.yml` の検査が `/home/…`・`.cargo`・`.rustup`・利用者名（`runner`）で落ちる。この 3 つの形の文字列で落ちることは `scripts/check-wasm-paths.test.mjs` の "finds the paths of a Linux CI build under /home/runner" で固定した。今の wasm に `runner` の語は 0 件（`grep -aic runner`）で、利用者名の検査が誤って落ちることは無い
+- wasm が動くこと: `PCV_E2E_PORT=4391 npx playwright test e2e/web-conversion.spec.ts` → `1 passed`（作り直した wasm を `npm run build` で取り込んだ preview で変換が通る）。
+  vitest には wasm 本体を読むテストが無い（`grep -rln "wasm/pcv-wasm\|pcv_wasm" src e2e` は Worker 2 つと `layer-rules.test.ts` の文字列だけ）。`npx vitest run` は全部通る（下）
+
+テスト: `scripts/check-wasm-paths.test.mjs`（Windows のビルドのパス、`/` と小文字のドライブ名、Linux の CI、macOS の home と home の外の `.cargo`、利用者名、短すぎる利用者名を見ない、`http://`・`https://` を数えない、付け替えた後の形を通す、`remapPathPrefixFlags` の Windows・Linux）
+
+#### F10（AC-4）
+
+- `GpuErrorSource` に `"storage"` を足し、見出しの表を `src/ui/dialogs/ErrorDialog.tsx` から `src/ui/dialogs/error-source-label.ts`（`ERROR_SOURCE_LABEL`）に出して「保存領域のエラー」を足した。表は `Record<GpuErrorSource, string>` なので、種類を足して見出しが無いと型で落ちる
+- 保存領域の削除の失敗は `"storage"` で報告する。テスト: `src/ui/dialogs/error-source-label.test.ts` の "heads a failure of the browser storage as storage, not as a conversion error"・"gives every source its own heading"、`src/app/storage-cleanup.test.ts` の "shows a failure to remove a scratch dir in the error log under the storage heading, not as a conversion error"・"shows a failure to remove a cached conversion in the error log under the storage heading"
+- 使い手を数えた: `grep -rn "GpuErrorSource" src` は 28 行、テスト以外のファイルは 11 個（`open-files.ts`・`point-cloud-tools.ts`・`storage-cleanup.ts`・`section-export.ts`・`section-view.ts`・`core/plugin-host.ts`・`gpu-error-log.ts`・`useErrorLog.ts`・`useLayers.ts`・`useRendererLifecycle.ts`・`error-source-label.ts`）。
+  種類で分かれるのは見出しの表（`ERROR_SOURCE_LABEL`）と、`GpuErrorLog.report` の「直前と同じ本文・同じ種類なら回数を足す」だけ。ほかは種類を受け取って渡すだけなので、種類が 1 つ増えても困る側は無い。`plugin-host.ts`（PL-1 の範囲）は型を通すだけで、触っていない
+
+#### F9（AC-3）
+
+- `src/app/scratch-cleanup.ts` を `src/app/storage-cleanup.ts` にした（一時ファイルと変換済みキャッシュの両方を扱うため名前を替えた）。`removeStorageUnlessConverting(ctx, target)` の `target` は `all-scratch`・`one-scratch`・`all-cached`・`one-cached` の 4 つ。
+  どれも `withConversionLock` の中でだけ消し、取れなければ何も消さず `"busy"` を返して押したボタンをストアに置く。失敗の文は「一時ファイルを消せませんでした: …」「変換済みキャッシュを消せませんでした: …」
+- `useOpfsStorage` の `removeOpfsCachedConversion`・`clearOpfsCachedConversions`（`useCallback` の手順）を消し、文脈 `storageCleanupContext` に消す関数（`clearAllCachedConversions`・`removeCachedConversionEntry`）を入れて組むだけにした。消した 2 つの使い手は `grep -rn` で `StorageDialog.tsx` の 2 か所と配線（`useCopcViewer.ts`・`viewer-types.ts`）だけで、全部付け替えた。`withConversionLock`・`opfs.ts` の消す関数は変えていない
+- `StorageDialog.tsx`: 変換済みキャッシュの「すべて消す」（`data-testid="cached-remove-all"` を足した）は見出しの下、行の「消す」はその行の下に文を出す。`data-testid` の `scratch-cleanup-busy` は `storage-cleanup-busy` にした（使い手は `src`・`e2e`・`scripts` に無い）
+- 文を出すかは `showsBusyNoticeFor(blocked, target, breakdown)`（押したボタンで、かつ対象がまだ一覧にあるとき）。CM-F1 では「対象が無くなった」を画面の条件にだけ書いていたのを、この関数に入れてテストにした
+
+文が消える時とテスト（`src/app/storage-cleanup.test.ts`）:
+
+| 消える時 | テスト |
+|---|---|
+| 次に消せた | "clears the busy notice once a later press removes: $kind"（4 つの target） |
+| 保存領域を開き直した | "forgets the busy notice when the storage page is opened again after the conversion ended: $kind"（4 つ） |
+| 一覧を読み直した（更新） | "forgets the busy notice of a cached conversion row when the list is refreshed" |
+| 対象が一覧から無くなった | "hides the notice once its target is no longer listed: $kind"（4 つ）、"hides the notice of a removed cached row while the other rows stay" |
+
+ほか: "asks for the conversion lock by the same name, only if available: $kind"、"removes nothing and remembers the blocked button when a conversion holds the lock: $kind"、"removes all cached conversions and refreshes when the lock is free"、"removes only the chosen cached conversion when the lock is free"、"releases the lock when removing throws, so a later conversion can take it"、"keeps the busy notice of one viewer out of another viewer"、"shows the notice only next to the button that was blocked"、"matches the blocked row by name or output"
+
+画面で見たこと（Playwright の Chromium（`channel: "chromium"`）。`npx vite --port 5397 --strictPort` を自分で立て、終わってから、コマンドラインに `--port 5397` を含む自分の 2 つのプロセスだけを止めた。台本は作業役の一時フォルダに置き、撮った後に消した）:
+
+- 同じオリジンの 2 つ目のタブで `navigator.locks.request("pcv-web-conversion", …)` を持ったまま、OPFS の `pcv-converted` に `shot-a`・`shot-b` の変換済みキャッシュ（`.copc.laz` と `.meta.json`）を作り、設定 → 保存領域で変換済みの「すべて消す」と `shot-a.las` の行の「消す」を押した
+- 375px・1280px とも、スクリプトの出力は `noticesWhileBusy: 1`、`namesWhileBusy` は 4 つのファイルが全部残る、ロックを離して「更新」で `noticesAfterRefresh: 0`、その後の「すべて消す」で `namesAfter: []`・`noticesAtEnd: 0`
+- 「すべて消す」の文は見出しのすぐ下に、行の「消す」の文はその行（`shot-a.las`）のすぐ下に橙で出る。375px では 2 行に折り返してダイアログの枠の中に収まり、ボタンや行と重ならない（`375-2-remove-all-cached-busy.png`・`375-3-remove-one-cached-busy.png`・`1280-3-remove-one-cached-busy.png` を見た）
+
+確かめていないこと（未確認）:
+
+- 実際の変換が走っている最中に押したとき（上はロックを手で持っただけ）。所有者の確認手順: Web 版で大きな LAS の変換を始め、別のタブで 設定 → 保存領域 → 変換済みの「すべて消す」を押す。押した近くに「変換・ツールの実行中なので消せません。…」が出て、キャッシュが残り、変換が最後まで終わること。終わってからもう一度押すと消えること
+- 消すのに失敗したときの「保存領域のエラー」の見出しは、画面では出していない（失敗させる手段が無いため。テストだけ）
+- CI（Linux）で作った wasm の中身と、`pages.yml`・`ci.yml` の新しい段が CI で通ること（push していないため）
