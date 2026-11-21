@@ -107,6 +107,8 @@
 - **コメントを名前に移すとき、名前は「それが何か」（値の意味・単位）だけにし、「なぜその値か」は名前に入れずタスクシートの「移した理由」の表に書く。** 文の形の名前（`_SO_`・`_FOR_A_`・`_IS_AN_`・`Because`・`_MEASURED_IN_ADR_…` など、理由を接続詞でつないだもの）にしない。例: `MIN_CONCURRENCY_SO_FEW_CORES_DO_NOT_SERIALIZE` でなく `MIN_CONCURRENT_REQUESTS`、`YELLOW_SO_GREEN_TO_RED_IS_NOT_MUDDY` でなく `YELLOW_BETWEEN_GREEN_AND_RED`（CM-1 の監査 F-3・F-7。名前の長さは機械で見ない: CM-1 の時点の `src/` の 5 語以上の名前 49 個のうち文の形は 4 個で、残りは単位や対象を並べた普通の名前だったため）
 - **案内・警告の表示（「〜なので消せません」など、操作の結果を一時的に出す文）を足すときは、「いつ消えるか」を先に決め、消える時ごとにテストを置く。** 少なくとも、画面を閉じて開き直したとき・一覧を読み直したとき・対象が無くなったとき（ボタンが消えたら文も消える）を考える。
   「次に押すまで」だけにしない（CM-F1 の監査 R1 F-1: 変換が終わった後も「実行中なので」が残った）。その状態は `src/app` の生成関数でビューアごとに作る（`src/app` のテスト以外のファイルで、関数の外の `createStore` の呼び出し（`as`・オブジェクトの中・`export default`・名前空間・別名の import を含む）と最上位の `let`・`var` は `npm run lint` が落とす。CM-F1 の F-2）
+- **プラグインのホストに口を足したら、プラグインが終わるとき（`activate` が投げた・`deactivate`・`deactivateAll`）にその口で作った物が片付くことをテストで固定する。** 購読（`subscribe` を持つ口）は `src/core/plugin-host-lifecycle.test.ts` の `SUBSCRIBING_PARTS` に足す（足すまで "covers every part of the host that has subscribe" が落ちる）。`subscribe` 以外の形で外の物に登録する口（タイマー・イベント・Worker など）は、このテストが拾わないので同じ形のケースを自分で足す（PL-1 の監査 R1 F-1: `layers`・`view` の購読が、PL-0 の「止めたら全部消す」の保証から漏れた）
+- **ADR の改訂を書くときは、変えた物の名前（型・関数・ストア・ファイル）で `TaskSheets/ADR-*.md` を grep し、当たった ADR すべてで、改訂を書くか、食い違わないことを確かめる。** 採らなかった案の理由に、確かめていない予想（「〜になる」「道が無い」）を書くなら「推定」と付ける（PL-1 の監査 R1 F-2: 投影をストアに残した判断を ADR-0023 にだけ書き、ADR-0022 の「移行」と食い違った）
 
 ### 作業報告（Worker → Auditor）
 
