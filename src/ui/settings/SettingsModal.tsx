@@ -15,7 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useReducer } from "react";
-import { refreshStorageAndForgetBlockedCleanup } from "../../app/scratch-cleanup";
+import { refreshStorageAndForgetBlockedCleanup } from "../../app/storage-cleanup";
 import type { CopcViewerState } from "../../state/useCopcViewer";
 import type { ThemeState } from "../../state/useTheme";
 import type { UpdateCheckState } from "../../state/useUpdateCheck";
@@ -66,10 +66,10 @@ export function SettingsModal({ open, onClose, theme, update, viewer }: Props) {
     if (open) dispatch({ type: "reset" });
   }, [open]);
 
-  const { scratchCleanupContext } = viewer;
+  const { storageCleanupContext } = viewer;
   useEffect(() => {
-    if (open && page === "storage" && viewer.isBrowser) void refreshStorageAndForgetBlockedCleanup(scratchCleanupContext);
-  }, [open, page, viewer.isBrowser, scratchCleanupContext]);
+    if (open && page === "storage" && viewer.isBrowser) void refreshStorageAndForgetBlockedCleanup(storageCleanupContext);
+  }, [open, page, viewer.isBrowser, storageCleanupContext]);
 
   const back = () => dispatch({ type: "back" });
   const pageProps = (id: SettingsPageId) => ({ open: open && page === id, onBack: back, onClose });

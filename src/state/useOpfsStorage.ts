@@ -8,11 +8,10 @@ import {
   isPersisted,
   removeCachedConversionEntry,
   removeScratchDirByName,
-  type CachedConversionEntry,
   type OpfsUsageBreakdown,
 } from "../datasource/opfs";
 import { isTauriEnvironment } from "../datasource/environment";
-import { createBlockedCleanupStore, type ScratchCleanupContext } from "../app/scratch-cleanup";
+import { createBlockedCleanupStore, type StorageCleanupContext } from "../app/storage-cleanup";
 
 export interface OpfsStorageInfo {
   quotaBytes: number;
@@ -25,12 +24,10 @@ export interface OpfsStorage {
   opfsStorageInfo: OpfsStorageInfo | null;
   refreshOpfsStorageInfo: () => Promise<void>;
   requestOpfsPersistentStorage: () => Promise<void>;
-  removeOpfsCachedConversion: (entry: CachedConversionEntry) => Promise<void>;
-  clearOpfsCachedConversions: () => Promise<void>;
-  scratchCleanupContext: ScratchCleanupContext;
+  storageCleanupContext: StorageCleanupContext;
 }
 
-export function useOpfsStorage(reportError: ScratchCleanupContext["reportError"]): OpfsStorage {
+export function useOpfsStorage(reportError: StorageCleanupContext["reportError"]): OpfsStorage {
   const [opfsStorageInfo, setOpfsStorageInfo] = useState<OpfsStorageInfo | null>(null);
 
   const refreshOpfsStorageInfo = useCallback(async () => {
@@ -58,25 +55,14 @@ export function useOpfsStorage(reportError: ScratchCleanupContext["reportError"]
     await refreshOpfsStorageInfo();
   }, [refreshOpfsStorageInfo]);
 
-  const removeOpfsCachedConversion = useCallback(
-    async (entry: CachedConversionEntry) => {
-      await removeCachedConversionEntry(entry);
-      await refreshOpfsStorageInfo();
-    },
-    [refreshOpfsStorageInfo],
-  );
-
-  const clearOpfsCachedConversions = useCallback(async () => {
-    await clearAllCachedConversions();
-    await refreshOpfsStorageInfo();
-  }, [refreshOpfsStorageInfo]);
-
   const [blockedByConversion] = useState(createBlockedCleanupStore);
-  const scratchCleanupContext = useMemo<ScratchCleanupContext>(
+  const storageCleanupContext = useMemo<StorageCleanupContext>(
     () => ({
       lockManager: navigator.locks,
       removeAllScratchDirs: cleanupStaleScratchDirs,
       removeScratchDir: removeScratchDirByName,
+      removeAllCachedConversions: clearAllCachedConversions,
+      removeCachedConversion: removeCachedConversionEntry,
       refreshStorageInfo: refreshOpfsStorageInfo,
       reportError,
       blockedByConversion,
@@ -88,8 +74,6 @@ export function useOpfsStorage(reportError: ScratchCleanupContext["reportError"]
     opfsStorageInfo,
     refreshOpfsStorageInfo,
     requestOpfsPersistentStorage,
-    removeOpfsCachedConversion,
-    clearOpfsCachedConversions,
-    scratchCleanupContext,
+    storageCleanupContext,
   };
 }
