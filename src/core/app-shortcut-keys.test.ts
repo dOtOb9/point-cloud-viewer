@@ -113,7 +113,7 @@ describe("keys the app already uses are not given to plugins", () => {
     const reported: string[] = [];
     const host = createPluginHost({ reportError: (message) => reported.push(message) });
     const run = vi.fn();
-    host.activate([{ id: "a", name: "a", apiVersion: 1, activate: (h) => h.shortcuts.add({ key, label: key, kind: "harmless", run }) }]);
+    host.activate([{ id: "a", name: "a", apiVersion: 1, activate: (h) => void h.shortcuts.add({ key, label: key, kind: "harmless", run }) }]);
     expect(host.getState().shortcuts).toEqual([]);
     expect(reported).toHaveLength(1);
     expect(reported[0]).toMatch(/^a: /);

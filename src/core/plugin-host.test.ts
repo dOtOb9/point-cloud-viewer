@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PcvPlugin, PluginHost } from "../plugin-api";
-import { createPluginHost, pluginErrorMessage, type ShortcutKeyEvent } from "./plugin-host";
+import type { PcvPlugin, PluginHost, RibbonHandle, ShortcutHandle } from "../plugin-api";
+import { createPluginHost, isEnabled, pluginErrorMessage, ribbonInGroup, type ShortcutKeyEvent } from "./plugin-host";
 
 function fakePlugin(id: string, activate: (host: PluginHost) => void | (() => void)): PcvPlugin {
   return { id, name: id, apiVersion: 1, activate };
@@ -37,7 +37,7 @@ describe("plugin host: activation", () => {
     host.activate([
       fakePlugin("a", (h) => {
         order.push("a");
-        h.ribbon.add({ label: "A", icon, onClick: () => {} });
+        h.ribbon.add({ group: "view", label: "A", icon, onClick: () => {} });
       }),
       fakePlugin("b", (h) => {
         order.push("b");
@@ -53,11 +53,11 @@ describe("plugin host: activation", () => {
     const { host, reported } = makeHost();
     host.activate([
       fakePlugin("broken", (h) => {
-        h.ribbon.add({ label: "half", icon, onClick: () => {} });
+        h.ribbon.add({ group: "view", label: "half", icon, onClick: () => {} });
         h.shortcuts.add({ key: "x", label: "x", kind: "harmless", run: () => {} });
         throw new Error("activate failed");
       }),
-      fakePlugin("fine", (h) => h.ribbon.add({ label: "ok", icon, onClick: () => {} })),
+      fakePlugin("fine", (h) => void h.ribbon.add({ group: "view", label: "ok", icon, onClick: () => {} })),
     ]);
     expect(host.getState().ribbon.map((r) => r.item.label)).toEqual(["ok"]);
     expect(host.getState().shortcuts).toEqual([]);
@@ -73,7 +73,7 @@ describe("plugin host: activation", () => {
         throw new Error("no");
       }),
     ]);
-    saved!.ribbon.add({ label: "late", icon, onClick: () => {} });
+    saved!.ribbon.add({ group: "view", label: "late", icon, onClick: () => {} });
     expect(host.getState().ribbon).toEqual([]);
   });
 
@@ -90,7 +90,7 @@ describe("plugin host: activation", () => {
   it("keeps the first plugin of an id and reports the second", () => {
     const { host, reported } = makeHost();
     const second = vi.fn();
-    host.activate([fakePlugin("same", (h) => h.ribbon.add({ label: "first", icon, onClick: () => {} })), fakePlugin("same", second)]);
+    host.activate([fakePlugin("same", (h) => void h.ribbon.add({ group: "view", label: "first", icon, onClick: () => {} })), fakePlugin("same", second)]);
     expect(second).not.toHaveBeenCalled();
     expect(host.getState().ribbon.map((r) => r.item.label)).toEqual(["first"]);
     expect(reported).toHaveLength(1);
@@ -104,13 +104,13 @@ describe("plugin host: cleanup", () => {
     const cleanup = vi.fn();
     host.activate([
       fakePlugin("a", (h) => {
-        h.ribbon.add({ label: "A", icon, onClick: () => {} });
+        h.ribbon.add({ group: "view", label: "A", icon, onClick: () => {} });
         h.status.add({ render: () => "a" });
         h.shortcuts.add({ key: "a", label: "a", kind: "harmless", run: () => {} });
         h.dialogs.open({ title: "A", render: () => "a" });
         return cleanup;
       }),
-      fakePlugin("b", (h) => h.ribbon.add({ label: "B", icon, onClick: () => {} })),
+      fakePlugin("b", (h) => void h.ribbon.add({ group: "view", label: "B", icon, onClick: () => {} })),
     ]);
     host.deactivate("a");
     expect(cleanup).toHaveBeenCalledTimes(1);
@@ -123,7 +123,7 @@ describe("plugin host: cleanup", () => {
 
   it("deactivates a plugin without a cleanup function too", () => {
     const { host } = makeHost();
-    host.activate([fakePlugin("a", (h) => h.ribbon.add({ label: "A", icon, onClick: () => {} }))]);
+    host.activate([fakePlugin("a", (h) => void h.ribbon.add({ group: "view", label: "A", icon, onClick: () => {} }))]);
     host.deactivate("a");
     expect(host.getState().ribbon).toEqual([]);
   });
@@ -132,7 +132,7 @@ describe("plugin host: cleanup", () => {
     const { host, reported } = makeHost();
     host.activate([
       fakePlugin("a", (h) => {
-        h.ribbon.add({ label: "A", icon, onClick: () => {} });
+        h.ribbon.add({ group: "view", label: "A", icon, onClick: () => {} });
         return () => {
           throw new Error("cleanup failed");
         };
@@ -145,7 +145,7 @@ describe("plugin host: cleanup", () => {
 
   it("deactivateAll lets the same plugins be activated again (React StrictMode runs effects twice)", () => {
     const { host, reported } = makeHost();
-    const plugins = [fakePlugin("a", (h) => h.ribbon.add({ label: "A", icon, onClick: () => {} }))];
+    const plugins = [fakePlugin("a", (h) => void h.ribbon.add({ group: "view", label: "A", icon, onClick: () => {} }))];
     host.activate(plugins);
     host.deactivateAll();
     host.activate(plugins);
@@ -160,8 +160,8 @@ describe("plugin host: shortcuts", () => {
     const first = vi.fn();
     const second = vi.fn();
     host.activate([
-      fakePlugin("a", (h) => h.shortcuts.add({ key: "K", label: "fit", kind: "harmless", run: first })),
-      fakePlugin("b", (h) => h.shortcuts.add({ key: "k", label: "other", kind: "harmless", run: second })),
+      fakePlugin("a", (h) => void h.shortcuts.add({ key: "K", label: "fit", kind: "harmless", run: first })),
+      fakePlugin("b", (h) => void h.shortcuts.add({ key: "k", label: "other", kind: "harmless", run: second })),
     ]);
     expect(host.getState().shortcuts.map((s) => s.pluginId)).toEqual(["a"]);
     expect(reported).toHaveLength(1);
@@ -174,7 +174,7 @@ describe("plugin host: shortcuts", () => {
   it("runs a harmless shortcut on a checkbox but not in a text input", () => {
     const { host } = makeHost();
     const run = vi.fn();
-    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "8", label: "top", kind: "harmless", run }))]);
+    host.activate([fakePlugin("a", (h) => void h.shortcuts.add({ key: "8", label: "top", kind: "harmless", run }))]);
     host.handleKeyDown(keyEvent("8", { tagName: "INPUT", type: "text" }));
     expect(run).not.toHaveBeenCalled();
     const onCheckbox = keyEvent("8", { tagName: "INPUT", type: "checkbox" });
@@ -186,7 +186,7 @@ describe("plugin host: shortcuts", () => {
   it("does not run an irreversible shortcut on any form control, a checkbox included", () => {
     const { host } = makeHost();
     const run = vi.fn();
-    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "Backspace", label: "delete", kind: "irreversible", run }))]);
+    host.activate([fakePlugin("a", (h) => void h.shortcuts.add({ key: "Backspace", label: "delete", kind: "irreversible", run }))]);
     const onCheckbox = keyEvent("Backspace", { tagName: "INPUT", type: "checkbox" });
     host.handleKeyDown(onCheckbox);
     host.handleKeyDown(keyEvent("Backspace", { tagName: "SELECT" }));
@@ -199,7 +199,7 @@ describe("plugin host: shortcuts", () => {
   it("ignores keys pressed with Ctrl, Meta or Alt, repeats and composition", () => {
     const { host } = makeHost();
     const run = vi.fn();
-    host.activate([fakePlugin("a", (h) => h.shortcuts.add({ key: "k", label: "fit", kind: "harmless", run }))]);
+    host.activate([fakePlugin("a", (h) => void h.shortcuts.add({ key: "k", label: "fit", kind: "harmless", run }))]);
     host.handleKeyDown(keyEvent("k", null, { ctrlKey: true }));
     host.handleKeyDown(keyEvent("k", null, { metaKey: true }));
     host.handleKeyDown(keyEvent("k", null, { altKey: true }));
@@ -212,7 +212,7 @@ describe("plugin host: shortcuts", () => {
     const { host, reported } = makeHost();
     host.activate([
       fakePlugin("a", (h) =>
-        h.shortcuts.add({
+        void h.shortcuts.add({
           key: "g",
           label: "g",
           kind: "harmless",
@@ -225,6 +225,75 @@ describe("plugin host: shortcuts", () => {
     expect(() => host.handleKeyDown(keyEvent("g"))).not.toThrow();
     expect(reported).toEqual(["a: run failed"]);
   });
+
+  it("neither runs nor takes the key of a disabled shortcut, and follows setEnabled", () => {
+    const { host } = makeHost();
+    const run = vi.fn();
+    let handle: ShortcutHandle | null = null;
+    host.activate([fakePlugin("a", (h) => void (handle = h.shortcuts.add({ key: "k", label: "k", kind: "harmless", enabled: false, run })))]);
+    const off = keyEvent("k");
+    host.handleKeyDown(off);
+    expect(run).not.toHaveBeenCalled();
+    expect(off.prevented).toBe(false);
+    handle!.setEnabled(true);
+    const on = keyEvent("k");
+    host.handleKeyDown(on);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(on.prevented).toBe(true);
+    handle!.setEnabled(false);
+    host.handleKeyDown(keyEvent("k"));
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a refused shortcut a handle that does nothing", () => {
+    const { host } = makeHost();
+    let handle: ShortcutHandle | null = null;
+    host.activate([
+      fakePlugin("a", (h) => void h.shortcuts.add({ key: "k", label: "k", kind: "harmless", run: () => {} })),
+      fakePlugin("b", (h) => void (handle = h.shortcuts.add({ key: "k", label: "k", kind: "harmless", enabled: false, run: () => {} }))),
+    ]);
+    const before = host.getState();
+    handle!.setEnabled(true);
+    expect(host.getState()).toBe(before);
+  });
+});
+
+describe("plugin host: ribbon enabled and groups", () => {
+  it("keeps a ribbon item disabled until setEnabled(true), without registering it again", () => {
+    const { host } = makeHost();
+    const onClick = vi.fn();
+    let handle: RibbonHandle | null = null;
+    host.activate([fakePlugin("a", (h) => void (handle = h.ribbon.add({ group: "view", label: "A", icon, enabled: false, onClick })))]);
+    const key = host.getState().ribbon[0].key;
+    expect(isEnabled(host.getState().ribbon[0].item)).toBe(false);
+    host.clickRibbonItem(host.getState().ribbon[0]);
+    expect(onClick).not.toHaveBeenCalled();
+    handle!.setEnabled(true);
+    expect(host.getState().ribbon.map((e) => [e.key, isEnabled(e.item)])).toEqual([[key, true]]);
+    host.clickRibbonItem(host.getState().ribbon[0]);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify when setEnabled does not change anything", () => {
+    const { host } = makeHost();
+    let handle: RibbonHandle | null = null;
+    host.activate([fakePlugin("a", (h) => void (handle = h.ribbon.add({ group: "view", label: "A", icon, onClick: () => {} })))]);
+    const listener = vi.fn();
+    host.subscribe(listener);
+    handle!.setEnabled(true);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("lists the ribbon items of a group in the order they were added", () => {
+    const { host } = makeHost();
+    host.activate([
+      fakePlugin("a", (h) => {
+        h.ribbon.add({ group: "view", label: "A1", icon, onClick: () => {} });
+        h.ribbon.add({ group: "view", label: "A2", icon, onClick: () => {} });
+      }),
+    ]);
+    expect(ribbonInGroup(host.getState().ribbon, "view").map((e) => e.item.label)).toEqual(["A1", "A2"]);
+  });
 });
 
 describe("plugin host: ribbon, dialogs, errors and programs", () => {
@@ -232,7 +301,8 @@ describe("plugin host: ribbon, dialogs, errors and programs", () => {
     const { host, reported } = makeHost();
     host.activate([
       fakePlugin("a", (h) =>
-        h.ribbon.add({
+        void h.ribbon.add({
+          group: "view",
           label: "A",
           icon,
           onClick: () => {

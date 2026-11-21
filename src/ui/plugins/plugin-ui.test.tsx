@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Circle } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PcvPlugin, PluginHost } from "../../plugin-api";
+import type { PcvPlugin, PluginHost, RibbonHandle } from "../../plugin-api";
 import { createPluginHost, type PluginHostCore, type PluginHostState } from "../../core/plugin-host";
 import { PluginDialogs } from "./PluginDialogs";
 import { PluginRibbonItems } from "./PluginRibbonItems";
@@ -24,7 +24,7 @@ function Shell({ plugins, reportError }: { plugins: readonly PcvPlugin[]; report
   return (
     <div>
       <div data-testid="ribbon-slot">
-        <PluginRibbonItems host={host} />
+        <PluginRibbonItems host={host} group="view" />
       </div>
       <div data-testid="status-slot">
         <PluginStatusItems host={host} />
@@ -62,6 +62,7 @@ function buttonLabelled(label: string): HTMLButtonElement | undefined {
 
 const dialogPlugin = fakePlugin("demo.dialog", (host) => {
   host.ribbon.add({
+    group: "view",
     label: "デモ",
     icon: Circle,
     onClick: () => {
@@ -125,6 +126,7 @@ describe("plugin UI", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const throwing = fakePlugin("demo.throwing-dialog", (host) => {
       host.ribbon.add({
+        group: "view",
         label: "壊れた",
         icon: Circle,
         onClick: () => {
@@ -147,6 +149,7 @@ describe("plugin UI", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const throwing = fakePlugin("demo.throwing-dialog", (host) => {
       host.ribbon.add({
+        group: "view",
         label: "壊れた",
         icon: Circle,
         onClick: () => {
@@ -166,7 +169,7 @@ describe("plugin UI", () => {
 
   it("passes window keydown to the host once, so a plugin shortcut runs", () => {
     const run = vi.fn();
-    mount([fakePlugin("demo.key", (host) => host.shortcuts.add({ key: "q", label: "q", kind: "harmless", run }))]);
+    mount([fakePlugin("demo.key", (host) => void host.shortcuts.add({ key: "q", label: "q", kind: "harmless", run }))]);
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "q", bubbles: true, cancelable: true }));
     });
@@ -179,6 +182,34 @@ describe("plugin UI", () => {
     act(() => root!.unmount());
     root = null;
     expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("grays out a disabled ribbon button with its disabled title, and enables the same button in place", () => {
+    let handle: RibbonHandle | null = null;
+    const onClick = vi.fn();
+    mount([
+      fakePlugin("demo.enabled", (host) => {
+        handle = host.ribbon.add({
+          group: "view",
+          label: "切替",
+          icon: Circle,
+          title: "押せる",
+          disabledTitle: "まだ押せない",
+          enabled: false,
+          testId: "demo-button",
+          onClick,
+        });
+      }),
+    ]);
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="demo-button"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe("まだ押せない");
+    act(() => handle!.setEnabled(true));
+    expect(document.querySelector('[data-testid="demo-button"]')).toBe(button);
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe("押せる");
+    act(() => button.click());
+    expect(onClick).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -224,7 +255,7 @@ function throwingRender(): never {
 }
 
 const THROWING_UI_BY_PLACE: Record<Exclude<keyof PluginHostState, "shortcuts">, (host: PluginHost) => void> = {
-  ribbon: (host) => host.ribbon.add({ label: "壊れたアイコン", icon: throwingRender, onClick: () => {} }),
+  ribbon: (host) => void host.ribbon.add({ group: "view", label: "壊れたアイコン", icon: throwingRender, onClick: () => {} }),
   status: (host) => host.status.add({ render: throwingRender }),
   dialogs: (host) => void host.dialogs.open({ title: "壊れたダイアログ", render: throwingRender }),
 };

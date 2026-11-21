@@ -153,3 +153,7 @@ PL-1 で視点（TP-1）を組み込みプラグイン `pcv.view`（`src/plugins
 - **`DialogSpec.onClose`（閉じたことの通知、PL-0 の N-7）**: ホストが閉じたとき（Esc・枠の外のクリック・フッターの閉じるボタン、中身が投げてホストが閉じたとき）に、ちょうど1度呼ぶ。
   プラグインが自分で `handle.close()` したときと、プラグインを止めるとき（`deactivate`）は呼ばない（閉じたことをプラグインが知っている、またはプラグインがもう居ないため）。
   `onClose` が投げたら `errors.report(プラグインの id, error)` に流し、ダイアログは閉じたままにする。使い手は `pcv.view`（ダイアログが開いているかを Model に持ち、リボンを2度押しても2つ開かない）
+- **リボンの `group`・`enabled`・`disabledTitle`・`testId` と、`ribbon.add` が返す `RibbonHandle { setEnabled }`**（PL-0 の改訂で PL-1 に先送りした物）: `group` は置く場所で、今は `"view"`（「開く」の区切りの後、計測の区切りの前）だけ（使い手のいない場所は足さない。PL-3 以降で足す）。
+  `enabled: false` のボタンはグレーアウトし、ツールチップは `disabledTitle`。`setEnabled` で、登録し直さずに（同じボタンのまま）押せる／押せないを変える。押せないボタンの `onClick` はホストが呼ばない。
+  `enabled` を「条件の関数」にしてホストが毎回呼ぶ案は、いつ呼び直すか（何が変わったら描き直すか）をホストが知りようがないので採らなかった。プラグインは自分の Model の変化で `setEnabled` を呼ぶ
+- **`Shortcut.enabled` と、`shortcuts.add` が返す `ShortcutHandle { setEnabled }`**: 押せないショートカットは、走らせず、キーも取らない（`preventDefault` しない）。TP-1 の「点群が無いとき視点のキーは何もせず、キーも取らない」をそのまま移すため。断った登録（アプリのキー・他のプラグインのキー）には何もしない handle を返す

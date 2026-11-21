@@ -1,7 +1,18 @@
 import { createStore } from "../app/store";
 import { createProgram } from "../app/tea";
 import { isFormControl, isTypingTarget } from "../app/typing-target";
-import { PLUGIN_API_VERSION, type DialogSpec, type PcvPlugin, type PluginHost, type RibbonItem, type Shortcut, type StatusItem } from "../plugin-api";
+import {
+  PLUGIN_API_VERSION,
+  type DialogSpec,
+  type PcvPlugin,
+  type PluginHost,
+  type RibbonGroup,
+  type RibbonHandle,
+  type RibbonItem,
+  type Shortcut,
+  type ShortcutHandle,
+  type StatusItem,
+} from "../plugin-api";
 import type { GpuErrorSource } from "../renderer/gpu-error-log";
 
 export interface Registered<T> {
@@ -48,6 +59,16 @@ export const APP_SHORTCUT_KEYS: readonly string[] = ["F", "1", "2", "3", "4", "5
 
 const NO_REGISTRATIONS: PluginHostState = { ribbon: [], status: [], dialogs: [], shortcuts: [] };
 
+const REFUSED_HANDLE: ShortcutHandle = { setEnabled: () => {} };
+
+export function isEnabled(item: { enabled?: boolean }): boolean {
+  return item.enabled !== false;
+}
+
+export function ribbonInGroup(ribbon: readonly Registered<RibbonItem>[], group: RibbonGroup): readonly Registered<RibbonItem>[] {
+  return ribbon.filter((entry) => entry.item.group === group);
+}
+
 export function pluginErrorMessage(source: string, error: unknown): string {
   const body = error instanceof Error ? error.message : String(error);
   return `${source}: ${body}`;
@@ -86,6 +107,19 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
     return key;
   }
 
+  function setEnabled(list: "ribbon" | "shortcuts", key: number, enabled: boolean): void {
+    change((s) => {
+      const entries: readonly Registered<RibbonItem | Shortcut>[] = s[list];
+      const entry = entries.find((e) => e.key === key);
+      if (!entry || isEnabled(entry.item) === enabled) return s;
+      return { ...s, [list]: entries.map((e) => (e === entry ? { ...e, item: { ...e.item, enabled } } : e)) };
+    });
+  }
+
+  function enabledHandle(list: "ribbon" | "shortcuts", key: number): RibbonHandle & ShortcutHandle {
+    return { setEnabled: (enabled) => setEnabled(list, key, enabled) };
+  }
+
   function removeRegistrations(pluginId: string): void {
     change((s) => {
       const next = {
@@ -111,22 +145,22 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
     if (entry && onClose) runReported(entry.pluginId, () => onClose.call(entry.item));
   }
 
-  function addShortcut(pluginId: string, shortcut: Shortcut): void {
+  function addShortcut(pluginId: string, shortcut: Shortcut): ShortcutHandle {
     if (APP_SHORTCUT_KEYS.some((key) => sameShortcutKey(key, shortcut.key))) {
       report(pluginId, `ショートカット「${shortcut.key}」はアプリが使っているので登録しませんでした`);
-      return;
+      return REFUSED_HANDLE;
     }
     const taken = store.get().shortcuts.find((s) => sameShortcutKey(s.item.key, shortcut.key));
     if (taken) {
       report(pluginId, `ショートカット「${shortcut.key}」は ${taken.pluginId} が使っているので登録しませんでした`);
-      return;
+      return REFUSED_HANDLE;
     }
-    register("shortcuts", pluginId, shortcut);
+    return enabledHandle("shortcuts", register("shortcuts", pluginId, shortcut));
   }
 
   function hostFor(pluginId: string): PluginHost {
     return {
-      ribbon: { add: (item) => void register("ribbon", pluginId, item) },
+      ribbon: { add: (item) => enabledHandle("ribbon", register("ribbon", pluginId, item)) },
       dialogs: {
         open(dialog) {
           const key = register("dialogs", pluginId, dialog);
@@ -199,12 +233,15 @@ export function createPluginHost(deps: PluginHostDeps): PluginHostCore {
       for (const pluginId of [...active.keys()].reverse()) deactivate(pluginId);
     },
     report,
-    clickRibbonItem: (entry) => runReported(entry.pluginId, () => entry.item.onClick()),
+    clickRibbonItem(entry) {
+      if (!isEnabled(entry.item)) return;
+      runReported(entry.pluginId, () => entry.item.onClick());
+    },
     closeDialog,
     handleKeyDown(event) {
       if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.repeat) return;
       const entry = store.get().shortcuts.find((s) => sameShortcutKey(s.item.key, event.key));
-      if (!entry || shortcutBlockedByFocus(entry.item.kind, event.target)) return;
+      if (!entry || !isEnabled(entry.item) || shortcutBlockedByFocus(entry.item.kind, event.target)) return;
       event.preventDefault();
       runReported(entry.pluginId, () => entry.item.run());
     },

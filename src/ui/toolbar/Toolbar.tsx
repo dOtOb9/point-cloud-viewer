@@ -47,7 +47,7 @@ export function Toolbar({ viewer, glassEnabled, onOpenSettings, measure, layerTo
     >
       <OpenFileButton viewer={viewer} />
       <ToolbarSeparator />
-      <PluginRibbonItems host={pluginHost} />
+      <PluginRibbonItems host={pluginHost} group="view" />
       <ViewButton viewer={viewer} onOpen={onOpenView} />
       <ToolbarSeparator />
       <MeasureButton kind="distance" viewer={viewer} measure={measure} />
