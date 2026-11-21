@@ -8,6 +8,7 @@ const USAGE = `usage: node scripts/build-wasm.mjs   (npm run build:wasm)
 Builds crates/pcv-wasm for wasm32-unknown-unknown in release and runs wasm-bindgen into src/wasm/pcv-wasm.
 The absolute paths of this checkout, CARGO_HOME and the rustc sysroot are remapped (--remap-path-prefix),
 so the wasm holds no path of the machine that built it.
+The remap flags go after the flags already in CARGO_ENCODED_RUSTFLAGS or RUSTFLAGS.
 Honors CARGO_TARGET_DIR and CARGO_HOME.`;
 
 const RUSTFLAGS_SEPARATOR = "\x1f";
@@ -36,6 +37,14 @@ export function remapPathPrefixFlags(remaps) {
   return flags;
 }
 
+export function encodedRustflagsWith(flags, env) {
+  const given =
+    env.CARGO_ENCODED_RUSTFLAGS !== undefined && env.CARGO_ENCODED_RUSTFLAGS !== ""
+      ? env.CARGO_ENCODED_RUSTFLAGS.split(RUSTFLAGS_SEPARATOR)
+      : (env.RUSTFLAGS ?? "").split(/\s+/).filter((flag) => flag !== "");
+  return [...given, ...flags].join(RUSTFLAGS_SEPARATOR);
+}
+
 function rustcSysroot() {
   return execFileSync("rustc", ["--print", "sysroot"], { encoding: "utf8" }).trim();
 }
@@ -54,7 +63,7 @@ function main() {
     { from: cargoHome, to: REMAPPED_CARGO_HOME },
     { from: rustcSysroot(), to: REMAPPED_SYSROOT },
   ]);
-  const env = { ...process.env, CARGO_ENCODED_RUSTFLAGS: flags.join(RUSTFLAGS_SEPARATOR) };
+  const env = { ...process.env, CARGO_ENCODED_RUSTFLAGS: encodedRustflagsWith(flags, process.env) };
   delete env.RUSTFLAGS;
   execFileSync(
     "cargo",

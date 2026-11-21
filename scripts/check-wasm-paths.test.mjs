@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { findBuildMachinePaths } from "./check-wasm-paths.mjs";
-import { remapPathPrefixFlags } from "./build-wasm.mjs";
+import { encodedRustflagsWith, remapPathPrefixFlags } from "./build-wasm.mjs";
 
 function bytesOf(...strings) {
   return Buffer.from(["\0\x01", ...strings, "\0"].join("\0\x02"), "latin1");
@@ -85,6 +85,20 @@ describe("build-wasm remapPathPrefixFlags", () => {
       "--remap-path-prefix=c:\\work\\pcv=/pcv",
       "--remap-path-prefix=c:/work/pcv=/pcv",
     ]);
+  });
+
+  it("puts the remap flags after the flags already in CARGO_ENCODED_RUSTFLAGS", () => {
+    expect(encodedRustflagsWith(["--remap"], { CARGO_ENCODED_RUSTFLAGS: "-C\x1ftarget-cpu=mvp" })).toBe(
+      "-C\x1ftarget-cpu=mvp\x1f--remap",
+    );
+  });
+
+  it("puts the remap flags after the flags already in RUSTFLAGS", () => {
+    expect(encodedRustflagsWith(["--remap"], { RUSTFLAGS: " -C  opt-level=s " })).toBe("-C\x1fopt-level=s\x1f--remap");
+  });
+
+  it("passes only the remap flags when no flags are given", () => {
+    expect(encodedRustflagsWith(["--a", "--b"], {})).toBe("--a\x1f--b");
   });
 
   it("remaps a Linux path as given", () => {
