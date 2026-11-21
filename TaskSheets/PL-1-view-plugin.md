@@ -144,3 +144,14 @@
 2. ダイアログの全体・上・正面・背面・左・右・等角、投影のラジオがすぐ効き、今の視点のボタンが強調される。Esc・「閉じる」・枠の外で閉じ、もう一度押すと開く
 3. F・1〜7 のキーが効く（入力欄の中では効かず、ラジオの上では効く）。ステータスバーの「視点: …（…投影）」が変わる（狭い画面では「上・平行」の形）
 4. レイヤーを消して点群を無くすと、「視点」がグレーアウトし（ツールチップ「点群を開くと、視点を変えられる」）、キーが効かない。開き直すとまた押せる
+
+### 実装の記録 R2（作業役、2026-11-21。監査 R1 の指摘への対応）
+
+| 指摘 | 対応 | コミット |
+|---|---|---|
+| F-1 [must] `layers.subscribe`・`view.subscribe` の購読をホストがプラグインごとに覚えておらず、`activate` が投げたプラグインや、cleanup を返さずに止めたプラグインの購読が残る | 直した。`src/core/plugin-host.ts` の `subscribeReported` が購読の解除の関数をプラグインの id ごとの集合に入れ、`dropSubscriptions` を `deactivate` と `activate` の失敗のときに `removeRegistrations` と一緒に呼ぶ。解除の関数は2度目以降は何もしない（ホストが先に外した後にプラグインの cleanup が呼んでも安全）。止まったプラグインの `subscribe` は何も登録しない。監査役の赤のテスト `src/core/plugin-host-subscriptions.test.ts`（2件）を弱めずに一緒にコミットし、`plugin-host.test.ts` に "lets a cleanup call the unsubscribe the host has already run, and a stopped plugin cannot subscribe again"・"keeps the subscriptions of the other plugins when one is deactivated" を足した。R1 の `plugin-host.ts`（`972af47`）に一時的に戻すと、赤のテスト2件と足した1件が落ちることを確かめてから戻した。ADR-0023 の改訂（PL-1）に「購読はプラグインと一緒に終わる」を足した | `9dc0520`、`9ceab09` |
+| F-2 [should] 投影の正本をストアに残した判断が ADR-0023 にしか無く、ADR-0022 の「移行」と食い違う | 直した。ADR-0022 の改訂（PL-1）に1行足した（投影はホストの文脈 `ViewContext.state` に残し、Model は写し。理由は ADR-0023）。ADR-0023 の「投影の正本はビューの文脈」の言い切り（「道がホストに無くなり」）を、採らなかった案2つに書き直した: (1) Model だけに置く案は「レンダラを付けた」ことを知らせる口が別に要る、(2) その口でプラグインが投影を送り直す案は、付けてから送り直すまで投影が既定（透視投影）に戻る。既定は `src/renderer/point-cloud-renderer.ts` の `projectionMode = DEFAULT_PROJECTION_MODE` を開いて確かめた。その間に透視投影で描かれうることは推定（測っていない）と ADR に書いた | `9ceab09` |
+| F-3 [nit] "other keys are ignored" から Escape のケースが抜けた | 直した。`src/ui/plugins/view-plugin.test.tsx` の同じテストに Escape を戻した（`pcv.view` は Escape を登録しないので、キーを取らないことも見る） | `b828d74` |
+| F-4 [nit] `useCopcViewer.ts` に `useEffect(() => syncViewWithStats(…))` が増えた | 直さない（コーディネーターの指示。PL-3 以降で片付ける） | ― |
+
+- メインの決定: `src/renderer/view-presets.ts` の `VIEW_PRESET_LABELS` は残す（視点の名前の二重持ちは、メインが PLAN の後のタスクに起こす）
