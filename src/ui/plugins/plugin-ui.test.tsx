@@ -248,6 +248,33 @@ describe("a plugin is told once when the host closes its dialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(reported).toContain("demo.closing: render failed");
   });
+
+  it("on the footer close button the plugin asked for", () => {
+    const onClose = vi.fn();
+    mount([fakePlugin("demo.footer", (host) => void host.dialogs.open({ title: "フッター", closeButtonLabel: "閉じる", render: () => "中身", onClose }))]);
+    act(() => buttonLabelled("閉じる")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the frame of a plugin dialog", () => {
+  it("has no footer unless the plugin asks for a close button", () => {
+    mount([fakePlugin("demo.plain", (host) => void host.dialogs.open({ title: "なし", render: () => "中身" }))]);
+    expect(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("is narrow when the plugin asks for it, and the normal width otherwise", () => {
+    mount([
+      fakePlugin("demo.widths", (host) => {
+        host.dialogs.open({ title: "狭い", width: "narrow", placement: "side", render: () => "a" });
+        host.dialogs.open({ title: "普通", render: () => "b" });
+      }),
+    ]);
+    const [narrow, normal] = [...document.querySelectorAll('[role="dialog"]')];
+    expect(narrow.className).toContain("max-w-xs");
+    expect(normal.className).toContain("max-w-lg");
+  });
 });
 
 function throwingRender(): never {

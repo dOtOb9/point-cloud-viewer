@@ -157,3 +157,6 @@ PL-1 で視点（TP-1）を組み込みプラグイン `pcv.view`（`src/plugins
   `enabled: false` のボタンはグレーアウトし、ツールチップは `disabledTitle`。`setEnabled` で、登録し直さずに（同じボタンのまま）押せる／押せないを変える。押せないボタンの `onClick` はホストが呼ばない。
   `enabled` を「条件の関数」にしてホストが毎回呼ぶ案は、いつ呼び直すか（何が変わったら描き直すか）をホストが知りようがないので採らなかった。プラグインは自分の Model の変化で `setEnabled` を呼ぶ
 - **`Shortcut.enabled` と、`shortcuts.add` が返す `ShortcutHandle { setEnabled }`**: 押せないショートカットは、走らせず、キーも取らない（`preventDefault` しない）。TP-1 の「点群が無いとき視点のキーは何もせず、キーも取らない」をそのまま移すため。断った登録（アプリのキー・他のプラグインのキー）には何もしない handle を返す
+- **`DialogSpec.width`（`"normal"`・`"narrow"`）と `closeButtonLabel`**: ダイアログの枠の幅と、フッターの閉じるボタン。ホストが既存の `Dialog` の `widthClass`（`normal` は今の既定の `max-w-lg`、`narrow` は視点のダイアログが使っていた `max-w-xs`）と、
+  既存のダイアログと同じ形のボタン（`DIALOG_TERTIARY_BUTTON_CLASS`）で描く。押したら、ホストが閉じたのと同じに `onClose` を呼ぶ。
+  幅をクラス名の文字列で渡す案と、フッターを `ViewNode` で渡す案は、プラグインが `src/ui/dialogs` の見た目の定数を import できない（ADR-0023 の import の決まり）ので、同じ見た目を保つ道が無く採らなかった

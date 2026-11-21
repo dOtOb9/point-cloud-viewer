@@ -28,9 +28,13 @@ export interface StatusItem {
   render(): ViewNode;
 }
 
+export type DialogWidth = "normal" | "narrow";
+
 export interface DialogSpec {
   title: string;
   placement?: "center" | "side";
+  width?: DialogWidth;
+  closeButtonLabel?: string;
   render(): ViewNode;
   onClose?(): void;
 }
