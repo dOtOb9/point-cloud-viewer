@@ -30,18 +30,33 @@ function isRemappedRoot(userName) {
   return REMAPPED_ROOTS.some((root) => root.toLowerCase() === userName.toLowerCase());
 }
 
-function userFolderPatterns(userName) {
+const ROOTS_REMAPPED_BY_RUST_RELEASES = ["rustc", "rust/deps"];
+
+const INSIDE_REMAPPED_ROOT = new RegExp(
+  String.raw`/(?:` + [...REMAPPED_ROOTS, ...ROOTS_REMAPPED_BY_RUST_RELEASES].map(escapeRegExp).join("|") + String.raw`)[\\/]`,
+);
+
+function startsInsideRemappedRoot(path, userFolderStart) {
+  const root = INSIDE_REMAPPED_ROOT.exec(path);
+  return root !== null && root.index <= userFolderStart;
+}
+
+function userFolderPaths(text, userName) {
   if (userName.length < MIN_USER_NAME_LENGTH || isRemappedRoot(userName)) return [];
   const folder = String.raw`[\\/]` + escapeRegExp(userName) + String.raw`[\\/]`;
-  return [new RegExp(PATH_CHARACTER + "{0,30}" + folder + PATH_TAIL, "gi")];
+  const pattern = new RegExp("(" + PATH_CHARACTER + "{0,120})" + folder + PATH_TAIL, "gi");
+  return [...text.matchAll(pattern)]
+    .filter((match) => !startsInsideRemappedRoot(match[0], match[1].length))
+    .map((match) => match[0]);
 }
 
 export function findBuildMachinePaths(bytes, userName = "") {
   const text = Buffer.from(bytes).toString("latin1");
   const found = new Set();
-  for (const pattern of [...BUILD_MACHINE_PATHS, ...userFolderPatterns(userName)]) {
+  for (const pattern of BUILD_MACHINE_PATHS) {
     for (const match of text.matchAll(pattern)) found.add(match[0]);
   }
+  for (const path of userFolderPaths(text, userName)) found.add(path);
   return [...found];
 }
 

@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { findBuildMachinePaths } from "./check-wasm-paths.mjs";
 import { encodedRustflagsWith, remapPathPrefixFlags } from "./build-wasm.mjs";
@@ -43,6 +45,19 @@ describe("check-wasm-paths", () => {
 
   it("finds a folder named after the user running the check in any case", () => {
     expect(findBuildMachinePaths(bytesOf("/srv/SOMEONE/pcv/lib.rs"), "someone")).toEqual(["/srv/SOMEONE/pcv/lib.rs"]);
+  });
+
+  it("does not take a user named like a folder inside a remapped path for a path of the build machine", () => {
+    expect(findBuildMachinePaths(bytesOf("/pcv\\vendor\\laz\\src\\lib.rs"), "src")).toEqual([]);
+    expect(findBuildMachinePaths(bytesOf("/rustc-sysroot\\lib/rustlib/src/rust/library/core/src/lib.rs"), "rust")).toEqual([]);
+    expect(findBuildMachinePaths(bytesOf("/rustc/b940084d7eb6a299/library/std/src/panicking.rs"), "std")).toEqual([]);
+    expect(findBuildMachinePaths(bytesOf("/rust/deps/hashbrown-0.17.1/src/raw.rs"), "src")).toEqual([]);
+    expect(findBuildMachinePaths(bytesOf("/rust/deps/hashbrown-0.17.1/src/raw.rs"), "rust")).toEqual([]);
+    expect(findBuildMachinePaths(bytesOf("/rustc-sysroot\\lib/rustlib/src/lib.rs"), "lib")).toEqual([]);
+  });
+
+  it("still finds the user folder when a remapped root name comes only after it", () => {
+    expect(findBuildMachinePaths(bytesOf("/srv/someone/pcv/x.rs"), "someone")).toEqual(["/srv/someone/pcv/x.rs"]);
   });
 
   it("does not take a user named like a remapped root for a path of the build machine", () => {
@@ -117,5 +132,17 @@ describe("audit CM-F2 R1 red", () => {
 
   it("still finds the user name as a folder of a path outside a home folder", () => {
     expect(findBuildMachinePaths(bytesOf("/srv/build/someone/pcv/vendor/laz/src/lib.rs"), "someone")).not.toEqual([]);
+  });
+});
+
+describe("check-wasm-paths on the committed wasm", () => {
+  const COMMON_USER_NAMES = [
+    "root", "user", "dev", "ken", "test", "build", "app", "data", "node", "pcv", "cargo", "runner",
+    "admin", "ubuntu", "vscode", "docker", "jenkins", "github", "rust", "wasm", "src", "lib", "core", "std",
+  ];
+  const committedWasm = readFileSync(fileURLToPath(new URL("../src/wasm/pcv-wasm/pcv_wasm_bg.wasm", import.meta.url)));
+
+  it.each(COMMON_USER_NAMES)("passes when the check runs as a user named %s", (userName) => {
+    expect(findBuildMachinePaths(committedWasm, userName)).toEqual([]);
   });
 });
