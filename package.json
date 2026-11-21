@@ -13,9 +13,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "build:wasm": "cargo build --manifest-path crates/pcv-wasm/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "check:circular": "madge --circular --extensions ts,tsx src",
     "check:wasm-glue": "git diff --exit-code -- src/wasm/pcv-wasm/pcv_wasm.js src/wasm/pcv-wasm/pcv_wasm.d.ts src/wasm/pcv-wasm/pcv_wasm_bg.wasm.d.ts",
+    "check:wasm-paths": "node scripts/check-wasm-paths.mjs",
     "check:docs": "node scripts/check-doc-paths.mjs && node scripts/check-adr.mjs",
     "check:comments": "node scripts/check-comments.mjs",
     "check:all": "node scripts/check-all.mjs"

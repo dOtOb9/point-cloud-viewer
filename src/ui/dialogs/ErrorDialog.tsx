@@ -2,15 +2,7 @@ import { useState } from "react";
 import type { GpuErrorEntry } from "../../renderer/gpu-error-log";
 import { Dialog } from "./Dialog";
 import { DIALOG_TERTIARY_BUTTON_CLASS } from "./dialog-styles";
-
-const SOURCE_LABEL: Record<GpuErrorEntry["source"], string> = {
-  gpu: "WebGPU エラー",
-  "node-read": "ノード読み出しエラー",
-  conversion: "変換エラー",
-  crs: "座標系の読み取りエラー",
-  tool: "点群ツール",
-  "file-dialog": "ファイル選択ダイアログのエラー",
-};
+import { ERROR_SOURCE_LABEL } from "./error-source-label";
 
 function formatTimestamp(ms: number): string {
   return new Date(ms).toLocaleString();
@@ -26,7 +18,7 @@ interface Item {
 function itemsFrom(entries: GpuErrorEntry[], withTime: boolean): Item[] {
   return entries.map((e) => ({
     key: String(e.id),
-    heading: `${SOURCE_LABEL[e.source]}${e.count > 1 ? `（同じエラーが${e.count}回発生）` : ""}`,
+    heading: `${ERROR_SOURCE_LABEL[e.source]}${e.count > 1 ? `（同じエラーが${e.count}回発生）` : ""}`,
     message: e.message,
     detail: withTime ? `最初: ${formatTimestamp(e.firstAt)} / 最後: ${formatTimestamp(e.lastAt)}` : undefined,
   }));

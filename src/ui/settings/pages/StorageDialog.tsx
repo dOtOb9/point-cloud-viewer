@@ -1,9 +1,10 @@
 import {
-  isBlockedCleanupFor,
   refreshStorageAndForgetBlockedCleanup,
-  removeScratchDirsUnlessConverting,
-  SCRATCH_CLEANUP_BUSY_MESSAGE,
-} from "../../../app/scratch-cleanup";
+  removeStorageUnlessConverting,
+  showsBusyNoticeFor,
+  STORAGE_CLEANUP_BUSY_MESSAGE,
+  type StorageCleanupTarget,
+} from "../../../app/storage-cleanup";
 import type { CopcViewerState } from "../../../state/useCopcViewer";
 import { useStore } from "../../../state/useStore";
 import { SettingsPageDialog, type PageProps } from "../SettingsPageDialog";
@@ -12,17 +13,19 @@ function toGiBLabel(bytes: number): string {
   return `約${(bytes / 1024 ** 3).toFixed(1)}GiB`;
 }
 
-function ScratchCleanupBusyNotice() {
+function StorageCleanupBusyNotice() {
   return (
-    <p role="status" data-testid="scratch-cleanup-busy" className="mt-1 text-secondary">
-      {SCRATCH_CLEANUP_BUSY_MESSAGE}
+    <p role="status" data-testid="storage-cleanup-busy" className="mt-1 text-secondary">
+      {STORAGE_CLEANUP_BUSY_MESSAGE}
     </p>
   );
 }
 
 export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcViewerState }) {
   const info = viewer.opfsStorageInfo;
-  const blockedCleanup = useStore(viewer.scratchCleanupContext.blockedByConversion);
+  const cleanup = viewer.storageCleanupContext;
+  const blockedCleanup = useStore(cleanup.blockedByConversion);
+  const remove = (target: StorageCleanupTarget) => void removeStorageUnlessConverting(cleanup, target);
   return (
     <SettingsPageDialog {...page} title="ブラウザの保存領域" widthClass="max-w-2xl">
       <p className="text-xs opacity-60">
@@ -66,30 +69,37 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
               {info.breakdown.cachedConversions.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => void viewer.clearOpfsCachedConversions()}
+                  onClick={() => remove({ kind: "all-cached" })}
+                  data-testid="cached-remove-all"
                   className="rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-600"
                 >
                   すべて消す
                 </button>
               )}
             </div>
+            {showsBusyNoticeFor(blockedCleanup, { kind: "all-cached" }, info.breakdown) && <StorageCleanupBusyNotice />}
             {info.breakdown.cachedConversions.length === 0 ? (
               <p className="mt-1 opacity-60">無し</p>
             ) : (
               <ul className="mt-1 flex flex-col gap-1">
                 {info.breakdown.cachedConversions.map((entry) => (
-                  <li key={entry.outputName} className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 truncate font-mono" title={entry.sourceName}>
-                      {entry.sourceName}
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap opacity-70">{toGiBLabel(entry.sizeBytes)}</span>
-                    <button
-                      type="button"
-                      onClick={() => void viewer.removeOpfsCachedConversion(entry)}
-                      className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"
-                    >
-                      消す
-                    </button>
+                  <li key={entry.outputName}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 flex-1 truncate font-mono" title={entry.sourceName}>
+                        {entry.sourceName}
+                      </span>
+                      <span className="shrink-0 whitespace-nowrap opacity-70">{toGiBLabel(entry.sizeBytes)}</span>
+                      <button
+                        type="button"
+                        onClick={() => remove({ kind: "one-cached", entry })}
+                        className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"
+                      >
+                        消す
+                      </button>
+                    </div>
+                    {showsBusyNoticeFor(blockedCleanup, { kind: "one-cached", entry }, info.breakdown) && (
+                      <StorageCleanupBusyNotice />
+                    )}
                   </li>
                 ))}
               </ul>
@@ -105,7 +115,7 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
               {info.breakdown.staleScratchDirs.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => void removeScratchDirsUnlessConverting(viewer.scratchCleanupContext, { kind: "all" })}
+                  onClick={() => remove({ kind: "all-scratch" })}
                   data-testid="scratch-remove-all"
                   className="rounded border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-600"
                 >
@@ -113,9 +123,7 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
                 </button>
               )}
             </div>
-            {info.breakdown.staleScratchDirs.length > 0 && isBlockedCleanupFor(blockedCleanup, { kind: "all" }) && (
-              <ScratchCleanupBusyNotice />
-            )}
+            {showsBusyNoticeFor(blockedCleanup, { kind: "all-scratch" }, info.breakdown) && <StorageCleanupBusyNotice />}
             <p className="mt-1 opacity-60">
               タブを閉じる・クラッシュする等で後始末できなかった変換の一時ファイル。使用中の変換のものは
               消せない(失敗しても実害は無い)。
@@ -133,18 +141,15 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
                       <span className="shrink-0 whitespace-nowrap opacity-70">{toGiBLabel(dir.sizeBytes)}</span>
                       <button
                         type="button"
-                        onClick={() =>
-                          void removeScratchDirsUnlessConverting(viewer.scratchCleanupContext, {
-                            kind: "one",
-                            name: dir.name,
-                          })
-                        }
+                        onClick={() => remove({ kind: "one-scratch", name: dir.name })}
                         className="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"
                       >
                         消す
                       </button>
                     </div>
-                    {isBlockedCleanupFor(blockedCleanup, { kind: "one", name: dir.name }) && <ScratchCleanupBusyNotice />}
+                    {showsBusyNoticeFor(blockedCleanup, { kind: "one-scratch", name: dir.name }, info.breakdown) && (
+                      <StorageCleanupBusyNotice />
+                    )}
                   </li>
                 ))}
               </ul>
@@ -153,7 +158,7 @@ export function StorageDialog({ viewer, ...page }: PageProps & { viewer: CopcVie
 
           <button
             type="button"
-            onClick={() => void refreshStorageAndForgetBlockedCleanup(viewer.scratchCleanupContext)}
+            onClick={() => void refreshStorageAndForgetBlockedCleanup(cleanup)}
             className="self-start rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600"
           >
             更新
