@@ -146,3 +146,14 @@ describe("check-wasm-paths on the committed wasm", () => {
     expect(findBuildMachinePaths(committedWasm, userName)).toEqual([]);
   });
 });
+
+describe("audit CM-F2 R2 red", () => {
+  it.each([
+    "/mnt/pcv/someone/project/src/lib.rs",
+    "/srv/cargo/someone/x.rs",
+    "/opt/rustc/someone/x.rs",
+    "/data/rust/deps/someone/x.rs",
+  ])("finds the user folder when a remapped root name is only a later folder of an unremapped path: %s", (path) => {
+    expect(findBuildMachinePaths(bytesOf(path), "someone")).not.toEqual([]);
+  });
+});
