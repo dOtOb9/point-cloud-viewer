@@ -23,6 +23,7 @@ const STEPS = [
   ["check:circular", "npm run check:circular"],
   ["check:docs", "npm run check:docs"],
   ["check:comments", "npm run check:comments"],
+  ["check:wasm-paths", "npm run check:wasm-paths"],
   ["vitest", "npx vitest run"],
   ["cargo fmt (workspace)", "cargo fmt --all -- --check"],
   ["cargo clippy (workspace)", "cargo clippy --workspace --all-targets -- -D warnings"],

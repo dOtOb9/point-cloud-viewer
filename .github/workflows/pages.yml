@@ -45,17 +45,15 @@ jobs:
       - name: wasm-bindgen-cliのインストール
         run: cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
 
-      - name: pcv-wasm を release ビルド
-        run: cargo build --manifest-path crates/pcv-wasm/Cargo.toml --release --target wasm32-unknown-unknown
-      - name: wasm-bindgenでJSグルーを生成
-        run: |
-          wasm-bindgen --target web --out-dir src/wasm/pcv-wasm --out-name pcv_wasm \
-            crates/pcv-wasm/target/wasm32-unknown-unknown/release/pcv_wasm.wasm
-
       - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
+
+      - name: pcv-wasm を release ビルドし、wasm-bindgenでJSグルーを生成（ビルドした場所のパスを付け替える）
+        run: npm run build:wasm
+      - name: Pages に出す wasm にビルドした場所の絶対パスが無い
+        run: npm run check:wasm-paths
 
       - name: Committed wasm glue (JS and types) is up to date
         run: |

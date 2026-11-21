@@ -29,6 +29,7 @@ jobs:
             npm run check:docs
           fi
       - run: npm run check:comments
+      - run: npm run check:wasm-paths
       - run: npm run test
 
   invariants:
