@@ -340,7 +340,7 @@ describe("pcv.view: keyboard shortcuts (UX-4)", () => {
 
   it("other keys are ignored", () => {
     const { ctx, renderer } = mountViewer();
-    for (const key of ["Enter", "x", "8"]) expect(press(key).defaultPrevented).toBe(false);
+    for (const key of ["Enter", "x", "Escape", "8"]) expect(press(key).defaultPrevented).toBe(false);
     expect(ctx.state.get().projection).toBe("perspective");
     expect(renderer.fitAll).not.toHaveBeenCalled();
   });
