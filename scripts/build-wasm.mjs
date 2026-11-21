@@ -7,7 +7,7 @@ const USAGE = `usage: node scripts/build-wasm.mjs   (npm run build:wasm)
 
 Builds crates/pcv-wasm for wasm32-unknown-unknown in release and runs wasm-bindgen into src/wasm/pcv-wasm.
 The absolute paths of this checkout, CARGO_HOME and the rustc sysroot are remapped (--remap-path-prefix),
-so the wasm holds no path of the machine that built it and is the same from any folder.
+so the wasm holds no path of the machine that built it.
 Honors CARGO_TARGET_DIR and CARGO_HOME.`;
 
 const RUSTFLAGS_SEPARATOR = "\x1f";
