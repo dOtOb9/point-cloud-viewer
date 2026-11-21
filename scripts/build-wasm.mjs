@@ -12,9 +12,8 @@ Honors CARGO_TARGET_DIR and CARGO_HOME.`;
 
 const RUSTFLAGS_SEPARATOR = "\x1f";
 
-const REMAPPED_REPO = "/pcv";
-const REMAPPED_CARGO_HOME = "/cargo";
-const REMAPPED_SYSROOT = "/rustc-sysroot";
+export const REMAPPED_ROOTS = ["pcv", "cargo", "rustc-sysroot"];
+const [REMAPPED_REPO, REMAPPED_CARGO_HOME, REMAPPED_SYSROOT] = REMAPPED_ROOTS.map((root) => `/${root}`);
 
 function spellingsOfWindowsPath(path) {
   const spellings = [];

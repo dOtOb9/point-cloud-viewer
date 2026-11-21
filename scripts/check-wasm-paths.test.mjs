@@ -41,8 +41,14 @@ describe("check-wasm-paths", () => {
     ]);
   });
 
-  it("finds the name of the user running the check in any case", () => {
-    expect(findBuildMachinePaths(bytesOf("built by SOMEONE here"), "someone")).toEqual(["SOMEONE"]);
+  it("finds a folder named after the user running the check in any case", () => {
+    expect(findBuildMachinePaths(bytesOf("/srv/SOMEONE/pcv/lib.rs"), "someone")).toEqual(["/srv/SOMEONE/pcv/lib.rs"]);
+  });
+
+  it("does not take a user named like a remapped root for a path of the build machine", () => {
+    const remapped = bytesOf("/pcv\\vendor\\laz\\src\\lib.rs", "/cargo\\registry\\src\\x\\lib.rs");
+    expect(findBuildMachinePaths(remapped, "pcv")).toEqual([]);
+    expect(findBuildMachinePaths(remapped, "cargo")).toEqual([]);
   });
 
   it("ignores a user name too short to tell apart from other text", () => {
@@ -85,5 +91,17 @@ describe("build-wasm remapPathPrefixFlags", () => {
     expect(remapPathPrefixFlags([{ from: "/home/runner/.cargo", to: "/cargo" }])).toEqual([
       "--remap-path-prefix=/home/runner/.cargo=/cargo",
     ]);
+  });
+});
+
+describe("audit CM-F2 R1 red", () => {
+  it("does not take a user name found inside an ordinary word or a remapped path as a path of the build machine", () => {
+    expect(findBuildMachinePaths(bytesOf("/rustc-sysroot/lib/rustlib/src/rust/library/core/src/str/mod.rs"), "root")).toEqual([]);
+    expect(findBuildMachinePaths(bytesOf("/cargo/registry/src/x/roxmltree-0.21.1/src/tokenizer.rs"), "ken")).toEqual([]);
+    expect(findBuildMachinePaths(bytesOf("copcfile_readNode"), "node")).toEqual([]);
+  });
+
+  it("still finds the user name as a folder of a path outside a home folder", () => {
+    expect(findBuildMachinePaths(bytesOf("/srv/build/someone/pcv/vendor/laz/src/lib.rs"), "someone")).not.toEqual([]);
   });
 });
