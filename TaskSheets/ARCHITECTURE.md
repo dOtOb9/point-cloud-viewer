@@ -154,21 +154,21 @@ point-cloud-viewer/
 | ピッキング・計測・点の選択・抽出・結合 | 実装済み: 深度ピック（`src/renderer/depth-pick.ts`）、計測、多角形での抽出、レイヤーの結合。結果は新しいレイヤーとして作る（[ADR-0018](./ADR-0018-layer-centric-operations.md)）。ツールの呼び出しは `src/app/point-cloud-tools.ts` が`instanceof WebSource`で Web とデスクトップに振り分けている（[REVIEW](./REVIEW-architecture-2026-11.md) A-1。RF-2 で `DataSource` に入れる予定） |
 | 断面線・断面図 | 実装済み（G2）: `crates/pcv-core/src/section_line*`・`profile*`、`src/app/section-*.ts`、`src/ui/section/`。CSV・DXF の書き出しまで |
 | ラスタ・DTM・間引き・フィルタ | 実装済み（G1）: 点群をラスタ（GeoTIFF）にする、布シミュレーション（CSF）の DTM と LandXML、LOD の間引き・外れ値のフィルタ。`crates/pcv-core`（`raster/`・`dtm/`・`csf.rs`・`thin.rs`・`outlier.rs`）と、`pcv-convert`・`pcv-wasm`・`src-tauri/src/conversion.rs` |
-| 視点（TP-1） | 実装済み: 平行投影・定位置の視点（`src/renderer/projection.ts`・`view-presets.ts`）、手順は `src/app/view.ts`。[TP-trendpoint-parity.md](./TP-trendpoint-parity.md) |
+| 視点（TP-1） | 実装済み: 平行投影・定位置の視点（`src/renderer/projection.ts`・`view-presets.ts`）。画面・キー・状態は組み込みプラグイン `pcv.view`（`src/plugins/view/`、PL-1）、レンダラへ渡す手順とビューアごとの文脈は `src/app/view.ts`。[TP-trendpoint-parity.md](./TP-trendpoint-parity.md) |
 
 ## TEA とプラグインの土台（PL-0 で入った物）
 
 - **TEA（Model / Msg / update / view）**（[ADR-0022](./ADR-0022-tea-architecture.md)）: `src/app/tea.ts` の `createProgram(init, update, { effectFailed, report })` が
-  `getModel`・`dispatch`・`subscribe` を返す。`update` は純粋な関数で、I/O は `Effect` だけが行う。効果の例外（同期の throw・Promise の reject）は
+  `getModel`・`dispatch`・`subscribe` を返す。`update` は純粋な関数で、I/O は `Effect` だけが行う。`update` が投げたら、その Msg を捨てて `report` に流し、残りの Msg は同じ `dispatch` の中で続ける（PL-1）。効果の例外（同期の throw・Promise の reject）は
   `effectFailed` で Msg に変えて `update` に戻す。その失敗の Msg の処理中にまた効果が失敗したら、`update` に戻さず `report` に流す（同期の無限ループを作らない。ADR-0022 の改訂）。ライブラリは入れていない。テストは `src/app/tea.test.ts`。
-- **プラグインの API**（[ADR-0023](./ADR-0023-plugins.md)）: `src/plugin-api/index.ts` に `PcvPlugin`・`PluginHost` の型。PL-0 の口は
-  `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`program` だけ。React を import しないので、描く物は `ViewNode`（ReactNode と互換の型）で受け取る。
+- **プラグインの API**（[ADR-0023](./ADR-0023-plugins.md)）: `src/plugin-api/index.ts` に `PcvPlugin`・`PluginHost` の型。口は
+  `ribbon`・`dialogs`・`status`・`shortcuts`・`errors`・`layers`・`view`・`program`（`layers`・`view` は PL-1 で足した読む側と視点の操作だけ。ADR-0023 の改訂（PL-1））。React を import しないので、描く物は `ViewNode`（ReactNode と互換の型）で受け取る。
 - **ホスト**: `src/core/plugin-host.ts` の `createPluginHost` が、プラグインを順に `activate` し、登録された物を React に依存しないストアとして持つ。
-  `activate` の例外・知らない `apiVersion`・同じ id・同じキーのショートカット・アプリが使っているキー（`APP_SHORTCUT_KEYS`）・プラグインのプログラムの効果の失敗は、既存の `reportError`（`ErrorDialog` とログ）に流す。
+  `activate` の例外・知らない `apiVersion`・同じ id・同じキーのショートカット・アプリが使っているキー（`APP_SHORTCUT_KEYS`。PL-1 から Delete・Enter・Escape・Tab）・プラグインのプログラムの効果の失敗は、既存の `reportError`（`ErrorDialog` とログ）に流す。
   ショートカットの「入力欄では効かない」判定は、登録の種類（`harmless` → `isTypingTarget`、`irreversible` → `isFormControl`）でホストが行う。テストは `src/core/plugin-host.test.ts`。
-- **描画**: `src/ui/plugins/` が `useSyncExternalStore` でホストを読み、リボンの項目を `Toolbar.tsx` の「開く」の次の区切りの後に、
-  ステータスの項目を `StatusBar.tsx` の「ログ」の前に、ダイアログを既存の `Dialog` の枠で描く。プラグインの UI ごとに Error Boundary がある。`window` の `keydown` は `usePluginHost` が1つだけ登録する。
-- **組み込み**: `src/plugins/builtin.ts` は空。画面は PL-0 の前と同じ。
+- **描画**: `src/ui/plugins/` が `useSyncExternalStore` でホストを読み、リボンの項目を `Toolbar.tsx` の「開く」の次の区切りの後（グループ `view`）に、
+  ステータスの項目を `StatusBar.tsx` の fps の後に、ダイアログを既存の `Dialog` の枠で描く。プラグインの UI ごとに Error Boundary がある。`window` の `keydown` は `usePluginHost` が1つだけ登録する。
+- **組み込み**: `src/plugins/builtin.ts` に `pcv.view`（PL-1）。視点の文脈（`createViewContext`）は `useCopcViewer` がビューアごとに作り、レンダラの付け外し（`useRendererLifecycle`）とホストに渡す。
 - **層の規約**（`eslint.config.js`、テストは `src/layer-rules.test.ts`）: `src/plugin-api/**` は React・`src/ui`・`src/state`・`src/renderer`・`src/datasource` を、
   `src/core/**` は React・`src/ui`・`src/state` を import しない（JSX も書かない）。`src/plugins/**` が import してよいのは `src/plugin-api`・自分のフォルダ・`react`・`lucide-react`・`src/ui/kit` だけ（RF-1 で先に入れた）。
 
